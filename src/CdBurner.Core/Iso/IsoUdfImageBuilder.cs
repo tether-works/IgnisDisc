@@ -622,6 +622,14 @@ public static class IsoUdfImageBuilder
                     if (isInsideVideoTs)
                     {
                         string upperName = file.SourceFile.Name.ToUpperInvariant();
+                        if (upperName == "VIDEO_TS.IFO")
+                        {
+                            // The DVD-Video structures start on a 16-sector ECC block, so the offsets the authoring lined
+                            // up within VIDEO_TS (title VOBs on block boundaries, usable as a dual-layer break) hold on
+                            // the disc. Up to 15 unused sectors go in front.
+                            int block = OpticalConstants.DvdEccBlockSectors;
+                            currentLba = (currentLba + block - 1) / block * block;
+                        }
                         string? ifoName = upperName == "VIDEO_TS.BUP"
                             ? "VIDEO_TS.IFO"
                             : (upperName.EndsWith("_0.BUP", StringComparison.OrdinalIgnoreCase)

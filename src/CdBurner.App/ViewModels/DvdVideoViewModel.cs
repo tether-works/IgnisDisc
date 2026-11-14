@@ -1373,20 +1373,8 @@ public class DvdVideoViewModel : ObservableObject
         await IsoUdfImageBuilder.BuildAsync(root, image, buildOptions, null, cancellationToken, 0);
         int totalSectors = OpticalConstants.BytesToSectors(image.Length, OpticalConstants.DataSectorSize);
 
-        DvdCellPosition? chosen;
-        image.Position = 0;
-        using (var reader = IsoImageReader.FromStream(image, leaveOpen: true))
-        {
-            var videoTs = reader.FindDirectory("/VIDEO_TS");
-            var entries = videoTs?.Files.GroupBy(f => f.Name.ToUpperInvariant()).ToDictionary(g => g.Key, g => g.First())
-                          ?? new Dictionary<string, IsoFileEntry>();
-            var files = entries.ToDictionary(e => e.Key,
-                e => (e.Value.StartLba, OpticalConstants.BytesToSectors(e.Value.SizeBytes, OpticalConstants.DataSectorSize)));
-            var positions = DvdCellLayerBreak.PlaceCells(files,
-                name => entries.TryGetValue(name, out var entry) && entry.SizeBytes <= 16 * 1024 * 1024 ? reader.ReadFileBytes(entry) : null);
-            DvdCellStart? picked = _plannedBreakCells.TryGetValue(SelectedLayerBreakLba, out var cell) ? cell : null;
-            chosen = DvdCellLayerBreak.Choose(positions, totalSectors, picked);
-        }
+        DvdCellStart? picked = _plannedBreakCells.TryGetValue(SelectedLayerBreakLba, out var cell) ? cell : null;
+        DvdCellPosition? chosen = DvdCellLayerBreak.ChooseInImage(image, picked);
 
         if (chosen == null)
         {

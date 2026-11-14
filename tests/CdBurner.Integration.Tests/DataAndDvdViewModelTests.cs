@@ -425,7 +425,7 @@ public sealed class DataAndDvdViewModelTests : IDisposable
         Assert.True(mainVm.DvdVideo.TotalSectors > 0);
         Assert.Equal(mainVm.DvdVideo.TotalSectors, mainVm.CurrentCapacity.TotalSectors);
 
-        // Also verify BuildVtsIfo handles > 511 NAV packs without overflowing Sector 5
+        // BuildVtsIfo lists every VOBU in VOBU_ADMAP, however many there are (the table grows past one sector)
         var largeNavList = Enumerable.Range(0, 2500).Select(i => i * 15).ToList();
         byte[] vtsIfo = DvdIfoGenerator.BuildVtsIfo(
             titleSetNumber: 1,
@@ -435,7 +435,11 @@ public sealed class DataAndDvdViewModelTests : IDisposable
             durationSeconds: 6704,
             menuVobSectors: 16,
             navPackSectors: largeNavList);
-        Assert.Equal(6 * OpticalConstants.DataSectorSize, vtsIfo.Length);
+        int admap = (int)System.Buffers.Binary.BinaryPrimitives.ReadUInt32BigEndian(vtsIfo.AsSpan(0xE4)) * OpticalConstants.DataSectorSize;
+        Assert.Equal(4 * 2500 + 3, (int)System.Buffers.Binary.BinaryPrimitives.ReadUInt32BigEndian(vtsIfo.AsSpan(admap)));
+        Assert.Equal(largeNavList, Enumerable.Range(0, 2500).Select(i =>
+            (int)System.Buffers.Binary.BinaryPrimitives.ReadUInt32BigEndian(vtsIfo.AsSpan(admap + 4 + 4 * i))));
+        Assert.Equal(0, vtsIfo.Length % OpticalConstants.DataSectorSize);
     }
 
     [Fact]

@@ -586,6 +586,31 @@ public sealed class CliIntegrationTests : IDisposable
         Assert.True(medium.IsBlank);
     }
 
+    [Theory]
+    [InlineData(false, "1600", "--layer-break needs --native")]
+    [InlineData(true, "1500", "a positive multiple of 16")]
+    [InlineData(true, "1,600", "a positive multiple of 16")]
+    [InlineData(true, "1600", "needs a blank dual-layer DVD")] // the disc in the drive is a single-layer CD-RW
+    public async Task BurnIso_LayerBreak_IsCheckedBeforeAnythingIsWritten(bool native, string layerBreak, string expected)
+    {
+        string inputFolder = CreateSampleDataFolder("LayerBreakSource");
+        string iso = Path.Combine(_tempDir, "layer-break.iso");
+        int built = await CliCommandRunner.RunAsync(new[] { "build-iso", "--input", inputFolder, "--output", iso },
+            new StringWriter(), new StringWriter(), _deviceService, _burnEngine);
+        Assert.Equal(0, built);
+        using var medium = VirtualDiscMedium.CreateBlankCdRw700();
+        _recorder.InsertMedia(medium);
+
+        var args = new List<string> { "burn-iso", "--drive", "VDRV-01", "--iso", iso, "--layer-break", layerBreak };
+        if (native) args.Add("--native");
+        var (_, err) = CreateStringWriters();
+        int code = await CliCommandRunner.RunAsync(args.ToArray(), new StringWriter(), err, _deviceService, _burnEngine);
+
+        Assert.NotEqual(0, code);
+        Assert.Contains(expected, err.ToString());
+        Assert.True(medium.IsBlank);
+    }
+
     [Fact]
     public async Task BurnData_Native_AddsASessionToAnOpenDisc_AndKeepsTheEarlierFiles()
     {

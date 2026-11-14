@@ -125,6 +125,49 @@ public sealed class NativeDualLayerDvdWriterTests : IDisposable
     }
 
     [Fact]
+    public void FirstWrite_WaitsOutTheDrivesCalibration_LaterWritesKeepTheShortTimeout()
+    {
+        // The GP60NB50 held the first WRITE on a blank DVD+R DL for more than 60 s (2026-11-14); a 60 s timeout failed it.
+        var drive = BlankDvdPlusRDl();
+        drive.FirstWriteCalibration = TimeSpan.FromSeconds(70);
+        byte[] image = Image(3_001);
+
+        var result = Write(drive, image);
+
+        Assert.True(result.Success, result.Message);
+        Assert.True(drive.WriteTimeouts[0] >= TimeSpan.FromSeconds(70));
+        Assert.All(drive.WriteTimeouts.Skip(1), t => Assert.Equal(TimeSpan.FromSeconds(60), t));
+        Assert.True(drive.DataDiscImage!.AsSpan(0, image.Length).SequenceEqual(image));
+    }
+
+    [Fact]
+    public void RequestedBreak_AtOrPastTheEndOfTheImage_StopsBeforeAnythingIsSentOrWritten()
+    {
+        var drive = BlankDvdPlusRDl();
+
+        var result = Write(drive, Image(1_200), layerBreak: 1_200);
+
+        Assert.False(result.Success);
+        Assert.True(result.StoppedBeforeWriting);
+        Assert.Contains("not inside the image", result.Message);
+        Assert.Null(drive.LayerBreakSent);
+        Assert.Equal(0, drive.WriteCommandCount);
+    }
+
+    [Fact]
+    public void RequestedBreak_OnASingleLayerDisc_StopsBeforeWriting()
+    {
+        var drive = new VirtualMmcDrive { Profile = NativeTaoDataWriter.ProfileDvdPlusR, CapacitySectors = 2 * LayerSectors };
+
+        var result = Write(drive, Image(1_200), layerBreak: 1_024);
+
+        Assert.False(result.Success);
+        Assert.True(result.StoppedBeforeWriting);
+        Assert.Contains("single-layer", result.Message);
+        Assert.Equal(0, drive.WriteCommandCount);
+    }
+
+    [Fact]
     public void DriveThatRefusesTheBreak_StopsBeforeWriting()
     {
         var drive = BlankDvdPlusRDl();

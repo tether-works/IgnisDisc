@@ -139,6 +139,16 @@ public sealed class VirtualMmcDrive : IScsiTransport
     /// <summary>TEST UNIT READY answers 2/04/01 (becoming ready) this many times first.</summary>
     public int NotReadyResponses { get; set; }
 
+    /// <summary>
+    /// How long the drive holds the first WRITE of a recording while it calibrates the laser. A timeout given to that
+    /// WRITE shorter than this fails it as Windows does (Win32 error 121, nothing recorded), as the GP60NB50 did on a
+    /// blank DVD+R DL with a 60 s timeout (2026-11-14). Null: no calibration delay.
+    /// </summary>
+    public TimeSpan? FirstWriteCalibration { get; set; }
+
+    /// <summary>The timeout the host gave each WRITE, in order.</summary>
+    public List<TimeSpan> WriteTimeouts { get; } = new();
+
     /// <summary>MODE SELECT stores the page with the Test Write bit cleared, so the read-back shows it off.</summary>
     public bool DropsTestWriteBit { get; set; }
 
@@ -673,7 +683,7 @@ public sealed class VirtualMmcDrive : IScsiTransport
             0x5A => ModeSense(cdb, dataBuffer),
             NativeWriteCommands.OpCodeModeSelect10 => ModeSelect(dataBuffer),
             NativeWriteCommands.OpCodeSendCueSheet => SendCueSheet(cdb, dataBuffer),
-            NativeWriteCommands.OpCodeWrite10 => Write(cdb, dataBuffer),
+            NativeWriteCommands.OpCodeWrite10 => TimedWrite(cdb, dataBuffer, timeout),
             NativeWriteCommands.OpCodeReadBufferCapacity => ReadBufferCapacity(dataBuffer),
             0x35 => SynchronizeCache(),
             0xBE => ReadCd(cdb, dataBuffer),
@@ -972,6 +982,17 @@ public sealed class VirtualMmcDrive : IScsiTransport
         _nextLba = parsed.CdText ? LeadInStart.ToLba() : SaoAudioLayout.FirstWritableLba;
         SessionClosed = false;
         return Good(0);
+    }
+
+    private ScsiExecutionResult TimedWrite(ReadOnlySpan<byte> cdb, ReadOnlySpan<byte> data, TimeSpan timeout)
+    {
+        WriteTimeouts.Add(timeout);
+        if (FirstWriteCalibration is { } calibration && WriteTimeouts.Count == 1 && timeout < calibration)
+        {
+            WriteCommandCount++;
+            return ScsiExecutionResult.Failed(121, "DeviceIoControl failed with Win32 error 121.");
+        }
+        return Write(cdb, data);
     }
 
     private ScsiExecutionResult Write(ReadOnlySpan<byte> cdb, ReadOnlySpan<byte> data)

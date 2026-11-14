@@ -163,6 +163,28 @@ public static class DvdCellLayerBreak
         return usable.OrderBy(p => Math.Abs(p.Lba - target)).ThenBy(p => p.Lba).First();
     }
 
+    /// <summary>
+    /// The layer break of a built DVD-Video image (ISO 9660 / UDF with a VIDEO_TS folder): reads where the VIDEO_TS
+    /// files landed and their title set IFOs, places every cell start, and returns the usable one at or nearest
+    /// <paramref name="preferred"/> (else nearest an even split), as <see cref="Choose"/>. Null when no cell boundary
+    /// can be the break. The stream's position is left where reading ended.
+    /// </summary>
+    public static DvdCellPosition? ChooseInImage(Stream image, DvdCellStart? preferred = null)
+    {
+        ArgumentNullException.ThrowIfNull(image);
+        int totalSectors = CdBurner.Core.Primitives.OpticalConstants.BytesToSectors(image.Length, SectorSize);
+        image.Position = 0;
+        using var reader = CdBurner.Core.Iso.IsoImageReader.FromStream(image, leaveOpen: true);
+        var videoTs = reader.FindDirectory("/VIDEO_TS");
+        var entries = videoTs?.Files.GroupBy(f => f.Name.ToUpperInvariant()).ToDictionary(g => g.Key, g => g.First())
+                      ?? new Dictionary<string, CdBurner.Core.Iso.IsoFileEntry>();
+        var files = entries.ToDictionary(e => e.Key,
+            e => (e.Value.StartLba, CdBurner.Core.Primitives.OpticalConstants.BytesToSectors(e.Value.SizeBytes, SectorSize)));
+        var positions = PlaceCells(files,
+            name => entries.TryGetValue(name, out var entry) && entry.SizeBytes <= 16 * 1024 * 1024 ? reader.ReadFileBytes(entry) : null);
+        return Choose(positions, totalSectors, preferred);
+    }
+
     private static bool SameCell(DvdCellStart a, DvdCellStart b) =>
         a.TitleSet == b.TitleSet && a.VobId == b.VobId && a.CellId == b.CellId;
 }

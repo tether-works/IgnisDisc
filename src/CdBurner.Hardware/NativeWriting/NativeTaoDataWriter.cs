@@ -123,6 +123,13 @@ public sealed partial class NativeTaoDataWriter
     /// <summary>Windows refuses a pass-through whose transfer is larger than the adapter allows with this code.</summary>
     private const int ErrorInvalidParameter = 87;
     private static readonly TimeSpan WriteTimeout = TimeSpan.FromSeconds(60);
+
+    /// <summary>
+    /// The first WRITE of each run of writes: the drive may hold it while it calibrates the laser. The GP60NB50 held it
+    /// for more than 60 s on a blank DVD+R DL (Windows' own writer reported 66 s of calibration on that disc type) and
+    /// 23 s on a DVD+R; Windows then fails the command with error 121 although nothing was recorded.
+    /// </summary>
+    internal static readonly TimeSpan FirstWriteTimeout = TimeSpan.FromMinutes(4);
     private static readonly TimeSpan FlushTimeout = TimeSpan.FromMinutes(10);
 
     private readonly IScsiTransport _transport;
@@ -371,7 +378,7 @@ public sealed partial class NativeTaoDataWriter
             Array.Clear(buffer, fromImage, bytes - fromImage);
             remainingImage -= fromImage;
 
-            if (!WriteBlocks(lba, (ushort)n, buffer.AsSpan(0, bytes), state, canShrink: sectorsPerWrite > minimum))
+            if (!WriteBlocks(lba, (ushort)n, buffer.AsSpan(0, bytes), state, canShrink: sectorsPerWrite > minimum, first: lba == startLba))
             {
                 request.Image.Position -= fromImage;
                 remainingImage += fromImage;
@@ -399,15 +406,18 @@ public sealed partial class NativeTaoDataWriter
         }
     }
 
+    /// <param name="first">The first WRITE of a run, which the drive may hold while it calibrates
+    /// (<see cref="FirstWriteTimeout"/>).</param>
     /// <returns>False only when <paramref name="canShrink"/> is set and the adapter refused the transfer as too large.</returns>
-    private bool WriteBlocks(int lba, ushort count, Span<byte> data, RunState state, bool canShrink = false)
+    private bool WriteBlocks(int lba, ushort count, Span<byte> data, RunState state, bool canShrink = false, bool first = false)
     {
         byte[] cdb = NativeWriteCommands.BuildWrite10(lba, count);
+        TimeSpan timeout = first ? FirstWriteTimeout : WriteTimeout;
         var deadline = Stopwatch.StartNew();
         while (true)
         {
             state.WritingStarted = true;
-            var r = _transport.ExecuteCommand(cdb, data, ScsiPassThroughNative.SCSI_IOCTL_DATA_OUT, WriteTimeout);
+            var r = _transport.ExecuteCommand(cdb, data, ScsiPassThroughNative.SCSI_IOCTL_DATA_OUT, timeout);
             if (r.IsSuccess)
             {
                 return true;
@@ -416,7 +426,7 @@ public sealed partial class NativeTaoDataWriter
             {
                 return false;
             }
-            if (r.SenseInfo is { SenseKey: 0x02, Asc: 0x04, Ascq: 0x07 or 0x08 } && deadline.Elapsed < WriteTimeout)
+            if (r.SenseInfo is { SenseKey: 0x02, Asc: 0x04, Ascq: 0x07 or 0x08 } && deadline.Elapsed < timeout)
             {
                 _sleep(TimeSpan.FromMilliseconds(20)); // drive buffer full
                 continue;

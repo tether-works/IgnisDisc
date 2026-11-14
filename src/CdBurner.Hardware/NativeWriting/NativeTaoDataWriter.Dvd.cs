@@ -101,6 +101,10 @@ public sealed partial class NativeTaoDataWriter
             state.UnsupportedDisc = true;
             throw Stop($"Direct writing adds sessions to single-layer DVDs only so far (the disc is {discName}).");
         }
+        if (request.LayerBreakSectors != null && !dualLayer)
+        {
+            throw Stop($"A layer break was asked for, but the disc in the drive is a single-layer {discName}.");
+        }
         if (layerJump)
         {
             // Checked before anything is sent that changes the drive or the disc, so a refusal leaves the burn to the
@@ -455,6 +459,10 @@ public sealed partial class NativeTaoDataWriter
             if (asked > layer0Capacity)
             {
                 throw Stop($"The layer break ({asked:N0} sectors) is beyond the end of layer 0 ({layer0Capacity:N0} sectors).");
+            }
+            if (asked >= trackSectors)
+            {
+                throw Stop($"The layer break ({asked:N0} sectors) is not inside the image ({trackSectors:N0} sectors), so nothing would go on layer 1.");
             }
             if (2L * asked < trackSectors)
             {

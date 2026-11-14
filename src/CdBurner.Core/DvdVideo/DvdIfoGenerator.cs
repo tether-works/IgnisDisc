@@ -5,135 +5,79 @@ using CdBurner.Core.Primitives;
 namespace CdBurner.Core.DvdVideo;
 
 /// <summary>
-/// Generates DVD-Video binary structure files (.IFO and .BUP) and performs low-level NAV-pack
-/// patching and file splitting for compliant Video Manager (VMG) and Video Title Set (VTS) streams.
+/// Builds the DVD-Video information files (VIDEO_TS.IFO and VTS_nn_0.IFO; the BUP files are byte copies), fills the NAV
+/// packs of the video files (<see cref="DvdNavPackWriter"/>) and splits title VOBs into 1 GB files. Table layouts follow
+/// libdvdread's ifo_types.h, the structures DVD players are modelled on, and pass its ifo_read.c checks: every table
+/// starts on a sector of its own and the IFO grows with what it lists. Each title set holds one title of one cell
+/// (VOB 1, cell 1); the VMG holds the first-play program chain, the title search table, the title set attributes, a
+/// command-only VMGM program chain per title from title 2 on (the end of a title calls it to play the next one), and,
+/// with a menu, the title menu (one cell, one button that plays title 1, and a 10-second still after which title 1
+/// starts by itself).
 /// </summary>
 public static class DvdIfoGenerator
 {
     private const int SectorSize = OpticalConstants.DataSectorSize; // 2048 bytes
-    private const int IfoSectorCount = 6; // 6 sectors = 12,288 bytes
+
+    /// <summary>Size of a program chain's fixed part (PGC_SIZE): the command table may start right after it.</summary>
+    private const int PgcSize = 0xEC;
+
+    /// <summary>One title set attribute entry in VTS_ATRT, all 32 subpicture attributes included (VTS_ATTRIBUTES_SIZE).</summary>
+    private const int VtsAttributesSize = 542;
+
+    /// <summary>Seconds the title menu stays up before title 1 starts by itself.</summary>
+    public const int MenuStillSeconds = 10;
+
+    /// <summary>VM command JumpTT 1: play title 1.</summary>
+    public static readonly byte[] JumpTitle1 = [0x30, 0x02, 0x00, 0x00, 0x00, 0x01, 0x00, 0x00];
+
+    private static byte[] JumpTitle(int title) => [0x30, 0x02, 0x00, 0x00, 0x00, (byte)Math.Clamp(title, 1, 99), 0x00, 0x00];
+
+    /// <summary>JumpSS VMGM menu 2 (the title menu), from the first-play program chain.</summary>
+    private static readonly byte[] JumpTitleMenu = [0x30, 0x06, 0x00, 0x00, 0x00, 0x42, 0x00, 0x00];
+
+    /// <summary>CallSS VMGM menu 2 (the title menu), resuming at cell 1, at the end of a title.</summary>
+    private static readonly byte[] CallTitleMenu = [0x30, 0x08, 0x00, 0x00, 0x01, 0x42, 0x00, 0x00];
 
     /// <summary>
-    /// Patches in-memory VOB bytes ensuring sector 0 (and subsequent NAV packs) contains valid DVD NAV pack headers,
-    /// LBN addresses, VOBU end addresses, VOB ID, Cell ID, and menu button highlight commands.
+    /// CallSS VMGM PGC n, resuming at cell 1: the end of a title goes through VMGM program chain n, a command-only chain
+    /// that plays the next title. JumpTT itself is only allowed in first play and the VMGM (libdvdnav's vm.c asserts it),
+    /// so a title cannot jump to another title directly.
     /// </summary>
-    public static void PatchVobNavPackets(byte[] vobBytes, int vobId = 1, int cellId = 1, bool isMenu = false, int buttonCount = 1)
+    private static byte[] CallVmgmPgc(int pgcNumber) => [0x30, 0x08, (byte)(pgcNumber >> 8), (byte)pgcNumber, 0x01, 0xC0, 0x00, 0x00];
+
+    /// <summary>
+    /// Number of the VMGM program chain that plays <paramref name="title"/> (2 or later): the chains come after the
+    /// title menu, one per title from title 2 on.
+    /// </summary>
+    public static int TitleJumpPgcNumber(int title, bool hasTitleMenu) => (hasTitleMenu ? 1 : 0) + Math.Max(2, title) - 1;
+
+    /// <summary>Exit: stop playback.</summary>
+    private static readonly byte[] Exit = [0x30, 0x01, 0x00, 0x00, 0x00, 0x00, 0x00, 0x00];
+
+    /// <summary>
+    /// Fills the NAV packs of an in-memory VOB and returns its VOBUs (see <see cref="DvdNavPackWriter"/>). A menu VOB
+    /// gets one button that plays title 1.
+    /// </summary>
+    public static IReadOnlyList<DvdVobu> PatchVobNavPackets(byte[] vobBytes, int vobId = 1, int cellId = 1, bool isMenu = false, int buttonCount = 1)
     {
         ArgumentNullException.ThrowIfNull(vobBytes);
-        if (vobBytes.Length < SectorSize) return;
-
-        int totalSectors = vobBytes.Length / SectorSize;
-
-        // Ensure sector 0 is a NAV pack
-        if (!IsNavPack(vobBytes, 0))
+        if (vobBytes.Length < SectorSize)
         {
-            FormatNavPack(vobBytes, 0, vobId, cellId, isMenu, buttonCount, sectorLbn: 0, vobuEaSectors: totalSectors - 1);
+            return Array.Empty<DvdVobu>();
         }
-
-        // Find all NAV packs
-        var navSectors = new List<int>();
-        for (int s = 0; s < totalSectors; s++)
-        {
-            if (IsNavPack(vobBytes, s * SectorSize))
-            {
-                navSectors.Add(s);
-            }
-        }
-
-        if (navSectors.Count == 0)
-        {
-            navSectors.Add(0);
-        }
-
-        // Patch each NAV pack
-        for (int i = 0; i < navSectors.Count; i++)
-        {
-            int s = navSectors[i];
-            int nextS = (i + 1 < navSectors.Count) ? navSectors[i + 1] : totalSectors;
-            int vobuEa = Math.Max(0, nextS - s - 1);
-
-            PatchNavPackData(vobBytes, s * SectorSize, s, vobuEa, vobId, cellId, isMenu, buttonCount);
-        }
+        using var stream = new MemoryStream(vobBytes, 0, vobBytes.Length / SectorSize * SectorSize, writable: true);
+        return DvdNavPackWriter.Patch(stream, vobId, cellId, isMenu ? JumpTitle1 : null);
     }
 
-    /// <summary>
-    /// Patches NAV packets throughout a VOB file in-place using a stream to avoid loading large files into RAM.
-    /// </summary>
-    public static void PatchVobNavPacketsInFile(string vobFilePath, int vobId = 1, int cellId = 1, bool isMenu = false, int buttonCount = 1)
+    /// <summary>Fills the NAV packs of a VOB file in place and returns its VOBUs.</summary>
+    public static IReadOnlyList<DvdVobu> PatchVobNavPacketsInFile(string vobFilePath, int vobId = 1, int cellId = 1, bool isMenu = false, int buttonCount = 1)
     {
         ArgumentException.ThrowIfNullOrWhiteSpace(vobFilePath);
-        if (!File.Exists(vobFilePath)) return;
-
-        using var fs = new FileStream(vobFilePath, FileMode.Open, FileAccess.ReadWrite, FileShare.Read, bufferSize: 65536);
-        long length = fs.Length;
-        if (length < SectorSize) return;
-
-        int totalSectors = (int)(length / SectorSize);
-        byte[] sectorBuf = new byte[SectorSize];
-
-        // 1. Ensure sector 0 is a valid NAV pack
-        fs.Position = 0;
-        int read = fs.Read(sectorBuf, 0, SectorSize);
-        if (read == SectorSize && !IsNavPack(sectorBuf, 0))
+        if (!File.Exists(vobFilePath) || new FileInfo(vobFilePath).Length < SectorSize)
         {
-            FormatNavPack(sectorBuf, 0, vobId, cellId, isMenu, buttonCount, sectorLbn: 0, vobuEaSectors: totalSectors - 1);
-            fs.Position = 0;
-            fs.Write(sectorBuf, 0, SectorSize);
+            return Array.Empty<DvdVobu>();
         }
-
-        // 2. Discover all NAV pack sector indices using 1 MB buffered chunks
-        var navSectors = new List<int>();
-        const int chunkSectors = 512;
-        byte[] chunkBuf = new byte[chunkSectors * SectorSize];
-        fs.Position = 0;
-        int currentSector = 0;
-
-        while (currentSector < totalSectors)
-        {
-            int toReadSectors = Math.Min(chunkSectors, totalSectors - currentSector);
-            int bytesToRead = toReadSectors * SectorSize;
-            int bytesRead = 0;
-            while (bytesRead < bytesToRead)
-            {
-                int r = fs.Read(chunkBuf, bytesRead, bytesToRead - bytesRead);
-                if (r <= 0) break;
-                bytesRead += r;
-            }
-
-            int sectorsRead = bytesRead / SectorSize;
-            if (sectorsRead <= 0) break;
-
-            for (int i = 0; i < sectorsRead; i++)
-            {
-                if (IsNavPack(chunkBuf, i * SectorSize))
-                {
-                    navSectors.Add(currentSector + i);
-                }
-            }
-
-            currentSector += sectorsRead;
-        }
-
-        if (navSectors.Count == 0)
-        {
-            navSectors.Add(0);
-        }
-
-        // 3. Patch each NAV pack in-place
-        for (int i = 0; i < navSectors.Count; i++)
-        {
-            int s = navSectors[i];
-            int nextS = (i + 1 < navSectors.Count) ? navSectors[i + 1] : totalSectors;
-            int vobuEa = Math.Max(0, nextS - s - 1);
-
-            fs.Position = (long)s * SectorSize;
-            fs.ReadExactly(sectorBuf, 0, SectorSize);
-
-            PatchNavPackData(sectorBuf, 0, s, vobuEa, vobId, cellId, isMenu, buttonCount);
-
-            fs.Position = (long)s * SectorSize;
-            fs.Write(sectorBuf, 0, SectorSize);
-        }
+        return DvdNavPackWriter.PatchFile(vobFilePath, vobId, cellId, isMenu ? JumpTitle1 : null);
     }
 
     /// <summary>
@@ -146,46 +90,41 @@ public static class DvdIfoGenerator
         if (!File.Exists(vobFilePath)) return result;
 
         using var fs = new FileStream(vobFilePath, FileMode.Open, FileAccess.Read, FileShare.Read, bufferSize: 65536);
-        long length = fs.Length;
-        int totalSectors = (int)(length / SectorSize);
-
-        const int chunkSectors = 512;
-        byte[] chunkBuf = new byte[chunkSectors * SectorSize];
-        fs.Position = 0;
-        int currentSector = 0;
-
-        while (currentSector < totalSectors)
+        int totalSectors = (int)(fs.Length / SectorSize);
+        byte[] sector = new byte[SectorSize];
+        for (int s = 1; s < totalSectors; s++)
         {
-            int toReadSectors = Math.Min(chunkSectors, totalSectors - currentSector);
-            int bytesToRead = toReadSectors * SectorSize;
-            int bytesRead = 0;
-            while (bytesRead < bytesToRead)
+            fs.Position = (long)s * SectorSize;
+            fs.ReadExactly(sector);
+            if (DvdNavPackWriter.IsNavPack(sector))
             {
-                int r = fs.Read(chunkBuf, bytesRead, bytesToRead - bytesRead);
-                if (r <= 0) break;
-                bytesRead += r;
+                result.Add(s);
             }
-
-            int sectorsRead = bytesRead / SectorSize;
-            if (sectorsRead <= 0) break;
-
-            for (int i = 0; i < sectorsRead; i++)
-            {
-                int sectorIdx = currentSector + i;
-                if (sectorIdx > 0 && IsNavPack(chunkBuf, i * SectorSize))
-                {
-                    result.Add(sectorIdx);
-                }
-            }
-
-            currentSector += sectorsRead;
         }
-
         return result;
     }
 
+    /// <summary>Sectors of the VIDEO_TS.IFO <see cref="BuildVmgIfo"/> builds for these contents.</summary>
+    public static int CalculateVmgIfoSectors(int titleSetCount, int menuVobSectors, int menuVobuCount = 1)
+    {
+        titleSetCount = Math.Clamp(titleSetCount, 1, 99);
+        int sectors = 1 + Sectors(8 + 12 * titleSetCount) + Sectors(8 + titleSetCount * (4 + VtsAttributesSize));
+        if (PgciUtBytes(titleSetCount, menuVobSectors > 0) is int ut and > 0)
+        {
+            sectors += Sectors(ut);
+        }
+        if (menuVobSectors > 0)
+        {
+            sectors += 1 + Sectors(4 + 4 * Math.Max(1, menuVobuCount));
+        }
+        return sectors;
+    }
+
     /// <summary>
-    /// Builds a compliant 6-sector (12,288 byte) Video Manager Information (VIDEO_TS.IFO) buffer.
+    /// Builds VIDEO_TS.IFO. <paramref name="vtsStartSectorOffsets"/> gives where each title set's IFO starts, counted in
+    /// sectors from the start of VIDEO_TS.IFO (as <see cref="DvdVideoLayoutPlanner"/> places the files). With
+    /// <paramref name="menuVobSectors"/> &gt; 0 the VMG has a title menu in VIDEO_TS.VOB (VOBUs from
+    /// <paramref name="menuVobus"/>), and first play goes to it when <paramref name="autoPlayMenu"/> is set.
     /// </summary>
     public static byte[] BuildVmgIfo(
         int titleSetCount,
@@ -193,217 +132,172 @@ public static class DvdIfoGenerator
         DvdAspectRatio aspect,
         int menuVobSectors,
         IReadOnlyList<int>? vtsStartSectorOffsets = null,
-        bool autoPlayMenu = true)
+        bool autoPlayMenu = true,
+        IReadOnlyList<DvdVobu>? menuVobus = null)
     {
         titleSetCount = Math.Clamp(titleSetCount, 1, 99);
-        int vtsAtrtBytes = 8 + titleSetCount * 4 + titleSetCount * 772;
-        int vtsAtrtSectors = Math.Max(1, (vtsAtrtBytes + SectorSize - 1) / SectorSize);
-        int pgciUtSector = 2 + vtsAtrtSectors;
-        int cAdtSector = pgciUtSector + 1;
-        int vobuAdmapSector = cAdtSector + 1;
-        int totalIfoSectors = vobuAdmapSector + 1;
+        bool hasMenu = menuVobSectors > 0;
+        var menuUnits = hasMenu ? (menuVobus is { Count: > 0 } ? menuVobus : new[] { new DvdVobu(0, -1, -1) }) : Array.Empty<DvdVobu>();
 
-        byte[] ifo = new byte[totalIfoSectors * SectorSize];
-
-        // --- Sector 0: VMGI_MAT ---
-        int s0 = 0;
-        // 0x00..0x0B: Magic signature
-        Encoding.ASCII.GetBytes(DvdVideoValidator.VmgMagicSignature).CopyTo(ifo, s0);
-        // 0x0C..0x0F: VMGI end sector
-        BinaryPrimitives.WriteUInt32BigEndian(ifo.AsSpan(s0 + 0x0C), (uint)(totalIfoSectors - 1));
-        // 0x20..0x21: Version 0x0011 (DVD-Video 1.1)
-        BinaryPrimitives.WriteUInt16BigEndian(ifo.AsSpan(s0 + 0x20), 0x0011);
-        // 0x26..0x27: Volume count = 1
-        BinaryPrimitives.WriteUInt16BigEndian(ifo.AsSpan(s0 + 0x26), 1);
-        // 0x28..0x29: Volume number = 1
-        BinaryPrimitives.WriteUInt16BigEndian(ifo.AsSpan(s0 + 0x28), 1);
-        // 0x2A: Disc side = 1
-        ifo[s0 + 0x2A] = 1;
-        // 0x3E..0x3F: Number of Title Sets
-        BinaryPrimitives.WriteUInt16BigEndian(ifo.AsSpan(s0 + 0x3E), (ushort)titleSetCount);
-        // 0x40..0x5F: Provider ID "IGNISDISC STUDIO" (padded with spaces)
-        byte[] provider = Encoding.ASCII.GetBytes("IGNISDISC STUDIO                ");
-        Array.Copy(provider, 0, ifo, s0 + 0x40, 32);
-
-        // 0x80..0x83: VMGI_MAT end byte (0x07FF = 2047)
-        BinaryPrimitives.WriteUInt32BigEndian(ifo.AsSpan(s0 + 0x80), 0x000007FF);
-        // 0x84..0x87: FP_PGC start byte offset (0x0400 = 1024)
-        BinaryPrimitives.WriteUInt32BigEndian(ifo.AsSpan(s0 + 0x84), 0x00000400);
-
-        // Table start sector pointers
-        // 0xC0..0xC3: VMGM_VOBS start sector (totalIfoSectors if menu exists, else 0)
-        BinaryPrimitives.WriteUInt32BigEndian(ifo.AsSpan(s0 + 0xC0), (uint)(menuVobSectors > 0 ? totalIfoSectors : 0));
-        // 0xC4..0xC7: TT_SRPT sector = 1
-        BinaryPrimitives.WriteUInt32BigEndian(ifo.AsSpan(s0 + 0xC4), 1);
-        // 0xC8..0xCB: VMGM_PGCI_UT sector
-        BinaryPrimitives.WriteUInt32BigEndian(ifo.AsSpan(s0 + 0xC8), (uint)pgciUtSector);
-        // 0xD4..0xD7: VTS_ATRT sector = 2
-        BinaryPrimitives.WriteUInt32BigEndian(ifo.AsSpan(s0 + 0xD4), 2);
-        // 0xDC..0xDF: VMGM_C_ADT sector
-        BinaryPrimitives.WriteUInt32BigEndian(ifo.AsSpan(s0 + 0xDC), (uint)cAdtSector);
-        // 0xE0..0xE3: VMGM_VOBU_ADMAP sector
-        BinaryPrimitives.WriteUInt32BigEndian(ifo.AsSpan(s0 + 0xE0), (uint)vobuAdmapSector);
-
-        // Video attributes (0x100..0x101)
-        byte videoAttr0 = EncodeVideoAttribute(standard, aspect);
-        ifo[s0 + 0x100] = videoAttr0;
-        ifo[s0 + 0x101] = 0x00;
-
-        // Audio attributes (0x102..0x10B)
-        BinaryPrimitives.WriteUInt16BigEndian(ifo.AsSpan(s0 + 0x102), 1); // 1 audio stream
-        ifo[s0 + 0x104] = 0x01; // AC-3 2ch
-        ifo[s0 + 0x105] = 0x00; // 48kHz
-        ifo[s0 + 0x106] = (byte)'e';
-        ifo[s0 + 0x107] = (byte)'n';
-
-        // First-Play PGC (FP_PGC) at offset 0x400
-        int fpPgc = s0 + 0x400;
-        // PGC Command Table pointer at byte 160..161 of PGC (0x00EC = 236)
-        BinaryPrimitives.WriteUInt16BigEndian(ifo.AsSpan(fpPgc + 160), 0x00EC);
-        int fpCmd = fpPgc + 0xEC;
-        // 1 Pre-command
-        BinaryPrimitives.WriteUInt16BigEndian(ifo.AsSpan(fpCmd + 0), 1);
-        BinaryPrimitives.WriteUInt16BigEndian(ifo.AsSpan(fpCmd + 2), 0); // 0 post
-        BinaryPrimitives.WriteUInt16BigEndian(ifo.AsSpan(fpCmd + 4), 0); // 0 cell
-        BinaryPrimitives.WriteUInt16BigEndian(ifo.AsSpan(fpCmd + 6), 0x000F); // end offset
-
-        if (menuVobSectors > 0 && autoPlayMenu)
+        int ttSrptSector = 1;
+        int atrtSector = ttSrptSector + Sectors(8 + 12 * titleSetCount);
+        int atrtBytes = 8 + titleSetCount * (4 + VtsAttributesSize);
+        int next = atrtSector + Sectors(atrtBytes);
+        int pgciUtSector = 0, cAdtSector = 0, admapSector = 0;
+        if (PgciUtBytes(titleSetCount, hasMenu) > 0)
         {
-            // JumpSS VMGM_MENU Title (30 06 00 00 00 42 00 00)
-            byte[] jumpMenu = [0x30, 0x06, 0x00, 0x00, 0x00, 0x42, 0x00, 0x00];
-            jumpMenu.CopyTo(ifo, fpCmd + 8);
+            pgciUtSector = next;
+            next += Sectors(PgciUtBytes(titleSetCount, hasMenu));
         }
-        else
+        if (hasMenu)
         {
-            // JumpTT 1 (30 02 00 00 00 01 00 00)
-            byte[] jumpTt1 = [0x30, 0x02, 0x00, 0x00, 0x00, 0x01, 0x00, 0x00];
-            jumpTt1.CopyTo(ifo, fpCmd + 8);
+            cAdtSector = next++;
+            admapSector = next;
+            next += Sectors(4 + 4 * menuUnits.Count);
+        }
+        int ifoSectors = next;
+        byte[] ifo = new byte[ifoSectors * SectorSize];
+        var mat = ifo.AsSpan();
+
+        // --- VMGI_MAT ---
+        Encoding.ASCII.GetBytes(DvdVideoValidator.VmgMagicSignature).CopyTo(ifo, 0);
+        // Last sector of the VMG set (the BUP), as DvdVideoLayoutPlanner places it: IFO, menu VOB, 16 sectors of padding
+        // when the menu is shorter than one ECC block, BUP.
+        int vmgPadding = menuVobSectors < OpticalConstants.DvdEccBlockSectors ? OpticalConstants.DvdEccBlockSectors : 0;
+        W32(mat, 0x0C, 2 * ifoSectors + menuVobSectors + vmgPadding - 1);
+        W32(mat, 0x1C, ifoSectors - 1);            // last sector of the IFO
+        mat[0x21] = 0x11;                          // specification version 1.1
+        // 0x22 VMG category: region mask 0, playable in every region
+        W16(mat, 0x26, 1);                         // volumes
+        W16(mat, 0x28, 1);                         // this volume
+        mat[0x2A] = 1;                             // side
+        W16(mat, 0x3E, titleSetCount);
+        Encoding.ASCII.GetBytes("IGNISDISC").CopyTo(ifo, 0x40); // provider id, zero padded
+
+        byte[] firstPlay = BuildPgc(programs: 0, cells: 0, durationPts: 0, thirtyFps: true, hasAudio: false,
+            pre: hasMenu && autoPlayMenu ? JumpTitleMenu : JumpTitle1, post: null, cell: null);
+        firstPlay.CopyTo(ifo, 0x400);
+        W32(mat, 0x80, 0x400 + firstPlay.Length - 1); // last byte of VMGI_MAT with the first-play PGC
+        W32(mat, 0x84, 0x400);                        // first-play PGC
+        W32(mat, 0xC0, hasMenu ? ifoSectors : 0);     // VMGM_VOBS
+        W32(mat, 0xC4, ttSrptSector);
+        W32(mat, 0xC8, pgciUtSector);
+        // 0xCC PTL_MAIT, 0xD4 TXTDT_MGI: none
+        W32(mat, 0xD0, atrtSector);
+        W32(mat, 0xD8, cAdtSector);
+        W32(mat, 0xDC, admapSector);
+        if (hasMenu)
+        {
+            WriteVideoAttributes(mat[0x100..], standard, aspect); // menu video; the menu declares no audio
         }
 
-        // --- Sector 1: TT_SRPT (Title Search Pointer Table) ---
-        int s1 = 1 * SectorSize;
-        BinaryPrimitives.WriteUInt16BigEndian(ifo.AsSpan(s1 + 0), (ushort)titleSetCount);
-        BinaryPrimitives.WriteUInt32BigEndian(ifo.AsSpan(s1 + 4), (uint)(titleSetCount * 12 + 7));
-
+        // --- TT_SRPT: one title per title set ---
+        var tt = mat[(ttSrptSector * SectorSize)..];
+        W16(tt, 0, titleSetCount);
+        W32(tt, 4, 8 + 12 * titleSetCount - 1);
         for (int i = 1; i <= titleSetCount; i++)
         {
-            int tOff = s1 + 8 + (i - 1) * 12;
-            ifo[tOff + 0] = 0x01; // 1 sequential PGC
-            ifo[tOff + 1] = 0x01; // 1 angle
-            BinaryPrimitives.WriteUInt16BigEndian(ifo.AsSpan(tOff + 2), 1); // 1 chapter
-            ifo[tOff + 6] = (byte)i; // VTS Number
-            ifo[tOff + 7] = 0x01; // Title number within VTS (1)
-
-            uint vtsStart = (vtsStartSectorOffsets != null && i <= vtsStartSectorOffsets.Count)
-                ? (uint)vtsStartSectorOffsets[i - 1]
-                : (uint)(totalIfoSectors + (menuVobSectors > 0 ? menuVobSectors : 0) + (i - 1) * 32);
-
-            BinaryPrimitives.WriteUInt32BigEndian(ifo.AsSpan(tOff + 8), vtsStart);
+            var t = tt[(8 + (i - 1) * 12)..];
+            // Playback type: one sequential PGC; its post command jumps (JumpTT / CallSS) unless it is the last title
+            // of a disc without a menu.
+            t[0] = (byte)(i < titleSetCount || hasMenu ? 0x10 : 0x00);
+            t[1] = 1;      // angles
+            W16(t, 2, 1);  // chapters
+            t[6] = (byte)i; // title set
+            t[7] = 1;      // title within the title set
+            int start = vtsStartSectorOffsets != null && i <= vtsStartSectorOffsets.Count
+                ? vtsStartSectorOffsets[i - 1]
+                : ifoSectors * 2 + menuVobSectors + vmgPadding + (i - 1) * 32;
+            W32(t, 8, start);
         }
 
-        // --- Sector 2..: VTS_ATRT (Video Title Set Attribute Table) ---
-        int s2 = 2 * SectorSize;
-        BinaryPrimitives.WriteUInt16BigEndian(ifo.AsSpan(s2 + 0), (ushort)titleSetCount);
-        BinaryPrimitives.WriteUInt32BigEndian(ifo.AsSpan(s2 + 4), (uint)(vtsAtrtBytes - 1));
-
-        for (int i = 1; i <= titleSetCount; i++)
+        // --- VTS_ATRT ---
+        var atrt = mat[(atrtSector * SectorSize)..];
+        W16(atrt, 0, titleSetCount);
+        W32(atrt, 4, atrtBytes - 1);
+        for (int i = 0; i < titleSetCount; i++)
         {
-            int ptrOff = s2 + 8 + (i - 1) * 4;
-            int entryRelOff = 8 + titleSetCount * 4 + (i - 1) * 772;
-            BinaryPrimitives.WriteUInt32BigEndian(ifo.AsSpan(ptrOff), (uint)entryRelOff);
-
-            int entryOff = s2 + entryRelOff;
-            BinaryPrimitives.WriteUInt32BigEndian(ifo.AsSpan(entryOff), 771); // length
-            ifo[entryOff + 4] = videoAttr0;
-            ifo[entryOff + 5] = 0x00;
-            BinaryPrimitives.WriteUInt16BigEndian(ifo.AsSpan(entryOff + 6), 1); // 1 audio stream
-            ifo[entryOff + 8] = 0x01; // AC-3
-            ifo[entryOff + 9] = 0x00;
-            ifo[entryOff + 10] = (byte)'e';
-            ifo[entryOff + 11] = (byte)'n';
+            int entry = 8 + titleSetCount * 4 + i * VtsAttributesSize;
+            W32(atrt, 8 + i * 4, entry);
+            var e = atrt[entry..];
+            W32(e, 0, VtsAttributesSize - 1);
+            WriteVideoAttributes(e[264..], standard, aspect); // title VOBs' video
+            e[267] = 1;                                        // one audio stream
+            WriteAc3Stereo(e[268..]);
         }
 
-        // --- VMGM_PGCI_UT (Menu PGC Information Unit Table) ---
-        int s3 = pgciUtSector * SectorSize;
-        BinaryPrimitives.WriteUInt16BigEndian(ifo.AsSpan(s3 + 0), 1); // 1 Language Unit ("en")
-        BinaryPrimitives.WriteUInt32BigEndian(ifo.AsSpan(s3 + 4), 0x000001FF);
-        // Language unit entry (offset 8)
-        ifo[s3 + 8] = (byte)'e';
-        ifo[s3 + 9] = (byte)'n';
-        ifo[s3 + 11] = 0x01; // existence flag
-        BinaryPrimitives.WriteUInt32BigEndian(ifo.AsSpan(s3 + 12), 16); // LU offset = 16
-
-        // VMGM_LU at s3 + 16
-        int lu = s3 + 16;
-        BinaryPrimitives.WriteUInt16BigEndian(ifo.AsSpan(lu + 0), 1); // 1 PGC
-        BinaryPrimitives.WriteUInt32BigEndian(ifo.AsSpan(lu + 4), 0x000001EF);
-        // Menu PGC Search Pointer at lu + 8
-        ifo[lu + 8] = 0x82; // Title Menu / Root Menu
-        BinaryPrimitives.WriteUInt32BigEndian(ifo.AsSpan(lu + 12), 16); // PGC offset relative to LU (offset 32 in s3)
-
-        // Menu PGC at lu + 16 (s3 + 32)
-        int mPgc = lu + 16;
-        ifo[mPgc + 2] = (byte)(menuVobSectors > 0 ? 1 : 0); // 1 program if menu
-        ifo[mPgc + 3] = (byte)(menuVobSectors > 0 ? 1 : 0); // 1 cell if menu
-        ifo[mPgc + 6] = 0x02; // 2 seconds playback time
-
-        // PGC Command Table at mPgc + 0x00EC
-        BinaryPrimitives.WriteUInt16BigEndian(ifo.AsSpan(mPgc + 160), 0x00EC);
-        int mCmd = mPgc + 0xEC;
-        BinaryPrimitives.WriteUInt16BigEndian(ifo.AsSpan(mCmd + 0), 0); // 0 pre
-        BinaryPrimitives.WriteUInt16BigEndian(ifo.AsSpan(mCmd + 2), 1); // 1 post
-        BinaryPrimitives.WriteUInt16BigEndian(ifo.AsSpan(mCmd + 4), 0); // 0 cell
-        BinaryPrimitives.WriteUInt16BigEndian(ifo.AsSpan(mCmd + 6), 0x000F);
-        // Post-command: JumpTT 1 (30 02 00 00 00 01 00 00)
-        byte[] menuPostJump = [0x30, 0x02, 0x00, 0x00, 0x00, 0x01, 0x00, 0x00];
-        menuPostJump.CopyTo(ifo, mCmd + 8);
-
-        if (menuVobSectors > 0)
+        if (pgciUtSector > 0)
         {
-            // Program Map Table at mPgc + 0x0100: Program 1 -> Cell 1
-            BinaryPrimitives.WriteUInt16BigEndian(ifo.AsSpan(mPgc + 162), 0x0100);
-            ifo[mPgc + 0x100] = 0x01;
+            // --- VMGM_PGCI_UT: one language unit ("en"): the title menu (entry PGC), then one command-only PGC per title
+            //     from title 2 on, which the end of the previous title calls (CallSS VMGM PGC) to play it ---
+            var pgcs = new List<(byte EntryId, byte[] Pgc)>();
+            if (hasMenu)
+            {
+                pgcs.Add((0x82, BuildPgc(programs: 1, cells: 1, durationPts: Duration(menuUnits), thirtyFps: standard == DvdVideoStandard.Ntsc,
+                    hasAudio: false, pre: null, post: JumpTitle1,
+                    cell: new CellInfo(0, menuUnits[^1].Sector, menuVobSectors - 1, MenuStillSeconds))));
+            }
+            for (int title = 2; title <= titleSetCount; title++)
+            {
+                pgcs.Add((0x00, BuildPgc(programs: 0, cells: 0, durationPts: 0, thirtyFps: true, hasAudio: false,
+                    pre: JumpTitle(title), post: null, cell: null)));
+            }
 
-            // Cell Playback Info Table at mPgc + 0x0108
-            BinaryPrimitives.WriteUInt16BigEndian(ifo.AsSpan(mPgc + 164), 0x0108);
-            int mCell = mPgc + 0x0108;
-            ifo[mCell + 0] = 0x01; // normal playback
-            ifo[mCell + 6] = 0x02; // 2 sec
-            BinaryPrimitives.WriteUInt32BigEndian(ifo.AsSpan(mCell + 12), 0); // start sector 0
-            BinaryPrimitives.WriteUInt32BigEndian(ifo.AsSpan(mCell + 20), (uint)Math.Max(0, menuVobSectors - 1));
-
-            // Cell Position Info Table at mPgc + 0x0124
-            BinaryPrimitives.WriteUInt16BigEndian(ifo.AsSpan(mPgc + 166), 0x0124);
-            int mPos = mPgc + 0x0124;
-            BinaryPrimitives.WriteUInt16BigEndian(ifo.AsSpan(mPos + 0), 1); // VOB ID 1
-            ifo[mPos + 3] = 1; // Cell ID 1
+            var ut = mat[(pgciUtSector * SectorSize)..];
+            int pgcitBytes = 8 + 8 * pgcs.Count + pgcs.Sum(p => p.Pgc.Length);
+            W16(ut, 0, 1);
+            W32(ut, 4, 16 + pgcitBytes - 1);
+            ut[8] = (byte)'e';
+            ut[9] = (byte)'n';
+            ut[11] = (byte)(hasMenu ? 0x80 : 0x00); // a title menu exists
+            W32(ut, 12, 16);                        // the unit's PGCIT, from the start of PGCI_UT
+            var pgcit = ut[16..];
+            W16(pgcit, 0, pgcs.Count);
+            W32(pgcit, 4, pgcitBytes - 1);
+            int at = 8 + 8 * pgcs.Count;
+            for (int i = 0; i < pgcs.Count; i++)
+            {
+                pgcit[8 + 8 * i] = pgcs[i].EntryId; // 0x82: entry PGC, title menu; 0: not an entry PGC
+                W32(pgcit, 8 + 8 * i + 4, at);      // PGC, from the start of the PGCIT
+                pgcs[i].Pgc.CopyTo(pgcit[at..]);
+                at += pgcs[i].Pgc.Length;
+            }
         }
 
-        // --- VMGM_C_ADT (Menu Cell Address Table) ---
-        int s4 = cAdtSector * SectorSize;
-        if (menuVobSectors > 0)
+        if (hasMenu)
         {
-            BinaryPrimitives.WriteUInt16BigEndian(ifo.AsSpan(s4 + 0), 1); // 1 VOB
-            BinaryPrimitives.WriteUInt32BigEndian(ifo.AsSpan(s4 + 4), 19); // End byte (8-byte header + 12-byte entry - 1)
-            BinaryPrimitives.WriteUInt16BigEndian(ifo.AsSpan(s4 + 8), 1); // VOB ID 1
-            ifo[s4 + 10] = 1; // Cell ID 1
-            BinaryPrimitives.WriteUInt32BigEndian(ifo.AsSpan(s4 + 12), 0); // start
-            BinaryPrimitives.WriteUInt32BigEndian(ifo.AsSpan(s4 + 16), (uint)Math.Max(0, menuVobSectors - 1));
-        }
-
-        // --- VMGM_VOBU_ADMAP (Menu VOBU Address Map) ---
-        int s5 = vobuAdmapSector * SectorSize;
-        if (menuVobSectors > 0)
-        {
-            BinaryPrimitives.WriteUInt32BigEndian(ifo.AsSpan(s5 + 0), 7); // end byte
-            BinaryPrimitives.WriteUInt32BigEndian(ifo.AsSpan(s5 + 4), 0); // VOBU 0 at sector 0
+            WriteCellAddressTable(mat[(cAdtSector * SectorSize)..], menuVobSectors);
+            WriteVobuAddressMap(mat[(admapSector * SectorSize)..], menuUnits);
         }
 
         return ifo;
     }
 
     /// <summary>
-    /// Builds a compliant 6-sector (12,288 byte) Video Title Set Information (VTS_xx_0.IFO) buffer.
+    /// The bytes of the VMGM PGCI_UT (0 when there is none): header and language unit (16), PGCIT header (8), a search
+    /// pointer (8) and the PGC for the title menu and for each title from 2 on.
+    /// </summary>
+    private static int PgciUtBytes(int titleSetCount, bool hasMenu)
+    {
+        int jumps = Math.Max(0, titleSetCount - 1);
+        if (!hasMenu && jumps == 0)
+        {
+            return 0;
+        }
+        int bytes = 16 + 8 + 8 * (jumps + (hasMenu ? 1 : 0)) + jumps * PgcBytes(programs: 0, cells: 0, commands: 1);
+        return hasMenu ? bytes + PgcBytes(programs: 1, cells: 1, commands: 1) : bytes;
+    }
+
+    /// <summary>
+    /// Builds a title set IFO (VTS_nn_0.IFO) for one title of one cell. <paramref name="vobus"/> (from
+    /// <see cref="PatchVobNavPacketsInFile"/>) gives the VOBU address map, the time map and the running time; without
+    /// it <paramref name="navPackSectors"/> and <paramref name="durationSeconds"/> are used and there is no time map.
+    /// At the end the title goes on to <paramref name="nextTitleNumber"/> (through the VMGM program chain
+    /// <see cref="TitleJumpPgcNumber"/>), else calls the title menu or stops; <paramref name="callMenuAtEnd"/> says
+    /// whether the VMG has a title menu. The IFO is at least <paramref name="ifoSectors"/> sectors: a larger
+    /// one moves the title VOBs further out, which lets the authoring put them on a 16-sector block. Header fields: 0x0C
+    /// last sector of the title set (the BUP, a copy of the IFO after the VOB files), 0x1C last sector of the IFO, 0xC0 /
+    /// 0xC4 first sector of the menu / title VOBs, counted from the start of the IFO.
     /// </summary>
     public static byte[] BuildVtsIfo(
         int titleSetNumber,
@@ -413,135 +307,230 @@ public static class DvdIfoGenerator
         int durationSeconds = 60,
         int menuVobSectors = 0,
         IReadOnlyList<int>? navPackSectors = null,
-        int nextTitleNumber = 0)
+        int nextTitleNumber = 0,
+        int ifoSectors = 0,
+        IReadOnlyList<DvdVobu>? vobus = null,
+        bool callMenuAtEnd = true)
     {
         titleSetNumber = Math.Clamp(titleSetNumber, 1, 99);
-        durationSeconds = Math.Max(1, durationSeconds);
         titleVobTotalSectors = Math.Max(16, titleVobTotalSectors);
+        bool thirtyFps = standard == DvdVideoStandard.Ntsc;
+        var units = vobus is { Count: > 0 }
+            ? vobus
+            : (navPackSectors is { Count: > 0 } ? navPackSectors : new[] { 0 }).Select(s => new DvdVobu(s, -1, -1)).ToList();
+        bool timed = units[0].StartPts >= 0 && units[^1].EndPts > units[0].StartPts;
+        long durationPts = timed ? Duration(units) : Math.Max(1, durationSeconds) * 90_000L;
 
-        byte[] ifo = new byte[IfoSectorCount * SectorSize];
+        byte[] post = nextTitleNumber > 0
+            ? CallVmgmPgc(TitleJumpPgcNumber(nextTitleNumber, hasTitleMenu: callMenuAtEnd))
+            : (callMenuAtEnd ? CallTitleMenu : Exit);
+        byte[] pgc = BuildPgc(programs: 1, cells: 1, durationPts, thirtyFps, hasAudio: true, pre: null, post: post,
+            cell: new CellInfo(0, units[^1].Sector, titleVobTotalSectors - 1, 0));
+        byte[] timeMap = BuildTimeMap(units, timed);
 
-        // --- Sector 0: VTSI_MAT ---
-        int s0 = 0;
-        Encoding.ASCII.GetBytes(DvdVideoValidator.VtsMagicSignature).CopyTo(ifo, s0);
-        BinaryPrimitives.WriteUInt32BigEndian(ifo.AsSpan(s0 + 0x0C), 5); // VTSI end sector (5)
-        BinaryPrimitives.WriteUInt16BigEndian(ifo.AsSpan(s0 + 0x20), 0x0011); // Version 1.1
-        BinaryPrimitives.WriteUInt32BigEndian(ifo.AsSpan(s0 + 0x80), 0x000007FF); // VTSI_MAT end byte
+        const int pttSector = 1, pgcitSector = 2, tmaptSector = 3;
+        int cAdtSector = tmaptSector + Sectors(timeMap.Length);
+        int admapSector = cAdtSector + 1;
+        int natural = admapSector + Sectors(4 + 4 * units.Count);
+        int total = Math.Max(natural, ifoSectors);
+        byte[] ifo = new byte[total * SectorSize];
+        var mat = ifo.AsSpan();
 
-        // Table start sector pointers
-        BinaryPrimitives.WriteUInt32BigEndian(ifo.AsSpan(s0 + 0xC0), (uint)(menuVobSectors > 0 ? 6 : 0)); // VTSM_VOBS
-        BinaryPrimitives.WriteUInt32BigEndian(ifo.AsSpan(s0 + 0xC4), (uint)(6 + menuVobSectors)); // VTSTT_VOBS
-        BinaryPrimitives.WriteUInt32BigEndian(ifo.AsSpan(s0 + 0xC8), 1); // VTS_PTT_SRPT
-        BinaryPrimitives.WriteUInt32BigEndian(ifo.AsSpan(s0 + 0xCC), 2); // VTS_PGCIT
-        BinaryPrimitives.WriteUInt32BigEndian(ifo.AsSpan(s0 + 0xD4), 3); // VTS_TMAPT
-        BinaryPrimitives.WriteUInt32BigEndian(ifo.AsSpan(s0 + 0xE0), 4); // VTS_C_ADT
-        BinaryPrimitives.WriteUInt32BigEndian(ifo.AsSpan(s0 + 0xE4), 5); // VTS_VOBU_ADMAP
+        // --- VTSI_MAT ---
+        Encoding.ASCII.GetBytes(DvdVideoValidator.VtsMagicSignature).CopyTo(ifo, 0);
+        W32(mat, 0x0C, 2 * total + menuVobSectors + titleVobTotalSectors - 1);
+        W32(mat, 0x1C, total - 1);
+        mat[0x21] = 0x11;
+        W32(mat, 0x80, 0x3D7); // last byte of VTSI_MAT (VTSI_MAT_SIZE 984)
+        W32(mat, 0xC0, menuVobSectors > 0 ? total : 0);
+        W32(mat, 0xC4, total + menuVobSectors);
+        W32(mat, 0xC8, pttSector);
+        W32(mat, 0xCC, pgcitSector);
+        W32(mat, 0xD4, tmaptSector);
+        W32(mat, 0xE0, cAdtSector);
+        W32(mat, 0xE4, admapSector);
+        WriteVideoAttributes(mat[0x200..], standard, aspect);
+        mat[0x203] = 1; // one audio stream
+        WriteAc3Stereo(mat[0x204..]);
 
-        // Video attributes (0x200..0x201)
-        byte videoAttr0 = EncodeVideoAttribute(standard, aspect);
-        ifo[s0 + 0x200] = videoAttr0;
-        ifo[s0 + 0x201] = 0x00;
+        // --- VTS_PTT_SRPT: title 1, chapter 1 = PGC 1, program 1 ---
+        var ptt = mat[(pttSector * SectorSize)..];
+        W16(ptt, 0, 1);
+        W32(ptt, 4, 15);
+        W32(ptt, 8, 12);
+        W16(ptt, 12, 1);
+        W16(ptt, 14, 1);
 
-        // Audio attributes (0x202..0x20B)
-        BinaryPrimitives.WriteUInt16BigEndian(ifo.AsSpan(s0 + 0x202), 1); // 1 audio stream
-        ifo[s0 + 0x204] = 0x01; // AC-3 2ch
-        ifo[s0 + 0x205] = 0x00; // 48kHz
-        ifo[s0 + 0x206] = (byte)'e';
-        ifo[s0 + 0x207] = (byte)'n';
+        // --- VTS_PGCIT: the title's entry PGC ---
+        var pgcit = mat[(pgcitSector * SectorSize)..];
+        W16(pgcit, 0, 1);
+        W32(pgcit, 4, 16 + pgc.Length - 1);
+        pgcit[8] = 0x81; // entry PGC of title 1
+        W32(pgcit, 12, 16);
+        pgc.CopyTo(pgcit[16..]);
 
-        // --- Sector 1: VTS_PTT_SRPT (Part of Title / Chapters) ---
-        int s1 = 1 * SectorSize;
-        BinaryPrimitives.WriteUInt16BigEndian(ifo.AsSpan(s1 + 0), 1); // 1 Title in VTS
-        BinaryPrimitives.WriteUInt32BigEndian(ifo.AsSpan(s1 + 4), 11); // end offset
-        BinaryPrimitives.WriteUInt16BigEndian(ifo.AsSpan(s1 + 8), 1); // 1 Chapter
-        ifo[s1 + 10] = 0x01; // PGC 1
-        ifo[s1 + 11] = 0x01; // Program 1
-
-        // --- Sector 2: VTS_PGCIT (PGC Information Table) ---
-        int s2 = 2 * SectorSize;
-        BinaryPrimitives.WriteUInt16BigEndian(ifo.AsSpan(s2 + 0), 1); // 1 PGC
-        BinaryPrimitives.WriteUInt32BigEndian(ifo.AsSpan(s2 + 4), 0x000001FF);
-        // PGC 1 search pointer at s2 + 8
-        ifo[s2 + 8] = 0x81; // Title 1 Entry PGC
-        BinaryPrimitives.WriteUInt32BigEndian(ifo.AsSpan(s2 + 12), 16); // PGC offset 16 (s2 + 24)
-
-        int pgc = s2 + 24;
-        ifo[pgc + 2] = 1; // 1 program
-        ifo[pgc + 3] = 1; // 1 cell
-        EncodeBcdTime(durationSeconds, ifo.AsSpan(pgc + 4, 4));
-
-        // PGC Command Table at pgc + 0x00EC
-        BinaryPrimitives.WriteUInt16BigEndian(ifo.AsSpan(pgc + 160), 0x00EC);
-        int cmd = pgc + 0xEC;
-        BinaryPrimitives.WriteUInt16BigEndian(ifo.AsSpan(cmd + 0), 0); // 0 pre
-        BinaryPrimitives.WriteUInt16BigEndian(ifo.AsSpan(cmd + 2), 1); // 1 post
-        BinaryPrimitives.WriteUInt16BigEndian(ifo.AsSpan(cmd + 4), 0); // 0 cell
-        BinaryPrimitives.WriteUInt16BigEndian(ifo.AsSpan(cmd + 6), 0x000F);
-
-        if (nextTitleNumber > 0)
-        {
-            // JumpTT nextTitleNumber (30 02 00 00 00 {nextTitleNumber} 00 00)
-            byte[] jumpNext = [0x30, 0x02, 0x00, 0x00, 0x00, (byte)nextTitleNumber, 0x00, 0x00];
-            jumpNext.CopyTo(ifo, cmd + 8);
-        }
-        else
-        {
-            // CallSS VMGM_MENU Title (30 08 00 00 01 42 00 00)
-            byte[] callMenu = [0x30, 0x08, 0x00, 0x00, 0x01, 0x42, 0x00, 0x00];
-            callMenu.CopyTo(ifo, cmd + 8);
-        }
-
-        // Program Map Table at pgc + 0x0100: Program 1 -> Cell 1
-        BinaryPrimitives.WriteUInt16BigEndian(ifo.AsSpan(pgc + 162), 0x0100);
-        ifo[pgc + 0x100] = 0x01;
-
-        // Cell Playback Info Table at pgc + 0x0108
-        BinaryPrimitives.WriteUInt16BigEndian(ifo.AsSpan(pgc + 164), 0x0108);
-        int cell = pgc + 0x0108;
-        ifo[cell + 0] = 0x01; // normal playback
-        EncodeBcdTime(durationSeconds, ifo.AsSpan(cell + 4, 4));
-        BinaryPrimitives.WriteUInt32BigEndian(ifo.AsSpan(cell + 12), 0); // start sector 0
-        BinaryPrimitives.WriteUInt32BigEndian(ifo.AsSpan(cell + 20), (uint)Math.Max(0, titleVobTotalSectors - 1));
-
-        // Cell Position Info Table at pgc + 0x0124
-        BinaryPrimitives.WriteUInt16BigEndian(ifo.AsSpan(pgc + 166), 0x0124);
-        int pos = pgc + 0x0124;
-        BinaryPrimitives.WriteUInt16BigEndian(ifo.AsSpan(pos + 0), 1); // VOB ID 1
-        ifo[pos + 3] = 1; // Cell ID 1
-
-        // --- Sector 3: VTS_TMAPT (Time Map Table) ---
-        int s3 = 3 * SectorSize;
-        BinaryPrimitives.WriteUInt16BigEndian(ifo.AsSpan(s3 + 0), 1); // 1 title
-        BinaryPrimitives.WriteUInt32BigEndian(ifo.AsSpan(s3 + 4), 11);
-
-        // --- Sector 4: VTS_C_ADT (Cell Address Table) ---
-        int s4 = 4 * SectorSize;
-        BinaryPrimitives.WriteUInt16BigEndian(ifo.AsSpan(s4 + 0), 1); // 1 VOB
-        BinaryPrimitives.WriteUInt32BigEndian(ifo.AsSpan(s4 + 4), 19); // End byte (8-byte header + 12-byte entry - 1)
-        BinaryPrimitives.WriteUInt16BigEndian(ifo.AsSpan(s4 + 8), 1); // VOB ID 1
-        ifo[s4 + 10] = 1; // Cell ID 1
-        BinaryPrimitives.WriteUInt32BigEndian(ifo.AsSpan(s4 + 12), 0);
-        BinaryPrimitives.WriteUInt32BigEndian(ifo.AsSpan(s4 + 16), (uint)Math.Max(0, titleVobTotalSectors - 1));
-
-        // --- Sector 5: VTS_VOBU_ADMAP (VOBU Address Map) ---
-        int s5 = 5 * SectorSize;
-        var sectors = (navPackSectors != null && navPackSectors.Count > 0)
-            ? navPackSectors
-            : new[] { 0 };
-
-        int maxEntriesInSector = (SectorSize - 4) / 4; // 511 entries max in single 2048-byte sector
-        int entryCount = Math.Min(sectors.Count, maxEntriesInSector);
-        BinaryPrimitives.WriteUInt32BigEndian(ifo.AsSpan(s5 + 0), (uint)(entryCount * 4 + 3));
-        for (int i = 0; i < entryCount; i++)
-        {
-            int idx = sectors.Count <= maxEntriesInSector
-                ? i
-                : (int)((long)i * (sectors.Count - 1) / Math.Max(1, entryCount - 1));
-            BinaryPrimitives.WriteUInt32BigEndian(ifo.AsSpan(s5 + 4 + i * 4), (uint)sectors[idx]);
-        }
-
+        timeMap.CopyTo(mat[(tmaptSector * SectorSize)..]);
+        WriteCellAddressTable(mat[(cAdtSector * SectorSize)..], titleVobTotalSectors);
+        WriteVobuAddressMap(mat[(admapSector * SectorSize)..], units);
         return ifo;
     }
+
+    /// <summary>Where a cell lies in its VOB, counted in sectors, and how long it stays as a still at its end.</summary>
+    private readonly record struct CellInfo(int FirstSector, int LastVobuStartSector, int LastSector, int StillSeconds);
+
+    private static int PgcBytes(int programs, int cells, int commands)
+    {
+        int size = PgcSize + 8 + 8 * commands;
+        if (cells > 0)
+        {
+            size = Align4(size + programs) + 24 * cells + 4 * cells;
+        }
+        return size;
+    }
+
+    /// <summary>
+    /// A program chain (pgc_t): programs and cells counts, running time, audio stream 0 present when
+    /// <paramref name="hasAudio"/>, then its command table (one pre or post command), program map, cell playback and
+    /// cell position tables, with their offsets at 0xE4-0xEA.
+    /// </summary>
+    private static byte[] BuildPgc(int programs, int cells, long durationPts, bool thirtyFps, bool hasAudio, byte[]? pre, byte[]? post, CellInfo? cell)
+    {
+        int commands = (pre != null ? 1 : 0) + (post != null ? 1 : 0);
+        byte[] pgc = new byte[PgcBytes(programs, cells, commands)];
+        var p = pgc.AsSpan();
+        p[2] = (byte)programs;
+        p[3] = (byte)cells;
+        if (cells > 0)
+        {
+            DvdNavPackWriter.Bcd(durationPts, thirtyFps).CopyTo(p[4..]);
+        }
+        if (hasAudio)
+        {
+            W16(p, 0x0C, 0x8000); // audio stream 0 present, decoding stream 0
+        }
+
+        int at = PgcSize;
+        W16(p, 0xE4, at);
+        var table = p[at..];
+        W16(table, 0, pre != null ? 1 : 0);
+        W16(table, 2, post != null ? 1 : 0);
+        W16(table, 6, 8 + 8 * commands - 1);
+        int c = 8;
+        if (pre != null) { pre.CopyTo(table[c..]); c += 8; }
+        if (post != null) { post.CopyTo(table[c..]); c += 8; }
+        at += c;
+
+        if (cells > 0 && cell is { } info)
+        {
+            W16(p, 0xE6, at);
+            p[at] = 1; // program 1 starts at cell 1
+            at = Align4(at + programs);
+            W16(p, 0xE8, at);
+            var playback = p[at..];
+            playback[2] = (byte)info.StillSeconds;
+            DvdNavPackWriter.Bcd(durationPts, thirtyFps).CopyTo(playback[4..]);
+            W32(playback, 8, info.FirstSector);
+            W32(playback, 16, info.LastVobuStartSector);
+            W32(playback, 20, info.LastSector);
+            at += 24;
+            W16(p, 0xEA, at);
+            W16(p, at, 1);   // VOB id 1
+            p[at + 3] = 1;   // cell id 1
+        }
+        return pgc;
+    }
+
+    /// <summary>
+    /// VTS_TMAPT with one time map: the VOBU holding each multiple of the time unit, the unit chosen so the map has at
+    /// most 2,048 entries. Without times the map is empty.
+    /// </summary>
+    private static byte[] BuildTimeMap(IReadOnlyList<DvdVobu> units, bool timed)
+    {
+        var entries = new List<int>();
+        int unit = 1;
+        if (timed)
+        {
+            long start = units[0].StartPts;
+            long seconds = (units[^1].EndPts - start) / 90_000;
+            unit = (int)Math.Clamp((seconds + 2047) / 2048, 1, 255);
+            int v = 0;
+            for (long t = unit; t < seconds; t += unit)
+            {
+                long target = start + t * 90_000;
+                while (v + 1 < units.Count && units[v + 1].StartPts >= 0 && units[v + 1].StartPts <= target)
+                {
+                    v++;
+                }
+                entries.Add(units[v].Sector);
+            }
+        }
+        byte[] map = new byte[8 + 4 + 4 + 4 * entries.Count];
+        var m = map.AsSpan();
+        W16(m, 0, 1);
+        W32(m, 4, map.Length - 1);
+        W32(m, 8, 12);
+        m[12] = (byte)unit;
+        W16(m, 14, entries.Count);
+        for (int i = 0; i < entries.Count; i++)
+        {
+            W32(m, 16 + 4 * i, entries[i]);
+        }
+        return map;
+    }
+
+    /// <summary>C_ADT with one cell, VOB 1 cell 1, over the whole VOB.</summary>
+    private static void WriteCellAddressTable(Span<byte> t, int vobSectors)
+    {
+        W16(t, 0, 1);
+        W32(t, 4, 8 + 12 - 1);
+        W16(t, 8, 1);
+        t[10] = 1;
+        W32(t, 12, 0);
+        W32(t, 16, Math.Max(1, vobSectors) - 1);
+    }
+
+    /// <summary>VOBU_ADMAP: the first sector of every VOBU.</summary>
+    private static void WriteVobuAddressMap(Span<byte> t, IReadOnlyList<DvdVobu> units)
+    {
+        W32(t, 0, 4 + 4 * units.Count - 1);
+        for (int i = 0; i < units.Count; i++)
+        {
+            W32(t, 4 + 4 * i, units[i].Sector);
+        }
+    }
+
+    /// <summary>
+    /// video_attr_t: MPEG-2, NTSC or PAL, 4:3 or 16:9; a 16:9 picture is shown letterboxed on a 4:3 screen (no pan and
+    /// scan), 720 pixels wide.
+    /// </summary>
+    private static void WriteVideoAttributes(Span<byte> a, DvdVideoStandard standard, DvdAspectRatio aspect)
+    {
+        byte b = 0x40; // MPEG-2
+        if (standard == DvdVideoStandard.Pal) b |= 0x10;
+        if (aspect == DvdAspectRatio.Widescreen16x9) b |= 0x0C | 0x02; // 16:9, letterbox only
+        a[0] = b;
+        a[1] = 0x00;
+    }
+
+    /// <summary>audio_attr_t: AC-3, language given ("en"), 48 kHz, 2 channels.</summary>
+    private static void WriteAc3Stereo(Span<byte> a)
+    {
+        a[0] = 0x04; // AC-3, language type 1
+        a[1] = 0x01; // 48 kHz, channels - 1 = 1
+        a[2] = (byte)'e';
+        a[3] = (byte)'n';
+    }
+
+    private static long Duration(IReadOnlyList<DvdVobu> units) =>
+        units.Count > 0 && units[0].StartPts >= 0 && units[^1].EndPts > units[0].StartPts ? units[^1].EndPts - units[0].StartPts : 0;
+
+    private static int Sectors(int bytes) => Math.Max(1, (bytes + SectorSize - 1) / SectorSize);
+
+    private static int Align4(int value) => (value + 3) & ~3;
+
+    private static void W16(Span<byte> s, int offset, int value) => BinaryPrimitives.WriteUInt16BigEndian(s[offset..], (ushort)value);
+
+    private static void W32(Span<byte> s, int offset, long value) => BinaryPrimitives.WriteUInt32BigEndian(s[offset..], (uint)value);
 
     /// <summary>
     /// Splits an oversized VOB file (> 1 GB) on 2048-byte sector boundaries into VTS_xx_1.VOB, VTS_xx_2.VOB, ...
@@ -627,120 +616,5 @@ public static class DvdIfoGenerator
         }
 
         return generatedFiles;
-    }
-
-    private static bool IsNavPack(byte[] buffer, int offset)
-    {
-        if (offset + 45 > buffer.Length) return false;
-        // Pack start code (00 00 01 BA) and Private Stream 2 (00 00 01 BF) with substream 00 (PCI)
-        return buffer[offset + 0] == 0x00 &&
-               buffer[offset + 1] == 0x00 &&
-               buffer[offset + 2] == 0x01 &&
-               buffer[offset + 3] == 0xBA &&
-               buffer[offset + 38] == 0x00 &&
-               buffer[offset + 39] == 0x00 &&
-               buffer[offset + 40] == 0x01 &&
-               buffer[offset + 41] == 0xBF &&
-               buffer[offset + 44] == 0x00;
-    }
-
-    private static void FormatNavPack(byte[] buffer, int offset, int vobId, int cellId, bool isMenu, int buttonCount, int sectorLbn, int vobuEaSectors)
-    {
-        // 1. Pack Header (14 bytes)
-        byte[] packHeader = [0x00, 0x00, 0x01, 0xBA, 0x44, 0x00, 0x04, 0x00, 0x04, 0x01, 0x01, 0x89, 0xC3, 0xF8];
-        packHeader.CopyTo(buffer, offset);
-
-        // 2. System Header (24 bytes)
-        byte[] sysHeader = [0x00, 0x00, 0x01, 0xBB, 0x00, 0x12, 0x80, 0xC4, 0xE1, 0x04, 0xE1, 0x7F, 0xE0, 0xE0, 0xE8, 0xBD, 0xE0, 0x3A, 0xBF, 0xE0, 0x02];
-        sysHeader.CopyTo(buffer, offset + 14);
-
-        // 3. PCI Packet (offset 38)
-        buffer[offset + 38] = 0x00;
-        buffer[offset + 39] = 0x00;
-        buffer[offset + 40] = 0x01;
-        buffer[offset + 41] = 0xBF; // Private stream 2
-        buffer[offset + 42] = 0x03; // length 0x03D4 = 980
-        buffer[offset + 43] = 0xD4;
-        buffer[offset + 44] = 0x00; // Substream ID 00 (PCI)
-
-        // 4. DSI Packet (offset 1024)
-        buffer[offset + 1024] = 0x00;
-        buffer[offset + 1025] = 0x00;
-        buffer[offset + 1026] = 0x01;
-        buffer[offset + 1027] = 0xBF; // Private stream 2
-        buffer[offset + 1028] = 0x03; // length 0x03FA = 1018
-        buffer[offset + 1029] = 0xFA;
-        buffer[offset + 1030] = 0x01; // Substream ID 01 (DSI)
-
-        PatchNavPackData(buffer, offset, sectorLbn, vobuEaSectors, vobId, cellId, isMenu, buttonCount);
-    }
-
-    private static void PatchNavPackData(byte[] buffer, int offset, int sectorLbn, int vobuEaSectors, int vobId, int cellId, bool isMenu, int buttonCount)
-    {
-        // PCI: nv_pck_lbn at offset 45
-        BinaryPrimitives.WriteUInt32BigEndian(buffer.AsSpan(offset + 45), (uint)sectorLbn);
-
-        // DSI_GI starts at offset 1031 (after 6-byte PES header at 1024..1029 and 1-byte substream ID 0x01 at 1030):
-        // +4 (1035): nv_pck_lbn, +8 (1039): vobu_ea, +24 (1055): vobu_vob_idn, +27 (1058): vobu_c_idn
-        BinaryPrimitives.WriteUInt32BigEndian(buffer.AsSpan(offset + 1035), (uint)sectorLbn);
-        BinaryPrimitives.WriteUInt32BigEndian(buffer.AsSpan(offset + 1039), (uint)vobuEaSectors);
-        BinaryPrimitives.WriteUInt16BigEndian(buffer.AsSpan(offset + 1055), (ushort)vobId);
-        buffer[offset + 1058] = (byte)cellId;
-
-        if (isMenu)
-        {
-            // PCI Highlight Information (hl_gi):
-            // hli_ss at offset 140 (0x8C)
-            BinaryPrimitives.WriteUInt16BigEndian(buffer.AsSpan(offset + 140), 0x0001);
-            BinaryPrimitives.WriteUInt32BigEndian(buffer.AsSpan(offset + 142), 0); // hli_s_ptm
-            BinaryPrimitives.WriteUInt32BigEndian(buffer.AsSpan(offset + 146), 0xFFFFFFFF); // hli_e_ptm
-            BinaryPrimitives.WriteUInt16BigEndian(buffer.AsSpan(offset + 154), 1); // btn_s_num
-            buffer[offset + 156] = (byte)Math.Clamp(buttonCount, 1, 36); // btn_ns
-            buffer[offset + 158] = 1; // fosl_btnn (forced selected button 1)
-
-            // Button 1 VM command at offset 196..203: JumpTT 1 (30 02 00 00 00 01 00 00)
-            byte[] jumpTt1 = [0x30, 0x02, 0x00, 0x00, 0x00, 0x01, 0x00, 0x00];
-            jumpTt1.CopyTo(buffer, offset + 196);
-        }
-    }
-
-    private static byte EncodeVideoAttribute(DvdVideoStandard standard, DvdAspectRatio aspect)
-    {
-        // Bits 7-6: 01 = MPEG-2 (0x40)
-        byte b = 0x40;
-
-        // Bits 5-4: 00 = NTSC, 01 = PAL (0x10)
-        if (standard == DvdVideoStandard.Pal)
-        {
-            b |= 0x10;
-        }
-
-        // Bits 3-2: 00 = 4:3, 11 = 16:9 (0x0C)
-        if (aspect == DvdAspectRatio.Widescreen16x9)
-        {
-            b |= 0x0C;
-        }
-
-        return b;
-    }
-
-    private static void EncodeBcdTime(int durationSeconds, Span<byte> target)
-    {
-        int hours = Math.Clamp(durationSeconds / 3600, 0, 99);
-        int rem = durationSeconds % 3600;
-        int mins = rem / 60;
-        int secs = rem % 60;
-
-        target[0] = ToBcd(hours);
-        target[1] = ToBcd(mins);
-        target[2] = ToBcd(secs);
-        target[3] = 0x00; // frames
-    }
-
-    private static byte ToBcd(int val)
-    {
-        int tens = val / 10;
-        int units = val % 10;
-        return (byte)((tens << 4) | units);
     }
 }

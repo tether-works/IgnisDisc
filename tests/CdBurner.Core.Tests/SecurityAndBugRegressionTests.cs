@@ -31,8 +31,9 @@ public sealed class SecurityAndBugRegressionTests
         Assert.True(vmgIfo.Length > 6 * 2048);
         Assert.Equal(0, vmgIfo.Length % 2048);
 
-        // Verify VMGM_C_ADT sector pointer in VMGI_MAT (offset 0xDC)
-        uint cAdtSector = BinaryPrimitives.ReadUInt32BigEndian(vmgIfo.AsSpan(0xDC, 4));
+        // VMGM_C_ADT sector pointer in VMGI_MAT: offset 0xD8 (libdvdread vmgi_mat_t: ... vts_atrt 0xD0, txtdt_mgi 0xD4,
+        // vmgm_c_adt 0xD8, vmgm_vobu_admap 0xDC)
+        uint cAdtSector = BinaryPrimitives.ReadUInt32BigEndian(vmgIfo.AsSpan(0xD8, 4));
         int cAdtOffset = (int)(cAdtSector * 2048);
 
         // Verify C_ADT header (8 bytes) + cell_adr_t entry (12 bytes -> last_byte = 19)

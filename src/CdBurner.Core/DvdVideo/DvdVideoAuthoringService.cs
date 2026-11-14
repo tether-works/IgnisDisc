@@ -61,7 +61,17 @@ public sealed class DvdAuthoringOptions
     /// Audio bitrate in kilobits per second. Default: 192 kbps.
     /// </summary>
     public int AudioBitrateKbps { get; set; } = 192;
+
+    /// <summary>
+    /// Author for a dual-layer disc (DVD-9 on DVD+R DL) instead of fitting everything onto a single-layer DVD-5. The
+    /// bitrate is then chosen so the titles up to the first one that brings the running time past half fit on the first
+    /// layer, which puts a title start (a cell boundary) where the layer break can go. Default: false.
+    /// </summary>
+    public bool DualLayer { get; set; }
 }
+
+/// <summary>The video bitrate chosen for an authoring run, and why it was lowered (null when it was not).</summary>
+public sealed record DvdBitratePlan(int VideoKbps, int MaxVideoKbps, string? Note);
 
 /// <summary>
 /// Result containing authored DVD directory paths, generated files, validation status, and planned disc layout.
@@ -92,6 +102,92 @@ public sealed class DvdAuthoringResult
 /// </summary>
 public sealed class DvdVideoAuthoringService
 {
+    /// <summary>Bytes of video files planned for a single-layer DVD-5 (4.7 GB disc, about 10% left for margin).</summary>
+    public const double Dvd5PayloadBytes = 4_250_000_000.0;
+
+    /// <summary>Bytes of video files planned for a DVD-9 (4,173,824 sectors, about 10% left for margin).</summary>
+    public const double Dvd9PayloadBytes = 7_700_000_000.0;
+
+    /// <summary>Bytes planned for the first layer of a DVD-9 (2,086,912 sectors, about 10% left for margin).</summary>
+    public const double Dvd9Layer0PayloadBytes = 3_850_000_000.0;
+
+    /// <summary>MPEG program stream and DVD navigation overhead on top of the audio and video bitrates.</summary>
+    private const double MuxOverhead = 1.07;
+
+    /// <summary>
+    /// Chooses the video bitrate for titles of the given running times (seconds, in disc order; 0 when unknown). The
+    /// bitrate asked for in <paramref name="options"/> is kept when everything fits, else lowered (to 1,800 kbps at
+    /// the least). Single layer: all titles within <see cref="Dvd5PayloadBytes"/>. Dual layer
+    /// (<see cref="DvdAuthoringOptions.DualLayer"/>): all titles within <see cref="Dvd9PayloadBytes"/>, and the
+    /// titles up to the first one that brings the running time to at least half also within
+    /// <see cref="Dvd9Layer0PayloadBytes"/>. The next title then starts on a cell boundary that holds at least half the
+    /// disc before it and lies within the first layer: a usable layer break. With one title, or a last title longer
+    /// than all the others together, there is no such boundary; the note says so.
+    /// </summary>
+    public static DvdBitratePlan PlanVideoBitrate(IReadOnlyList<double> titleSeconds, DvdAuthoringOptions options)
+    {
+        ArgumentNullException.ThrowIfNull(titleSeconds);
+        ArgumentNullException.ThrowIfNull(options);
+        double total = titleSeconds.Where(s => s > 0).Sum();
+        if (total <= 60)
+        {
+            return new DvdBitratePlan(options.VideoBitrateKbps, options.MaxVideoBitrateKbps, null);
+        }
+
+        static int TotalKbps(double bytes, double seconds) => (int)(bytes * 8.0 / 1000.0 / MuxOverhead / seconds);
+
+        int allowedKbps;
+        string target;
+        string? warning = null;
+        if (!options.DualLayer)
+        {
+            allowedKbps = TotalKbps(Dvd5PayloadBytes, total);
+            target = $"fit {FormatSeconds(total)} onto Single-Layer DVD-5";
+        }
+        else
+        {
+            allowedKbps = TotalKbps(Dvd9PayloadBytes, total);
+            target = $"fit {FormatSeconds(total)} onto dual-layer DVD-9";
+            double before = 0;
+            int titlesOnLayer0 = 0;
+            for (int i = 0; i < titleSeconds.Count - 1; i++)
+            {
+                before += Math.Max(0, titleSeconds[i]);
+                if (before * 2 >= total)
+                {
+                    titlesOnLayer0 = i + 1;
+                    break;
+                }
+            }
+
+            if (titlesOnLayer0 > 0)
+            {
+                int layer0Kbps = TotalKbps(Dvd9Layer0PayloadBytes, before);
+                if (layer0Kbps < allowedKbps)
+                {
+                    allowedKbps = layer0Kbps;
+                    target = $"fit title{(titlesOnLayer0 > 1 ? "s 1-" + titlesOnLayer0 : " 1")} ({FormatSeconds(before)}) onto the first layer of a DVD-9, " +
+                             $"so title {titlesOnLayer0 + 1} starts where the layer break can go";
+                }
+            }
+            else
+            {
+                warning = "No title start can take the layer break of a dual-layer disc (there is one title, or the last title runs longer " +
+                          "than all the others together). Put a longer title first, or burn with the Windows writer, which places the break itself.";
+            }
+        }
+
+        int fittedVideoKbps = Math.Clamp(allowedKbps - options.AudioBitrateKbps, 1800, options.VideoBitrateKbps);
+        if (fittedVideoKbps >= options.VideoBitrateKbps)
+        {
+            return new DvdBitratePlan(options.VideoBitrateKbps, options.MaxVideoBitrateKbps, warning);
+        }
+
+        int maxKbps = Math.Clamp((int)(fittedVideoKbps * 1.35), fittedVideoKbps + 500, options.MaxVideoBitrateKbps);
+        string note = $"Auto-adjusted video bitrate to {fittedVideoKbps} kbps (max {maxKbps} kbps) to {target}.";
+        return new DvdBitratePlan(fittedVideoKbps, maxKbps, warning == null ? note : note + " " + warning);
+    }
+
     /// <summary>
     /// Creates a compliant sectorCount * 2048 byte VOB buffer containing a valid NAV pack at sector 0
     /// and alternating MPEG-2 Video & AC-3 Audio PES sectors.
@@ -310,6 +406,7 @@ public sealed class DvdVideoAuthoringService
         {
             titleCount = Math.Min(analyzed.MovieFilePaths.Count, 99);
             int menuVobSectors = 0;
+            IReadOnlyList<DvdVobu> menuVobus = Array.Empty<DvdVobu>();
 
             // 1. Generate Menu VOB if requested
             if (options.AutoCreatePlayMenu)
@@ -332,6 +429,7 @@ public sealed class DvdVideoAuthoringService
                 string menuVobPath = Path.Combine(videoTsDir, "VIDEO_TS.VOB");
                 await File.WriteAllBytesAsync(menuVobPath, menuBytes, cancellationToken).ConfigureAwait(false);
                 menuVobSectors = menuBytes.Length / OpticalConstants.DataSectorSize;
+                menuVobus = DvdIfoGenerator.PatchVobNavPacketsInFile(menuVobPath, isMenu: true);
                 logNotes.Add($"Generated menu 'VIDEO_TS.VOB' ({menuVobSectors} sectors).");
             }
 
@@ -342,40 +440,26 @@ public sealed class DvdVideoAuthoringService
                                !string.IsNullOrEmpty(ffmpegExe);
 
             var probedDurations = new double[titleCount];
-            double totalMovieDurationSeconds = 0;
             if (ffmpegReady)
             {
                 for (int i = 0; i < titleCount; i++)
                 {
-                    double dur = await ProbeVideoDurationSecondsAsync(ffmpegExe!, analyzed.MovieFilePaths[i], cancellationToken).ConfigureAwait(false);
-                    probedDurations[i] = dur;
-                    if (dur > 0)
-                    {
-                        totalMovieDurationSeconds += dur;
-                    }
+                    probedDurations[i] = await ProbeVideoDurationSecondsAsync(ffmpegExe!, analyzed.MovieFilePaths[i], cancellationToken).ConfigureAwait(false);
                 }
             }
 
-            // Calculate optimal video bitrate so feature-length movies (e.g. 2 hours) automatically fit on Single-Layer DVD-5 (~4.25 GB VOB budget)
-            int targetVideoBitrateKbps = options.VideoBitrateKbps;
-            int targetMaxVideoBitrateKbps = options.MaxVideoBitrateKbps;
-            if (totalMovieDurationSeconds > 60)
+            // Video bitrate so feature-length movies fit on the disc (single-layer DVD-5, or DVD-9 with a usable break)
+            var bitratePlan = PlanVideoBitrate(probedDurations, options);
+            int targetVideoBitrateKbps = bitratePlan.VideoKbps;
+            int targetMaxVideoBitrateKbps = bitratePlan.MaxVideoKbps;
+            if (bitratePlan.Note != null)
             {
-                const double dvd5SafePayloadBytes = 4_250_000_000.0;
-                double availableKilobits = (dvd5SafePayloadBytes * 8.0 / 1000.0) / 1.07; // 7% DVD PS mux overhead
-                int maxTotalKbps = (int)(availableKilobits / totalMovieDurationSeconds);
-                int fittedVideoKbps = Math.Clamp(maxTotalKbps - options.AudioBitrateKbps, 1800, options.VideoBitrateKbps);
-                if (fittedVideoKbps < targetVideoBitrateKbps)
-                {
-                    targetVideoBitrateKbps = fittedVideoKbps;
-                    targetMaxVideoBitrateKbps = Math.Clamp((int)(fittedVideoKbps * 1.35), fittedVideoKbps + 500, options.MaxVideoBitrateKbps);
-                    logNotes.Add($"Auto-adjusted video bitrate to {targetVideoBitrateKbps} kbps (max {targetMaxVideoBitrateKbps} kbps) to fit {FormatSeconds(totalMovieDurationSeconds)} onto Single-Layer DVD-5.");
-                }
+                logNotes.Add(bitratePlan.Note);
             }
 
             // 2. Process each movie track into a Title Set (VTS_xx)
-            var titleNavPacks = new Dictionary<int, IReadOnlyList<int>>();
             var titleTotalSectors = new Dictionary<int, int>();
+            var titleSetIfoInputs = new List<(int SetNum, int VobSectors, int DurationSeconds, IReadOnlyList<DvdVobu> Vobus, int NextTitle)>();
 
             for (int i = 0; i < titleCount; i++)
             {
@@ -444,8 +528,7 @@ public sealed class DvdVideoAuthoringService
                 // Patch NAV packets on the contiguous VOB stream before splitting into 1 GB extents
                 double navPct = titleStartPct + titleSpanPct * 0.92;
                 progress?.Report((navPct, $"Patching DVD NAV packets & VOBU address maps for Title {setNum}/{titleCount}..."));
-                DvdIfoGenerator.PatchVobNavPacketsInFile(tempVob, vobId: 1, cellId: 1, isMenu: false);
-                var allNavSectors = DvdIfoGenerator.ExtractNavPackSectors(tempVob).ToList();
+                var vobus = DvdIfoGenerator.PatchVobNavPacketsInFile(tempVob, vobId: 1, cellId: 1, isMenu: false).ToList();
 
                 // Split oversized VOB (> 1 GB)
                 double splitPct = titleStartPct + titleSpanPct * 0.96;
@@ -470,13 +553,11 @@ public sealed class DvdVideoAuthoringService
                     totalVobSecs += (int)(new FileInfo(part).Length / OpticalConstants.DataSectorSize);
                 }
 
-                allNavSectors.RemoveAll(s => s >= totalVobSecs);
-                if (allNavSectors.Count == 0)
+                vobus.RemoveAll(v => v.Sector >= totalVobSecs);
+                if (vobus.Count == 0)
                 {
-                    allNavSectors.Add(0);
+                    vobus.Add(new DvdVobu(0, -1, -1));
                 }
-
-                titleNavPacks[setNum] = allNavSectors;
                 titleTotalSectors[setNum] = totalVobSecs;
 
                 // Build VTS_xx_0.IFO and VTS_xx_0.BUP
@@ -489,36 +570,69 @@ public sealed class DvdVideoAuthoringService
                     titleVobTotalSectors: totalVobSecs,
                     durationSeconds: effectiveDurationSec,
                     menuVobSectors: 0,
-                    navPackSectors: allNavSectors,
-                    nextTitleNumber: nextTitle);
+                    nextTitleNumber: nextTitle,
+                    vobus: vobus,
+                    callMenuAtEnd: menuVobSectors > 0);
 
                 string vtsIfoPath = Path.Combine(videoTsDir, $"VTS_{setNum:D2}_0.IFO");
                 string vtsBupPath = Path.Combine(videoTsDir, $"VTS_{setNum:D2}_0.BUP");
 
                 await File.WriteAllBytesAsync(vtsIfoPath, vtsIfoBytes, cancellationToken).ConfigureAwait(false);
                 await File.WriteAllBytesAsync(vtsBupPath, vtsIfoBytes, cancellationToken).ConfigureAwait(false);
+                titleSetIfoInputs.Add((setNum, totalVobSecs, effectiveDurationSec, vobus, nextTitle));
             }
 
             // 3. Plan preliminary layout to determine exact VTS start sector offsets
             progress?.Report((86.0, "Building Video Manager (VIDEO_TS.IFO / VIDEO_TS.BUP) navigation tables..."));
             var layoutPlanner = new DvdVideoLayoutPlanner();
-            var preliminaryFiles = Directory.GetFiles(videoTsDir)
-                .Select(f => (IDvdVideoFileEntry)new FileSystemDvdVideoFileEntry(new FileInfo(f)))
-                .ToList();
+            int vmgIfoSectors = DvdIfoGenerator.CalculateVmgIfoSectors(titleCount, menuVobSectors, menuVobus.Count);
 
-            int vtsAtrtBytes = 8 + titleCount * 4 + titleCount * 772;
-            int vmgIfoSectors = 5 + Math.Max(1, (vtsAtrtBytes + OpticalConstants.DataSectorSize - 1) / OpticalConstants.DataSectorSize);
-
-            if (!preliminaryFiles.Any(f => string.Equals(f.Name, "VIDEO_TS.IFO", StringComparison.OrdinalIgnoreCase)))
+            List<IDvdVideoFileEntry> PreliminaryFiles()
             {
-                preliminaryFiles.Add(new DvdVideoMemoryFileEntry("VIDEO_TS.IFO", new byte[vmgIfoSectors * OpticalConstants.DataSectorSize]));
-            }
-            if (!preliminaryFiles.Any(f => string.Equals(f.Name, "VIDEO_TS.BUP", StringComparison.OrdinalIgnoreCase)))
-            {
-                preliminaryFiles.Add(new DvdVideoMemoryFileEntry("VIDEO_TS.BUP", new byte[vmgIfoSectors * OpticalConstants.DataSectorSize]));
+                var entries = Directory.GetFiles(videoTsDir)
+                    .Select(f => (IDvdVideoFileEntry)new FileSystemDvdVideoFileEntry(new FileInfo(f)))
+                    .ToList();
+                if (!entries.Any(f => string.Equals(f.Name, "VIDEO_TS.IFO", StringComparison.OrdinalIgnoreCase)))
+                {
+                    entries.Add(new DvdVideoMemoryFileEntry("VIDEO_TS.IFO", new byte[vmgIfoSectors * OpticalConstants.DataSectorSize]));
+                }
+                if (!entries.Any(f => string.Equals(f.Name, "VIDEO_TS.BUP", StringComparison.OrdinalIgnoreCase)))
+                {
+                    entries.Add(new DvdVideoMemoryFileEntry("VIDEO_TS.BUP", new byte[vmgIfoSectors * OpticalConstants.DataSectorSize]));
+                }
+                return entries;
             }
 
-            var prelimLayout = layoutPlanner.Plan(preliminaryFiles, startLba: 0);
+            // 3a. Each title's first VOB on a 16-sector ECC block, counted from VIDEO_TS.IFO (which the image builder puts
+            //     on a block boundary): the title start is then a cell boundary a dual-layer break can use. The IFO
+            //     (and its BUP copy) grows by up to 15 sectors and its pointers follow; VOB files are not touched.
+            foreach (var input in titleSetIfoInputs)
+            {
+                var placement = layoutPlanner.Plan(PreliminaryFiles(), startLba: 0).GetPlacement($"VTS_{input.SetNum:D2}_1.VOB");
+                int misalignment = placement == null ? 0 : placement.StartLba.Value % OpticalConstants.DvdEccBlockSectors;
+                if (misalignment == 0)
+                {
+                    continue;
+                }
+                int currentSectors = (int)(new FileInfo(Path.Combine(videoTsDir, $"VTS_{input.SetNum:D2}_0.IFO")).Length / OpticalConstants.DataSectorSize);
+                int ifoSectors = currentSectors + OpticalConstants.DvdEccBlockSectors - misalignment;
+                byte[] alignedIfo = DvdIfoGenerator.BuildVtsIfo(
+                    titleSetNumber: input.SetNum,
+                    standard: options.Standard,
+                    aspect: options.AspectRatio,
+                    titleVobTotalSectors: input.VobSectors,
+                    durationSeconds: input.DurationSeconds,
+                    menuVobSectors: 0,
+                    nextTitleNumber: input.NextTitle,
+                    ifoSectors: ifoSectors,
+                    vobus: input.Vobus,
+                    callMenuAtEnd: menuVobSectors > 0);
+                await File.WriteAllBytesAsync(Path.Combine(videoTsDir, $"VTS_{input.SetNum:D2}_0.IFO"), alignedIfo, cancellationToken).ConfigureAwait(false);
+                await File.WriteAllBytesAsync(Path.Combine(videoTsDir, $"VTS_{input.SetNum:D2}_0.BUP"), alignedIfo, cancellationToken).ConfigureAwait(false);
+                logNotes.Add($"VTS_{input.SetNum:D2}_0.IFO padded to {ifoSectors} sectors so title {input.SetNum} starts on a 16-sector block.");
+            }
+
+            var prelimLayout = layoutPlanner.Plan(PreliminaryFiles(), startLba: 0);
 
             var vtsStartOffsets = new List<int>();
             for (int i = 1; i <= titleCount; i++)
@@ -535,7 +649,8 @@ public sealed class DvdVideoAuthoringService
                 aspect: options.AspectRatio,
                 menuVobSectors: menuVobSectors,
                 vtsStartSectorOffsets: vtsStartOffsets,
-                autoPlayMenu: options.AutoCreatePlayMenu);
+                autoPlayMenu: options.AutoCreatePlayMenu,
+                menuVobus: menuVobus);
 
             string vmgIfoPath = Path.Combine(videoTsDir, "VIDEO_TS.IFO");
             string vmgBupPath = Path.Combine(videoTsDir, "VIDEO_TS.BUP");

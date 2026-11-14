@@ -713,7 +713,8 @@ public static class CliCommandRunner
             VerifyAfterBurn = verify,
             StrictVerify = strictVerify,
             CloseDisc = closeDisc,
-            OverwriteExistingData = overwrite
+            OverwriteExistingData = overwrite,
+            LayerBreakSectors = ParseLayerBreak(cmd, nativeEngine, mediaStatus)
         };
 
         var burnService = new DataBurnService(nativeEngine ?? burnEngine);
@@ -842,7 +843,8 @@ public static class CliCommandRunner
             VerifyAfterBurn = verify,
             StrictVerify = strictVerify,
             CloseDisc = closeDisc,
-            OverwriteExistingData = overwrite
+            OverwriteExistingData = overwrite,
+            LayerBreakSectors = ParseLayerBreak(cmd, nativeEngine, mediaStatus)
         };
 
         var buildOptions = new IsoBuildOptions(
@@ -926,6 +928,34 @@ public static class CliCommandRunner
         return native
             ? (new NativeDataBurnEngine(fallback, cmd.GetOption("log-dir")) { TestWriteFirst = testFirst }, testWrite)
             : (null, false);
+    }
+
+    /// <summary>
+    /// <c>--layer-break &lt;sectors&gt;</c>: how many sectors go on the first layer of a dual-layer DVD (a positive multiple
+    /// of 16). Only the direct writer sets the break, so it needs <c>--native</c> and a dual-layer disc in the drive; the
+    /// writer itself then checks it against the image and the layer's capacity before the first WRITE. Null when not given.
+    /// </summary>
+    private static int? ParseLayerBreak(CommandLineArgs cmd, NativeDataBurnEngine? nativeEngine, MediaStatusDto mediaStatus)
+    {
+        string? value = cmd.GetOption("layer-break");
+        if (value == null)
+        {
+            return null;
+        }
+        if (nativeEngine == null)
+        {
+            throw new CommandLineException("--layer-break needs --native: only the direct writer sets the layer break.");
+        }
+        if (!int.TryParse(value, NumberStyles.None, CultureInfo.InvariantCulture, out int sectors) || sectors <= 0 ||
+            sectors % OpticalConstants.DvdEccBlockSectors != 0)
+        {
+            throw new CommandLineException($"--layer-break takes the number of sectors on the first layer, a positive multiple of 16; '{value}' is not.");
+        }
+        if (mediaStatus.MediaType is not (DiscMediaType.DvdPlusRDualLayer or DiscMediaType.DvdMinusRDualLayer))
+        {
+            throw new CommandLineException($"--layer-break needs a blank dual-layer DVD+R or DVD-R in the drive; it holds {mediaStatus.MediaType}. Nothing was written.");
+        }
+        return sectors;
     }
 
     private static object? NativeDataJson(NativeDataBurnEngine? engine)
@@ -1562,6 +1592,7 @@ public static class CliCommandRunner
         string? tempAuthorDir = null;
         string effectiveLabel = !string.IsNullOrWhiteSpace(volumeLabel) ? volumeLabel : (analysis.SuggestedVolumeLabel ?? "DVD_VIDEO");
         DataBurnResult result;
+        DvdCellPosition? layerBreak = null;
 
         try
         {
@@ -1572,7 +1603,8 @@ public static class CliCommandRunner
                 var authorOptions = new DvdAuthoringOptions
                 {
                     VolumeLabel = effectiveLabel,
-                    AutoCreatePlayMenu = true
+                    AutoCreatePlayMenu = true,
+                    DualLayer = cmd.HasFlag("dual-layer")
                 };
 
                 var authResult = await authorService.AuthorAsync(videoTsInput, tempAuthorDir, authorOptions).ConfigureAwait(false);
@@ -1667,7 +1699,16 @@ public static class CliCommandRunner
                 // Read back by default; a test write records nothing; a direct burn is always read back.
                 VerifyAfterBurn = !testWrite && (!cmd.HasFlag("no-verify") || nativeEngine != null)
             };
-            result = await burnService.BurnCompilationAsync(recorder, root, dvdOptions, buildOptions).ConfigureAwait(false);
+            var dvdMedia = recorder.QueryMediaStatus().MediaType;
+            if (nativeEngine != null && dvdMedia is DiscMediaType.DvdPlusRDualLayer or DiscMediaType.DvdMinusRDualLayer)
+            {
+                // Dual-layer with the direct writer: build the image first so the break can go on a cell boundary.
+                (result, layerBreak) = await BurnDvdVideoDualLayerAsync(burnService, recorder, root, dvdOptions, buildOptions, stdout, cmd.IsJson).ConfigureAwait(false);
+            }
+            else
+            {
+                result = await burnService.BurnCompilationAsync(recorder, root, dvdOptions, buildOptions).ConfigureAwait(false);
+            }
         }
         finally
         {
@@ -1692,6 +1733,13 @@ public static class CliCommandRunner
                 testWrite,
                 verified = result.Verified,
                 verificationNote = result.VerificationNote,
+                layerBreak = layerBreak == null ? null : new
+                {
+                    lba = layerBreak.Lba,
+                    titleSet = layerBreak.Cell.TitleSet,
+                    vobId = layerBreak.Cell.VobId,
+                    cellId = layerBreak.Cell.CellId
+                },
                 directWrite = NativeDataJson(nativeEngine),
                 error = result.ErrorMessage
             };
@@ -1707,6 +1755,7 @@ public static class CliCommandRunner
             stdout.WriteLine($"  Volume Label:   {effectiveLabel}");
             stdout.WriteLine($"  Sectors Burned: {result.SectorsWritten:N0}");
             stdout.WriteLine($"  Duration:       {result.TotalTime}");
+            if (layerBreak != null) stdout.WriteLine($"  Layer break:    {layerBreak}");
             stdout.WriteLine($"  Verified:       {(result.Verified ? "yes" : "no")}{(string.IsNullOrEmpty(result.VerificationNote) ? "" : " - " + result.VerificationNote)}");
             if (nativeEngine?.LastLogPath != null)
             {
@@ -1717,6 +1766,51 @@ public static class CliCommandRunner
 
         stderr.WriteLine($"DVD-Video burn failed: {result.ErrorMessage}");
         return 1;
+    }
+
+    /// <summary>
+    /// DVD-Video on a dual-layer disc with the direct writer: builds the image in a temporary file (deleted when closed),
+    /// and when it is larger than the first layer puts the layer break on the cell start nearest an even split
+    /// (<see cref="DvdCellLayerBreak.ChooseInImage"/>, as the app's DVD-Video screen does), then burns the image with it.
+    /// Stops with nothing written when no cell start can take the break.
+    /// </summary>
+    private static async Task<(DataBurnResult Result, DvdCellPosition? LayerBreak)> BurnDvdVideoDualLayerAsync(DataBurnService burnService,
+        IDiscRecorderBackend recorder, CompilationDirectory root, DataBurnOptions options, IsoBuildOptions buildOptions, TextWriter stdout, bool json)
+    {
+        string tempImage = Path.Combine(Path.GetTempPath(), $"ignisdisc_dvd9_{Guid.NewGuid():N}.iso");
+        await using var image = new FileStream(tempImage, FileMode.Create, FileAccess.ReadWrite, FileShare.None, 1 << 20,
+            FileOptions.DeleteOnClose | FileOptions.Asynchronous);
+        if (!json) stdout.WriteLine("Building the disc image to place the layer break on a cell boundary...");
+        await IsoUdfImageBuilder.BuildAsync(root, image, buildOptions, null, CancellationToken.None, 0).ConfigureAwait(false);
+        int totalSectors = OpticalConstants.BytesToSectors(image.Length, OpticalConstants.DataSectorSize);
+
+        DvdCellPosition? chosen = null;
+        if (totalSectors > DvdLayerBreakCalculator.MaxLayer0Sectors)
+        {
+            chosen = DvdCellLayerBreak.ChooseInImage(image);
+            if (chosen == null)
+            {
+                return (DataBurnResult.Failed($"No cell boundary of this DVD-Video ({totalSectors:N0} sectors) can take the layer break: it must start " +
+                    "on a 16-sector block with at least half the disc on the first layer and no more than the first layer holds. Nothing was written. " +
+                    "Without --native, the Windows writer burns the disc and places the break itself."), null);
+            }
+            if (!json) stdout.WriteLine($"Layer break: {chosen} ({chosen.Lba * 100.0 / totalSectors:F1}% on the first layer).");
+        }
+
+        image.Position = 0;
+        var withBreak = new DataBurnOptions
+        {
+            VolumeLabel = options.VolumeLabel,
+            CloseDisc = options.CloseDisc,
+            VerifyAfterBurn = options.VerifyAfterBurn,
+            StrictVerify = options.StrictVerify,
+            EjectAfterBurn = options.EjectAfterBurn,
+            Speed = options.Speed,
+            Simulate = options.Simulate,
+            OverwriteExistingData = options.OverwriteExistingData,
+            LayerBreakSectors = chosen?.Lba
+        };
+        return (await burnService.BurnStreamAsync(recorder, image, withBreak).ConfigureAwait(false), chosen);
     }
 
     private static async Task<int> HandleRipAsync(
@@ -3131,14 +3225,15 @@ public static class CliCommandRunner
         stdout.WriteLine("      Closes the tray and waits until the drive is ready. On a drive that cannot close its own tray it says so and exits 1.");
         stdout.WriteLine("  build-iso --input <folder> --output <file.iso> [--label <vol>] [--udf] [--udf-rev <1.02|1.50|2.00|2.01|2.50|2.60>] [--joliet] [--boot-bios <img>] [--boot-uefi <img>] [--fixed-time <unix|iso8601>] [--sha256sums] [--blake3sums] [--json]");
         stdout.WriteLine("      Compiles a folder into an ISO 9660 / Joliet / UDF filesystem image.");
-        stdout.WriteLine("  burn-iso --drive <id> --iso <file.iso|.nrg|.cdi|.mdf|.mds|.ccd|.img> [--speed <X|max>] [--no-verify | --strict-verify] [--no-close] [--overwrite] [--native [--test-write | --test-first] [--log-dir <folder>]] [--json]");
-        stdout.WriteLine("      Burns an ISO image directly to the target optical drive.");
-        stdout.WriteLine("  burn-data --drive <id> --input <folder> [--label <vol>] [--speed <X|max>] [--udf] [--udf-rev <1.02|1.50|2.00|2.01|2.50|2.60>] [--joliet] [--boot-bios <img>] [--boot-uefi <img>] [--no-verify | --strict-verify] [--no-close] [--overwrite] [--fixed-time <unix|iso8601>] [--sha256sums] [--blake3sums] [--native [--test-write | --test-first] [--log-dir <folder>]] [--json]");
+        stdout.WriteLine("  burn-iso --drive <id> --iso <file.iso|.nrg|.cdi|.mdf|.mds|.ccd|.img> [--speed <X|max>] [--no-verify | --strict-verify] [--no-close] [--overwrite] [--native [--test-write | --test-first] [--layer-break <sectors>] [--log-dir <folder>]] [--json]");
+        stdout.WriteLine("      Burns an ISO image directly to the target optical drive. --layer-break: sectors on the first layer of a DVD+R DL (multiple of 16).");
+        stdout.WriteLine("  burn-data --drive <id> --input <folder> [--label <vol>] [--speed <X|max>] [--udf] [--udf-rev <1.02|1.50|2.00|2.01|2.50|2.60>] [--joliet] [--boot-bios <img>] [--boot-uefi <img>] [--no-verify | --strict-verify] [--no-close] [--overwrite] [--fixed-time <unix|iso8601>] [--sha256sums] [--blake3sums] [--native [--test-write | --test-first] [--layer-break <sectors>] [--log-dir <folder>]] [--json]");
         stdout.WriteLine("      Compiles a folder and burns it to optical media.");
         stdout.WriteLine("  burn-audio --drive <id> --tracks <file1,file2,...> [--title <album>] [--artist <name>] [--speed <X|max>] [--dao] [--allow-damaged] [--native [--test-write | --test-first] [--recovery-session] [--write-offset <samples|auto>] [--log-dir <folder>]] [--json]");
         stdout.WriteLine("      Burns Red Book Audio CD from WAV, FLAC, MP3, AAC/M4A, or WMA tracks (--recovery-session adds session-2 PAR2 recovery; off by default).");
-        stdout.WriteLine("  burn-dvd --drive <id> --video-ts <folder|movie> [--label <vol>] [--speed <X|max>] [--no-verify] [--overwrite] [--native [--test-write | --test-first] [--log-dir <folder>]] [--json]");
+        stdout.WriteLine("  burn-dvd --drive <id> --video-ts <folder|movie> [--label <vol>] [--dual-layer] [--speed <X|max>] [--no-verify] [--overwrite] [--native [--test-write | --test-first] [--log-dir <folder>]] [--json]");
         stdout.WriteLine("      Validates, normalizes/authors, aligns, and burns a DVD-Video compliant disc from VIDEO_TS or movie files.");
+        stdout.WriteLine("      --dual-layer authors movie files for a DVD-9 (longest title first). On a dual-layer disc, --native puts the layer break on a cell boundary.");
         stdout.WriteLine("  rip --drive <id> --output <file.iso|file.bin> [--raw] [--json]");
         stdout.WriteLine("      Rips optical disc to an ISO or raw BIN+CUE image.");
         stdout.WriteLine("  rip-audio --drive <id> --output <folder> [--format wav|flac|mp3|opus|aac] [--bitrate <kbps>] [--tracks 1,3,5] [--lookup] [--keep-wav] [--continue-on-error] [--read-offset <samples>] [--verify-accuraterip] [--no-secure] [--repair] [--json]");
