@@ -87,10 +87,15 @@ public class DiscEraseService
         cancellationToken.ThrowIfCancellationRequested();
 
         // 1. Query current media presence and status
-        var mediaStatus = recorder.QueryMediaStatus();
+        var mediaStatus = await CdBurner.Core.Burning.MediaStatusWait.QueryWhenLoadedAsync(recorder, cancellationToken).ConfigureAwait(false);
         if (!mediaStatus.MediaPresent)
         {
             return BurnOperationResult.Failed("No optical media present in recorder.");
+        }
+
+        if (mediaStatus.IsLoading)
+        {
+            return BurnOperationResult.Failed(CdBurner.Core.Burning.MediaStatusWait.StillLoadingMessage);
         }
 
         // 2. Validate rewritable media type (CdRw, DvdMinusRw, DvdPlusRw, DvdRam)

@@ -4,8 +4,8 @@
     "featureHtml": "Burn a data disc from files and folders",
     "physical": "✅",
     "virtual": "✅",
-    "notesMarkdown": "ISO 9660 + Joliet + UDF bridge; UDF 1.02 by default, 1.50 to 2.60 on request (`--udf-rev`)",
-    "notesHtml": "ISO 9660 + Joliet + UDF bridge; UDF 1.02 by default, 1.50 to 2.60 on request (<code>--udf-rev</code>)"
+    "notesMarkdown": "ISO 9660 + Joliet + UDF bridge; UDF 1.02 by default, 1.50 to 2.60 on request (`--udf-rev`). With the Windows writer (the default) on real discs on one drive (LG GP60NB50), every file read back identical: a DVD+RW, a DVD-R and a DVD+R (two sessions each on the DVD-R and DVD+R), and a dual-layer DVD+R holding 5.5 GB across both layers (Windows puts the layer break at half the data). DVD-RW not tried yet",
+    "notesHtml": "ISO 9660 + Joliet + UDF bridge; UDF 1.02 by default, 1.50 to 2.60 on request (<code>--udf-rev</code>). With the Windows writer (the default) on real discs on one drive (LG GP60NB50), every file read back identical: a DVD+RW, a DVD-R and a DVD+R (two sessions each on the DVD-R and DVD+R), and a dual-layer DVD+R holding 5.5 GB across both layers (Windows puts the layer break at half the data). DVD-RW not tried yet"
   },
   {
     "featureMarkdown": "Burn an existing `.iso`",
@@ -132,8 +132,8 @@
     "featureHtml": "Append a session (multi-session)",
     "physical": "✅",
     "virtual": "✅",
-    "notesMarkdown": "Open and appended sessions omit UDF 1.02 so Windows mounts Joliet across all sessions; names longer than 64 characters are shortened there, and the burn result says so",
-    "notesHtml": "Open and appended sessions omit UDF 1.02 so Windows mounts Joliet across all sessions; names longer than 64 characters are shortened there, and the burn result says so"
+    "notesMarkdown": "Open and appended sessions omit UDF 1.02 so Windows mounts Joliet across all sessions; names longer than 64 characters are shortened there, and the burn result says so. With the Windows writer on real discs: a DVD-R and a DVD+R, two sessions each, every file of both sessions identical; the DVD+R showed the new session at once, the DVD-R only after the disc was put back in",
+    "notesHtml": "Open and appended sessions omit UDF 1.02 so Windows mounts Joliet across all sessions; names longer than 64 characters are shortened there, and the burn result says so. With the Windows writer on real discs: a DVD-R and a DVD+R, two sessions each, every file of both sessions identical; the DVD+R showed the new session at once, the DVD-R only after the disc was put back in"
   },
   {
     "featureMarkdown": "Bootable discs (El Torito BIOS + UEFI)",

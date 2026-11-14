@@ -44,7 +44,7 @@ public static class DriveCompatibilityReportBuilder
                 ?? "unknown";
         }
 
-        bool isFinalized = media.MediaPresent && !media.IsBlank && !media.IsAppendable && !media.IsOverwriteOnly;
+        bool isFinalized = media.MediaPresent && !media.IsLoading && !media.IsBlank && !media.IsAppendable && !media.IsOverwriteOnly;
         long usedBytes = media.UsedSectors > 0
             ? (long)media.UsedSectors * OpticalConstants.DataSectorSize
             : Math.Max(0L, media.TotalCapacityBytes - media.FreeCapacityBytes);

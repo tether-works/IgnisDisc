@@ -57,6 +57,12 @@ public class DriveCompatibilityMatrixTests
         public ImapiMediaPhysicalType ErasePhysicalMediaType { get; init; } = ImapiMediaPhysicalType.CdRw;
         public bool ErasePhysicallyBlank { get; init; }
 
+        /// <summary>
+        /// Status reads left in the just-loaded state (GP60NB50, 2026-11-14): Windows' writer does not accept the disc
+        /// yet and READ CAPACITY answers one sector. Each READ CAPACITY in that state uses one up.
+        /// </summary>
+        public int LoadingQueries { get; set; }
+
         // Low-level SCSI / Volume simulation
         public int? ScsiReadCapacitySectors { get; init; }
         public int? ScsiSessionCount { get; init; }
@@ -138,7 +144,7 @@ public class DriveCompatibilityMatrixTests
         public FakeComFormat2Data(SimulatedDrivePersona p) => _p = p;
 
         public bool IsRecorderSupported(IDiscRecorder2 recorder) => true;
-        public bool IsCurrentMediaSupported(IDiscRecorder2 recorder) => _p.DataFormatSupported;
+        public bool IsCurrentMediaSupported(IDiscRecorder2 recorder) => _p.LoadingQueries == 0 && _p.DataFormatSupported;
         public bool MediaPhysicallyBlank => _p.PhysicallyBlank;
         public bool MediaHeuristicallyBlank => _p.ThrowOnHeuristicallyBlank
             ? throw new COMException("E_NOTIMPL on MediaHeuristicallyBlank", unchecked((int)0x80004001))
@@ -403,7 +409,15 @@ public class DriveCompatibilityMatrixTests
         public IDiscFormat2RawCD? CreateDiscFormat2RawCD() => FormatRawCd;
         public IDiscFormat2Erase? CreateDiscFormat2Erase() => FormatErase;
         public IRawCDImageCreator? CreateRawCDImageCreator() => RawCreator;
-        public int? ReadCapacity(string volumePath) => Persona.ScsiReadCapacitySectors;
+        public int? ReadCapacity(string volumePath)
+        {
+            if (Persona.LoadingQueries > 0)
+            {
+                Persona.LoadingQueries--;
+                return 1;
+            }
+            return Persona.ScsiReadCapacitySectors;
+        }
         public int? ReadSessionCount(string volumePath) => Persona.ScsiSessionCount;
         public IReadOnlyList<DiscTocTrack> ReadTableOfContents(string volumePath) => Persona.TocTracks;
         public byte[]? ReadCdTextPacks(string volumePath) => Persona.CdTextPacks;
@@ -1375,6 +1389,113 @@ public class DriveCompatibilityMatrixTests
         Assert.Equal(persona.CanErase, DiscEraseService.CanErase(recorder));
         var eraseResult = await eraseService.QuickEraseAsync(recorder);
         Assert.Equal(persona.CanErase, eraseResult.Success);
+    }
+
+    #endregion
+
+    #region Disc still loading after the tray closes
+
+    /// <summary>
+    /// A blank Verbatim DVD+R as the GP60NB50 reports it for the first status reads after loading (2026-11-14):
+    /// Windows' writer does not accept it, READ CAPACITY gives one sector and the current profile is DVD+R (0x001B).
+    /// Afterwards it reads as blank with 2,295,104 sectors.
+    /// </summary>
+    private static SimulatedDrivePersona JustLoadedBlankDvdPlusR(int loadingQueries, int[]? currentProfiles = null) => new()
+    {
+        Name = "JustLoaded_Blank_DvdPlusR",
+        LoadingQueries = loadingQueries,
+        CurrentProfiles = currentProfiles ?? new[] { 0x001B },
+        PhysicalMediaType = ImapiMediaPhysicalType.DvdPlusR,
+        MediaState = ImapiFormat2DataMediaState.Blank | ImapiFormat2DataMediaState.Appendable,
+        PhysicallyBlank = true,
+        TotalSectorsOnMedia = 2_295_104,
+        FreeSectorsOnMedia = 2_295_104,
+        NextWritableAddress = 0,
+        ExpectedMediaType = DiscMediaType.DvdPlusR,
+        ExpectedIsBlank = true,
+        ExpectedIsRewritable = false,
+        ExpectedIsAppendable = true,
+        ExpectedIsOverwriteOnly = false,
+        ExpectedRequiresEraseToWrite = false,
+        ExpectedHasDataThatBurningReplaces = false,
+        ExpectedTotalSectors = 2_295_104,
+        ExpectedFreeSectors = 2_295_104,
+        ExpectedUsedSectors = 0,
+        ExpectedNextWritableLba = 0,
+        CanBurnDataWithoutFlags = true,
+        CanBurnDataWithOverwriteFlag = true,
+        CanBurnAudioCd = false,
+        CanErase = false
+    };
+
+    [Fact]
+    public void QueryMediaStatus_DiscJustLoaded_ReportsLoadingNotAFinishedOneSectorDisc_ThenBlank()
+    {
+        var persona = JustLoadedBlankDvdPlusR(loadingQueries: 1);
+        var provider = new SimulatedImapiComProvider(persona);
+        using var recorder = new ImapiDiscRecorder(provider.ComRecorder, "SIM-DRIVE", provider);
+
+        var loading = recorder.QueryMediaStatus();
+        Assert.True(loading.MediaPresent);
+        Assert.True(loading.IsLoading);
+        Assert.Equal(DiscMediaType.DvdPlusR, loading.MediaType);
+        Assert.False(loading.IsBlank);
+        Assert.Equal(0, loading.TotalSectors);
+        Assert.Equal(0, loading.UsedSectors);
+        Assert.Equal(0, loading.SessionCount);
+
+        var settled = recorder.QueryMediaStatus();
+        Assert.False(settled.IsLoading);
+        Assert.True(settled.IsBlank);
+        Assert.True(settled.IsAppendable);
+        Assert.Equal(2_295_104, settled.FreeSectors);
+    }
+
+    [Fact]
+    public void QueryMediaStatus_OneReadableSectorWithOnlyARomProfile_IsNotLoading()
+    {
+        // A pressed or closed disc whose drive marks only DVD-ROM current is never taken for a loading blank disc.
+        var persona = JustLoadedBlankDvdPlusR(loadingQueries: 1, currentProfiles: new[] { 0x0010 });
+        var provider = new SimulatedImapiComProvider(persona);
+        using var recorder = new ImapiDiscRecorder(provider.ComRecorder, "SIM-DRIVE", provider);
+
+        var status = recorder.QueryMediaStatus();
+        Assert.False(status.IsLoading);
+        Assert.Equal(DiscMediaType.DvdRom, status.MediaType);
+    }
+
+    [Fact]
+    public async Task BurnCompilation_StartedWhileTheDiscLoads_WaitsAndBurnsTheBlankDisc()
+    {
+        var persona = JustLoadedBlankDvdPlusR(loadingQueries: 3);
+        var provider = new SimulatedImapiComProvider(persona);
+        using var recorder = new ImapiDiscRecorder(provider.ComRecorder, "SIM-DRIVE", provider);
+        var root = CompilationDirectory.CreateRoot();
+        root.AddFile("HELLO.TXT", Encoding.UTF8.GetBytes("loaded"));
+
+        var result = await new DataBurnService(new Imapi2BurnEngine(provider))
+            .BurnCompilationAsync(recorder, root, new DataBurnOptions { CloseDisc = true });
+
+        Assert.True(result.Success, result.ErrorMessage);
+        Assert.Equal(0, persona.LoadingQueries);
+        Assert.NotNull(provider.FormatData.WrittenBytes);
+    }
+
+    [Fact]
+    public async Task BurnCompilation_DiscStillLoadingWhenTheWaitRunsOut_RefusesAndWritesNothing()
+    {
+        var persona = JustLoadedBlankDvdPlusR(loadingQueries: int.MaxValue);
+        var provider = new SimulatedImapiComProvider(persona);
+        using var recorder = new ImapiDiscRecorder(provider.ComRecorder, "SIM-DRIVE", provider);
+        var root = CompilationDirectory.CreateRoot();
+        root.AddFile("HELLO.TXT", Encoding.UTF8.GetBytes("loading"));
+        var service = new DataBurnService(new Imapi2BurnEngine(provider)) { MediaLoadWait = TimeSpan.FromMilliseconds(300) };
+
+        var result = await service.BurnCompilationAsync(recorder, root, new DataBurnOptions { CloseDisc = true });
+
+        Assert.False(result.Success);
+        Assert.Equal(MediaStatusWait.StillLoadingMessage, result.ErrorMessage);
+        Assert.Null(provider.FormatData.WrittenBytes);
     }
 
     #endregion

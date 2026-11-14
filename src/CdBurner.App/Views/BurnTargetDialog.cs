@@ -338,7 +338,9 @@ public sealed class BurnTargetDialog : Window
             if (status.MediaPresent && status.MediaType != DiscMediaType.NoMedia)
             {
                 double mb = status.TotalCapacityBytes / (1024.0 * 1024.0);
-                string stateDesc = status.IsBlank
+                string stateDesc = status.IsLoading
+                    ? "Still loading"
+                    : status.IsBlank
                     ? "Blank / Ready to Burn"
                     : (status.IsAppendable
                         ? "Appendable"
@@ -347,7 +349,13 @@ public sealed class BurnTargetDialog : Window
                             : (status.IsRewritable ? "Rewritable" : "Non-Blank")));
                 _mediaStatusText.Text = $"Inserted Disc: {status.MediaType.GetDisplayName()} — {stateDesc}\nCapacity: {mb:F1} MB ({status.FreeSectors:N0} free sectors)";
 
-                if (status.RequiresEraseToWrite)
+                if (status.IsLoading)
+                {
+                    _warningText.Text = $"⚠ The drive {rec.VolumePath} is still reading the {status.MediaType.GetDisplayName()}. Wait a few seconds and click '↻ Refresh'.";
+                    _warningBorder.Visibility = Visibility.Visible;
+                    _burnButton.IsEnabled = false;
+                }
+                else if (status.RequiresEraseToWrite)
                 {
                     _warningText.Text = $"⚠ The {status.MediaType.GetDisplayName()} in {rec.VolumePath} already has finalized data on it and must be erased before burning again (Drive Utilities -> Erase).";
                     _warningBorder.Visibility = Visibility.Visible;

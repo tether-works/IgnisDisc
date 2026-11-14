@@ -972,6 +972,7 @@ public class MainViewModel : ObservableObject, IDisposable
                     bool hasChanged =
                         st.MediaPresent != prevStatus.MediaPresent ||
                         st.MediaType != prevStatus.MediaType ||
+                        st.IsLoading != prevStatus.IsLoading ||
                         st.IsBlank != prevStatus.IsBlank ||
                         st.TotalSectors != prevStatus.TotalSectors ||
                         st.FreeSectors != prevStatus.FreeSectors;

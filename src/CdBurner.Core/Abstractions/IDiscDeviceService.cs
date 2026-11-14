@@ -179,6 +179,14 @@ public class MediaStatusDto
     public bool IsOverwriteOnly { get; init; }
 
     /// <summary>
+    /// True for the few seconds after a recordable disc is loaded, before Windows' writer accepts it. The drive already
+    /// names the disc type but reads only one sector, so the disc is not yet known to be blank or finished (measured on
+    /// a USB DVD writer: 1.7 to 3.2 s for DVD+R and DVD+R DL). Ask again shortly; <see cref="Burning.MediaStatusWait"/>
+    /// does that for the burn and erase paths.
+    /// </summary>
+    public bool IsLoading { get; init; }
+
+    /// <summary>
     /// True when burning to this disc would replace files already on it (a used DVD+RW or similar).
     /// </summary>
     public bool HasDataThatBurningReplaces => MediaPresent && IsOverwriteOnly && !IsBlank;

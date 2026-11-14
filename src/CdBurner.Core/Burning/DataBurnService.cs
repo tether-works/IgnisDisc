@@ -46,6 +46,12 @@ public class DataBurnService
     }
 
     /// <summary>
+    /// How long a burn waits for a disc the drive is still loading (<see cref="MediaStatusDto.IsLoading"/>) before
+    /// it refuses with <see cref="MediaStatusWait.StillLoadingMessage"/>.
+    /// </summary>
+    public TimeSpan MediaLoadWait { get; init; } = MediaStatusWait.DefaultMaxWait;
+
+    /// <summary>
     /// Compiles a virtual file system hierarchy from a <see cref="CompilationDirectory"/> into an ISO/UDF image stream
     /// and burns it to the target recorder.
     /// </summary>
@@ -65,10 +71,15 @@ public class DataBurnService
         cancellationToken.ThrowIfCancellationRequested();
 
         // 1. Validate media presence & state
-        var mediaStatus = recorder.QueryMediaStatus();
+        var mediaStatus = await MediaStatusWait.QueryWhenLoadedAsync(recorder, cancellationToken, MediaLoadWait);
         if (!mediaStatus.MediaPresent)
         {
             return DataBurnResult.Failed("No optical media present in recorder.");
+        }
+
+        if (mediaStatus.IsLoading)
+        {
+            return DataBurnResult.Failed(MediaStatusWait.StillLoadingMessage);
         }
 
         if (!mediaStatus.IsBlank && !mediaStatus.IsAppendable && !mediaStatus.IsRewritable)
@@ -266,10 +277,15 @@ public class DataBurnService
 
         cancellationToken.ThrowIfCancellationRequested();
 
-        var mediaStatus = recorder.QueryMediaStatus();
+        var mediaStatus = await MediaStatusWait.QueryWhenLoadedAsync(recorder, cancellationToken, MediaLoadWait);
         if (!mediaStatus.MediaPresent)
         {
             return DataBurnResult.Failed("No optical media present in recorder.");
+        }
+
+        if (mediaStatus.IsLoading)
+        {
+            return DataBurnResult.Failed(MediaStatusWait.StillLoadingMessage);
         }
 
         if (!mediaStatus.IsBlank && !mediaStatus.IsAppendable && !mediaStatus.IsRewritable)

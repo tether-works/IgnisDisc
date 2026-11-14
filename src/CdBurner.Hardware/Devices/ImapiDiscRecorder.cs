@@ -712,6 +712,25 @@ public class ImapiDiscRecorder : IDiscRecorderBackend, IDiscTocProvider, IMediaM
         try
         {
             int? readOnlySectors = _comProvider.ReadCapacity(VolumePath);
+
+            // Just after a recordable disc is loaded, Windows' writer does not accept it yet while READ CAPACITY already
+            // answers with one sector (a blank disc's). Measured on the GP60NB50 (2026-11-14): a blank DVD+R read like
+            // this for 3.2 s and a DVD+R DL for 1.7 s, then as blank. Any disc with data has more than one sector, so
+            // this is reported as still loading, not as a finished one-sector disc.
+            if (readOnlySectors is 1
+                && MapCurrentProfilesToMediaType(ReadCurrentProfiles()) is { } loadingType
+                && loadingType is not (DiscMediaType.CdRom or DiscMediaType.DvdRom or DiscMediaType.BdRom))
+            {
+                return new MediaStatusDto
+                {
+                    MediaType = loadingType,
+                    MediaPresent = true,
+                    IsLoading = true,
+                    LastRecordedLba = -1,
+                    NextWritableLba = -1
+                };
+            }
+
             if (readOnlySectors is > 0)
             {
                 // The disc type from the drive's current profiles (the GP60NB50 reports a closed DVD-R as DVD-ROM); the size is only

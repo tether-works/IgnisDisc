@@ -409,7 +409,7 @@ public static class CliCommandRunner
         // Only where formatting decides the usable size; on a CD-RW the drive just echoes the recorded data.
         var formatted = status.MediaType.IsFormattable() ? driveReport.FormattedCapacity : null;
         // Overwrite-only media (DVD+RW, DVD-RAM) are never "finalized": each burn rewrites them from the start.
-        bool isFinalized = status.MediaPresent && !status.IsBlank && !status.IsAppendable && !status.IsOverwriteOnly;
+        bool isFinalized = status.MediaPresent && !status.IsLoading && !status.IsBlank && !status.IsAppendable && !status.IsOverwriteOnly;
         long usedBytes = status.UsedSectors > 0
             ? (long)status.UsedSectors * OpticalConstants.DataSectorSize
             : Math.Max(0L, status.TotalCapacityBytes - status.FreeCapacityBytes);
@@ -430,6 +430,7 @@ public static class CliCommandRunner
                 mediaTypeName = status.MediaType.GetDisplayName(),
                 mediaManufacturerId = status.MediaManufacturerId,
                 mmcFeatures = caps.MmcFeatureSummary,
+                isLoading = status.IsLoading,
                 isBlank = status.IsBlank,
                 isRewritable = status.IsRewritable,
                 isAppendable = status.IsAppendable,
@@ -492,6 +493,10 @@ public static class CliCommandRunner
             if (!string.IsNullOrWhiteSpace(status.MediaManufacturerId))
             {
                 stdout.WriteLine($"  Media ID / ATIP:       {status.MediaManufacturerId}");
+            }
+            if (status.IsLoading)
+            {
+                stdout.WriteLine("  State:                 Still loading; ask again in a few seconds");
             }
             stdout.WriteLine($"  Blank:                 {(status.IsBlank ? "Yes" : "No")}");
             stdout.WriteLine($"  Rewritable:            {(status.IsRewritable ? "Yes" : "No")}");

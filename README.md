@@ -18,7 +18,7 @@ pipeline can be tested without hardware or blank media.
 <!-- SUPPORT-TABLE-START -->
 | Feature | Physical drives | Virtual drive | Notes |
 | --- | :---: | :---: | --- |
-| Burn data disc from files / folders | ✅ | ✅ | ISO 9660 + Joliet + UDF bridge; UDF 1.02 by default, 1.50 to 2.60 on request (`--udf-rev`) |
+| Burn data disc from files / folders | ✅ | ✅ | ISO 9660 + Joliet + UDF bridge; UDF 1.02 by default, 1.50 to 2.60 on request (`--udf-rev`). With the Windows writer (the default) on real discs on one drive (LG GP60NB50), every file read back identical: a DVD+RW, a DVD-R and a DVD+R (two sessions each on the DVD-R and DVD+R), and a dual-layer DVD+R holding 5.5 GB across both layers (Windows puts the layer break at half the data). DVD-RW not tried yet |
 | Burn an existing `.iso` | ✅ | ✅ | |
 | Create `.iso` image files | ✅ | — | Validated against an independent reader (DiscUtils) in the test suite |
 | Verify after burn | ✅ | ✅ | Reads every sector back and compares it with the image. The drive is told to read the disc itself, not its memory, where burn data can still be held; `--strict-verify` does that for every read. Damage is reported by file |
@@ -34,7 +34,7 @@ pipeline can be tested without hardware or blank media.
 | Quick / full erase of rewritable media | ✅ | ✅ | |
 | Re-burn a used DVD+RW / DVD-RAM | ✅ | ✅ | Asks before replacing the files on the disc (`--overwrite` on the command line); finalized CD-RW / sequential DVD-RW require `erase` first |
 | Surface scan | ✅ | ✅ | Per-track Full TOC (`0x02`) scan skips unrecorded multi-session gaps and auto-selects 2352B raw mode on audio tracks |
-| Append a session (multi-session) | ✅ | ✅ | Open and appended sessions omit UDF 1.02 so Windows mounts Joliet across all sessions; names longer than 64 characters are shortened there, and the burn result says so |
+| Append a session (multi-session) | ✅ | ✅ | Open and appended sessions omit UDF 1.02 so Windows mounts Joliet across all sessions; names longer than 64 characters are shortened there, and the burn result says so. With the Windows writer on real discs: a DVD-R and a DVD+R, two sessions each, every file of both sessions identical; the DVD+R showed the new session at once, the DVD-R only after the disc was put back in |
 | Bootable discs (El Torito BIOS + UEFI) | ✅ | ✅ | Hybrid BIOS + UEFI Boot Catalog verified via physical burn, readback, and rip; boot behaviour depends on your loaders |
 | DVD-Video authoring | ⚠️ | ✅ | Requires `ffmpeg.exe`; test on a standalone player before relying on it. With direct drive commands one 60 s test disc was burned to a DVD+RW on a real drive (read back and decoded in full), but not played in a stand-alone player |
 | Blu-ray (BD-R / BD-RE) | ❌ | — | Not yet: Blu-ray discs are recognised (type, size, layers) and archive sets can be planned for them, and the experimental direct writer handles single-layer BD-R and BD-RE in the drive simulator, but burning one has never been tried on a real drive |

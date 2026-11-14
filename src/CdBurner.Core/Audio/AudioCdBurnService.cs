@@ -184,10 +184,15 @@ public class AudioCdBurnService
         }
 
         // 2. Query and validate media
-        var mediaStatus = recorder.QueryMediaStatus();
+        var mediaStatus = await CdBurner.Core.Burning.MediaStatusWait.QueryWhenLoadedAsync(recorder, cancellationToken);
         if (!mediaStatus.MediaPresent)
         {
             return BurnOperationResult.Failed("No optical media present in recorder.");
+        }
+
+        if (mediaStatus.IsLoading)
+        {
+            return BurnOperationResult.Failed(CdBurner.Core.Burning.MediaStatusWait.StillLoadingMessage);
         }
 
         if (checkOnly)
