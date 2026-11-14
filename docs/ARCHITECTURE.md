@@ -228,6 +228,21 @@ LBA and track length to radius and angle, polar page layout and a streaming rast
 `tests/CdBurner.Lithography.Tests`. It was split out of Core so that code ported from an upstream project stays in
 one assembly with a clear provenance boundary. Nothing in it touches a drive.
 
+- `Ported/DiscImageStudio/Cd/` (namespace `CdBurner.Lithography.Cd`, ported from DiscImageStudio, see
+  `THIRD-PARTY-NOTICES.md`): `CdTrackGenerator` turns a picture into a CD-DA picture track (`.wav` + one-track
+  `.cue`, or big-endian `.raw`) through the `0x0D`/`0xAA` palette (`CdToneMapping`, `ToneProfile` dither) and the
+  CIRC delay interleaver (`CddaInterleaver`, from CDImage); `RenderTrack`/`PreviewTrack` read a track back into the
+  picture (from a file or from sectors read off a disc). `CdMode1Drawing` makes 2,048-byte Mode 1 sectors whose bytes
+  after the drive's ECMA-130 scrambler are palette bytes, and reads them back. Constant track pitch only for now.
+- `Imaging/PngRaster.cs`: IgnisDisc's own minimal PNG reader/writer (8-bit, non-interlaced) for picture input and
+  read-back previews.
+- Burning: `CdBurner.Core.Images.PictureTrackCue` adds the picture WAV as the last audio track of an audio or
+  mixed-mode CUE sheet, which then goes through the direct Session-at-Once writer (`burn-audio --tracks <cue> --dao
+  --native`) and `verify --cue` like any other CUE. Core does not reference this project.
+- Upstream issues kept as-is in the port until the goldens are reproduced (to be fixed separately): the
+  interleaved track starts with 1,332 placeholder bytes and the delay line drops the last 1,332 logical bytes of a
+  drawn stretch (upstream's `docs/PHYSICAL_MODEL_AUDIT.md`); the picture sits about 111 frames late against CIRC reference timing.
+
 ### Porting rules for upstream code (M5)
 
 1. **Pinned upstream revision.** Port only from commit `619ec7505ac8955f35fe2f353ebda74b6ea90dda` of the upstream

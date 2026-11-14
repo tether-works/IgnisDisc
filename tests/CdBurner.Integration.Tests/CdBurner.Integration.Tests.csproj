@@ -24,6 +24,7 @@
   <ItemGroup>
     <ProjectReference Include="..\..\src\CdBurner.Core\CdBurner.Core.csproj" />
     <ProjectReference Include="..\..\src\CdBurner.Hardware\CdBurner.Hardware.csproj" />
+    <ProjectReference Include="..\..\src\CdBurner.Lithography\CdBurner.Lithography.csproj" />
     <ProjectReference Include="..\..\src\CdBurner.Cli\CdBurner.Cli.csproj" />
     <ProjectReference Include="..\..\src\CdBurner.App\CdBurner.App.csproj" />
   </ItemGroup>
