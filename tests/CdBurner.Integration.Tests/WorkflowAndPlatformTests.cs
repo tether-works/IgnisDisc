@@ -342,7 +342,10 @@ public sealed class WorkflowAndPlatformTests : IDisposable
         string targetDir = Path.Combine(_tempDir, "par2_install");
 
         var vm = new ArchiveViewModel(_deviceService, _burnEngine);
-        var result = await vm.InstallPar2Async(targetDir, client, "https://example.test/par2.zip");
+        // A different archive than the pinned release needs its own hash; without it the download is refused.
+        string zipSha256 = Convert.ToHexStringLower(System.Security.Cryptography.SHA256.HashData(zipBytes));
+        var result = await vm.InstallPar2Async(targetDir, client, "https://example.test/par2.zip",
+            expectedSha256Override: zipSha256);
 
         Assert.True(result.Success);
         Assert.NotNull(result.ExecutablePath);
@@ -352,6 +355,26 @@ public sealed class WorkflowAndPlatformTests : IDisposable
         Assert.True(vm.RedundancyPercent > 0);
         Assert.Contains("par2 found:", vm.Par2StatusText);
         Assert.Equal(result.ExecutablePath, Par2Runner.FindPar2Executable(result.ExecutablePath));
+    }
+
+    [Fact]
+    public void ArchiveViewModel_InstalledPar2cmdline140_ShowsTheUpdateOffer()
+    {
+        string? par2 = Par2Runner.FindPar2Executable();
+        var version = par2 == null ? null : Par2ToolVersion.Query(par2, TimeSpan.FromSeconds(30));
+        if (version == null)
+        {
+            return; // Needs a real par2 (CI installs par2cmdline 1.4.0).
+        }
+
+        var vm = new ArchiveViewModel(_deviceService, _burnEngine);
+
+        bool expectOffer = !version.IsTurbo || version.Version < Version.Parse(ExternalToolInstallerService.Par2TurboVersion);
+        Assert.True(vm.Par2Available);
+        Assert.Equal(expectOffer, vm.IsPar2UpdateAvailable);
+        Assert.Equal(expectOffer, vm.IsPar2InstallOffered);
+        Assert.Contains(version.ToString(), vm.Par2StatusText);
+        Assert.Equal(expectOffer, vm.Par2StatusText.Contains("Update available", StringComparison.Ordinal));
     }
 
     [Fact]

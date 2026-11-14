@@ -19,12 +19,19 @@ license text ships as `ffmpeg-LICENSE.txt` next to it. ffmpeg is licensed under 
 GPL-enabled builds); see https://ffmpeg.org/legal.html. Prefer an LGPL build, record exactly which build you shipped
 in the release notes, and link to its source.
 
-## par2cmdline (optional, 1-click install available)
+## par2cmdline-turbo / par2cmdline (optional, 1-click install available)
 
-Archive recovery data is created and repaired by calling an external `par2.exe`
-([par2cmdline](https://github.com/Parchive/par2cmdline), GPL v2+) as a separate program. It is **not** bundled by default;
-you can download and install it with 1 click from the **Archive** or **Settings** workspace (installed per-user into
-`%LOCALAPPDATA%\Programs\par2cmdline\par2.exe` alongside `par2-LICENSE.txt`) or install it yourself on `PATH`.
+Archive recovery data is created and repaired by calling an external `par2.exe` as a separate program. It is **not**
+bundled. The 1-click install in the **Archive** or **Settings** workspace downloads
+[par2cmdline-turbo](https://github.com/animetosho/par2cmdline-turbo) 1.5.0 (GPL-2.0-or-later; a par2cmdline fork with
+faster checksum and Reed-Solomon code, same command line and PAR 2.0 files), the official `win-x64` or `win-arm64`
+release archive, into `%LOCALAPPDATA%\Programs\par2cmdline\par2.exe`. The archive's SHA-256 is pinned in IgnisDisc and
+a download with any other hash is refused. The release archive holds only `par2.exe`; its license text and source are at
+https://github.com/animetosho/par2cmdline-turbo/blob/v1.5.0/COPYING and the release's `.tar.xz`.
+
+[par2cmdline](https://github.com/Parchive/par2cmdline) 1.4.0 (GPL-2.0-or-later), which earlier versions installed, also
+works: recovery files made by either program verify and repair with the other. When IgnisDisc finds par2cmdline 1.4.0
+it offers the 1-click update. You can also put any `par2.exe` on `PATH`; the 1-click install location is checked first.
 
 ## Online services (optional, 1-click lookup & configurable defaults)
 

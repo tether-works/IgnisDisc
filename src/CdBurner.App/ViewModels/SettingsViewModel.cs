@@ -42,6 +42,7 @@ public class SettingsViewModel : ObservableObject
     private bool _isFfmpegInstalled;
     private string _ffmpegStatusText = string.Empty;
     private bool _isPar2Installed;
+    private bool _isPar2UpdateAvailable;
     private string _par2StatusText = string.Empty;
 
     /// <summary>
@@ -180,6 +181,16 @@ public class SettingsViewModel : ObservableObject
     {
         get => _isPar2Installed;
         private set => SetProperty(ref _isPar2Installed, value);
+    }
+
+    /// <summary>
+    /// True when the detected par2 is par2cmdline 1.4.0 (or another version older than the 1-click
+    /// par2cmdline-turbo release); the status text then offers the update.
+    /// </summary>
+    public bool IsPar2UpdateAvailable
+    {
+        get => _isPar2UpdateAvailable;
+        private set => SetProperty(ref _isPar2UpdateAvailable, value);
     }
 
     /// <summary>
@@ -343,9 +354,11 @@ public class SettingsViewModel : ObservableObject
 
         string? resolvedPar2 = Par2Runner.FindPar2Executable();
         IsPar2Installed = !string.IsNullOrEmpty(resolvedPar2);
+        Par2ToolVersion? par2Version = IsPar2Installed ? Par2ToolVersion.Query(resolvedPar2!) : null;
+        IsPar2UpdateAvailable = ExternalToolInstallerService.IsPar2UpdateRecommended(par2Version);
         Par2StatusText = IsPar2Installed
-            ? $"Installed: {resolvedPar2}"
-            : "Not found — click 'Install par2 (1-Click)' to enable PAR2 archive recovery.";
+            ? $"Installed: {ExternalToolInstallerService.DescribeInstalledPar2(resolvedPar2!, par2Version)}"
+            :"Not found — click 'Install par2 (1-Click)' to enable PAR2 archive recovery.";
     }
 
     /// <summary>
@@ -472,7 +485,8 @@ public class SettingsViewModel : ObservableObject
         string? targetDirectory = null,
         HttpClient? httpClient = null,
         string? downloadUrlOverride = null,
-        CancellationToken ct = default)
+        CancellationToken ct = default,
+        string? expectedSha256Override = null)
     {
         _isInstallingTool = true;
         InstallFfmpegCommand.RaiseCanExecuteChanged();
@@ -491,7 +505,8 @@ public class SettingsViewModel : ObservableObject
                 httpClient,
                 downloadUrlOverride,
                 progress,
-                ct).ConfigureAwait(true);
+                ct,
+                expectedSha256Override).ConfigureAwait(true);
 
             if (result.Success && !string.IsNullOrEmpty(result.ExecutablePath))
             {

@@ -35,7 +35,8 @@ jobs:
       - name: Build
         run: dotnet build CdBurner.sln --configuration Release -warnaserror
 
-      # The archive recovery tests run real par2 (the same release the app's optional download installs).
+      # The archive recovery tests run real par2. This stays on par2cmdline 1.4.0, the release earlier app versions
+      # installed; the 1-click download now installs par2cmdline-turbo, whose recovery files 1.4.0 reads and repairs.
       - name: Install par2cmdline
         shell: pwsh
         run: |

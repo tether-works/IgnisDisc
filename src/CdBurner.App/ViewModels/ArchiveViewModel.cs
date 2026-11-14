@@ -105,6 +105,7 @@ public class ArchiveViewModel : ObservableObject
     private ArchivePlan? _currentPlan;
     private string _planSummary = string.Empty;
     private bool _par2Available;
+    private bool _isPar2UpdateAvailable;
     private string _par2StatusText = string.Empty;
     private string? _customPar2Path;
 
@@ -208,6 +209,7 @@ public class ArchiveViewModel : ObservableObject
             if (SetProperty(ref _par2Available, value))
             {
                 OnPropertyChanged(nameof(IsPar2Missing));
+                OnPropertyChanged(nameof(IsPar2InstallOffered));
                 UpdateCanRepair();
                 InstallPar2Command?.RaiseCanExecuteChanged();
             }
@@ -218,6 +220,27 @@ public class ArchiveViewModel : ObservableObject
     /// True when <c>par2.exe</c> is not installed on the system.
     /// </summary>
     public bool IsPar2Missing => !_par2Available;
+
+    /// <summary>
+    /// True when the installed par2 is par2cmdline 1.4.0 (or another version older than the 1-click
+    /// par2cmdline-turbo release), so the install button is shown as an update.
+    /// </summary>
+    public bool IsPar2UpdateAvailable
+    {
+        get => _isPar2UpdateAvailable;
+        private set
+        {
+            if (SetProperty(ref _isPar2UpdateAvailable, value))
+            {
+                OnPropertyChanged(nameof(IsPar2InstallOffered));
+            }
+        }
+    }
+
+    /// <summary>
+    /// Shows the 1-click install button: par2 is missing or an update is available.
+    /// </summary>
+    public bool IsPar2InstallOffered => IsPar2Missing || _isPar2UpdateAvailable;
 
     /// <summary>
     /// Informational text describing PAR2 installation status.
@@ -531,8 +554,10 @@ public class ArchiveViewModel : ObservableObject
         string? par2Path = Par2Runner.FindPar2Executable(_customPar2Path);
         bool wasAvailable = _par2Available;
         Par2Available = par2Path != null;
-        Par2StatusText = Par2Available
-            ? $"par2 found: {par2Path}"
+        Par2ToolVersion? version = par2Path != null ? Par2ToolVersion.Query(par2Path) : null;
+        IsPar2UpdateAvailable = ExternalToolInstallerService.IsPar2UpdateRecommended(version);
+        Par2StatusText = par2Path != null
+            ? $"par2 found: {ExternalToolInstallerService.DescribeInstalledPar2(par2Path, version)}"
             : "par2 not installed — recovery data disabled (click 'Install par2 (1-Click)' to enable)";
 
         if (Par2Available && !wasAvailable && _redundancyPercent == 0)
@@ -548,7 +573,8 @@ public class ArchiveViewModel : ObservableObject
         string? targetDirectory = null,
         HttpClient? httpClient = null,
         string? downloadUrlOverride = null,
-        CancellationToken ct = default)
+        CancellationToken ct = default,
+        string? expectedSha256Override = null)
     {
         IsBusy = true;
         Progress = 0;
@@ -567,7 +593,8 @@ public class ArchiveViewModel : ObservableObject
                 httpClient,
                 downloadUrlOverride,
                 progressHandler,
-                ct).ConfigureAwait(true);
+                ct,
+                expectedSha256Override).ConfigureAwait(true);
 
             if (result.Success && !string.IsNullOrEmpty(result.ExecutablePath))
             {

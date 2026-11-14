@@ -62,7 +62,10 @@ public static class Par2RecoverySizer
     private const double SpanScaleBlocks = 38_000;
     private const double SpanScaleBytes = 700.0 * 1024 * 1024;
 
-    /// <summary>Upper bound for the creator packet ("Created by par2cmdline version x.y.z"); 104 bytes for 1.4.0.</summary>
+    /// <summary>
+    /// Upper bound for the creator packet ("Created by par2cmdline version x.y.z"); measured 104 bytes for
+    /// par2cmdline 1.4.0 and 108 bytes for par2cmdline-turbo 1.5.0.
+    /// </summary>
     public const int CreatorPacketBytes = 128;
 
     private const int PacketHeaderBytes = 64;

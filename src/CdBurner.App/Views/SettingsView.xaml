@@ -205,7 +205,7 @@
                                 Content="⬇ Install par2 (1-Click)"
                                 AutomationProperties.Name="Install par2 (1-Click)"
                                 Command="{Binding InstallPar2Command}"
-                                ToolTip="Downloads par2cmdline (par2.exe) into %LOCALAPPDATA%\Programs\par2cmdline for multi-disc archive parity recovery"
+                                ToolTip="Downloads par2cmdline-turbo (par2.exe, SHA-256 checked) into %LOCALAPPDATA%\Programs\par2cmdline for archive recovery data; replaces an older par2cmdline there"
                                 Padding="12,5"
                                 Margin="8,0,0,0" />
                     </Grid>

@@ -42,6 +42,10 @@ it:
 - **AccurateRip check** (audio CD ripping; *on by default* in the app's rip options, off unless you pass
   `--verify-accuraterip` or run `detect-offset` on the command line): IDs computed from the disc's table of contents
   are used to download the matching checksum file from `accuraterip.com`.
+- **Optional tool downloads** (only when you click *Install FFmpeg (1-Click)* or *Install par2 (1-Click)*): the
+  program is downloaded from its project's GitHub releases. The par2cmdline-turbo archive's SHA-256 is pinned in
+  IgnisDisc and any other download is refused before it is unpacked; ffmpeg comes from BtbN's rolling `latest` LGPL
+  build, which has no fixed hash to pin.
 - **Update check** (*off by default*): when you turn on *Check for updates on startup* or click
   *Check for Updates Now* in Settings, the app asks `api.github.com` for the latest IgnisDisc release. No personal or
   machine identifiers are sent.

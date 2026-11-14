@@ -1,6 +1,8 @@
 using System.IO.Compression;
 using System.Net.Http;
 using System.Runtime.InteropServices;
+using System.Security.Cryptography;
+using CdBurner.Core.Archival;
 
 namespace CdBurner.Core.Utilities;
 
@@ -30,16 +32,38 @@ public static class ExternalToolInstallerService
         "https://github.com/BtbN/FFmpeg-Builds/releases/download/latest/ffmpeg-master-latest-win64-lgpl.zip";
 
     /// <summary>
-    /// Official Parchive par2cmdline v1.4.0 Windows x64 release archive URL.
+    /// par2cmdline-turbo release installed by <see cref="InstallPar2Async"/>. par2cmdline-turbo
+    /// (https://github.com/animetosho/par2cmdline-turbo, GPL-2.0-or-later) keeps par2cmdline's command line and the
+    /// PAR 2.0 file format and replaces the slow parts (GF16 multiply, MD5/CRC32) with SIMD code; its recovery files
+    /// verify and repair with par2cmdline 1.4.0 and the other way round.
     /// </summary>
-    public const string DefaultPar2WinX64Url =
-        "https://github.com/Parchive/par2cmdline/releases/download/v1.4.0/par2cmdline-1.4.0-win-x64.zip";
+    public const string Par2TurboVersion = "1.5.0";
 
     /// <summary>
-    /// Official Parchive par2cmdline v1.4.0 Windows ARM64 release archive URL.
+    /// Official par2cmdline-turbo v1.5.0 Windows x64 release archive URL (pinned by <see cref="DefaultPar2WinX64Sha256"/>).
+    /// </summary>
+    public const string DefaultPar2WinX64Url =
+        "https://github.com/animetosho/par2cmdline-turbo/releases/download/v1.5.0/par2cmdline-turbo-1.5.0-win-x64.zip";
+
+    /// <summary>
+    /// SHA-256 of <see cref="DefaultPar2WinX64Url"/>: the asset digest GitHub publishes for the release, re-computed
+    /// from the downloaded file on 2026-11-14.
+    /// </summary>
+    public const string DefaultPar2WinX64Sha256 =
+        "873a6f25822415f432224cc6f734407ca2732004184e002960fc68ed1e99c5d7";
+
+    /// <summary>
+    /// Official par2cmdline-turbo v1.5.0 Windows ARM64 release archive URL (pinned by <see cref="DefaultPar2WinArm64Sha256"/>).
     /// </summary>
     public const string DefaultPar2WinArm64Url =
-        "https://github.com/Parchive/par2cmdline/releases/download/v1.4.0/par2cmdline-1.4.0-win-arm64.zip";
+        "https://github.com/animetosho/par2cmdline-turbo/releases/download/v1.5.0/par2cmdline-turbo-1.5.0-win-arm64.zip";
+
+    /// <summary>
+    /// SHA-256 of <see cref="DefaultPar2WinArm64Url"/>: the asset digest GitHub publishes for the release, re-computed
+    /// from the downloaded file on 2026-11-14.
+    /// </summary>
+    public const string DefaultPar2WinArm64Sha256 =
+        "bb73312747b706dcedd13b8d4de7acd20e17367ebb0b26ebc3ea7d55ea744735";
 
     /// <summary>
     /// User-Agent header sent on GitHub release downloads.
@@ -87,6 +111,8 @@ public static class ExternalToolInstallerService
             executableFileName: "ffmpeg.exe",
             licenseOutputFileName: "ffmpeg-LICENSE.txt",
             downloadUrl: url,
+            // BtbN publishes FFmpeg only as a rolling "latest" build, so there is no fixed hash to pin.
+            expectedSha256: null,
             installDirectory: installDir,
             httpClient: httpClient,
             progress: progress,
@@ -94,41 +120,89 @@ public static class ExternalToolInstallerService
     }
 
     /// <summary>
-    /// Downloads and extracts <c>par2.exe</c> (<c>par2cmdline</c>) into the specified or default per-user directory.
+    /// Downloads par2cmdline-turbo (<c>par2.exe</c>) into the specified or default per-user directory, replacing an
+    /// older <c>par2.exe</c> there. The archive's SHA-256 must equal the pinned value for this PC's architecture
+    /// (<see cref="DefaultPar2WinX64Sha256"/> or <see cref="DefaultPar2WinArm64Sha256"/>); any other download is
+    /// refused before anything is extracted.
     /// </summary>
+    /// <param name="targetDirectory">Install folder; default <see cref="GetDefaultPar2InstallDirectory"/>.</param>
+    /// <param name="httpClient">Client to download with; a new one is created when null.</param>
+    /// <param name="downloadUrlOverride">Different archive URL (tests, mirrors). The pinned hash still applies unless
+    /// <paramref name="expectedSha256Override"/> gives the hash of that archive.</param>
+    /// <param name="progress">Progress messages for the status line.</param>
+    /// <param name="cancellationToken">Cancels the download.</param>
+    /// <param name="expectedSha256Override">SHA-256 (64 hex digits) the archive must have instead of the pinned
+    /// one. There is no way to skip the check.</param>
     public static Task<ToolInstallResult> InstallPar2Async(
         string? targetDirectory = null,
         HttpClient? httpClient = null,
         string? downloadUrlOverride = null,
         IProgress<string>? progress = null,
-        CancellationToken cancellationToken = default)
+        CancellationToken cancellationToken = default,
+        string? expectedSha256Override = null)
     {
         string installDir = string.IsNullOrWhiteSpace(targetDirectory)
             ? GetDefaultPar2InstallDirectory()
             : Path.GetFullPath(targetDirectory);
-        string defaultUrl = RuntimeInformation.OSArchitecture == Architecture.Arm64
-            ? DefaultPar2WinArm64Url
-            : DefaultPar2WinX64Url;
+        bool arm64 = RuntimeInformation.OSArchitecture == Architecture.Arm64;
         string url = string.IsNullOrWhiteSpace(downloadUrlOverride)
-            ? defaultUrl
+            ? (arm64 ? DefaultPar2WinArm64Url : DefaultPar2WinX64Url)
             : downloadUrlOverride;
+        string expectedSha256 = string.IsNullOrWhiteSpace(expectedSha256Override)
+            ? (arm64 ? DefaultPar2WinArm64Sha256 : DefaultPar2WinX64Sha256)
+            : expectedSha256Override.Trim();
 
         return DownloadAndExtractToolAsync(
-            toolDisplayName: "par2cmdline (par2.exe)",
+            toolDisplayName: $"par2cmdline-turbo {Par2TurboVersion}",
             executableFileName: "par2.exe",
             licenseOutputFileName: "par2-LICENSE.txt",
             downloadUrl: url,
+            expectedSha256: expectedSha256,
             installDirectory: installDir,
             httpClient: httpClient,
             progress: progress,
             cancellationToken: cancellationToken);
     }
 
+    /// <summary>
+    /// True when <paramref name="installed"/> is the original par2cmdline (for example 1.4.0) or a par2cmdline-turbo
+    /// older than <see cref="Par2TurboVersion"/>, so the 1-click install should be offered as an update. False when
+    /// the version is unknown (nothing to compare) or already current.
+    /// </summary>
+    public static bool IsPar2UpdateRecommended(Par2ToolVersion? installed)
+    {
+        if (installed == null)
+        {
+            return false;
+        }
+
+        return !installed.IsTurbo || installed.Version < Version.Parse(Par2TurboVersion);
+    }
+
+    /// <summary>
+    /// Status text for an installed par2: its path and version, plus the update offer when
+    /// <see cref="IsPar2UpdateRecommended"/> is true.
+    /// </summary>
+    public static string DescribeInstalledPar2(string par2Path, Par2ToolVersion? installed)
+    {
+        string version = installed?.ToString() ?? "version unknown";
+        if (!IsPar2UpdateRecommended(installed))
+        {
+            return $"{par2Path} ({version})";
+        }
+
+        return $"{par2Path} ({version}). Update available: 'Install par2 (1-Click)' installs par2cmdline-turbo " +
+               $"{Par2TurboVersion}, which creates recovery data about 10 times faster and reads the same files.";
+    }
+
+    private static bool IsSha256Hex(string value) => value.Length == 64 && value.All(Uri.IsHexDigit);
+
     private static async Task<ToolInstallResult> DownloadAndExtractToolAsync(
         string toolDisplayName,
         string executableFileName,
         string licenseOutputFileName,
         string downloadUrl,
+        string? expectedSha256,
         string installDirectory,
         HttpClient? httpClient,
         IProgress<string>? progress,
@@ -141,9 +215,16 @@ public static class ExternalToolInstallerService
 
         try
         {
+            if (expectedSha256 != null && !IsSha256Hex(expectedSha256))
+            {
+                return new ToolInstallResult(false, null, null,
+                    $"The expected SHA-256 for {toolDisplayName} is not 64 hexadecimal digits; nothing was downloaded.");
+            }
+
             Directory.CreateDirectory(installDirectory);
             progress?.Report($"Downloading {toolDisplayName}...");
 
+            using var hasher = IncrementalHash.CreateHash(HashAlgorithmName.SHA256);
             using (var request = new HttpRequestMessage(HttpMethod.Get, downloadUrl))
             {
                 if (!request.Headers.UserAgent.Any())
@@ -175,6 +256,7 @@ public static class ExternalToolInstallerService
                 while ((bytesRead = await networkStream.ReadAsync(buffer, cancellationToken).ConfigureAwait(false)) > 0)
                 {
                     await fileStream.WriteAsync(buffer.AsMemory(0, bytesRead), cancellationToken).ConfigureAwait(false);
+                    hasher.AppendData(buffer, 0, bytesRead);
                     totalRead += bytesRead;
 
                     if (totalBytes is > 0)
@@ -185,6 +267,23 @@ public static class ExternalToolInstallerService
                         progress?.Report($"Downloading {toolDisplayName}... {pct:F0}% ({mbRead:F1} / {mbTotal:F1} MB)");
                     }
                 }
+            }
+
+            if (expectedSha256 != null)
+            {
+                // Checked before the archive is opened: a download that is not the pinned release is never unpacked.
+                string actualSha256 = Convert.ToHexStringLower(hasher.GetHashAndReset());
+                if (!string.Equals(actualSha256, expectedSha256, StringComparison.OrdinalIgnoreCase))
+                {
+                    return new ToolInstallResult(
+                        false,
+                        null,
+                        null,
+                        $"Refused {toolDisplayName}: the download's SHA-256 is {actualSha256}, expected " +
+                        $"{expectedSha256.ToLowerInvariant()}. Nothing was installed.");
+                }
+
+                progress?.Report($"{toolDisplayName}: SHA-256 matches the pinned release.");
             }
 
             progress?.Report($"Extracting {executableFileName}...");

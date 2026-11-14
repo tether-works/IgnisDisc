@@ -28,6 +28,15 @@ public static class Par2Runner
             }
         }
 
+        // The 1-click install comes before PATH: when it updates an older par2 found on PATH (for example a
+        // par2cmdline 1.4.0), the program it just installed is the one every caller then uses.
+        string localPrograms = Path.Combine(
+            Environment.GetFolderPath(Environment.SpecialFolder.LocalApplicationData), "Programs", "par2cmdline", "par2.exe");
+        if (File.Exists(localPrograms))
+        {
+            return localPrograms;
+        }
+
         string? pathEnv = Environment.GetEnvironmentVariable("PATH");
         if (!string.IsNullOrWhiteSpace(pathEnv))
         {
@@ -57,14 +66,6 @@ public static class Par2Runner
                 {
                 }
             }
-        }
-
-        // Per-user install location used when par2cmdline is unpacked from its GitHub release (not on PATH).
-        string localPrograms = Path.Combine(
-            Environment.GetFolderPath(Environment.SpecialFolder.LocalApplicationData), "Programs", "par2cmdline", "par2.exe");
-        if (File.Exists(localPrograms))
-        {
-            return localPrograms;
         }
 
         string baseDir = AppContext.BaseDirectory;
