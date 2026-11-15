@@ -4,7 +4,7 @@
   <meta charset="UTF-8" />
   <meta name="viewport" content="width=device-width, initial-scale=1.0" />
   <title>IgnisDisc Optical Studio — Windows CD/DVD Burner, Audio CD Ripper &amp; Archiver</title>
-  <meta name="description" content="IgnisDisc Optical Studio (v1.14): free, open-source Windows 10/11 desktop app and command-line tool for burning data, audio and video discs (ISO 9660 / Joliet / UDF, El Torito), ripping audio CDs with C2 error pointers and AccurateRip, and multi-disc archives with SHA-256 manifests and PAR2 recovery data." />
+  <meta name="description" content="IgnisDisc Optical Studio (v1.15): free, open-source Windows 10/11 desktop app and command-line tool for burning data, audio and video discs (ISO 9660 / Joliet / UDF, El Torito), ripping audio CDs with C2 error pointers and AccurateRip, and multi-disc archives with SHA-256 manifests and PAR2 recovery data." />
   <link rel="icon" type="image/x-icon" href="/assets/IgnisDisc.ico" />
   <link rel="stylesheet" href="/styles.css?v=1.12.1" />
 </head>
@@ -18,7 +18,7 @@
         <span>IgnisDisc Optical Studio</span>
       </div>
       <div class="telemetry-meta">
-        <div class="telemetry-cell">REV: <span id="navVersion">v1.14</span></div>
+        <div class="telemetry-cell">REV: <span id="navVersion">v1.15</span></div>
         <div class="telemetry-cell">TARGET: <strong>WIN10/11 x64 (.NET 10)</strong></div>
         <div class="telemetry-cell">LICENSE: <strong>GPL-3.0-OR-LATER</strong></div>
         <div class="telemetry-cell">SRC: <a id="navGithubLink" href="https://github.com/tether-works/IgnisDisc" target="_blank" rel="noopener">GITHUB</a></div>
@@ -33,20 +33,20 @@
       <div class="cell">
         <h1 class="spec-title">Burn CDs and DVDs, rip music CDs, and back up folders on Windows.</h1>
         <p class="spec-lead">
-          <strong>IgnisDisc</strong> is a free, open-source disc burner and audio CD ripper for Windows 10 and 11. Burn files, folders, and <code>.iso</code> images to CD or DVD, make audio CDs from WAV, FLAC, MP3, M4A, or WMA tracks, rip your music CDs to lossless audio with automatic track names, or split a large folder across several numbered backup discs. After a burn it can read the whole disc back and compare it with what you asked for. Burning goes through Windows' built-in disc burning service by default; for CDs you can switch on IgnisDisc's own drive commands instead (experimental), which also write CD-Text and always check the disc afterwards. No extra drivers, no ads, no bundled offers, and no tracking.
+          <strong>IgnisDisc</strong> is a free, open-source disc burner, DVD-Video authoring tool, and audio CD ripper for Windows 10 and 11. Burn files, folders, and <code>.iso</code> images to CD or DVD, author playable DVD-Video discs, make audio CDs from WAV, FLAC, MP3, Opus, Ogg, M4A, or WMA tracks, rip your music CDs to WAV, FLAC, MP3, Opus, or AAC with automatic track names, or split a large folder across several numbered backup discs. After a burn it reads the disc back and compares it with what you asked for. In the app, audio CDs (on drives that offer Session-at-Once) and dual-layer DVD-Video discs use IgnisDisc's own drive commands by default and read the disc back afterwards; data discs, single-layer DVDs and the command line use Windows' built-in disc burning service by default unless direct drive commands are switched on. No extra drivers, no ads, no bundled offers, and no tracking.
         </p>
 
         <!-- Download & Verification Block -->
         <div class="action-bar" id="download">
-          <a id="btnDownloadSetup" href="https://github.com/tether-works/IgnisDisc/releases/download/v1.14/IgnisDisc-Setup.exe" class="btn-hardware">
+          <a id="btnDownloadSetup" href="https://github.com/tether-works/IgnisDisc/releases/download/v1.15/IgnisDisc-Setup.exe" class="btn-hardware">
             <span>Download Installer (IgnisDisc-Setup.exe)</span>
             <span>·</span>
-            <span class="dl-sub">v1.14 · 82.1 MB</span>
+            <span class="dl-sub">v1.15 · 82.3 MB</span>
           </a>
-          <a id="btnDownloadPortable" href="https://github.com/tether-works/IgnisDisc/releases/download/v1.14/IgnisDisc-Portable-win-x64.zip" class="btn-hardware btn-hardware-secondary">
+          <a id="btnDownloadPortable" href="https://github.com/tether-works/IgnisDisc/releases/download/v1.15/IgnisDisc-Portable-win-x64.zip" class="btn-hardware btn-hardware-secondary">
             <span>Portable .zip</span>
             <span>·</span>
-            <span class="dl-sub">v1.14 · 81.4 MB</span>
+            <span class="dl-sub">v1.15 · 81.6 MB</span>
           </a>
         </div>
 
@@ -60,13 +60,13 @@
           </div>
           <div class="digest-row">
             <span class="digest-label">IgnisDisc-Setup.exe</span>
-            <code id="hashSetup">86BD991430116370AECCAAEE4C49BF5FB3D6F966E13029B1003A1CE741473C37</code>
-            <button type="button" class="btn-copy" data-copy="86BD991430116370AECCAAEE4C49BF5FB3D6F966E13029B1003A1CE741473C37">[ COPY ]</button>
+            <code id="hashSetup">CF22C05D6806645B8A8A15D14FBF8126D72893762939587619C336AA5DFBE855</code>
+            <button type="button" class="btn-copy" data-copy="CF22C05D6806645B8A8A15D14FBF8126D72893762939587619C336AA5DFBE855">[ COPY ]</button>
           </div>
           <div class="digest-row">
             <span class="digest-label">IgnisDisc-Portable-win-x64.zip</span>
-            <code id="hashPortable">00D7738868EE5BA973AF5D21C8846FC2CE166E1B8E7AAEDD411BD25F85C6F021</code>
-            <button type="button" class="btn-copy" data-copy="00D7738868EE5BA973AF5D21C8846FC2CE166E1B8E7AAEDD411BD25F85C6F021">[ COPY ]</button>
+            <code id="hashPortable">EC6FD6620FDD6C8B0F7C772DAB9F9522C4BEF2978EA5A2605E183C126B6788F1</code>
+            <button type="button" class="btn-copy" data-copy="EC6FD6620FDD6C8B0F7C772DAB9F9522C4BEF2978EA5A2605E183C126B6788F1">[ COPY ]</button>
           </div>
         </div>
       </div>
@@ -97,7 +97,7 @@
 
 PS C:\&gt; ignisdisc-cli.exe media-info --drive H: --json
 {
-  "engine": "IgnisDisc v1.14 (GPL-3.0-or-later, https://ignisdisc.tetherworks.dev)",
+  "engine": "IgnisDisc v1.15 (GPL-3.0-or-later, https://ignisdisc.tetherworks.dev)",
   "success": true,
   ...
   "vendorId": "HL-DT-ST",
@@ -172,11 +172,11 @@ PS C:\&gt; ignisdisc-cli.exe burn-audio --drive H: --tracks album\album.cue --da
                 <tr><td>Surface scan</td><td><span class="badge-pass">[ PASS ]</span></td><td><span class="badge-pass">[ PASS ]</span></td><td>Per-track Full TOC (<code>0x02</code>) scan skips unrecorded multi-session gaps and auto-selects 2352B raw mode on audio tracks</td></tr>
                 <tr><td>Append a session (multi-session)</td><td><span class="badge-pass">[ PASS ]</span></td><td><span class="badge-pass">[ PASS ]</span></td><td>Open and appended sessions omit UDF 1.02 so Windows mounts Joliet across all sessions; names longer than 64 characters are shortened there, and the burn result says so. With the Windows writer on real discs: a DVD-R and a DVD+R, two sessions each, every file of both sessions identical; the DVD+R showed the new session at once, the DVD-R only after the disc was put back in</td></tr>
                 <tr><td>Bootable discs (El Torito BIOS + UEFI)</td><td><span class="badge-pass">[ PASS ]</span></td><td><span class="badge-pass">[ PASS ]</span></td><td>Hybrid BIOS + UEFI Boot Catalog verified via physical burn, readback, and rip; boot behaviour depends on your loaders</td></tr>
-                <tr><td>DVD-Video authoring</td><td><span class="badge-warn">[ PARTIAL ]</span></td><td><span class="badge-pass">[ PASS ]</span></td><td>Requires <code>ffmpeg.exe</code> (the 1-click download). Each film becomes a title with a chapter every 5 minutes, English subtitles from an <code>.srt</code> beside it (or generated with the optional subtitle tool), and a title menu with a still from each film and Play / Play with subtitles buttons. The navigation tables follow libdvdread's structures and were checked with libdvdnav (mpv, VLC). Played on one stand-alone player so far, an Xbox Series X: a film with menu, chapters and subtitles on a DVD+RW, and two films on a dual-layer DVD+R played across the layer change. Discs authored before 2026-11-14 did not play there</td></tr>
+                <tr><td>DVD-Video authoring</td><td><span class="badge-warn">[ PARTIAL ]</span></td><td><span class="badge-pass">[ PASS ]</span></td><td>Requires <code>ffmpeg.exe</code> (the 1-click download). Each film becomes a title with a chapter every 5 minutes, English subtitles from an <code>.srt</code> beside it (or generated with the optional subtitle tool; the DVD-Video screen shows each movie's subtitle source with <em>Choose .srt...</em> and <em>No subtitles</em>), and a title menu with a still from each film and Play / Play with subtitles buttons. The navigation tables follow libdvdread's structures and were checked with libdvdnav (mpv, VLC). Played on one stand-alone player so far, an Xbox Series X: a film with menu, chapters and subtitles on a DVD+RW, and two films on a dual-layer DVD+R played across the layer change. Discs authored before 2026-11-14 did not play there</td></tr>
                 <tr><td>Generate subtitles for DVD-Video (speech recognition)</td><td><span class="badge-warn">[ PARTIAL ]</span></td><td><span class="badge-na">[ N/A ]</span></td><td>Optional 1-click download, nothing bundled: whisper.cpp 1.9.5 and its models, every file pinned by SHA-256 (<code>install-subtitle-tool</code>, or the button on the DVD-Video screen). On a PC with an NVIDIA GPU and driver 551.61 or newer it gets the CUDA build and the large-v3-turbo model (2.3 GB download); every other PC gets the processor build and the smaller base model (160 MB). AMD and Intel GPUs are not used: whisper.cpp publishes no Windows GPU build for them. Measured on one PC, on an 86-minute animated feature with English dialogue, against its human-made subtitles: on an RTX 3090, 3.3 min from movie file to .srt (26 times real time) with a word error rate of 24.9%; processor build only (16-core desktop processor, base model), 3.4 min and 34.3%. The large model on that processor ran at 1.7 times real time (178 s for 5 minutes, about 50 minutes for this film), so the better model needs a GPU. The error rate counts wording the human subtitles shorten too; an invented place name was never heard right. The subtitles are machine-generated: check them before relying on them. <code>burn-dvd --generate-subtitles</code> ("Generate subtitles" on the DVD-Video screen) makes them for movies with no .srt beside them and puts them on the disc as its subtitle track. Authored end to end on the test PC from a 5-minute excerpt: the generated lines appear as the DVD subtitle track and on the menu's "Play with subtitles" button; such a disc has not yet been burned and played in a stand-alone player. Muxing the subtitle track needs a recent FFmpeg (the 1-click download): a 2021 build crashed on it</td></tr>
                 <tr><td>Blu-ray (BD-R / BD-RE)</td><td><span class="badge-na">[ N/A ]</span></td><td><span class="badge-na">[ N/A ]</span></td><td>Not yet: Blu-ray discs are recognised (type, size, layers) and archive sets can be planned for them, and the experimental direct writer handles single-layer BD-R and BD-RE in the drive simulator, but burning one has never been tried on a real drive</td></tr>
-                <tr><td>Burn CDs with direct drive commands (experimental, off by default)</td><td><span class="badge-warn">[ PARTIAL ]</span></td><td><span class="badge-pass">[ PASS ]</span></td><td>Audio CDs Session-at-Once and data CDs Track-at-Once without the Windows writer (<code>--native</code>, or "Direct drive commands" in the app); the disc is always read back and compared. Run on real hardware on one drive so far (LG GP60NB50), on CD-R and CD-RW. Mixed-mode CDs (a Mode 1 data track, then audio) from a <code>.cue</code> file too: one CD-RW so far, where Windows read the data track's files back identical. Blank single-layer DVD-R, DVD-RW and DVD+R can also be written this way. A further session on a CD-R, CD-RW, DVD-R, DVD-RW or DVD+R left open is added the same way: on real discs on the same drive, three sessions each on a CD-RW, a CD-R and a DVD+R and four on a DVD-R, every file of every session identical (the first DVD-R try was refused with nothing written, because the drive rejects the writer's old track query on DVD; fixed before these runs); DVD-RW only in the simulator so far. On real hardware so far two DVD-Rs on the same drive (Verbatim): one closed in one pass (372 MB), one left open, after which Windows' own writer added a second session; every file of each session identical when read through Windows. Two DVD+RWs too (Verbatim, 372 MB each, every file identical): a used one written over with leave to replace its data, and a new one, formatted first by the drive. A single-layer DVD+R too (Verbatim, 198 MB, finalized by the drive, every file identical). A DVD-Video disc was written to a used DVD+RW this way too (a 60 s test card, 44 MB): every sector read back and the title decodes in full, this test card was not played in a stand-alone player (a later film disc was; see DVD-Video authoring). A dual-layer DVD+R too (Verbatim, the Ubuntu 26.04 image, 6.5 GB, with the layer break moved to where it was asked for; the drive reported it there and the disc's SHA-256 equalled the image). A two-film DVD-9 (103 and 86 minutes) went onto a dual-layer DVD+R the same way, with the layer break on the cell where the second film starts: every sector read back, the drive reported the break there, and an Xbox Series X played through the first film into the second across the layer change without a stop. Dual-layer DVD-R (layer jump recording, on drives that offer it), DVD-RW (sequential or in overwrite mode), DVD-RAM and single-layer BD-R and BD-RE have run only in the built-in drive simulator. Dual-layer DVD-R on a drive without layer jump recording, and multi-layer Blu-ray discs, still use the Windows writer</td></tr>
-                <tr><td>CD-Text / ISRC on burned audio CDs</td><td><span class="badge-warn">[ PARTIAL ]</span></td><td><span class="badge-pass">[ PASS ]</span></td><td>The Windows writer (the default) cannot write lead-in CD-Text. The experimental direct writer (<code>--native</code>, or "Direct drive commands" in the app) writes CD-Text, ISRC and catalog codes, then reads the disc back and compares it. Run on real hardware on one drive so far (LG GP60NB50): a CD-RW and a CD-R, where CD-Text, ISRC and catalog codes and the audio all read back correctly</td></tr>
+                <tr><td>Burn with direct drive commands (experimental)</td><td><span class="badge-warn">[ PARTIAL ]</span></td><td><span class="badge-pass">[ PASS ]</span></td><td>Audio CDs Session-at-Once and data/video discs without the Windows writer (<code>--native</code> on the command line, or "Direct drive commands" in the app — on by default in the app for audio CDs, falling back to the Windows writer if the drive does not offer Session-at-Once, and for dual-layer DVD-Video; off by default elsewhere); the disc is always read back and compared. Run on real hardware on one drive so far (LG GP60NB50), on CD-R and CD-RW. Mixed-mode CDs (a Mode 1 data track, then audio) from a <code>.cue</code> file too: one CD-RW so far, where Windows read the data track's files back identical. Blank single-layer DVD-R, DVD-RW and DVD+R can also be written this way. A further session on a CD-R, CD-RW, DVD-R, DVD-RW or DVD+R left open is added the same way: on real discs on the same drive, three sessions each on a CD-RW, a CD-R and a DVD+R and four on a DVD-R, every file of every session identical (the first DVD-R try was refused with nothing written, because the drive rejects the writer's old track query on DVD; fixed before these runs); DVD-RW only in the simulator so far. On real hardware so far two DVD-Rs on the same drive (Verbatim): one closed in one pass (372 MB), one left open, after which Windows' own writer added a second session; every file of each session identical when read through Windows. Two DVD+RWs too (Verbatim, 372 MB each, every file identical): a used one written over with leave to replace its data, and a new one, formatted first by the drive. A single-layer DVD+R too (Verbatim, 198 MB, finalized by the drive, every file identical). A DVD-Video disc was written to a used DVD+RW this way too (a 60 s test card, 44 MB): every sector read back and the title decodes in full, this test card was not played in a stand-alone player (a later film disc was; see DVD-Video authoring). A dual-layer DVD+R too (Verbatim, the Ubuntu 26.04 image, 6.5 GB, with the layer break moved to where it was asked for; the drive reported it there and the disc's SHA-256 equalled the image). A two-film DVD-9 (103 and 86 minutes) went onto a dual-layer DVD+R the same way, with the layer break on the cell where the second film starts: every sector read back, the drive reported the break there, and an Xbox Series X played through the first film into the second across the layer change without a stop. Dual-layer DVD-R (layer jump recording, on drives that offer it), DVD-RW (sequential or in overwrite mode), DVD-RAM, single-layer BD-R and BD-RE, leaving an audio CD open for a second data session (CD-Extra), and the optional Audio CD PAR2 recovery session (<code>--recovery-session</code> / <code>rip-audio --repair</code>) have run only in the built-in drive simulator, not on a real disc. Dual-layer DVD-R on a drive without layer jump recording, and multi-layer Blu-ray discs, still use the Windows writer</td></tr>
+                <tr><td>CD-Text / ISRC on burned audio CDs</td><td><span class="badge-warn">[ PARTIAL ]</span></td><td><span class="badge-pass">[ PASS ]</span></td><td>The Windows writer cannot write lead-in CD-Text. The direct writer (on by default on the Audio CD screen when the drive offers Session-at-Once, or <code>--native</code> on <code>burn-audio</code>) writes CD-Text, ISRC and catalog codes, then reads the disc back and compares it. Run on real hardware on one drive so far (LG GP60NB50): a CD-RW and a CD-R, where CD-Text, ISRC and catalog codes and the audio all read back correctly; not yet checked in a stand-alone CD player</td></tr>
                 <tr><td>DVD+R book type (bitsetting)</td><td><span class="badge-na">[ N/A ]</span></td><td><span class="badge-pass">[ PASS ]</span></td><td>Needs drive-vendor-specific commands; reports "not supported" instead of pretending</td></tr>
                 <tr><td>Test write (simulation)</td><td><span class="badge-warn">[ PARTIAL ]</span></td><td><span class="badge-pass">[ PASS ]</span></td><td>With the experimental direct writer (<code>--native --test-write</code>): the whole burn with the laser off. Run on one drive (LG GP60NB50) on CD-R and CD-RW. DVD-R has passed a test write on the same drive (a Verbatim DVD-R, still blank after a reload); DVD-RW only in the drive simulator so far; DVD+R discs have none. The Windows writer has no test write</td></tr>
               </tbody>
@@ -190,7 +190,7 @@ PS C:\&gt; ignisdisc-cli.exe burn-audio --drive H: --tracks album\album.cue --da
       <!-- Left Column: Command Syntax Table -->
       <div class="cell">
         <p class="spec-lead">
-          <code>ignisdisc-cli.exe</code> has 17 commands. Every command accepts <code>--json</code> for machine-readable output and exits with code <code>0</code> on success.
+          <code>ignisdisc-cli.exe</code> has 37 commands. Every command accepts <code>--json</code> for machine-readable output and exits with code <code>0</code> on success.
         </p>
         <div class="table-scroll">
           <table class="spec-table">
@@ -214,24 +214,64 @@ PS C:\&gt; ignisdisc-cli.exe burn-audio --drive H: --tracks album\album.cue --da
                 <td><code>--drive &lt;id&gt;</code> — Drive capability and media ID report as Markdown</td>
               </tr>
               <tr>
+                <td><code>eject</code></td>
+                <td><code>--drive &lt;id&gt;</code> — Open the drive tray (spring trays must be pushed shut by hand)</td>
+              </tr>
+              <tr>
+                <td><code>load</code></td>
+                <td><code>--drive &lt;id&gt;</code> — Close a motorised tray and wait until the drive is ready</td>
+              </tr>
+              <tr>
                 <td><code>build-iso</code></td>
                 <td><code>--input &lt;dir&gt; --output &lt;iso&gt; [--label &lt;vol&gt;] [--udf] [--joliet] [--udf-rev &lt;1.02|1.50|2.00|2.01|2.50|2.60&gt;] [--boot-bios &lt;img&gt;] [--boot-uefi &lt;img&gt;] [--fixed-time &lt;t&gt;] [--sha256sums] [--blake3sums]</code></td>
               </tr>
               <tr>
                 <td><code>burn-iso</code></td>
-                <td><code>--drive &lt;id&gt; --iso &lt;file&gt; [--speed &lt;X|max&gt;] [--no-verify | --strict-verify] [--no-close] [--overwrite] [--native [--test-write | --test-first] [--log-dir &lt;dir&gt;]]</code></td>
+                <td><code>--drive &lt;id&gt; --iso &lt;file&gt; [--speed &lt;X|max&gt;] [--no-verify | --strict-verify] [--no-close] [--no-burnfree] [--overwrite] [--post-action &lt;action&gt;] [--native [--test-write | --test-first] [--layer-break &lt;sectors&gt;] [--log-dir &lt;dir&gt;]]</code></td>
               </tr>
               <tr>
                 <td><code>burn-data</code></td>
-                <td><code>--drive &lt;id&gt; --input &lt;dir&gt; [--label &lt;vol&gt;] [--speed &lt;X|max&gt;] [--udf-rev &lt;rev&gt;] [--no-verify | --strict-verify] [--no-close] [--overwrite] [--sha256sums] [--blake3sums] [--fixed-time &lt;t&gt;] [--native [--test-write | --test-first] [--log-dir &lt;dir&gt;]]</code></td>
+                <td><code>--drive &lt;id&gt; --input &lt;dir&gt; [--label &lt;vol&gt;] [--speed &lt;X|max&gt;] [--udf-rev &lt;rev&gt;] [--no-verify | --strict-verify] [--no-close] [--append] [--no-burnfree] [--overwrite] [--post-action &lt;action&gt;] [--sha256sums] [--blake3sums] [--fixed-time &lt;t&gt;] [--native [--test-write | --test-first] [--layer-break &lt;sectors&gt;] [--log-dir &lt;dir&gt;]]</code></td>
               </tr>
               <tr>
                 <td><code>burn-audio</code></td>
-                <td><code>--drive &lt;id&gt; --tracks &lt;files|cue|m3u&gt; [--title &lt;str&gt;] [--artist &lt;str&gt;] [--speed &lt;X|max&gt;] [--dao] [--allow-damaged] [--native [--test-write | --test-first] [--log-dir &lt;dir&gt;]]</code></td>
+                <td><code>(--drive &lt;id&gt; | --plan-only) (--tracks &lt;files|cue|m3u&gt; | --tracks-file &lt;json&gt;) [--title &lt;str&gt;] [--artist &lt;str&gt;] [--songwriter &lt;str&gt;] [--upc &lt;13digits&gt;] [--speed &lt;X|max&gt;] [--dao] [--pregap &lt;frames&gt;] [--normalize] [--rms-level] [--loudness &lt;track|album|off&gt;] [--crossfade &lt;sec&gt;] [--no-cd-text] [--no-burnfree] [--post-action &lt;action&gt;] [--allow-damaged] [--native [--test-write | --test-first] [--recovery-session] [--write-offset &lt;n|auto&gt;] [--log-dir &lt;dir&gt;]]</code></td>
               </tr>
               <tr>
                 <td><code>burn-dvd</code></td>
-                <td><code>--drive &lt;id&gt; --video-ts &lt;dir|file&gt; [--label &lt;vol&gt;] [--speed &lt;X|max&gt;] [--no-verify] [--overwrite] [--generate-subtitles [--subtitle-language &lt;code|auto&gt;]] [--native [--test-write | --test-first] [--log-dir &lt;dir&gt;]]</code></td>
+                <td><code>--drive &lt;id&gt; --video-ts &lt;dir|file&gt; [--label &lt;vol&gt;] [--menu-title &lt;str&gt;] [--no-menu] [--standard &lt;ntsc|pal&gt;] [--aspect &lt;16:9|4:3&gt;] [--chapters &lt;sec&gt;] [--dual-layer] [--generate-subtitles [--subtitle-language &lt;code|auto&gt;]] [--speed &lt;X|max&gt;] [--no-verify] [--no-burnfree] [--overwrite] [--post-action &lt;action&gt;] [--native [--test-write | --test-first] [--log-dir &lt;dir&gt;]]</code></td>
+              </tr>
+              <tr>
+                <td><code>burn-queue</code></td>
+                <td><code>--drive &lt;id&gt; --images &lt;img1,img2,...&gt; [--speed &lt;X|max&gt;] [--no-verify | --strict-verify] [--no-close] [--no-burnfree] [--overwrite] [--continue-on-error] [--wait-minutes &lt;n&gt;] [--post-action &lt;action&gt;]</code></td>
+              </tr>
+              <tr>
+                <td><code>author-dvd</code></td>
+                <td><code>--input &lt;dir|movies&gt; --output &lt;dir|iso&gt; [--label &lt;vol&gt;] [--menu-title &lt;str&gt;] [--no-menu] [--standard &lt;ntsc|pal&gt;] [--aspect &lt;16:9|4:3&gt;] [--chapters &lt;sec&gt;] [--dual-layer] [--generate-subtitles [--subtitle-language &lt;code|auto&gt;]] [--overwrite]</code></td>
+              </tr>
+              <tr>
+                <td><code>image-info</code></td>
+                <td><code>--image &lt;file&gt;</code> — Inspect an ISO, CUE/BIN, NRG, MDF/MDS, CCD/IMG or CDI disc image</td>
+              </tr>
+              <tr>
+                <td><code>convert-image</code></td>
+                <td><code>--input &lt;file&gt; --output &lt;file&gt; [--cue &lt;file.cue&gt;] [--overwrite]</code> — Convert NRG/MDF/MDS/CCD/IMG/CDI or BIN+CUE to ISO, or ISO/legacy to BIN+CUE</td>
+              </tr>
+              <tr>
+                <td><code>jewel-cover</code></td>
+                <td><code>(--tracks &lt;files&gt; | --tracks-file &lt;json&gt;) --output &lt;file.html&gt; [--title &lt;str&gt;] [--artist &lt;str&gt;] [--songwriter &lt;str&gt;] [--upc &lt;13digits&gt;] [--dao] [--pregap &lt;frames&gt;] [--overwrite]</code></td>
+              </tr>
+              <tr>
+                <td><code>audio-plan</code></td>
+                <td><code>(--tracks &lt;files|cue|m3u&gt; | --tracks-file &lt;json&gt;) [--title &lt;str&gt;] [--artist &lt;str&gt;] [--dao] [--pregap &lt;frames&gt;] [--normalize] [--rms-level] [--loudness &lt;track|album|off&gt;] [--crossfade &lt;sec&gt;] [--media &lt;74|80&gt;]</code></td>
+              </tr>
+              <tr>
+                <td><code>install-ffmpeg</code></td>
+                <td><code>[--dir &lt;dir&gt;] [--plan-only] [--overwrite]</code> — Optional LGPL Windows FFmpeg download</td>
+              </tr>
+              <tr>
+                <td><code>install-par2</code></td>
+                <td><code>[--dir &lt;dir&gt;] [--plan-only] [--overwrite]</code> — Optional par2cmdline-turbo download, pinned by SHA-256</td>
               </tr>
               <tr>
                 <td><code>install-subtitle-tool</code></td>
@@ -239,7 +279,7 @@ PS C:\&gt; ignisdisc-cli.exe burn-audio --drive H: --tracks album\album.cue --da
               </tr>
               <tr>
                 <td><code>generate-subtitles</code></td>
-                <td><code>--input &lt;movie&gt; [--output &lt;file.srt&gt;] [--language &lt;code|auto&gt;]</code> — Machine-generated subtitles by speech recognition</td>
+                <td><code>--input &lt;movie&gt; [--output &lt;file.srt&gt;] [--language &lt;code|auto&gt;] [--ffmpeg &lt;path&gt;]</code> — Machine-generated subtitles by speech recognition</td>
               </tr>
               <tr>
                 <td><code>rip</code></td>
@@ -247,7 +287,15 @@ PS C:\&gt; ignisdisc-cli.exe burn-audio --drive H: --tracks album\album.cue --da
               </tr>
               <tr>
                 <td><code>rip-audio</code></td>
-                <td><code>--drive &lt;id&gt; --output &lt;dir&gt; [--format wav|flac|mp3|opus|aac] [--bitrate &lt;kbps&gt;] [--tracks 1,3,5] [--lookup] [--no-secure] [--verify-accuraterip] [--read-offset &lt;n&gt;] [--cover &lt;img&gt;] [--keep-wav] [--continue-on-error]</code></td>
+                <td><code>--drive &lt;id&gt; --output &lt;dir&gt; [--format wav|flac|mp3|opus|aac] [--bitrate &lt;kbps&gt;] [--tracks 1,3,5] [--lookup] [--no-secure] [--verify-accuraterip] [--read-offset &lt;n&gt;] [--repair] [--cover &lt;img&gt;] [--keep-wav] [--continue-on-error]</code></td>
+              </tr>
+              <tr>
+                <td><code>copy-disc</code></td>
+                <td><code>--source &lt;id&gt; [--target &lt;id&gt;] [--copies &lt;n&gt;] [--speed &lt;X|max&gt;] [--raw] [--native [--log-dir &lt;dir&gt;]] [--allow-suspect] [--keep-image &lt;dir&gt;] [--wait-minutes &lt;n&gt;]</code></td>
+              </tr>
+              <tr>
+                <td><code>check-disc</code></td>
+                <td><code>--drive &lt;id&gt; [--compare &lt;discNN.HEALTH.json&gt;]</code> — Read a CD once with C2 error pointers, or compare against a health certificate</td>
               </tr>
               <tr>
                 <td><code>detect-offset</code></td>
@@ -255,7 +303,11 @@ PS C:\&gt; ignisdisc-cli.exe burn-audio --drive H: --tracks album\album.cue --da
               </tr>
               <tr>
                 <td><code>archive-stage</code></td>
-                <td><code>--input &lt;dir&gt; (--staging &lt;dir&gt; | --plan-only) [--media cd|dvd|dvd-dl|bd|bd-dl|bdxl|bdxl-ql] [--redundancy &lt;min %&gt;] [--no-fill]</code></td>
+                <td><code>--input &lt;dir&gt; (--staging &lt;dir&gt; | --plan-only) [--media cd|dvd|dvd-dl|bd|bd-dl|bdxl|bdxl-ql] [--redundancy &lt;min %&gt;] [--no-fill] [--keep-folders | --order size|path]</code></td>
+              </tr>
+              <tr>
+                <td><code>archive-burn</code></td>
+                <td><code>--drive &lt;id&gt; --disc &lt;dir&gt; [--speed &lt;X|max&gt;] [--no-verify | --strict-verify] [--no-burnfree] [--overwrite] [--post-action &lt;action&gt;] [--native [--test-write | --test-first] [--log-dir &lt;dir&gt;]] [--health-certificate]</code></td>
               </tr>
               <tr>
                 <td><code>archive-verify</code></td>
@@ -266,8 +318,12 @@ PS C:\&gt; ignisdisc-cli.exe burn-audio --drive H: --tracks album\album.cue --da
                 <td><code>(--drive &lt;id&gt; | --image &lt;iso&gt;) --out &lt;dir&gt; [--retries N] [--keep-image]</code> — Copy the files off a damaged archive disc and rebuild them with par2</td>
               </tr>
               <tr>
+                <td><code>repair-par2</code></td>
+                <td><code>--path &lt;dir&gt; [--par2 &lt;path&gt;] [--delete-backups]</code> — Verify and repair a folder in place using its PAR2 recovery set</td>
+              </tr>
+              <tr>
                 <td><code>verify</code></td>
-                <td><code>--drive &lt;id&gt; --iso &lt;file&gt;</code> — Compare a disc with an image, sector by sector</td>
+                <td><code>--drive &lt;id&gt; (--iso &lt;file&gt; [--strict-verify] | --cue &lt;file.cue&gt; [--no-cd-text] [--write-offset &lt;n|auto&gt;])</code> — Compare a disc with an image or CUE sheet</td>
               </tr>
               <tr>
                 <td><code>erase</code></td>
@@ -276,6 +332,22 @@ PS C:\&gt; ignisdisc-cli.exe burn-audio --drive H: --tracks album\album.cue --da
               <tr>
                 <td><code>scan</code></td>
                 <td><code>--drive &lt;id&gt; [--block-size &lt;sectors&gt;] [--csv &lt;file&gt;]</code> — Surface scan with read-speed curve</td>
+              </tr>
+              <tr>
+                <td><code>book-type</code></td>
+                <td><code>--drive &lt;id&gt; [--set dvd-rom|dvd+r|dvd+rw|dvd+r-dl|dvd-r|dvd-rw|dvd-ram]</code> — Query or set DVD+R / DVD+RW / DVD+R DL book-type bitsetting</td>
+              </tr>
+              <tr>
+                <td><code>tools</code></td>
+                <td><code>[--ffmpeg &lt;path&gt;] [--par2 &lt;path&gt;] [--json]</code> — Report availability and versions of optional tools</td>
+              </tr>
+              <tr>
+                <td><code>settings</code></td>
+                <td><code>get [key] | set &lt;key&gt; &lt;value&gt; | reset [--settings-file &lt;path&gt;]</code> — Inspect, update or reset saved settings</td>
+              </tr>
+              <tr>
+                <td><code>check-update</code></td>
+                <td><code>[--json]</code> — Check GitHub Releases for a newer IgnisDisc version</td>
               </tr>
             </tbody>
           </table>
@@ -341,7 +413,7 @@ PS C:\&gt; ignisdisc-cli.exe burn-audio --drive H: --tracks album\album.cue --da
       <div class="cell">
         <h2 class="spec-module-title">Technical Overview &amp; Subsystem Architecture</h2>
         <p class="spec-lead">
-          IgnisDisc Optical Studio is a .NET 10 WPF desktop application (<code>IgnisDisc.exe</code>) and a command-line tool (<code>ignisdisc-cli.exe</code>). Its own image builder writes ISO 9660 + Joliet + UDF bridge volumes (UDF 1.02 by default, 1.50 to 2.60 on request), El Torito BIOS/UEFI boot images, and optional <code>SHA256SUMS</code> / <code>BLAKE3SUMS</code> hash lists; legacy disc images (<code>.nrg</code>, <code>.mdf</code>/<code>.mds</code>, <code>.ccd</code>/<code>.img</code>) are read and converted. Discs are burned through Windows IMAPIv2 by default. CDs can instead be written with IgnisDisc's own SCSI MMC commands (experimental, off by default): Session-at-Once audio with CD-Text, and Track-at-Once data. Reading uses Win32 SCSI pass-through: 294-byte C2 error pointers, AccurateRip checksums and read-offset detection for audio, and after a burn a sector-by-sector comparison in which the drive is told to read the disc rather than its buffer. Multi-disc archives carry per-disc SHA-256 manifests and PAR2 recovery volumes. In-memory virtual drives stand in for hardware in the test suite.
+          IgnisDisc Optical Studio is a .NET 10 WPF desktop application (<code>IgnisDisc.exe</code>) and a command-line tool (<code>ignisdisc-cli.exe</code>). Its own image builder writes ISO 9660 + Joliet + UDF bridge volumes (UDF 1.02 by default, 1.50 to 2.60 on request), El Torito BIOS/UEFI boot images, and optional <code>SHA256SUMS</code> / <code>BLAKE3SUMS</code> hash lists; legacy disc images (<code>.nrg</code>, <code>.mdf</code>/<code>.mds</code>, <code>.ccd</code>/<code>.img</code>, and <code>.cdi</code>) are read and converted. Data discs and single-layer DVDs burn through Windows IMAPIv2 by default, while in the desktop app audio CDs (on drives that report Session-at-Once) and dual-layer DVD-Video discs use IgnisDisc's own SCSI MMC commands by default (<code>--native</code> on the command line). Reading uses Win32 SCSI pass-through: 294-byte C2 error pointers, AccurateRip checksums and read-offset detection for audio, and after a burn a sector-by-sector comparison in which the drive is told to read the disc rather than its buffer. Multi-disc archives carry per-disc SHA-256 manifests and PAR2 recovery volumes split across inner, middle and outer zones. In-memory virtual drives stand in for hardware in the test suite.
         </p>
       </div>
       <div class="grid-1px grid-4col">
@@ -367,7 +439,7 @@ PS C:\&gt; ignisdisc-cli.exe burn-audio --drive H: --tracks album\album.cue --da
         <h2 class="spec-module-title">CdBurner.Cli &amp; App</h2>
         <ul class="spec-module-list">
           <li><code>IgnisDisc.exe</code>: WPF desktop studio with 8 dedicated workspaces and OS-synced Dark/Light theme (<code>ThemeManager</code>).</li>
-          <li><code>ignisdisc-cli.exe</code>: 17 commands with <code>--json</code> output; it refuses to replace the contents of a rewritable disc unless <code>--overwrite</code> is given.</li>
+          <li><code>ignisdisc-cli.exe</code>: 37 commands with <code>--json</code> output; it refuses to replace the contents of a rewritable disc unless <code>--overwrite</code> is given.</li>
           <li>Per-user installer (<code>net48</code> bootstrapper, no administrator rights) with a small separate <code>Uninstall-IgnisDisc.exe</code>.</li>
         </ul>
       </div>
@@ -378,7 +450,7 @@ PS C:\&gt; ignisdisc-cli.exe burn-audio --drive H: --tracks album\album.cue --da
           <li><strong>Audio CDs:</strong> Session-at-Once with <code>SEND CUE SHEET</code> and <code>WRITE (10)</code>: CD-Text in the lead-in (R-W sub-channel), ISRC and catalog codes, pre-emphasis and copy bits, <code>INDEX 00</code> gaps, and audio in front of track 1.</li>
           <li><strong>Data discs:</strong> CD Track-at-Once; DVD-R and DVD-RW Disc-At-Once, or in packets when left open; DVD+R written in sequence and finalized; DVD+RW written over from sector 0. A disc left open gets its next session the same way, with the earlier files kept. Speed is taken from the drive's own list.</li>
           <li><strong>Checks:</strong> every direct burn is read back and compared (track list, CD-Text, codes, every audio sample or data sector). A laser-off test write is available, and every drive command is logged.</li>
-          <li><strong>Status:</strong> off by default; IMAPIv2 stays the default writer. Run on real hardware on one drive (LG GP60NB50): audio and data CDs on CD-R and CD-RW; data on DVD-R, DVD+R and DVD+RW; a dual-layer DVD+R with the layer break where it was asked for (6.5 GB, SHA-256 equal to the image); a two-film DVD-9 on a dual-layer DVD+R with the break on the second film's first cell, played on an Xbox Series X across the layer change; and three or four sessions added one after another on a CD-R, a CD-RW, a DVD-R and a DVD+R, every file read back identical. DVD-RW, DVD-RAM, dual-layer DVD-R and Blu-ray have run only in the built-in drive simulator so far.</li>
+          <li><strong>Status:</strong> on by default in the app for audio CDs (when the drive offers Session-at-Once) and dual-layer DVD-Video; off by default elsewhere (<code>--native</code> on the command line), with IMAPIv2 as the default elsewhere and the fallback. Run on real hardware on one drive (LG GP60NB50): audio and data CDs on CD-R and CD-RW; data on DVD-R, DVD+R and DVD+RW; a dual-layer DVD+R with the layer break where it was asked for (6.5 GB, SHA-256 equal to the image); a two-film DVD-9 on a dual-layer DVD+R with the break on the second film's first cell, played on an Xbox Series X across the layer change; and three or four sessions added one after another on a CD-R, a CD-RW, a DVD-R and a DVD+R, every file read back identical. DVD-RW, DVD-RAM, dual-layer DVD-R, Blu-ray, CD-Extra / Audio CD PAR2 recovery sessions, and CD picture tracks have run only in the built-in drive simulator so far.</li>
         </ul>
       </div>
       </div>
@@ -411,7 +483,7 @@ PS C:\&gt; ignisdisc-cli.exe burn-audio --drive H: --tracks album\album.cue --da
     <!-- Footer Strip -->
     <footer class="datasheet-footer">
       <div>
-        <strong>IgnisDisc v1.14</strong> · Published by <a href="https://tetherworks.dev">tetherworks</a> · GPL-3.0-or-later License · Zero Telemetry, Zero Cookies, Zero Third-Party Requests
+        <strong>IgnisDisc v1.15</strong> · Published by <a href="https://tetherworks.dev">tetherworks</a> · GPL-3.0-or-later License · Zero Telemetry, Zero Cookies, Zero Third-Party Requests
       </div>
       <div class="footer-links">
         <a href="#download">DOWNLOAD</a>

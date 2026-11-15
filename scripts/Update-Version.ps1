@@ -1,4 +1,4 @@
-<#
+﻿<#
 .SYNOPSIS
     Atomic, repo-wide version updater for IgnisDisc Optical Studio.
 
@@ -194,6 +194,7 @@ if (Test-Path $PublicHtmlPath) {
     $newHtml = [regex]::Replace($newHtml, '(id="btnDownloadPortable"[\s\S]*?<span class="dl-sub">)v[^\s•·]+', "`${1}v$NewVersion")
     $newHtml = [regex]::Replace($newHtml, '<strong>IgnisDisc( Optical Studio)? v[^<]+</strong>', "<strong>IgnisDisc v$NewVersion</strong>")
     $newHtml = [regex]::Replace($newHtml, 'IgnisDisc Optical Studio \(v[^)]+\)', "IgnisDisc Optical Studio (v$NewVersion)")
+    $newHtml = [regex]::Replace($newHtml, '"engine":\s*"IgnisDisc v[^ (]+', "`"engine`": `"IgnisDisc v$NewVersion")
     if ($newHtml -ne $html) {
         Set-FileText $PublicHtmlPath $newHtml "web/public/index.html (version badges & URLs)"
     }

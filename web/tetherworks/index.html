@@ -51,7 +51,7 @@
               <tr>
                 <td><a href="https://ignisdisc.tetherworks.dev"><strong>IgnisDisc</strong></a></td>
                 <td>Windows 10/11 x64 (.NET 10 / IMAPIv2 / SCSI)</td>
-                <td><code id="ignisRev">v1.14</code></td>
+                <td><code id="ignisRev">v1.15</code></td>
               </tr>
               <tr>
                 <td><a href="https://kilo.tetherworks.dev" target="_blank" rel="noopener"><strong>KiloOS</strong></a></td>
@@ -69,10 +69,10 @@
       <!-- Project 1: IgnisDisc -->
       <article class="cell">
         <h2 class="project-title">
-          <a href="https://ignisdisc.tetherworks.dev">IgnisDisc Optical Studio (v1.14)</a>
+          <a href="https://ignisdisc.tetherworks.dev">IgnisDisc Optical Studio (v1.15)</a>
         </h2>
         <p class="spec-lead">
-          Free, open-source CD and DVD burner, audio CD ripper, and multi-disc backup tool for Windows 10 and 11. Burn files, folders, and disc images, make music CDs, rip audio CDs to lossless WAV or FLAC with automatic track names, or split large folders across several discs — from the desktop app or the command line.
+          Free, open-source CD and DVD burner, audio CD ripper, and multi-disc backup tool for Windows 10 and 11. Burn files, folders, and disc images, author DVD-Video discs, make music CDs, rip audio CDs to WAV, FLAC, MP3, Opus or AAC with automatic track names, or split large folders across several discs — from the desktop app or the command line.
         </p>
 
         <div class="table-scroll">
@@ -86,19 +86,19 @@
             <tbody>
               <tr>
                 <td><strong>Data &amp; Boot Mastering</strong></td>
-                <td>ISO 9660 + Joliet UCS-2BE + UDF bridge (UDF 1.02 to 2.60), hybrid BIOS/UEFI El Torito boot catalogs, multi-session append, optional <code>SHA256SUMS</code> / <code>BLAKE3SUMS</code> hash lists, and streaming <code>.nrg</code> / <code>.mdf</code> / <code>.ccd</code> conversion.</td>
+                <td>ISO 9660 + Joliet UCS-2BE + UDF bridge (UDF 1.02 to 2.60), hybrid BIOS/UEFI El Torito boot catalogs, multi-session append, optional <code>SHA256SUMS</code> / <code>BLAKE3SUMS</code> hash lists, and streaming <code>.nrg</code> / <code>.mdf</code> / <code>.ccd</code> / <code>.cdi</code> conversion.</td>
               </tr>
               <tr>
                 <td><strong>Audio CD Rip &amp; Burn</strong></td>
-                <td>Secure SCSI extraction with 294-byte C2 error pointers, AccurateRip verification, drive offset detection, MusicBrainz lookup, and Red Book DAO/TAO burning (WAV, FLAC, MP3/M4A, CUE). Optional direct drive commands (experimental) write CD-Text and read the disc back.</td>
+                <td>Secure SCSI extraction with 294-byte C2 error pointers, AccurateRip verification, drive offset detection, MusicBrainz lookup, and Red Book DAO/TAO burning (WAV, FLAC, MP3, Opus, Ogg, M4A, WMA, CUE). Direct drive commands (experimental; default in the app for audio CDs) write CD-Text and read the disc back.</td>
               </tr>
               <tr>
                 <td><strong>Multi-Disc Cold Archive</strong></td>
-                <td>Folder spanning across discs with per-disc SHA-256 manifests, optional PAR2 recovery data that fills each disc, and a <code>recover</code> command for damaged discs.</td>
+                <td>Folder spanning across discs with per-disc SHA-256 manifests, optional PAR2 recovery data split across three disc zones, and a <code>recover</code> command for damaged discs.</td>
               </tr>
               <tr>
                 <td><strong>Hardware Verification</strong></td>
-                <td>Tested on physical CD-R, CD-RW, DVD-R, and DVD+RW media on one drive model, plus over 1,200 automated tests.</td>
+                <td>Tested on physical CD-R, CD-RW, DVD-R, DVD+R, DVD+RW, and dual-layer DVD+R media on one drive model, plus an in-memory virtual drive simulator.</td>
               </tr>
             </tbody>
           </table>
