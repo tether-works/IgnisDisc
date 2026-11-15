@@ -64,6 +64,21 @@ public record BurnQueueItem(
     /// Result metrics from the underlying burn engine upon completion.
     /// </summary>
     public BurnOperationResult? BurnResult { get; set; }
+
+    /// <summary>
+    /// Disables buffer-underrun protection (BURN-Free) for this queue item.
+    /// </summary>
+    public bool DisableBufferUnderrunFree { get; init; }
+
+    /// <summary>
+    /// Forces every verification sector read directly from the disc instead of drive cache.
+    /// </summary>
+    public bool StrictVerify { get; init; }
+
+    /// <summary>
+    /// Allows overwriting existing data on overwritable media when explicitly requested by the caller.
+    /// </summary>
+    public bool OverwriteExistingData { get; init; }
 }
 
 /// <summary>
@@ -242,12 +257,13 @@ public class BurnQueueService
                     VolumeLabel = Path.GetFileNameWithoutExtension(item.ImagePath),
                     CloseDisc = item.CloseDisc,
                     VerifyAfterBurn = item.VerifyAfterBurn,
+                    StrictVerify = item.StrictVerify,
+                    DisableBufferUnderrunFree = item.DisableBufferUnderrunFree,
                     Speed = item.WriteSpeedMultiplier.HasValue
                         ? WriteSpeedDescriptor.FromMultiplier(item.WriteSpeedMultiplier.Value, recorder.QueryMediaStatus().MediaType)
                         : null,
-                    // A queue runs unattended: never silently replace what is on a rewritable disc.
-                    // DataBurnService fails the item with a clear message instead.
-                    OverwriteExistingData = false
+                    // A queue runs unattended: never silently replace what is on a rewritable disc unless explicitly allowed.
+                    OverwriteExistingData = item.OverwriteExistingData
                 };
 
                 BurnOperationResult burnResult;

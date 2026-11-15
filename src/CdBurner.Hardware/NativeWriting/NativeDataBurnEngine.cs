@@ -92,7 +92,10 @@ public sealed class NativeDataBurnEngine : IBurnEngineBackend
             : null;
         var request = new NativeDataWriteRequest(imageStream, start, bytes, TestWrite: options.Simulate, options.CloseDisc, speed,
             OverwriteExistingData: options.OverwriteExistingData, LayerBreakSectors: options.LayerBreakSectors,
-            SessionStartLba: appending ? status.NextWritableLba : null);
+            SessionStartLba: appending ? status.NextWritableLba : null)
+        {
+            DisableBufferUnderrunFree = options.DisableBufferUnderrunFree
+        };
 
         var result = await Task.Run(() => Run(recorder, request, progress, cancellationToken), CancellationToken.None).ConfigureAwait(false);
         if (result is { UnsupportedDisc: true, StoppedBeforeWriting: true })

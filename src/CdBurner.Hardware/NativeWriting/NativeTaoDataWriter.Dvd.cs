@@ -206,11 +206,12 @@ public sealed partial class NativeTaoDataWriter
         {
             var current = ReadWriteParameters() ?? throw Stop("The drive did not return its write parameters (mode page 0x05).");
             byte trackMode = track.TrackMode != 0 ? track.TrackMode : WriteParametersPage.TrackModeDvd;
+            bool useBufe = bufferUnderrunFree && !request.DisableBufferUnderrunFree;
             var wanted = mode switch
             {
-                DvdWriteMode.DiscAtOnce => current.ForDvdDiscAtOnce(request.TestWrite, bufferUnderrunFree),
-                DvdWriteMode.LayerJump => current.ForDvdLayerJump(request.TestWrite, bufferUnderrunFree, trackMode),
-                _ => current.ForDvdIncremental(request.TestWrite, bufferUnderrunFree, request.CloseDisc, trackMode)
+                DvdWriteMode.DiscAtOnce => current.ForDvdDiscAtOnce(request.TestWrite, useBufe),
+                DvdWriteMode.LayerJump => current.ForDvdLayerJump(request.TestWrite, useBufe, trackMode),
+                _ => current.ForDvdIncremental(request.TestWrite, useBufe, request.CloseDisc, trackMode)
             };
             if (!SelectWriteParameters(wanted))
             {

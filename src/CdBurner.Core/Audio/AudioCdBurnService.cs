@@ -530,7 +530,8 @@ public class AudioCdBurnService
                 KeepIndexMarks = options.KeepIndexMarks,
                 WriteOffsetSamples = options.WriteOffsetSamples,
                 LeaveSessionOpen = options.LeaveSessionOpen || leaveOpenForRecovery,
-                IncludeRecoverySession = options.IncludeRecoverySession
+                IncludeRecoverySession = options.IncludeRecoverySession,
+                DisableBufferUnderrunFree = options.DisableBufferUnderrunFree
             };
 
             // 6. Execute burn through backend (or, for a check, read the disc back against the prepared tracks)
@@ -596,7 +597,8 @@ public class AudioCdBurnService
                 CloseDisc = true,
                 EjectWhenDone = options.EjectWhenDone,
                 VerifyAfterBurn = false,
-                VolumeLabel = AudioRecoveryManifest.VolumeLabel
+                VolumeLabel = AudioRecoveryManifest.VolumeLabel,
+                DisableBufferUnderrunFree = options.DisableBufferUnderrunFree
             };
 
             var session2Result = await _recoveryDataEngine!.BurnDataStreamAsync(

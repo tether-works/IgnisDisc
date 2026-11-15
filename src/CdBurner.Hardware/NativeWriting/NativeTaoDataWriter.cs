@@ -34,6 +34,9 @@ public sealed record NativeDataWriteRequest(
 {
     /// <summary>True when the image is a new session for a disc that already holds one.</summary>
     public bool AppendsSession => SessionStartLba is > 0;
+
+    /// <summary>True to disable buffer-underrun protection (BUFE) in Mode Page 0x05.</summary>
+    public bool DisableBufferUnderrunFree { get; init; }
 }
 
 /// <summary>Outcome of a native Track-at-Once data write.</summary>
@@ -269,7 +272,8 @@ public sealed partial class NativeTaoDataWriter
 
         // 3. Write parameters, then read them back.
         var current = ReadWriteParameters() ?? throw Stop("The drive did not return its write parameters (mode page 0x05).");
-        var wanted = current.ForTrackAtOnceData(request.TestWrite, tao.BufferUnderrunFree, request.CloseDisc);
+        bool useBufe = tao.BufferUnderrunFree && !request.DisableBufferUnderrunFree;
+        var wanted = current.ForTrackAtOnceData(request.TestWrite, useBufe, request.CloseDisc);
         if (!SelectWriteParameters(wanted))
         {
             throw Stop("The drive rejected the Track-at-Once data write parameters.");

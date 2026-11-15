@@ -365,6 +365,11 @@ public class DataBurnOptions
     /// Null lets the writer choose. Windows' writer cannot set a layer break and ignores this.
     /// </summary>
     public int? LayerBreakSectors { get; init; }
+
+    /// <summary>
+    /// Disables buffer-underrun protection (BURN-Free) for this write when true. Off by default.
+    /// </summary>
+    public bool DisableBufferUnderrunFree { get; init; }
 }
 
 /// <summary>
@@ -413,6 +418,11 @@ public class AudioBurnOptions
     /// can be appended after burning (Enhanced CD / CD-Extra).
     /// </summary>
     public bool LeaveSessionOpen { get; init; }
+
+    /// <summary>
+    /// Disables buffer-underrun protection (BURN-Free) for this audio burn when true. Off by default.
+    /// </summary>
+    public bool DisableBufferUnderrunFree { get; init; }
 
     /// <summary>
     /// Direct drive-command writer only: append a second Mode 1 ISO 9660/Joliet session containing PAR2 recovery

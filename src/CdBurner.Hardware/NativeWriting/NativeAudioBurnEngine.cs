@@ -319,7 +319,8 @@ public sealed class NativeAudioBurnEngine : IBurnEngineBackend, IAudioDiscVerifi
             TestWrite: options.Simulate,
             WriteSpeedKiloBytesPerSecond: speed)
         {
-            LeaveSessionOpen = options.LeaveSessionOpen
+            LeaveSessionOpen = options.LeaveSessionOpen,
+            DisableBufferUnderrunFree = options.DisableBufferUnderrunFree
         };
     }
 

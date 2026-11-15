@@ -107,7 +107,7 @@ public class Imapi2BurnEngine : IBurnEngineBackend, ISecureAudioReader
             // Buffer underrun free (BURN-Free)
             try
             {
-                formatData.put_BufferUnderrunFreeDisabled(false);
+                formatData.put_BufferUnderrunFreeDisabled(options.DisableBufferUnderrunFree);
             }
             catch
             {
@@ -430,7 +430,7 @@ public class Imapi2BurnEngine : IBurnEngineBackend, ISecureAudioReader
                         rawCd.put_Recorder(comRecorder);
                         rawCd.put_ClientName(ClientName);
 
-                        try { rawCd.put_BufferUnderrunFreeDisabled(false); } catch { }
+                        try { rawCd.put_BufferUnderrunFreeDisabled(options.DisableBufferUnderrunFree); } catch { }
 
                         for (int i = 0; i < tracks.Count; i++)
                         {
@@ -548,7 +548,7 @@ public class Imapi2BurnEngine : IBurnEngineBackend, ISecureAudioReader
                 tao.put_Recorder(comRecorder);
                 tao.put_ClientName(ClientName);
 
-                try { tao.put_BufferUnderrunFreeDisabled(false); } catch { }
+                try { tao.put_BufferUnderrunFreeDisabled(options.DisableBufferUnderrunFree); } catch { }
                 try { tao.put_DoNotFinalizeMedia(false); } catch { }
 
                 tao.PrepareMedia();

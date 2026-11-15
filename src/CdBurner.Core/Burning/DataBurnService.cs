@@ -347,7 +347,8 @@ public class DataBurnService
             CloseDisc = burnOptions.CloseDisc,
             VolumeLabel = burnOptions.VolumeLabel,
             OverwriteExistingData = burnOptions.OverwriteExistingData,
-            LayerBreakSectors = burnOptions.LayerBreakSectors
+            LayerBreakSectors = burnOptions.LayerBreakSectors,
+            DisableBufferUnderrunFree = burnOptions.DisableBufferUnderrunFree
         };
 
         BurnOperationResult burnResult;

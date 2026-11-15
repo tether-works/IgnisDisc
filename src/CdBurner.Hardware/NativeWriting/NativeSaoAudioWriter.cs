@@ -31,6 +31,9 @@ public sealed record NativeSaoWriteRequest(
     /// lead-out and a B0h pointer to the next session instead of closing the disc: the first session of a CD-Extra
     /// disc. False (the default) closes the disc.</summary>
     public bool LeaveSessionOpen { get; init; }
+
+    /// <summary>True to disable buffer-underrun protection (BUFE) in Mode Page 0x05.</summary>
+    public bool DisableBufferUnderrunFree { get; init; }
 }
 
 /// <summary>Outcome of a native Session-at-Once write.</summary>
@@ -210,7 +213,8 @@ public sealed class NativeSaoAudioWriter
 
         // 3. Write parameters, then read them back.
         var current = ReadWriteParameters() ?? throw Stop("The drive did not return its write parameters (mode page 0x05).");
-        var wanted = current.ForSessionAtOnce(request.TestWrite, mastering.BufferUnderrunFree, cdText, request.LeaveSessionOpen);
+        bool useBufe = mastering.BufferUnderrunFree && !request.DisableBufferUnderrunFree;
+        var wanted = current.ForSessionAtOnce(request.TestWrite, useBufe, cdText, request.LeaveSessionOpen);
         if (!SelectWriteParameters(wanted))
         {
             if (!cdText || !SelectWriteParameters(wanted = wanted.WithRawDataBlockType()))

@@ -77,17 +77,27 @@ ignisdisc-cli <command> [options]
                                                --fixed-time (or SOURCE_DATE_EPOCH) gives byte-identical images;
                                                --sha256sums adds a root SHA256SUMS that `sha256sum -c` can check;
                                                --blake3sums adds a BLAKE3SUMS that `b3sum -c` can check
-  burn-iso   --drive <id> --iso <file.iso|.nrg|.mdf|.ccd|.img|.cdi> [--speed <X|max>] [--no-verify | --strict-verify] [--no-close] [--overwrite]
-             [--native [--test-write | --test-first] [--log-dir <folder>]]
+  burn-iso   --drive <id> --iso <file.iso|.nrg|.mdf|.mds|.ccd|.img|.cdi> [--speed <X|max>] [--no-verify | --strict-verify] [--no-close] [--no-burnfree] [--overwrite] [--post-action none|eject|sound|eject-sound|shutdown]
+             [--native [--test-write | --test-first] [--layer-break <sectors>] [--log-dir <folder>]]
   burn-data  --drive <id> --input <folder> [--label <vol>] [--speed <X|max>] [--udf] [--joliet]
-             [--boot-bios <img>] [--boot-uefi <img>] [--no-verify | --strict-verify] [--no-close] [--overwrite] [--fixed-time <...>]
-             [--sha256sums] [--blake3sums] [--udf-rev <...>] [--native [--test-write | --test-first] [--log-dir <folder>]]
-  burn-audio --drive <id> --tracks <a.wav,b.flac,album.cue,list.m3u,...> [--title <album>] [--artist <name>]
-             [--speed <X|max>] [--dao] [--allow-damaged] [--native [--test-write | --test-first] [--write-offset <n|auto>]
-             [--log-dir <folder>]]
-  burn-dvd   --drive <id> --video-ts <folder|movie> [--label <vol>] [--speed <X|max>] [--no-verify] [--overwrite]
-             [--generate-subtitles [--subtitle-language <code|auto>]]
+             [--boot-bios <img>] [--boot-uefi <img>] [--no-verify | --strict-verify] [--no-close] [--append] [--no-burnfree] [--overwrite] [--post-action none|eject|sound|eject-sound|shutdown] [--fixed-time <...>]
+             [--sha256sums] [--blake3sums] [--udf-rev <...>] [--native [--test-write | --test-first] [--layer-break <sectors>] [--log-dir <folder>]]
+  burn-audio (--drive <id> | --plan-only) (--tracks <a.wav,b.flac,album.cue,list.m3u,...> | --tracks-file <file.json>) [--title <album>] [--artist <name>]
+             [--songwriter <name>] [--upc <13digits>] [--speed <X|max>] [--dao] [--pregap <frames>] [--normalize] [--rms-level] [--loudness track|album|off] [--crossfade <sec>]
+             [--no-cd-text] [--no-burnfree] [--post-action none|eject|sound|eject-sound|shutdown] [--allow-damaged] [--native [--test-write | --test-first] [--recovery-session] [--write-offset <n|auto>] [--log-dir <folder>]]
+  burn-dvd   --drive <id> --video-ts <folder|movie> [--label <vol>] [--menu-title <title>] [--no-menu] [--standard ntsc|pal] [--aspect 16:9|4:3] [--chapters <sec>] [--dual-layer]
+             [--generate-subtitles [--subtitle-language <code|auto>]] [--speed <X|max>] [--no-verify] [--no-burnfree] [--overwrite] [--post-action none|eject|sound|eject-sound|shutdown]
              [--native [--test-write | --test-first] [--log-dir <folder>]]
+  burn-queue --drive <id> --images <f1.iso,f2.iso,...> [--speed <X|max>] [--no-verify | --strict-verify] [--no-close] [--no-burnfree] [--overwrite] [--continue-on-error] [--wait-minutes <n>] [--post-action none|eject|sound|eject-sound|shutdown]
+  image-info --input <file.iso|.nrg|.mdf|.mds|.ccd|.img|.cdi|.bin|.cue>
+                                               Inspect disc image geometry, format, file systems, and boot info
+  convert-image --input <file> --output <file.iso|file.cue> [--label <vol>] [--progress]
+                                               Convert legacy disc images (NRG/MDF/MDS/CCD/IMG/CDI) to ISO or convert ISO <-> BIN/CUE
+  author-dvd --input <movie1,movie2,...> --output <folder|file.iso> [--label <vol>] [--menu-title <title>] [--no-menu] [--standard ntsc|pal] [--aspect 16:9|4:3] [--chapters <sec>] [--dual-layer]
+                                               Author a DVD-Video VIDEO_TS folder or ISO without burning
+  jewel-cover --tracks <a.wav,.cue,.json,...> --output <file.pdf|file.svg|file.png> [--title <album>] [--artist <name>] [--side front|back|both] [--show-duration] [--show-numbers]
+  audio-plan (--tracks <files|.cue|.m3u|.pls> | --tracks-file <file.json>) [--title <album>] [--artist <name>] [--pregap <frames>] [--normalize] [--rms-level] [--loudness track|album|off] [--crossfade <sec>]
+                                               Show resolved audio CD track lengths, pre-gaps, normalization gain, and 80-min fit
   rip        --drive <id> --output <file.iso|file.bin> [--raw]
   rip-audio  --drive <id> --output <folder> [--format wav|flac|mp3|opus|aac] [--bitrate <kbps>] [--tracks 1,3,5] [--lookup]
              [--read-offset <samples>] [--verify-accuraterip] [--no-secure] [--continue-on-error] [--cover <image>]
@@ -102,21 +112,32 @@ ignisdisc-cli <command> [options]
              [--redundancy <min %>] [--no-fill]      Recovery data fills each disc; --no-fill keeps exactly that %
              [--keep-folders | --order size|path]    Largest-first packing (default); whole folders; or path order.
                                                      Every disc gets CATALOG.JSON and INDEX.HTML listing the whole set
-  archive-burn --drive <id> --disc <staged disc folder> [--native [--test-write | --test-first] [--log-dir <folder>]]
+  archive-burn --drive <id> --disc <staged disc folder> [--speed <X|max>] [--no-verify | --strict-verify] [--no-burnfree] [--overwrite] [--post-action none|eject|sound|eject-sound|shutdown]
+             [--native [--test-write | --test-first] [--log-dir <folder>]] [--health-certificate]
                                                Burn one staged archive disc; --native uses direct drive commands; --health-certificate writes discNN.HEALTH.json + .svg (off by default)
   archive-verify --path <folder|drive>         Check an archive disc against its SHA-256 manifest
   recover (--drive <id>|--image <file.iso>) --out <folder>
                                                Copy a damaged archive disc's files out, rebuild them from its
                                                PAR2 recovery data and check them (exit code 2 if any are lost)
+  repair-par2 --path <folder> [--delete-backups]
+                                               Run PAR2 repair in place; keeps .1 backup copies unless --delete-backups is passed
   verify     --drive <id> --iso <file.iso|.nrg|.mdf|.ccd|.img|.cdi>
   verify     --drive <id> --cue <file.cue> [--title <album>] [--artist <name>] [--no-cd-text] [--write-offset <n|auto>]
                                                Check an audio or mixed-mode CD burned with --native against its .cue,
                                                without writing (track table, CD-Text, codes, every sample)
   erase      --drive <id> [--full]
   scan       --drive <id> [--block-size <sectors>] [--csv <file.csv>]
+  book-type  --drive <id> [--set dvd-rom|dvd+r|dvd+rw|dvd+r-dl|dvd-r|dvd-rw|dvd-ram]
+                                               Query or set the DVD+R / DVD+R DL book-type bitsetting on supported drives
   drive-report --drive <id>                    Build a drive compatibility report (capabilities and media ID)
   eject      --drive <id>                      Open the tray
+  tools                                        Check availability of optional tools (ffmpeg, par2, whisper.cpp)
+  install-ffmpeg [--plan-only]                 Optional download for FFmpeg (audio/DVD tools), SHA-256 pinned
+  install-par2   [--plan-only]                 Optional download for par2cmdline (archival recovery), SHA-256 pinned
   install-subtitle-tool [--plan-only]          Optional download for subtitles: whisper.cpp and speech models, SHA-256 pinned
+  settings (get | set <key> <value> | reset) [--settings-file <path>]
+                                               Inspect, update, or reset IgnisDisc persistent settings
+  check-update                                 Check GitHub Releases for a newer IgnisDisc version
   generate-subtitles --input <movie> [--output <file.srt>] [--language <code|auto>] [--ffmpeg <path>]
                                                Machine-generated subtitles by speech recognition (see below)
   load       --drive <id>                      Close the tray and wait until the drive is ready; on a drive that

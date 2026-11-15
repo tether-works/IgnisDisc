@@ -51,7 +51,8 @@ public static partial class CliCommandRunner
         "json", "udf", "joliet", "verify", "close", "no-close", "raw", "full", "dao", "help", "h", "version", "v",
         "lookup", "keep-wav", "continue-on-error", "verify-accuraterip", "secure", "plan-only",
         "overwrite", "strict-verify", "no-verify", "no-secure", "allow-damaged", "no-fill", "keep-folders",
-        "generate-subtitles"
+        "generate-subtitles", "no-menu", "dual-layer", "no-cd-text", "normalize", "peak-normalize", "rms-level",
+        "no-burnfree", "append", "delete-backups", "confirm-shutdown"
     };
 
     private static void WriteJsonResult(TextWriter stdout, object payload)
@@ -214,6 +215,19 @@ public static partial class CliCommandRunner
             "generate-subtitles" => await HandleGenerateSubtitlesAsync(cmd, stdout, stderr).ConfigureAwait(false),
             "eject" => RunTrayCommand(cmd, stdout, stderr, deviceService, load: false),
             "load" => RunTrayCommand(cmd, stdout, stderr, deviceService, load: true),
+            "settings" => HandleSettingsCommand(cmd, stdout),
+            "tools" => HandleToolsCommand(cmd, stdout),
+            "install-ffmpeg" => await HandleInstallFfmpegAsync(cmd, stdout, stderr).ConfigureAwait(false),
+            "install-par2" => await HandleInstallPar2Async(cmd, stdout, stderr).ConfigureAwait(false),
+            "check-update" => await HandleCheckUpdateAsync(cmd, stdout, stderr).ConfigureAwait(false),
+            "image-info" or "imageinfo" => HandleImageInfo(cmd, stdout),
+            "convert-image" or "convertimage" => await HandleConvertImageAsync(cmd, stdout, stderr).ConfigureAwait(false),
+            "author-dvd" or "authordvd" => await HandleAuthorDvdAsync(cmd, stdout, stderr).ConfigureAwait(false),
+            "jewel-cover" or "jewelcover" => HandleJewelCover(cmd, stdout, stderr),
+            "audio-plan" or "audioplan" => HandleAudioPlan(cmd, stdout, stderr),
+            "burn-queue" or "burnqueue" => await HandleBurnQueueAsync(cmd, stdout, stderr, deviceService, burnEngine).ConfigureAwait(false),
+            "book-type" or "booktype" => HandleBookTypeCommand(cmd, stdout, stderr, deviceService),
+            "repair-par2" or "repairpar2" => await HandleRepairPar2Async(cmd, stdout, stderr).ConfigureAwait(false),
             _ => throw new CommandLineException($"Unknown command '{cmd.Subcommand}'. Use --help for usage information.")
         };
     }
@@ -698,6 +712,8 @@ public static partial class CliCommandRunner
         bool verify = strictVerify || (!testWrite && (!cmd.HasFlag("no-verify") || nativeEngine != null));
         bool closeDisc = !cmd.HasFlag("no-close");
         bool overwrite = cmd.HasFlag("overwrite");
+        bool disableBufe = cmd.HasFlag("no-burnfree");
+        var postAction = ParsePostBurnAction(cmd);
 
         if (!File.Exists(isoPath))
         {
@@ -717,7 +733,8 @@ public static partial class CliCommandRunner
             StrictVerify = strictVerify,
             CloseDisc = closeDisc,
             OverwriteExistingData = overwrite,
-            LayerBreakSectors = ParseLayerBreak(cmd, nativeEngine, mediaStatus)
+            LayerBreakSectors = ParseLayerBreak(cmd, nativeEngine, mediaStatus),
+            DisableBufferUnderrunFree = disableBufe
         };
 
         var burnService = new DataBurnService(nativeEngine ?? burnEngine);
@@ -732,6 +749,8 @@ public static partial class CliCommandRunner
         {
             result = await burnService.BurnIsoFileAsync(recorder, isoPath, burnOptions).ConfigureAwait(false);
         }
+
+        ExecutePostBurnActionIfSucceeded(postAction, result.Success, recorder);
 
         if (cmd.IsJson)
         {
@@ -792,6 +811,9 @@ public static partial class CliCommandRunner
         bool verify = strictVerify || (!testWrite && (!cmd.HasFlag("no-verify") || nativeEngine != null));
         bool closeDisc = !cmd.HasFlag("no-close");
         bool overwrite = cmd.HasFlag("overwrite");
+        bool explicitAppend = cmd.HasFlag("append");
+        bool disableBufe = cmd.HasFlag("no-burnfree");
+        var postAction = ParsePostBurnAction(cmd);
 
         if (!Directory.Exists(inputFolder))
         {
@@ -811,6 +833,21 @@ public static partial class CliCommandRunner
 
         var recorder = FindRecorder(deviceService, driveId);
         var mediaStatus = recorder.QueryMediaStatus();
+        if (explicitAppend)
+        {
+            if (!mediaStatus.MediaPresent)
+            {
+                throw new CommandLineException("No disc is inserted in the drive to append a session to.");
+            }
+            if (mediaStatus.IsBlank)
+            {
+                throw new CommandLineException("The inserted disc is blank; omit --append to write the first session (use --no-close to keep it open for later --append).");
+            }
+            if (!mediaStatus.IsAppendable || mediaStatus.IsOverwriteOnly)
+            {
+                throw new CommandLineException($"Cannot append a session to {mediaStatus.MediaType.GetDisplayName()}: the disc is closed or overwrite-only.");
+            }
+        }
         var speedDesc = ParseSpeed(speedStr, recorder, mediaStatus.MediaType);
 
         string effectiveLabel = !string.IsNullOrWhiteSpace(volumeLabel) ? volumeLabel : "DATA_DISC";
@@ -823,7 +860,7 @@ public static partial class CliCommandRunner
             {
                 root = await MultiSessionManager.ImportFromRecorderAsync(recorder, burnEngine).ConfigureAwait(false);
             }
-            catch (Exception ex) when (ex is not OperationCanceledException)
+            catch (Exception ex) when (ex is not OperationCanceledException && !explicitAppend)
             {
                 stderr.WriteLine($"Warning: Could not import previous session ({ex.Message}); writing new session without merging.");
             }
@@ -847,7 +884,8 @@ public static partial class CliCommandRunner
             StrictVerify = strictVerify,
             CloseDisc = closeDisc,
             OverwriteExistingData = overwrite,
-            LayerBreakSectors = ParseLayerBreak(cmd, nativeEngine, mediaStatus)
+            LayerBreakSectors = ParseLayerBreak(cmd, nativeEngine, mediaStatus),
+            DisableBufferUnderrunFree = disableBufe
         };
 
         var buildOptions = new IsoBuildOptions(
@@ -865,6 +903,7 @@ public static partial class CliCommandRunner
         var burnService = new DataBurnService(nativeEngine ?? burnEngine);
         var result = await burnService.BurnCompilationAsync(recorder, root, burnOptions, buildOptions, phases).ConfigureAwait(false);
         phases.Complete();
+        ExecutePostBurnActionIfSucceeded(postAction, result.Success, recorder);
 
         if (cmd.IsJson)
         {
@@ -1072,16 +1111,16 @@ public static partial class CliCommandRunner
         IDiscDeviceService deviceService,
         IBurnEngineBackend burnEngine)
     {
-        string driveId = cmd.GetRequiredOption("drive", "--drive <id>");
-        string tracksRaw = cmd.GetRequiredOption("tracks", "--tracks <file1,file2,...>");
-        string? title = cmd.GetOption("title");
-        string? artist = cmd.GetOption("artist");
-        string? speedStr = cmd.GetOption("speed");
+        bool planOnly = cmd.HasFlag("plan-only");
         bool dao = cmd.HasFlag("dao");
         bool native = cmd.HasFlag("native");
         bool testWrite = cmd.HasFlag("test-write");
         bool testFirst = cmd.HasFlag("test-first");
         bool recoverySession = cmd.HasFlag("recovery-session");
+        bool disableBufe = cmd.HasFlag("no-burnfree");
+        var postAction = ParsePostBurnAction(cmd);
+        string? speedStr = cmd.GetOption("speed");
+
         if (testFirst && (!native || testWrite))
         {
             throw new CommandLineException("--test-first only applies to a real --native burn (without --test-write).");
@@ -1091,6 +1130,19 @@ public static partial class CliCommandRunner
             throw new CommandLineException("--recovery-session requires --native (direct drive commands); Windows IMAPIv2 cannot leave an SAO audio session open for a second data session.");
         }
 
+        using var mfDecoder = OperatingSystem.IsWindows() ? new MediaFoundationAudioDecoder() : null;
+        var (compilation, loadNote) = BuildAudioCompilation(cmd, mfDecoder, stderr);
+
+        if (planOnly)
+        {
+            if (loadNote != null && !cmd.IsJson)
+            {
+                stderr.WriteLine(loadNote);
+            }
+            return WriteAudioPlanOutput(compilation, 80, cmd.IsJson, stdout);
+        }
+
+        string driveId = cmd.GetRequiredOption("drive", "--drive <id>");
         var recorder = FindRecorder(deviceService, driveId);
         if (recorder is VirtualDiscRecorder vRec && !vRec.QueryMediaStatus().MediaPresent)
         {
@@ -1099,107 +1151,15 @@ public static partial class CliCommandRunner
         var mediaStatus = recorder.QueryMediaStatus();
         var speedDesc = ParseSpeed(speedStr, recorder, mediaStatus.MediaType, isAudio: true);
 
-        var trackFiles = tracksRaw.Split(new[] { ',', ';' }, StringSplitOptions.RemoveEmptyEntries | StringSplitOptions.TrimEntries);
-        if (trackFiles.Length == 0)
+        if (loadNote != null && !cmd.IsJson)
         {
-            throw new CommandLineException("No track files provided in --tracks argument.");
+            stderr.WriteLine(loadNote);
         }
 
-        foreach (var track in trackFiles)
-        {
-            if (!File.Exists(track))
-            {
-                throw new FileNotFoundException($"Audio track file not found: {track}", track);
-            }
-        }
-
-        using var mfDecoder = OperatingSystem.IsWindows() ? new MediaFoundationAudioDecoder() : null;
         string? logDir = cmd.GetOption("log-dir");
         var nativeEngine = native ? new NativeAudioBurnEngine(logDir) { TestWriteFirst = testFirst } : null;
         var nativeDataEngine = native ? new NativeDataBurnEngine(burnEngine, logDir) : null;
         var audioBurnService = new AudioCdBurnService(nativeEngine ?? burnEngine, mfDecoder, nativeDataEngine);
-
-        var compilation = new AudioCdCompilation
-        {
-            AlbumTitle = title ?? "Audio CD",
-            AlbumPerformer = artist ?? "Various Artists",
-            RecordingMode = dao ? AudioRecordingMode.DiscAtOnceGapless : AudioRecordingMode.TrackAtOnce,
-            IncludeCdText = !string.IsNullOrEmpty(title) || !string.IsNullOrEmpty(artist)
-        };
-
-        for (int i = 0; i < trackFiles.Length; i++)
-        {
-            string trackPath = trackFiles[i];
-            if (string.Equals(Path.GetExtension(trackPath), ".cue", StringComparison.OrdinalIgnoreCase))
-            {
-                compilation.ImportCueSheet(trackPath, audioBurnService.AudioDecoder);
-                compilation.IncludeCdText = true;
-                continue;
-            }
-
-            if (AudioPlaylistParser.IsPlaylistFile(trackPath))
-            {
-                compilation.ImportPlaylist(trackPath, audioBurnService.AudioDecoder);
-                compilation.IncludeCdText = true;
-                continue;
-            }
-
-            string trackTitle = Path.GetFileNameWithoutExtension(trackPath);
-            string trackPerformer = artist ?? compilation.AlbumPerformer;
-            string? trackSongwriter = null;
-            string? trackComposer = null;
-            string? trackIsrc = null;
-
-            try
-            {
-                var meta = audioBurnService.AudioDecoder.ProbeAudioFile(trackPath);
-                if (!string.IsNullOrWhiteSpace(meta.Title))
-                {
-                    trackTitle = meta.Title;
-                    compilation.IncludeCdText = true;
-                }
-                if (string.IsNullOrEmpty(artist) && !string.IsNullOrWhiteSpace(meta.Artist))
-                {
-                    trackPerformer = meta.Artist;
-                    compilation.IncludeCdText = true;
-                }
-                if (string.IsNullOrEmpty(title) && compilation.AlbumTitle == "Audio CD" && !string.IsNullOrWhiteSpace(meta.Album))
-                {
-                    compilation.AlbumTitle = meta.Album;
-                    compilation.IncludeCdText = true;
-                }
-                if (string.IsNullOrEmpty(artist) && compilation.AlbumPerformer == "Various Artists" && !string.IsNullOrWhiteSpace(meta.AlbumArtist ?? meta.Artist))
-                {
-                    compilation.AlbumPerformer = (meta.AlbumArtist ?? meta.Artist)!;
-                }
-                trackSongwriter = meta.Songwriter;
-                trackComposer = meta.Composer;
-                trackIsrc = meta.Isrc;
-            }
-            catch (Exception ex) when (ex is not OutOfMemoryException)
-            {
-                // The burn itself reports decode errors in detail; here only the titles are lost, so say so.
-                stderr.WriteLine($"Warning: could not read tags from '{Path.GetFileName(trackPath)}' ({ex.Message}); its CD-Text title will be the file name.");
-            }
-
-            int nextTrackNum = compilation.TrackCount + 1;
-            compilation.AddTrack(new AudioCdTrackItem(
-                TrackNumber: nextTrackNum,
-                SourceFilePath: trackPath,
-                Title: trackTitle,
-                Performer: trackPerformer,
-                Isrc: trackIsrc,
-                PreGapFrames: nextTrackNum == 1 ? 150 : 0)
-            {
-                Songwriter = trackSongwriter,
-                Composer = trackComposer
-            });
-        }
-
-        if (!compilation.IncludeCdText)
-        {
-            stderr.WriteLine("Note: no titles or artists were found in the tracks' tags and none were given (--title, --artist), so the disc gets no CD-Text.");
-        }
 
         var result = await audioBurnService.BurnAsync(
             recorder,
@@ -1209,12 +1169,18 @@ public static partial class CliCommandRunner
                 Speed = speedDesc,
                 UseDiscAtOnce = dao,
                 WriteCdText = compilation.IncludeCdText,
+                PerformNormalization = compilation.NormalizeAllTracks,
+                PreGapFrames = compilation.DefaultPreGapFrames,
+                MediaCatalogNumber = compilation.UpcEan,
                 Simulate = testWrite,
                 KeepIndexMarks = native, // only the direct writer can place INDEX 00 marks and hidden audio
                 AllowDamagedAudio = cmd.HasFlag("allow-damaged"),
                 WriteOffsetSamples = ParseWriteOffset(cmd.GetOption("write-offset"), native),
-                IncludeRecoverySession = recoverySession
+                IncludeRecoverySession = recoverySession,
+                DisableBufferUnderrunFree = disableBufe
             }).ConfigureAwait(false);
+
+        ExecutePostBurnActionIfSucceeded(postAction, result.Success, recorder);
 
         var verification = nativeEngine?.LastResult?.Verification;
         var recoveryManifest = audioBurnService.LastRecoveryManifest;
@@ -1566,6 +1532,8 @@ public static partial class CliCommandRunner
         }
         string? volumeLabel = cmd.GetOption("label");
         var (nativeEngine, testWrite) = ResolveNativeDataEngine(cmd, burnEngine);
+        var dvdPostAction = ParsePostBurnAction(cmd);
+        bool dvdDisableBufe = cmd.HasFlag("no-burnfree");
 
         var pathTokens = videoTsInput.Split(new[] { ';', '|' }, StringSplitOptions.RemoveEmptyEntries | StringSplitOptions.TrimEntries);
         bool allTokensExist = pathTokens.Length > 0 && pathTokens.All(p => File.Exists(p) || Directory.Exists(p));
@@ -1603,13 +1571,7 @@ public static partial class CliCommandRunner
             {
                 tempAuthorDir = Path.Combine(Path.GetTempPath(), "IgnisDisc_CliAuthor_" + Guid.NewGuid().ToString("N"));
                 var authorService = new DvdVideoAuthoringService();
-                var authorOptions = new DvdAuthoringOptions
-                {
-                    VolumeLabel = effectiveLabel,
-                    AutoCreatePlayMenu = true,
-                    DualLayer = cmd.HasFlag("dual-layer")
-                };
-                ApplySubtitleOptions(cmd, authorOptions);
+                var authorOptions = BuildDvdAuthoringOptions(cmd, effectiveLabel);
 
                 var authResult = await authorService.AuthorAsync(
                     videoTsInput, tempAuthorDir, authorOptions,
@@ -1626,66 +1588,7 @@ public static partial class CliCommandRunner
                 sourceRootDirectory = analysis.ExistingVideoTsPath ?? videoTsInput;
             }
 
-            var root = CompilationDirectory.CreateRoot();
-            CompilationDirectory videoTsDir;
-
-            string folderName = Path.GetFileName(sourceRootDirectory.TrimEnd(Path.DirectorySeparatorChar, Path.AltDirectorySeparatorChar));
-            if (string.Equals(folderName, "VIDEO_TS", StringComparison.OrdinalIgnoreCase))
-            {
-                videoTsDir = root.AddDirectory("VIDEO_TS");
-                PopulateDirectoryFromDisk(videoTsDir, sourceRootDirectory, skipDvdIgnoredFiles: true);
-
-                string? parent = Path.GetDirectoryName(Path.GetFullPath(sourceRootDirectory));
-                if (!string.IsNullOrEmpty(parent))
-                {
-                    string siblingAudioTs = Path.Combine(parent, "AUDIO_TS");
-                    if (Directory.Exists(siblingAudioTs))
-                    {
-                        var audioTs = root.AddDirectory("AUDIO_TS");
-                        PopulateDirectoryFromDisk(audioTs, siblingAudioTs, skipDvdIgnoredFiles: true);
-                    }
-                }
-            }
-            else
-            {
-                string childVideoTs = Path.Combine(sourceRootDirectory, "VIDEO_TS");
-                if (Directory.Exists(childVideoTs))
-                {
-                    videoTsDir = root.AddDirectory("VIDEO_TS");
-                    PopulateDirectoryFromDisk(videoTsDir, childVideoTs, skipDvdIgnoredFiles: true);
-
-                    string childAudioTs = Path.Combine(sourceRootDirectory, "AUDIO_TS");
-                    if (Directory.Exists(childAudioTs))
-                    {
-                        var audioTs = root.AddDirectory("AUDIO_TS");
-                        PopulateDirectoryFromDisk(audioTs, childAudioTs, skipDvdIgnoredFiles: true);
-                    }
-                }
-                else
-                {
-                    videoTsDir = root.AddDirectory("VIDEO_TS");
-                    PopulateDirectoryFromDisk(videoTsDir, sourceRootDirectory, skipDvdIgnoredFiles: true);
-                }
-            }
-
-            // Ensure AUDIO_TS is always added to root
-            if (root.FindDirectoryByVirtualPath("/AUDIO_TS") == null)
-            {
-                root.AddDirectory("AUDIO_TS");
-            }
-
-            // Validate VIDEO_TS structure
-            var validator = new DvdVideoValidator();
-            bool hasAudioTs = root.FindDirectoryByVirtualPath("/AUDIO_TS") != null;
-            var validation = validator.ValidateDirectory(videoTsDir, hasAudioTs);
-            if (!validation.IsValid)
-            {
-                throw new InvalidOperationException($"DVD-Video structure validation failed: {string.Join("; ", validation.Errors)}");
-            }
-
-            // Align IFO and BUP files across 16-sector ECC boundaries
-            var planner = new DvdVideoLayoutPlanner();
-            planner.ApplyToCompilation(videoTsDir, startLba: 0);
+            var (root, _) = CompileDvdDirectory(sourceRootDirectory, effectiveLabel);
 
             var buildOptions = new IsoBuildOptions(
                 VolumeLabel: effectiveLabel,
@@ -1703,7 +1606,8 @@ public static partial class CliCommandRunner
                 Speed = ParseSpeed(cmd.GetOption("speed"), recorder, recorder.QueryMediaStatus().MediaType),
                 Simulate = testWrite,
                 // Read back by default; a test write records nothing; a direct burn is always read back.
-                VerifyAfterBurn = !testWrite && (!cmd.HasFlag("no-verify") || nativeEngine != null)
+                VerifyAfterBurn = !testWrite && (!cmd.HasFlag("no-verify") || nativeEngine != null),
+                DisableBufferUnderrunFree = dvdDisableBufe
             };
             var dvdMedia = recorder.QueryMediaStatus().MediaType;
             if (nativeEngine != null && dvdMedia is DiscMediaType.DvdPlusRDualLayer or DiscMediaType.DvdMinusRDualLayer)
@@ -1723,6 +1627,8 @@ public static partial class CliCommandRunner
                 try { Directory.Delete(tempAuthorDir, recursive: true); } catch { }
             }
         }
+
+        ExecutePostBurnActionIfSucceeded(dvdPostAction, result.Success, recorder);
 
         if (cmd.IsJson)
         {
@@ -1814,7 +1720,8 @@ public static partial class CliCommandRunner
             Speed = options.Speed,
             Simulate = options.Simulate,
             OverwriteExistingData = options.OverwriteExistingData,
-            LayerBreakSectors = chosen?.Lba
+            LayerBreakSectors = chosen?.Lba,
+            DisableBufferUnderrunFree = options.DisableBufferUnderrunFree
         };
         return (await burnService.BurnStreamAsync(recorder, image, withBreak).ConfigureAwait(false), chosen);
     }
@@ -2514,6 +2421,9 @@ public static partial class CliCommandRunner
         var speedDesc = ParseSpeed(cmd.GetOption("speed"), recorder, mediaStatus.MediaType);
         var root = CompilationFolderImporter.ImportAsRoot(discFolder, strict: true);
 
+        var archivePostAction = ParsePostBurnAction(cmd);
+        bool archiveDisableBufe = cmd.HasFlag("no-burnfree");
+
         var burnOptions = new DataBurnOptions
         {
             VolumeLabel = label,
@@ -2522,7 +2432,8 @@ public static partial class CliCommandRunner
             VerifyAfterBurn = verify,
             StrictVerify = strictVerify,
             CloseDisc = true,
-            OverwriteExistingData = overwrite
+            OverwriteExistingData = overwrite,
+            DisableBufferUnderrunFree = archiveDisableBufe
         };
         var buildOptions = new IsoBuildOptions(
             VolumeLabel: label,
@@ -2543,6 +2454,7 @@ public static partial class CliCommandRunner
         var burnService = new DataBurnService(nativeEngine ?? burnEngine);
         var result = await burnService.BurnCompilationAsync(recorder, root, burnOptions, buildOptions, curve).ConfigureAwait(false);
         phases.Complete();
+        ExecutePostBurnActionIfSucceeded(archivePostAction, result.Success, recorder);
 
         string? certificateJson = null;
         string? certificateError = null;
@@ -3231,13 +3143,13 @@ public static partial class CliCommandRunner
         stdout.WriteLine("      Closes the tray and waits until the drive is ready. On a drive that cannot close its own tray it says so and exits 1.");
         stdout.WriteLine("  build-iso --input <folder> --output <file.iso> [--label <vol>] [--udf] [--udf-rev <1.02|1.50|2.00|2.01|2.50|2.60>] [--joliet] [--boot-bios <img>] [--boot-uefi <img>] [--fixed-time <unix|iso8601>] [--sha256sums] [--blake3sums] [--json]");
         stdout.WriteLine("      Compiles a folder into an ISO 9660 / Joliet / UDF filesystem image.");
-        stdout.WriteLine("  burn-iso --drive <id> --iso <file.iso|.nrg|.cdi|.mdf|.mds|.ccd|.img> [--speed <X|max>] [--no-verify | --strict-verify] [--no-close] [--overwrite] [--native [--test-write | --test-first] [--layer-break <sectors>] [--log-dir <folder>]] [--json]");
+        stdout.WriteLine("  burn-iso --drive <id> --iso <file.iso|.nrg|.cdi|.mdf|.mds|.ccd|.img> [--speed <X|max>] [--no-verify | --strict-verify] [--no-close] [--no-burnfree] [--overwrite] [--post-action none|eject|sound|eject-sound|shutdown] [--native [--test-write | --test-first] [--layer-break <sectors>] [--log-dir <folder>]] [--json]");
         stdout.WriteLine("      Burns an ISO image directly to the target optical drive. --layer-break: sectors on the first layer of a DVD+R DL (multiple of 16).");
-        stdout.WriteLine("  burn-data --drive <id> --input <folder> [--label <vol>] [--speed <X|max>] [--udf] [--udf-rev <1.02|1.50|2.00|2.01|2.50|2.60>] [--joliet] [--boot-bios <img>] [--boot-uefi <img>] [--no-verify | --strict-verify] [--no-close] [--overwrite] [--fixed-time <unix|iso8601>] [--sha256sums] [--blake3sums] [--native [--test-write | --test-first] [--layer-break <sectors>] [--log-dir <folder>]] [--json]");
-        stdout.WriteLine("      Compiles a folder and burns it to optical media.");
-        stdout.WriteLine("  burn-audio --drive <id> --tracks <file1,file2,...> [--title <album>] [--artist <name>] [--speed <X|max>] [--dao] [--allow-damaged] [--native [--test-write | --test-first] [--recovery-session] [--write-offset <samples|auto>] [--log-dir <folder>]] [--json]");
-        stdout.WriteLine("      Burns Red Book Audio CD from WAV, FLAC, MP3, AAC/M4A, or WMA tracks (--recovery-session adds session-2 PAR2 recovery; off by default).");
-        stdout.WriteLine("  burn-dvd --drive <id> --video-ts <folder|movie> [--label <vol>] [--dual-layer] [--generate-subtitles [--subtitle-language <code>]] [--speed <X|max>] [--no-verify] [--overwrite] [--native [--test-write | --test-first] [--log-dir <folder>]] [--json]");
+        stdout.WriteLine("  burn-data --drive <id> --input <folder> [--label <vol>] [--speed <X|max>] [--udf] [--udf-rev <1.02|1.50|2.00|2.01|2.50|2.60>] [--joliet] [--boot-bios <img>] [--boot-uefi <img>] [--no-verify | --strict-verify] [--no-close] [--append] [--no-burnfree] [--overwrite] [--post-action none|eject|sound|eject-sound|shutdown] [--fixed-time <unix|iso8601>] [--sha256sums] [--blake3sums] [--native [--test-write | --test-first] [--layer-break <sectors>] [--log-dir <folder>]] [--json]");
+        stdout.WriteLine("      Compiles a folder and burns it to optical media (--append merges and adds a session on an appendable disc).");
+        stdout.WriteLine("  burn-audio (--drive <id> | --plan-only) (--tracks <files|.cue|.m3u|.pls> | --tracks-file <file.json>) [--title <album>] [--artist <name>] [--songwriter <name>] [--upc <13digits>] [--speed <X|max>] [--dao] [--pregap <frames>] [--normalize] [--rms-level] [--loudness track|album|off] [--crossfade <sec>] [--no-cd-text] [--no-burnfree] [--post-action none|eject|sound|eject-sound|shutdown] [--allow-damaged] [--native [--test-write | --test-first] [--recovery-session] [--write-offset <samples|auto>] [--log-dir <folder>]] [--json]");
+        stdout.WriteLine("      Burns Red Book Audio CD from WAV, FLAC, MP3, AAC/M4A, WMA, .cue, .m3u/.pls, or a JSON --tracks-file (--recovery-session adds session-2 PAR2 recovery; --plan-only previews without burning).");
+        stdout.WriteLine("  burn-dvd --drive <id> --video-ts <folder|movie> [--label <vol>] [--menu-title <title>] [--no-menu] [--standard ntsc|pal] [--aspect 16:9|4:3] [--chapters <sec>] [--dual-layer] [--generate-subtitles [--subtitle-language <code>]] [--speed <X|max>] [--no-verify] [--no-burnfree] [--overwrite] [--post-action none|eject|sound|eject-sound|shutdown] [--native [--test-write | --test-first] [--log-dir <folder>]] [--json]");
         stdout.WriteLine("      Validates, normalizes/authors, aligns, and burns a DVD-Video compliant disc from VIDEO_TS or movie files.");
         stdout.WriteLine("      --dual-layer authors movie files for a DVD-9 (longest title first). On a dual-layer disc, --native puts the layer break on a cell boundary.");
         stdout.WriteLine("      --generate-subtitles makes subtitles by speech recognition for movies with no .srt next to them (needs install-subtitle-tool);");
@@ -3262,7 +3174,7 @@ public static partial class CliCommandRunner
         stdout.WriteLine("      Splits a folder across discs and stages disc01..discNN with SHA-256 manifests and PAR2 recovery data (fills free space unless --no-fill).");
         stdout.WriteLine("      Files are packed largest first into the first disc with room (--order size, the default); --keep-folders keeps a folder whole when it fits on one disc;");
         stdout.WriteLine("      --order path fills discs in path order. Every disc also gets CATALOG.JSON and INDEX.HTML listing the whole set.");
-        stdout.WriteLine("  archive-burn --drive <id> --disc <staged disc folder> [--speed <X|max>] [--no-verify | --strict-verify] [--overwrite] [--native [--test-write | --test-first] [--log-dir <folder>]] [--health-certificate] [--json]");
+        stdout.WriteLine("  archive-burn --drive <id> --disc <staged disc folder> [--speed <X|max>] [--no-verify | --strict-verify] [--no-burnfree] [--overwrite] [--post-action none|eject|sound|eject-sound|shutdown] [--native [--test-write | --test-first] [--log-dir <folder>]] [--health-certificate] [--json]");
         stdout.WriteLine("      --health-certificate (off by default) writes discNN.HEALTH.json and .svg next to the disc folder: read-back result, write-speed curve, drive, media ID, date and, for a CD, one read-health pass.");
         stdout.WriteLine("      Burns one staged archive disc (ISO 9660 + Joliet + UDF, closed). With --native, discs the direct writer does not cover go to the Windows writer, and the output says why.");
         stdout.WriteLine("  archive-verify --path <folder|drive> [--json]");
@@ -3276,6 +3188,32 @@ public static partial class CliCommandRunner
         stdout.WriteLine("      Erases rewritable optical media (CD-RW, DVD-RW, DVD+RW, DVD-RAM).");
         stdout.WriteLine("  scan --drive <id> [--block-size <sectors>] [--csv <file.csv>] [--json]");
         stdout.WriteLine("      Scans optical disc surface and benchmarks transfer rate curve.");
+        stdout.WriteLine("  settings get [key] | set <key> <value> | reset [--settings-file <path>] [--json]");
+        stdout.WriteLine("      Reads, changes, or resets application settings (default settings.json or --settings-file).");
+        stdout.WriteLine("  tools [--ffmpeg <path>] [--par2 <path>] [--json]");
+        stdout.WriteLine("      Reports whether optional tools (ffmpeg, par2, subtitle tool) are installed and their versions.");
+        stdout.WriteLine("  install-ffmpeg [--dir <folder>] [--plan-only] [--overwrite] [--json]");
+        stdout.WriteLine("      Downloads and extracts the LGPL Windows FFmpeg build into %LOCALAPPDATA%\\Programs\\ffmpeg (or --dir).");
+        stdout.WriteLine("  install-par2 [--dir <folder>] [--plan-only] [--overwrite] [--json]");
+        stdout.WriteLine("      Downloads and verifies par2cmdline-turbo by SHA-256 into %LOCALAPPDATA%\\Programs\\par2cmdline (or --dir).");
+        stdout.WriteLine("  check-update [--json]");
+        stdout.WriteLine("      Checks GitHub Releases for a newer IgnisDisc version.");
+        stdout.WriteLine("  image-info --image <file> [--json]");
+        stdout.WriteLine("      Inspects an .iso, .cue, .bin, .nrg, .mdf/.mds, .ccd/.img, or .cdi disc image.");
+        stdout.WriteLine("  convert-image --input <file> --output <file> [--cue <file.cue>] [--overwrite] [--json]");
+        stdout.WriteLine("      Converts legacy images or BIN+CUE to .iso, or converts .iso/legacy images to .bin + .cue.");
+        stdout.WriteLine("  author-dvd --input <folder|movies> --output <folder|file.iso> [--label <vol>] [--menu-title <title>] [--no-menu] [--standard ntsc|pal] [--aspect 16:9|4:3] [--chapters <sec>] [--dual-layer] [--generate-subtitles [--subtitle-language <code|auto>]] [--overwrite] [--json]");
+        stdout.WriteLine("      Authors DVD-Video files into a VIDEO_TS folder or compliant .iso without burning a disc.");
+        stdout.WriteLine("  jewel-cover (--tracks <files> | --tracks-file <file.json>) --output <file.html> [--title <album>] [--artist <name>] [--songwriter <name>] [--upc <13digits>] [--dao] [--pregap <frames>] [--overwrite] [--json]");
+        stdout.WriteLine("      Generates a printable HTML CD jewel case cover and tray inlay from audio tracks.");
+        stdout.WriteLine("  audio-plan (--tracks <files> | --tracks-file <file.json>) [--title <album>] [--artist <name>] [--dao] [--pregap <frames>] [--normalize] [--rms-level] [--loudness track|album|off] [--crossfade <sec>] [--media 74|80] [--json]");
+        stdout.WriteLine("      Previews Audio CD track layout, durations, 74/80-minute fit, and CD-Text without burning.");
+        stdout.WriteLine("  burn-queue --drive <id> --images <img1,img2,...> [--speed <X|max>] [--no-verify | --strict-verify] [--no-close] [--no-burnfree] [--overwrite] [--continue-on-error] [--post-action none|eject|sound|eject-sound|shutdown] [--wait-minutes <n>] [--json]");
+        stdout.WriteLine("      Burns a sequential queue of .iso or legacy/BIN images to discs, prompting for disc swaps.");
+        stdout.WriteLine("  book-type --drive <id> [--set dvd-rom|dvd+r|dvd+rw|dvd+r-dl|dvd-r|dvd-rw|dvd-ram] [--json]");
+        stdout.WriteLine("      Reads or updates DVD+R / DVD+RW / DVD+R DL book-type bitsetting.");
+        stdout.WriteLine("  repair-par2 --path <folder> [--par2 <path>] [--delete-backups] [--json]");
+        stdout.WriteLine("      Verifies and repairs a folder in place from its PAR2 recovery set (keeps backup files unless --delete-backups).");
         stdout.WriteLine();
         stdout.WriteLine("General Options:");
         stdout.WriteLine("  --help, -h       Show help information.");
@@ -3328,6 +3266,92 @@ public static partial class CliCommandRunner
             return;
         }
 
+        if (string.Equals(subcommand, "settings", StringComparison.OrdinalIgnoreCase))
+        {
+            stdout.WriteLine(LegalBanner.VersionNotice);
+            stdout.WriteLine();
+            stdout.WriteLine("  settings get [key] [--key <k>] [--settings-file <path>] [--json]");
+            stdout.WriteLine("  settings set <key> <value> [--key <k>] [--value <v>] [--settings-file <path>] [--json]");
+            stdout.WriteLine("  settings reset [--settings-file <path>] [--json]");
+            stdout.WriteLine($"      Valid keys: {string.Join(", ", SupportedSettingsKeys)}");
+            return;
+        }
+        if (string.Equals(subcommand, "tools", StringComparison.OrdinalIgnoreCase) ||
+            string.Equals(subcommand, "install-ffmpeg", StringComparison.OrdinalIgnoreCase) ||
+            string.Equals(subcommand, "install-par2", StringComparison.OrdinalIgnoreCase) ||
+            string.Equals(subcommand, "check-update", StringComparison.OrdinalIgnoreCase))
+        {
+            stdout.WriteLine(LegalBanner.VersionNotice);
+            stdout.WriteLine();
+            stdout.WriteLine("  tools [--ffmpeg <path>] [--par2 <path>] [--json]");
+            stdout.WriteLine("      Checks installed optional tools (ffmpeg, par2 with update check, whisper.cpp subtitle tool).");
+            stdout.WriteLine("  install-ffmpeg [--dir <folder>] [--plan-only] [--overwrite] [--json]");
+            stdout.WriteLine("      Downloads and extracts the LGPL Windows FFmpeg build into %LOCALAPPDATA%\\Programs\\ffmpeg (or --dir).");
+            stdout.WriteLine("  install-par2 [--dir <folder>] [--plan-only] [--overwrite] [--json]");
+            stdout.WriteLine("      Downloads and verifies par2cmdline-turbo by SHA-256 into %LOCALAPPDATA%\\Programs\\par2cmdline (or --dir).");
+            stdout.WriteLine("  check-update [--json]");
+            stdout.WriteLine("      Queries GitHub Releases for a newer IgnisDisc version.");
+            return;
+        }
+
+        if (string.Equals(subcommand, "image-info", StringComparison.OrdinalIgnoreCase) ||
+            string.Equals(subcommand, "imageinfo", StringComparison.OrdinalIgnoreCase) ||
+            string.Equals(subcommand, "convert-image", StringComparison.OrdinalIgnoreCase) ||
+            string.Equals(subcommand, "convertimage", StringComparison.OrdinalIgnoreCase))
+        {
+            stdout.WriteLine(LegalBanner.VersionNotice);
+            stdout.WriteLine();
+            stdout.WriteLine("  image-info --image <file> [--json]");
+            stdout.WriteLine("      Inspects sector size, sector count, offsets, and tracks of an .iso, .cue, .bin, .nrg, .mdf/.mds, .ccd/.img, or .cdi image.");
+            stdout.WriteLine("  convert-image --input <file> --output <file> [--cue <file.cue>] [--overwrite] [--json]");
+            stdout.WriteLine("      Converts .nrg, .mdf/.mds, .ccd/.img, .cdi, .bin, or .cue to .iso, or converts .iso/legacy images to .bin + .cue.");
+            return;
+        }
+        if (string.Equals(subcommand, "author-dvd", StringComparison.OrdinalIgnoreCase) ||
+            string.Equals(subcommand, "authordvd", StringComparison.OrdinalIgnoreCase))
+        {
+            stdout.WriteLine(LegalBanner.VersionNotice);
+            stdout.WriteLine();
+            stdout.WriteLine("  author-dvd --input <folder|movies> --output <folder|file.iso> [--label <vol>] [--menu-title <title>] [--no-menu] [--standard ntsc|pal] [--aspect 16:9|4:3] [--chapters <sec>] [--dual-layer] [--generate-subtitles [--subtitle-language <code|auto>]] [--ffmpeg <path>] [--overwrite] [--json]");
+            stdout.WriteLine("      Authors DVD-Video files into a VIDEO_TS folder or compliant ISO 9660 + UDF 1.02 image without burning.");
+            return;
+        }
+        if (string.Equals(subcommand, "jewel-cover", StringComparison.OrdinalIgnoreCase) ||
+            string.Equals(subcommand, "jewelcover", StringComparison.OrdinalIgnoreCase) ||
+            string.Equals(subcommand, "audio-plan", StringComparison.OrdinalIgnoreCase) ||
+            string.Equals(subcommand, "audioplan", StringComparison.OrdinalIgnoreCase))
+        {
+            stdout.WriteLine(LegalBanner.VersionNotice);
+            stdout.WriteLine();
+            stdout.WriteLine("  jewel-cover (--tracks <files> | --tracks-file <file.json>) --output <file.html> [--title <album>] [--artist <name>] [--songwriter <name>] [--upc <13digits>] [--dao] [--pregap <frames>] [--no-cd-text] [--overwrite] [--json]");
+            stdout.WriteLine("      Generates a printable HTML CD jewel case cover and tray inlay from audio tracks.");
+            stdout.WriteLine("  audio-plan (--tracks <files> | --tracks-file <file.json>) [--title <album>] [--artist <name>] [--songwriter <name>] [--upc <13digits>] [--dao] [--pregap <frames>] [--no-cd-text] [--normalize] [--rms-level] [--loudness track|album|off] [--crossfade <sec>] [--media 74|80] [--json]");
+            stdout.WriteLine("      Previews Audio CD track layout, durations, 74/80-minute fit, and CD-Text without burning.");
+            return;
+        }
+        if (string.Equals(subcommand, "burn-queue", StringComparison.OrdinalIgnoreCase) ||
+            string.Equals(subcommand, "burnqueue", StringComparison.OrdinalIgnoreCase))
+        {
+            stdout.WriteLine(LegalBanner.VersionNotice);
+            stdout.WriteLine();
+            stdout.WriteLine("  burn-queue --drive <id> --images <img1,img2,...> [--speed <X|max>] [--no-verify | --strict-verify] [--no-close] [--no-burnfree] [--overwrite] [--continue-on-error] [--post-action none|eject|sound|eject-sound|shutdown [--confirm-shutdown]] [--wait-minutes <n>] [--json]");
+            stdout.WriteLine("      Burns each queued disc image sequentially, ejecting and waiting for blank discs between items.");
+            return;
+        }
+        if (string.Equals(subcommand, "book-type", StringComparison.OrdinalIgnoreCase) ||
+            string.Equals(subcommand, "booktype", StringComparison.OrdinalIgnoreCase) ||
+            string.Equals(subcommand, "repair-par2", StringComparison.OrdinalIgnoreCase) ||
+            string.Equals(subcommand, "repairpar2", StringComparison.OrdinalIgnoreCase))
+        {
+            stdout.WriteLine(LegalBanner.VersionNotice);
+            stdout.WriteLine();
+            stdout.WriteLine("  book-type --drive <id> [--set dvd-rom|dvd+r|dvd+rw|dvd+r-dl|dvd-r|dvd-rw|dvd-ram] [--json]");
+            stdout.WriteLine("      Reads or updates DVD+R / DVD+RW / DVD+R DL book-type bitsetting.");
+            stdout.WriteLine("  repair-par2 --path <folder> [--par2 <path>] [--delete-backups] [--json]");
+            stdout.WriteLine("      Verifies and repairs a folder from its PAR2 recovery set (retains backup files unless --delete-backups).");
+            return;
+        }
+
         PrintHelp(stdout);
     }
 
@@ -3377,7 +3401,7 @@ public static partial class CliCommandRunner
                 string arg = args[i].Trim();
                 if (string.IsNullOrEmpty(arg)) continue;
 
-                if (arg.StartsWith("--") || arg.StartsWith('-'))
+                if (arg.StartsWith("--") || (arg.StartsWith('-') && !double.TryParse(arg, NumberStyles.Float, CultureInfo.InvariantCulture, out _)))
                 {
                     string trimmed = arg.TrimStart('-');
                     string key;
