@@ -184,6 +184,22 @@ public sealed class NativeDvdDataWriterTests : IDisposable
         Assert.False(result.Success);
         Assert.True(result.StoppedBeforeWriting);
         Assert.Contains("incremental", result.Message);
+        Assert.DoesNotContain("erase --full", result.Message); // a DVD-R cannot be erased
+        Assert.Equal(0, drive.WriteCommandCount);
+    }
+
+    [Fact]
+    public void OpenDvdMinusRw_AfterAQuickErase_StopsBeforeWriting_AndSaysToEraseFully()
+    {
+        // GP60NB50, Ritek DVD-RW after a quick erase: feature 0021h listed but not current.
+        var drive = BlankDvd(NativeTaoDataWriter.ProfileDvdMinusRwSequential);
+        drive.OffersIncremental = false;
+
+        var result = Write(drive, Image(320), closeDisc: false);
+
+        Assert.False(result.Success);
+        Assert.True(result.StoppedBeforeWriting);
+        Assert.Contains("erase --full", result.Message);
         Assert.Equal(0, drive.WriteCommandCount);
     }
 

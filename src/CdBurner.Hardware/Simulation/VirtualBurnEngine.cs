@@ -22,6 +22,12 @@ public class VirtualBurnEngine : IBurnEngineBackend, ISecureAudioReader
     /// </summary>
     public bool ThrowOnReadError { get; set; }
 
+    /// <summary>
+    /// Like Windows' writer (default on): a blank DVD-RW is put in restricted overwrite mode before the first write,
+    /// so it is never left open for more sessions.
+    /// </summary>
+    public bool FormatsBlankDvdMinusRwForOverwrite { get; set; } = true;
+
     public VirtualBurnEngine(VirtualDiscRecorder? defaultRecorder = null)
     {
         DefaultRecorder = defaultRecorder;
@@ -53,7 +59,7 @@ public class VirtualBurnEngine : IBurnEngineBackend, ISecureAudioReader
             return BurnOperationResult.Failed("No media present in recorder.");
         }
 
-        bool overwriteOnly = medium.MediaType is DiscMediaType.DvdPlusRw or DiscMediaType.DvdRam or DiscMediaType.BdRe;
+        bool overwriteOnly = medium.IsOverwriteOnly;
         if (medium.IsFinalized && !(overwriteOnly && options.OverwriteExistingData))
         {
             return BurnOperationResult.Failed("Mounted virtual medium is finalized and cannot be written.");
@@ -106,6 +112,14 @@ public class VirtualBurnEngine : IBurnEngineBackend, ISecureAudioReader
         // 3. Writing Lead-In
         ReportSnapshot(0, estimatedSectors, "WritingLeadIn");
         cancellationToken.ThrowIfCancellationRequested();
+
+        // Windows' writer quick-formats a blank DVD-RW into restricted overwrite mode before writing, whether or not
+        // the disc is to be closed (GP60NB50, Ritek DVD-RW, 2026-11-15): sessions can then never be added.
+        if (FormatsBlankDvdMinusRwForOverwrite && !options.Simulate && medium.MediaType == DiscMediaType.DvdMinusRw && medium.IsBlank)
+        {
+            medium.InRestrictedOverwriteMode = true;
+            overwriteOnly = true;
+        }
 
         // Like IMAPI's ForceOverwrite: replacing an overwrite-only disc's data writes from sector 0.
         bool replacesFromStart = options.OverwriteExistingData && overwriteOnly;

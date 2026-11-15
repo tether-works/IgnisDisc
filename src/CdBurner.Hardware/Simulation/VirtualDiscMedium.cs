@@ -77,6 +77,17 @@ public class VirtualDiscMedium : IDisposable, IBookTypeTarget
     public bool IsRewritable => MediaType.IsRewritable();
 
     /// <summary>
+    /// A DVD-RW in restricted overwrite mode (profile 0013h): written over in place like a DVD+RW, no sessions.
+    /// Windows' writer puts a blank DVD-RW in this mode before it writes, and an erase returns it to sequential mode
+    /// (measured on the GP60NB50, 2026-11-15). Ignored for other media types.
+    /// </summary>
+    public bool InRestrictedOverwriteMode { get; set; }
+
+    /// <summary>Media written over from sector 0 instead of appended to: DVD+RW, DVD-RAM, BD-RE, restricted-overwrite DVD-RW.</summary>
+    public bool IsOverwriteOnly => MediaType is DiscMediaType.DvdPlusRw or DiscMediaType.DvdRam or DiscMediaType.BdRe
+        || (MediaType == DiscMediaType.DvdMinusRw && InRestrictedOverwriteMode);
+
+    /// <summary>
     /// Indicates whether the disc has been closed/finalized, prohibiting further multi-session appending.
     /// </summary>
     public bool IsFinalized { get; set; }
@@ -511,6 +522,7 @@ public class VirtualDiscMedium : IDisposable, IBookTypeTarget
 
         lock (_syncRoot)
         {
+            InRestrictedOverwriteMode = false; // BLANK leaves a DVD-RW in sequential mode
             if (_fileStream != null)
             {
                 if (fullErase)

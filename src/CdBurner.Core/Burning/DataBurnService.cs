@@ -137,10 +137,10 @@ public class DataBurnService
             var result = await ExecuteBurnPipelineAsync(recorder, imageStream, burnOptions, requiredSectors, progress, cancellationToken);
             if (result.Success)
             {
-                result.Warning = ComposeBurnWarning(
+                result.Warning = JoinWarnings(result.Warning, ComposeBurnWarning(
                     DescribeShortenedNames(rootDirectory, buildOptions, sessionStartLba),
                     sessionAdded: sessionStartLba > 0,
-                    virtualDrive: recorder.IsVirtual);
+                    virtualDrive: recorder.IsVirtual));
             }
             return result;
         }
@@ -371,6 +371,15 @@ public class DataBurnService
             return DataBurnResult.FromBurnResult(burnResult);
         }
 
+        // A disc that was to stay open but can now only be written over: Windows' writer formats a blank DVD-RW into
+        // restricted overwrite mode before writing (measured on a real drive), so it never holds a second session.
+        string? leftOpenNote = null;
+        if (!burnOptions.CloseDisc && !burnOptions.Simulate && !preBurnStatus.IsOverwriteOnly
+            && recorder.QueryMediaStatus().IsOverwriteOnly)
+        {
+            leftOpenNote = NotLeftOpenMessage;
+        }
+
         bool verified = false;
         string? verificationNote = null;
         if (verifyRequested && !burnOptions.Simulate)
@@ -408,13 +417,28 @@ public class DataBurnService
             }
         }
 
-        return DataBurnResult.Succeeded(
+        var succeeded = DataBurnResult.Succeeded(
             burnResult.SectorsWritten,
             burnResult.TotalTime,
             burnResult.AverageSpeedMultiplier,
             verified,
             verificationNote);
+        succeeded.Warning = leftOpenNote;
+        return succeeded;
     }
+
+    /// <summary>
+    /// Shown when a burn asked to leave the disc open, but the disc came out overwrite-only. Windows' writer does this
+    /// to every blank DVD-RW (it formats it into restricted overwrite mode first); direct drive commands keep a DVD-RW
+    /// sequential after a full erase.
+    /// </summary>
+    public const string NotLeftOpenMessage =
+        "The disc could not be left open for more sessions: Windows' writer formatted this DVD-RW for overwriting. " +
+        "The files are on it, but a later burn replaces them instead of adding a session.";
+
+    /// <summary>Joins two notes for the user, either of which may be missing.</summary>
+    public static string? JoinWarnings(string? first, string? second) =>
+        first == null ? second : second == null ? first : first + " " + second;
 
     /// <summary>
     /// Reads the burned sectors back and compares each one with the image (roadmap M1.3). The drive is told to read

@@ -29,6 +29,10 @@ public sealed partial class NativeTaoDataWriter
 {
     public const ushort ProfileDvdMinusR = 0x0011;
     public const ushort ProfileDvdMinusRwSequential = 0x0014;
+
+    /// <summary>Why a DVD-RW cannot be left open, and what makes it possible: a quick erase allows Disc-At-Once only.</summary>
+    public const string QuickErasedDvdRwHint =
+        "A DVD-RW that was given a quick erase can only be written and closed in one go: erase it fully (command line: erase --full) to leave it open for more sessions.";
     public const ushort ProfileDvdMinusRDualLayer = 0x0015;
     public const ushort ProfileDvdMinusRDualLayerJump = 0x0016;
     public const ushort ProfileDvdPlusR = 0x001B;
@@ -161,9 +165,12 @@ public sealed partial class NativeTaoDataWriter
             bufferUnderrunFree = (dvdWrite.Flags & 0x40) != 0;
             if (mode == DvdWriteMode.Incremental && !ReadFeature(FeatureIncrementalStreaming).Current)
             {
-                throw Stop(request.AppendsSession
+                // Measured on the GP60NB50 (Ritek DVD-RW): after a quick erase (BLANK minimal) feature 0021h is listed
+                // but not current; a full erase makes it current again.
+                string hint = profile == ProfileDvdMinusRwSequential && !request.AppendsSession ? " " + QuickErasedDvdRwHint : "";
+                throw Stop((request.AppendsSession
                     ? "The drive does not offer incremental writing for this disc, which adding a session needs."
-                    : "The drive does not offer incremental writing for this disc, which leaving the disc open needs.");
+                    : "The drive does not offer incremental writing for this disc, which leaving the disc open needs.") + hint);
             }
         }
 

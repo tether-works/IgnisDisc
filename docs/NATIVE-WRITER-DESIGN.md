@@ -17,7 +17,7 @@
 - data discs: one Mode 1 track Track-at-Once on a blank CD-R/CD-RW, and one data track on a blank single-layer
   DVD-R, DVD-RW (sequential) or DVD+R (`NativeTaoDataWriter`, DVD half in `NativeTaoDataWriter.Dvd.cs`), through
   `burn-iso` / `burn-data --native` and the Data Disc and Disc Image screens. The DVD path has run on real discs for
-  DVD-R, DVD+R and DVD+RW (see the results table); DVD-RW has run only against the virtual drive.
+  DVD-R, DVD+R, DVD+RW and DVD-RW (see the results table).
 - Exclusive access opens the drive by its device interface path (`\\?\…{53f56308-…}`): the cdrom driver refuses
   the lock (ERROR_INVALID_HANDLE) on a handle opened by drive letter, because that handle belongs to the mounted
   file system.
@@ -34,7 +34,7 @@ back); a DVD-R written in one pass, a DVD-R left open and given a second session
 write; a used and a new DVD+RW; a DVD+R finalized by the drive; three added sessions on a CD-RW, a CD-R and a DVD+R and
 four on a DVD-R, every file of every session identical; a 60 s DVD-Video test disc on a DVD+RW, read back and decoded
 in full; and a dual-layer DVD+R with the layer break where IgnisDisc was told to put it (the Ubuntu 26.04 image, 6.5 GB,
-SHA-256 of the disc equal to the image). Also real: a two-film DVD-9 on a dual-layer DVD+R with the break on the second film's first cell, played on an Xbox Series X across the layer change. Still simulator only: DVD-RW, DVD-RAM, dual-layer DVD-R, Blu-ray, the open audio session with a data
+SHA-256 of the disc equal to the image). Also real: a two-film DVD-9 on a dual-layer DVD+R with the break on the second film's first cell, played on an Xbox Series X across the layer change. Real since 2026-11-15: DVD-RW closed (Disc-At-Once), left open (incremental) and in restricted overwrite mode (expanded with 13h). Still simulator only: adding a session to a DVD-RW (not reachable from the burn service yet, see below), DVD-RAM, dual-layer DVD-R, Blu-ray, the open audio session with a data
 session after it (CD-Extra), the Audio CD recovery session, CD picture tracks, the radial spread of archive recovery data, the archive
 `HEALTH.json` certificates, and the `eject` and `load` commands.
 
@@ -96,7 +96,12 @@ FUA over every sector, compared with the image. A test write skips the close and
 disc that is not blank is never erased by the writer.
 
 **Adding a session (CD-R, CD-RW, DVD-R, DVD-RW, DVD+R left open; built 2026-11-12; run on a real CD-RW, CD-R, DVD-R
-and DVD+R 2026-11-13, DVD-RW simulator only):**
+and DVD+R 2026-11-13, DVD-RW simulator only):** On a real open DVD-RW (2026-11-15) Windows' media status says
+overwrite-only with no next writable address (state 0x1, profiles 0x0014 and 0x0013 both current), although the drive
+reports profile 0x0014 and disc status 1. `DataBurnService` and `NativeDataBurnEngine` take the disc from that status,
+so a second session is refused (nothing written) and the append path is never reached for DVD-RW. Reaching it needs
+the direct writer to read the disc itself (READ DISC INFORMATION, current profile from the GET CONFIGURATION header)
+outside `QueryMediaStatus`.
 the image is built by `IsoUdfImageBuilder` from the disc's next writable address, with the last session's tree
 imported (`MultiSessionManager`), as for the Windows writer. Before anything is written the writer checks:
 `READ DISC INFORMATION` status 1 (appendable) with an empty last session (byte 2 bits 3–2 = 00b); `READ TRACK
@@ -193,7 +198,7 @@ from the track's own stream (its INDEX 00 area). Track 1's first 150 sectors (be
 audio after them and before INDEX 01 is hidden audio that players reach by rewinding. From a single-file `.cue`
 album the bytes on the disc stay in file order; only the track marks move.
 
-**Data DVD** (built 2026-11-11; run on real discs for DVD-R, DVD+R and DVD+RW, see the results table; DVD-RW only in the simulator). Sequences from libburn's cookbook (libburnia,
+**Data DVD** (built 2026-11-11; run on real discs for DVD-R, DVD+R, DVD+RW and DVD-RW, see the results table). Sequences from libburn's cookbook (libburnia,
 `doc/cookbook.txt`); `SET STREAMING` layout from libburn's `mmc.c`. Every case starts with `GET CONFIGURATION`
 (current profile), `READ DISC INFORMATION` (status must be blank) and `READ TRACK INFORMATION` track 1 (next writable
 address must be 0, free blocks must hold the image). The image is padded with zeros to whole 16-sector (32 KiB) ECC
@@ -228,7 +233,7 @@ speed in kB over 1,000 ms), then `SET CD SPEED` if the drive refuses that.
   and makes the disc readable elsewhere; a refusal is logged, not fatal. Sectors past a shorter new image keep their
   old contents, as with any overwrite; the new file system ends before them. `DataBurnService` now verifies from
   sector 0 whenever an overwrite-only disc's data is replaced.
-- *DVD-RW in restricted overwrite mode and DVD-RAM* (built 2026-11-11, simulator only; shared with DVD+RW in
+- *DVD-RW in restricted overwrite mode and DVD-RAM* (built 2026-11-11; DVD-RW real 2026-11-15, DVD-RAM simulator only; shared with DVD+RW in
   `NativeTaoDataWriter.Overwritable.cs`). DVD-RW: 32 KiB alignment, so the image is padded to whole 16-sector
   blocks. `READ FORMAT CAPACITIES` decides the state (cookbook): formatted with format 13h or 11h still offering
   blocks = partly formatted, expanded first with `FORMAT UNIT` type 13h (list byte 1 0x82, byte 3 = 8, blocks 0,
@@ -347,7 +352,7 @@ BURN-Free / buffer-underrun protection (BUFE bit in page 0x05) when the drive su
 - Virtual drive: each command is implemented in `VirtualDiscBackend`, including failure injection (sense codes at
   chosen LBAs), so the error paths are tested.
 - Real hardware, in order: test write on CD-RW (done), real write on CD-RW (done), then CD-R (done); DVD after CD:
-  a DVD-R test write, then a real DVD-R (done 2026-11-11), DVD+R (done 2026-11-13) and DVD-RW (not run yet).
+  a DVD-R test write, then a real DVD-R (done 2026-11-11), DVD+R (done 2026-11-13) and DVD-RW (done 2026-11-15).
 
 ## Test hardware
 
@@ -397,8 +402,12 @@ Results:
 | 2026-11-13 | GP60NB50 | used Verbatim DVD+RW (MKM-A02-00) | Data with `--overwrite` (30 MB, 148 files), then a second burn of other files without `--overwrite`, direct and through the Windows writer | First burn: written over from sector 0, every file identical. Second burn: both writers refused before writing ("already has files on it ... add --overwrite, or erase the disc first"); the first burn's files still identical and none of the new ones on the disc. A DVD+RW gets no added session; it is replaced whole or left alone. |
 | 2026-11-14 | GP60NB50 | blank Verbatim DVD+R DL (MKM-003-00, 4,173,824 sectors, layer 0 2,086,912) | Data, real write: the Ubuntu 26.04 desktop ISO (6,518,974,464 bytes, 3,183,093 sectors), `burn-iso --native --layer-break 1800000` | **First try stopped at the first WRITE, nothing recorded:** READ DISC STRUCTURE 20h, SEND DISC STRUCTURE 20h with 1,800,000 and the read-back all accepted, SET STREAMING 6x (the drive offers 6x, 4x and 3x for this disc), then the first WRITE was failed by Windows after the writer's 60 s timeout (error 121). Afterwards the disc read blank (next writable address 0) with layer 0 at 1,800,000, not yet fixed, and a capacity of 3,600,000 sectors (twice layer 0). Fixed: the first WRITE of a run now has 4 minutes, and the simulator holds the first WRITE for a set calibration time (`FirstWriteCalibration`). **Second try on the same disc passed:** "layer break already at 1,800,000"; the first WRITE took **61.3 s**, then 64 KiB WRITEs of at most 3.4 s; 1,008 s of writing (4.7x average); SYNCHRONIZE CACHE 40.7 s; CLOSE TRACK, then finalize 101b accepted; 1,275 s for the writer; read-back passed. READ DISC STRUCTURE afterwards: 00h book type **0 (DVD-ROM, set by the drive itself)**, two layers, opposite track path, layer 0 ends after 1,800,000 sectors; 20h layer 0 1,800,000, fixed. Independent check: `verify --iso` read all 3,183,093 sectors in 15 min, SHA-256 `487F87FA…BCEE9DD2`, equal to the image and to Ubuntu's published checksum. |
 | 2026-11-14 | GP60NB50 | blank Verbatim DVD+R DL (MKM-003-00) | DVD-9 video: two films authored by IgnisDisc (103 and 86 min, 4,463 kbps video so the first fits on layer 0), `burn-dvd --native`; the break placed on the cell where the second film starts | Image 3,122,832 sectors built first; layer break on title set 2, cell 1 at LBA **1,793,216** (57.4% on layer 0), sent with SEND DISC STRUCTURE 20h and read back. First WRITE **85.4 s** (calibration), 1,016 s of writing, SYNCHRONIZE CACHE 48.3 s, finalize 101b accepted; 1,382 s with the read-back of every sector: passed. READ DISC STRUCTURE afterwards: book type 0 (DVD-ROM), layer 0 1,793,216, fixed. Independent checks: libdvdnav (mpv) read the disc in the drive from 1:42:42 in the first film to its end and on into the second film on layer 1; an Xbox Series X played both films, fast-forwarding through the first into the second (the layer change) without a stop. |
+| 2026-11-15 | GP60NB50 | Ritek DVD-RW (RITEKW01), quick-erased | Data, `burn-data --native --no-close` (200 MB) | **Stopped before writing**: feature 0021h listed but not current after a quick erase (BLANK minimal). Nothing written; the message now says to erase fully. |
+| 2026-11-15 | GP60NB50 | same disc after a full erase (1,762 s) | Data, `burn-data --native --no-close` (200 MB, 10 files) | Incremental: 102,427 sectors + 5 padding, 77 s writing (1.97x), session closed, read-back passed. Drive afterwards: profile 0014h, disc status 1 (open). 10/10 files identical through Windows and in a rip (102,427 sectors, 0 bad). Windows' media status: overwrite-only, so a second session was refused, nothing written. |
+| 2026-11-15 | GP60NB50 | same disc, quick-erased | Data, `burn-data --native` closed (63 MB, 6 files incl. a 100-character name) | Disc-At-Once: 31.9 s writing, then **SYNCHRONIZE CACHE 376 s** (lead-out; 122 s for 372 MB on DVD-R), so the flush timeout went from 10 to 20 min. Status 2, one track of 31,024 sectors. UDF mount and rip: 6/6 identical. Any burn without an erase refused: "must be erased". |
+| 2026-11-15 | GP60NB50 | same disc, Windows' writer had formatted it to 65,264 blocks (restricted overwrite) | Data, `burn-data --native --overwrite` (230 MB, 13 files) | FORMAT UNIT 13h accepted, drive ready after 12.4 s; 118,071 sectors (+9 to a 32 KiB block) from LBA 0, 88.5 s; CLOSE SESSION accepted. Formatted size afterwards 118,080. 13/13 identical through Windows (UDF) and in a rip. |
 
-Media on hand: CD-RW, CD-R, DVD-R, DVD+RW and DVD+R (Verbatim). Ordered: DVD+R DL, BD-R, BD-RE and M-DISC BD-R, a Blu-ray writer (LG BP50NB40) and a second DVD writer (Lite-On iHAS124). No DVD-RW, DVD-RAM, BD-R DL or BDXL yet.
+Media on hand: CD-RW, CD-R, DVD-R, DVD+RW, DVD+R and DVD-RW (Ritek). Ordered: DVD+R DL, BD-R, BD-RE and M-DISC BD-R, a Blu-ray writer (LG BP50NB40) and a second DVD writer (Lite-On iHAS124). No DVD-RAM, BD-R DL or BDXL yet.
 
 The GP60NB50 has a spring-loaded slim tray that cannot close itself: automated runs never eject it, and the owner
 swaps discs by hand. Drives added later get a row here with their probe result.

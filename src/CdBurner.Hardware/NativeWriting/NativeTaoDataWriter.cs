@@ -133,7 +133,13 @@ public sealed partial class NativeTaoDataWriter
     /// 23 s on a DVD+R; Windows then fails the command with error 121 although nothing was recorded.
     /// </summary>
     internal static readonly TimeSpan FirstWriteTimeout = TimeSpan.FromMinutes(4);
-    private static readonly TimeSpan FlushTimeout = TimeSpan.FromMinutes(10);
+
+    /// <summary>
+    /// SYNCHRONIZE CACHE, where a Disc-At-Once or closing drive writes the lead-out. The GP60NB50 took 376 s for a
+    /// 63 MB Disc-At-Once DVD-RW at 2x (122 s for 372 MB on DVD-R); a 1x disc could take twice that, and a timeout here
+    /// would report a failed burn while the drive goes on closing the disc.
+    /// </summary>
+    private static readonly TimeSpan FlushTimeout = TimeSpan.FromMinutes(20);
 
     private readonly IScsiTransport _transport;
     private readonly Action<string> _note;
