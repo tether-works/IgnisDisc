@@ -840,6 +840,11 @@ public sealed class FullSystemAcceptanceTests : IDisposable
                 // Verify that a substantial suite of interactive controls were checked
                 Assert.True(totalInspected >= 50, $"Expected >= 50 interactive controls inspected across all views, but found {totalInspected}.");
 
+                // Verify DVD-Video title menu checkbox label
+                var dvdCheckBoxes = EnumerateAllDescendants(dvdView).OfType<CheckBox>().ToList();
+                Assert.Contains(dvdCheckBoxes, cb => (cb.Content as string) == "Create title menu");
+                Assert.DoesNotContain(dvdCheckBoxes, cb => (cb.Content as string) == "Auto Play Menu");
+
                 // Keyboard Navigation Verification on BurnTargetDialog:
                 Assert.Equal(KeyboardNavigationMode.Cycle, KeyboardNavigation.GetTabNavigation(burnDialog));
                 var dialogButtons = EnumerateAllDescendants(burnDialog).OfType<Button>().ToList();

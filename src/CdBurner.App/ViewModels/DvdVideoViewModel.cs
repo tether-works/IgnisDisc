@@ -155,7 +155,7 @@ public class DvdVideoViewModel : ObservableObject
     public IReadOnlyList<DvdAspectRatio> AvailableAspectRatios { get; } = new[] { DvdAspectRatio.Widescreen16x9, DvdAspectRatio.Standard4x3 };
 
     /// <summary>
-    /// Whether to automatically generate an interactive DVD Root Menu.
+    /// Whether to create a DVD title menu.
     /// </summary>
     public bool AutoCreatePlayMenu
     {

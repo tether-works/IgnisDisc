@@ -145,8 +145,8 @@
                               SelectedItem="{Binding SelectedAspectRatio}"
                               Margin="0,0,14,0" />
 
-                    <CheckBox Content="Auto Play Menu"
-                              AutomationProperties.Name="Auto Play Menu"
+                    <CheckBox Content="Create title menu"
+                              AutomationProperties.Name="Create title menu"
                               IsChecked="{Binding AutoCreatePlayMenu}"
                               VerticalAlignment="Center"
                               Foreground="{DynamicResource TextPrimaryBrush}"
