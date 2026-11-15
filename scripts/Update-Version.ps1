@@ -195,6 +195,8 @@ if (Test-Path $PublicHtmlPath) {
     $newHtml = [regex]::Replace($newHtml, '<strong>IgnisDisc( Optical Studio)? v[^<]+</strong>', "<strong>IgnisDisc v$NewVersion</strong>")
     $newHtml = [regex]::Replace($newHtml, 'IgnisDisc Optical Studio \(v[^)]+\)', "IgnisDisc Optical Studio (v$NewVersion)")
     $newHtml = [regex]::Replace($newHtml, '"engine":\s*"IgnisDisc v[^ (]+', "`"engine`": `"IgnisDisc v$NewVersion")
+    $newHtml = [regex]::Replace($newHtml, '(/styles\.css\?v=)[^"]+', "`${1}$NewVersion")
+    $newHtml = [regex]::Replace($newHtml, '(/app\.js\?v=)[^"]+', "`${1}$NewVersion")
     if ($newHtml -ne $html) {
         Set-FileText $PublicHtmlPath $newHtml "web/public/index.html (version badges & URLs)"
     }
@@ -208,6 +210,8 @@ if (Test-Path $TetherHtmlPath) {
     $thtml = Get-Content $TetherHtmlPath -Raw
     $newThtml = [regex]::Replace($thtml, 'IgnisDisc Optical Studio \(v[^)]+\)', "IgnisDisc Optical Studio (v$NewVersion)")
     $newThtml = [regex]::Replace($newThtml, '(id="ignisRev">)v[^<]+(</code>)', "`${1}v$NewVersion`${2}")
+    $newThtml = [regex]::Replace($newThtml, '(/styles\.css\?v=)[^"]+', "`${1}$NewVersion")
+    $newThtml = [regex]::Replace($newThtml, '(/app\.js\?v=)[^"]+', "`${1}$NewVersion")
     if ($newThtml -ne $thtml) {
         Set-FileText $TetherHtmlPath $newThtml "web/tetherworks/index.html"
     }

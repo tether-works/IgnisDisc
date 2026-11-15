@@ -4,9 +4,9 @@
   <meta charset="UTF-8" />
   <meta name="viewport" content="width=device-width, initial-scale=1.0" />
   <title>IgnisDisc Optical Studio — Windows CD/DVD Burner, Audio CD Ripper &amp; Archiver</title>
-  <meta name="description" content="IgnisDisc Optical Studio (v1.15): free, open-source Windows 10/11 desktop app and command-line tool for burning data, audio and video discs (ISO 9660 / Joliet / UDF, El Torito), ripping audio CDs with C2 error pointers and AccurateRip, and multi-disc archives with SHA-256 manifests and PAR2 recovery data." />
+  <meta name="description" content="IgnisDisc Optical Studio (v1.15): free, open-source Windows 10/11 desktop app and command-line tool for burning data, audio and DVD-Video discs (ISO 9660 / Joliet / UDF, El Torito, menus and subtitles), ripping audio CDs with C2 error pointers and AccurateRip, and multi-disc archives with SHA-256 manifests and PAR2 recovery data." />
   <link rel="icon" type="image/x-icon" href="/assets/IgnisDisc.ico" />
-  <link rel="stylesheet" href="/styles.css?v=1.12.1" />
+  <link rel="stylesheet" href="/styles.css?v=1.15" />
 </head>
 <body>
   <!-- Top Bar -->
@@ -33,7 +33,7 @@
       <div class="cell">
         <h1 class="spec-title">Burn CDs and DVDs, rip music CDs, and back up folders on Windows.</h1>
         <p class="spec-lead">
-          <strong>IgnisDisc</strong> is a free, open-source disc burner, DVD-Video authoring tool, and audio CD ripper for Windows 10 and 11. Burn files, folders, and <code>.iso</code> images to CD or DVD, author playable DVD-Video discs, make audio CDs from WAV, FLAC, MP3, Opus, Ogg, M4A, or WMA tracks, rip your music CDs to WAV, FLAC, MP3, Opus, or AAC with automatic track names, or split a large folder across several numbered backup discs. After a burn it reads the disc back and compares it with what you asked for. In the app, audio CDs (on drives that offer Session-at-Once) and dual-layer DVD-Video discs use IgnisDisc's own drive commands by default and read the disc back afterwards; data discs, single-layer DVDs and the command line use Windows' built-in disc burning service by default unless direct drive commands are switched on. No extra drivers, no ads, no bundled offers, and no tracking.
+          <strong>IgnisDisc</strong> is a free, open-source disc burner, DVD-Video authoring tool, and audio CD ripper for Windows 10 and 11. Burn files, folders, and <code>.iso</code> / legacy disc images to CD or DVD, author playable DVD-Video discs with title menus, chapters and subtitles (from <code>.srt</code> files or optional speech recognition), make audio CDs from WAV, FLAC, MP3, Opus, Ogg, M4A, or WMA tracks with optional loudness normalisation, rip your music CDs to WAV, FLAC, MP3, Opus, or AAC with automatic track names and cover art, or split a large folder across several numbered backup discs with PAR2 recovery data. After a burn it reads the disc back, compares it with what you asked for, and notifies you when finished. In the app, audio CDs (on drives that offer Session-at-Once) and dual-layer DVD-Video discs use IgnisDisc's own drive commands by default; data discs, single-layer DVDs and the command line use Windows' built-in disc burning service by default unless direct drive commands are switched on. No extra drivers, no ads, no bundled offers, and no tracking.
         </p>
 
         <!-- Download & Verification Block -->
@@ -60,13 +60,13 @@
           </div>
           <div class="digest-row">
             <span class="digest-label">IgnisDisc-Setup.exe</span>
-            <code id="hashSetup">CF22C05D6806645B8A8A15D14FBF8126D72893762939587619C336AA5DFBE855</code>
-            <button type="button" class="btn-copy" data-copy="CF22C05D6806645B8A8A15D14FBF8126D72893762939587619C336AA5DFBE855">[ COPY ]</button>
+            <code id="hashSetup">7D4151B5442B46EF8C3473FF03BB86BF96EC77AF5BBE47CFED9286FB83A0E1C3</code>
+            <button type="button" class="btn-copy" data-copy="7D4151B5442B46EF8C3473FF03BB86BF96EC77AF5BBE47CFED9286FB83A0E1C3">[ COPY ]</button>
           </div>
           <div class="digest-row">
             <span class="digest-label">IgnisDisc-Portable-win-x64.zip</span>
-            <code id="hashPortable">EC6FD6620FDD6C8B0F7C772DAB9F9522C4BEF2978EA5A2605E183C126B6788F1</code>
-            <button type="button" class="btn-copy" data-copy="EC6FD6620FDD6C8B0F7C772DAB9F9522C4BEF2978EA5A2605E183C126B6788F1">[ COPY ]</button>
+            <code id="hashPortable">E33CC4B02A635085794332EC1266768D7164A09F446F813D1C90EC88D14637D5</code>
+            <button type="button" class="btn-copy" data-copy="E33CC4B02A635085794332EC1266768D7164A09F446F813D1C90EC88D14637D5">[ COPY ]</button>
           </div>
         </div>
       </div>
@@ -367,10 +367,34 @@ PS C:\&gt; ignisdisc-cli.exe burn-audio --drive H: --tracks album\album.cue --da
 
           <div class="cli-block">
             <div class="cli-block-head">
-              <span>SECURE AUDIO EXTRACTION WITH C2 POINTERS &amp; ACCURATERIP</span>
-              <button type="button" class="btn-copy" data-copy="ignisdisc-cli.exe rip-audio --drive H: --output &quot;C:\Rips\Album&quot; --format flac --secure --verify-accuraterip --lookup --json">[ COPY ]</button>
+              <span>AUTHOR &amp; BURN DUAL-LAYER DVD-VIDEO WITH MENU, SUBTITLES &amp; CELL BREAK</span>
+              <button type="button" class="btn-copy" data-copy="ignisdisc-cli.exe burn-dvd --drive H: --video-ts &quot;C:\Films&quot; --menu-title &quot;Double Feature&quot; --dual-layer --native">[ COPY ]</button>
             </div>
-            <pre class="cli-block-code"><code>ignisdisc-cli.exe rip-audio --drive H: --output "C:\Rips\Album" --format flac --secure --verify-accuraterip --lookup --json</code></pre>
+            <pre class="cli-block-code"><code>ignisdisc-cli.exe burn-dvd --drive H: --video-ts "C:\Films" --menu-title "Double Feature" --dual-layer --native</code></pre>
+          </div>
+
+          <div class="cli-block">
+            <div class="cli-block-head">
+              <span>GENERATE SUBTITLES &amp; AUTHOR A DVD-VIDEO ISO</span>
+              <button type="button" class="btn-copy" data-copy="ignisdisc-cli.exe author-dvd --input &quot;C:\Films\movie.mp4&quot; --output &quot;C:\Movie.iso&quot; --generate-subtitles">[ COPY ]</button>
+            </div>
+            <pre class="cli-block-code"><code>ignisdisc-cli.exe author-dvd --input "C:\Films\movie.mp4" --output "C:\Movie.iso" --generate-subtitles</code></pre>
+          </div>
+
+          <div class="cli-block">
+            <div class="cli-block-head">
+              <span>SECURE AUDIO EXTRACTION WITH C2 POINTERS, ACCURATERIP &amp; COVER ART</span>
+              <button type="button" class="btn-copy" data-copy="ignisdisc-cli.exe rip-audio --drive H: --output &quot;C:\Rips\Album&quot; --format flac --verify-accuraterip --lookup --cover &quot;C:\Rips\cover.jpg&quot; --json">[ COPY ]</button>
+            </div>
+            <pre class="cli-block-code"><code>ignisdisc-cli.exe rip-audio --drive H: --output "C:\Rips\Album" --format flac --verify-accuraterip --lookup --cover "C:\Rips\cover.jpg" --json</code></pre>
+          </div>
+
+          <div class="cli-block">
+            <div class="cli-block-head">
+              <span>AUDIO CD WITH -18 LUFS LOUDNESS, CD-TEXT &amp; DIRECT DRIVE COMMANDS</span>
+              <button type="button" class="btn-copy" data-copy="ignisdisc-cli.exe burn-audio --drive H: --tracks &quot;C:\Album\album.cue&quot; --dao --loudness album --native --json">[ COPY ]</button>
+            </div>
+            <pre class="cli-block-code"><code>ignisdisc-cli.exe burn-audio --drive H: --tracks "C:\Album\album.cue" --dao --loudness album --native --json</code></pre>
           </div>
 
           <div class="cli-block">
@@ -383,10 +407,18 @@ PS C:\&gt; ignisdisc-cli.exe burn-audio --drive H: --tracks album\album.cue --da
 
           <div class="cli-block">
             <div class="cli-block-head">
-              <span>FIRST SESSION OF A MULTI-SESSION DISC, READ BACK AND COMPARED</span>
-              <button type="button" class="btn-copy" data-copy="ignisdisc-cli.exe burn-data --drive H: --input &quot;C:\Batch1&quot; --label &quot;ARCHIVE_S1&quot; --no-close --verify">[ COPY ]</button>
+              <span>RECOVER FILES FROM A DAMAGED ARCHIVE DISC WITH PAR2</span>
+              <button type="button" class="btn-copy" data-copy="ignisdisc-cli.exe recover --drive H: --out &quot;C:\Recovered&quot; --json">[ COPY ]</button>
             </div>
-            <pre class="cli-block-code"><code>ignisdisc-cli.exe burn-data --drive H: --input "C:\Batch1" --label "ARCHIVE_S1" --no-close --verify</code></pre>
+            <pre class="cli-block-code"><code>ignisdisc-cli.exe recover --drive H: --out "C:\Recovered" --json</code></pre>
+          </div>
+
+          <div class="cli-block">
+            <div class="cli-block-head">
+              <span>FIRST SESSION OF A MULTI-SESSION DISC, READ BACK AND COMPARED</span>
+              <button type="button" class="btn-copy" data-copy="ignisdisc-cli.exe burn-data --drive H: --input &quot;C:\Batch1&quot; --label &quot;ARCHIVE_S1&quot; --no-close">[ COPY ]</button>
+            </div>
+            <pre class="cli-block-code"><code>ignisdisc-cli.exe burn-data --drive H: --input "C:\Batch1" --label "ARCHIVE_S1" --no-close</code></pre>
           </div>
 
           <div class="cli-block">
@@ -395,14 +427,6 @@ PS C:\&gt; ignisdisc-cli.exe burn-audio --drive H: --tracks album\album.cue --da
               <button type="button" class="btn-copy" data-copy="ignisdisc-cli.exe burn-data --drive H: --input &quot;C:\Photos&quot; --label &quot;PHOTOS_2026&quot; --sha256sums --strict-verify">[ COPY ]</button>
             </div>
             <pre class="cli-block-code"><code>ignisdisc-cli.exe burn-data --drive H: --input "C:\Photos" --label "PHOTOS_2026" --sha256sums --strict-verify</code></pre>
-          </div>
-
-          <div class="cli-block">
-            <div class="cli-block-head">
-              <span>AUDIO CD WITH CD-TEXT FROM A CUE SHEET, DIRECT DRIVE COMMANDS (EXPERIMENTAL)</span>
-              <button type="button" class="btn-copy" data-copy="ignisdisc-cli.exe burn-audio --drive H: --tracks &quot;C:\Album\album.cue&quot; --dao --native --json">[ COPY ]</button>
-            </div>
-            <pre class="cli-block-code"><code>ignisdisc-cli.exe burn-audio --drive H: --tracks "C:\Album\album.cue" --dao --native --json</code></pre>
           </div>
         </div>
       </div>
@@ -413,7 +437,7 @@ PS C:\&gt; ignisdisc-cli.exe burn-audio --drive H: --tracks album\album.cue --da
       <div class="cell">
         <h2 class="spec-module-title">Technical Overview &amp; Subsystem Architecture</h2>
         <p class="spec-lead">
-          IgnisDisc Optical Studio is a .NET 10 WPF desktop application (<code>IgnisDisc.exe</code>) and a command-line tool (<code>ignisdisc-cli.exe</code>). Its own image builder writes ISO 9660 + Joliet + UDF bridge volumes (UDF 1.02 by default, 1.50 to 2.60 on request), El Torito BIOS/UEFI boot images, and optional <code>SHA256SUMS</code> / <code>BLAKE3SUMS</code> hash lists; legacy disc images (<code>.nrg</code>, <code>.mdf</code>/<code>.mds</code>, <code>.ccd</code>/<code>.img</code>, and <code>.cdi</code>) are read and converted. Data discs and single-layer DVDs burn through Windows IMAPIv2 by default, while in the desktop app audio CDs (on drives that report Session-at-Once) and dual-layer DVD-Video discs use IgnisDisc's own SCSI MMC commands by default (<code>--native</code> on the command line). Reading uses Win32 SCSI pass-through: 294-byte C2 error pointers, AccurateRip checksums and read-offset detection for audio, and after a burn a sector-by-sector comparison in which the drive is told to read the disc rather than its buffer. Multi-disc archives carry per-disc SHA-256 manifests and PAR2 recovery volumes split across inner, middle and outer zones. In-memory virtual drives stand in for hardware in the test suite.
+          IgnisDisc Optical Studio is a .NET 10 WPF desktop application (<code>IgnisDisc.exe</code>) and a command-line tool (<code>ignisdisc-cli.exe</code>). Its own image builder writes ISO 9660 + Joliet + UDF bridge volumes (UDF 1.02 by default, 1.50 to 2.60 on request), El Torito BIOS/UEFI boot images, and optional <code>SHA256SUMS</code> / <code>BLAKE3SUMS</code> hash lists; legacy disc images (<code>.nrg</code>, <code>.mdf</code>/<code>.mds</code>, <code>.ccd</code>/<code>.img</code>, and <code>.cdi</code>) are read and converted. Its DVD-Video author builds <code>IFO</code> and <code>NAV</code> pack tables with a still-frame title menu (<em>Create title menu</em>), 5-minute chapters, English subtitles from <code>.srt</code> files or the optional <code>whisper.cpp</code> speech-recognition download, and cell-boundary layer breaks on dual-layer DVD-9 discs. Audio CDs support BS.1770-4 <code>-18 LUFS</code> gated loudness normalisation and gapless lossy decoding via optional FFmpeg. Data discs and single-layer DVDs burn through Windows IMAPIv2 by default, while in the desktop app audio CDs (on drives that report Session-at-Once) and dual-layer DVD-Video discs use IgnisDisc's own SCSI MMC commands by default (<code>--native</code> on the command line). Reading uses Win32 SCSI pass-through: 294-byte C2 error pointers, AccurateRip checksums and read-offset detection for audio, and after a burn a sector-by-sector comparison in which the drive is told to read the disc rather than its buffer. Multi-disc archives carry per-disc SHA-256 manifests and PAR2 recovery volumes split across inner, middle and outer zones with duplicate volume descriptors. In-memory virtual drives stand in for hardware in the test suite.
         </p>
       </div>
       <div class="grid-1px grid-4col">
@@ -421,8 +445,9 @@ PS C:\&gt; ignisdisc-cli.exe burn-audio --drive H: --tracks album\album.cue --da
         <h2 class="spec-module-title">CdBurner.Core</h2>
         <ul class="spec-module-list">
           <li><code>IsoUdfImageBuilder</code>: ISO 9660, Joliet UCS-2BE, OSTA UDF 1.02 to 2.60 (metadata partition and mirror from 2.50), El Torito BIOS/UEFI boot catalogs; byte-identical output with a fixed build time.</li>
+          <li><code>DvdVideoAuthoringService</code>, <code>DvdIfoGenerator</code>, <code>DvdNavPackWriter</code>, and <code>DvdStillMenu</code>: <code>VMG</code>/<code>VTS</code> navigation tables, still-frame title menus (<em>Play</em> / <em>Play with subtitles</em>), 5-minute chapters, <code>DvdSubtitleWriter</code> (<code>.srt</code> or <code>SubtitleGenerationService</code> via optional <code>whisper.cpp</code> 1.9.5), and <code>DvdCellLayerBreak</code> for dual-layer DVD-9 discs.</li>
           <li>Streaming <code>LegacyDiscImageConverter</code> for <code>.nrg</code>, <code>.mdf</code>/<code>.mds</code>, and <code>.ccd</code>/<code>.img</code> (incl. Mode 2 / XA 2336B/2448B sectors), and DiscJuggler <code>.cdi</code> (v2, v3, v3.5; tested on hand-built files only).</li>
-          <li><code>RedBookPcmConverter</code> (polyphase resampler + TPDF dither), built-in <code>FlacFileCodec</code>, CUE/playlist parsers, <code>ArchiveSpanPlanner</code>, and built-in SHA-256 and BLAKE3 hash lists.</li>
+          <li><code>RedBookPcmConverter</code> (polyphase resampler, TPDF dither, BS.1770-4 <code>-18 LUFS</code> gated loudness with <code>-1 dBTP</code> 4x-oversampled limiter, gapless FFmpeg decoding for <code>.opus</code>/<code>.ogg</code>/<code>.mp3</code>), built-in <code>FlacFileCodec</code>, CD picture tracks (<code>.cue</code> pipeline, simulator-tested), and <code>ArchiveSpanPlanner</code> with 3-zone PAR2 recovery and SHA-256 / BLAKE3 manifests.</li>
         </ul>
       </div>
 
@@ -438,7 +463,7 @@ PS C:\&gt; ignisdisc-cli.exe burn-audio --drive H: --tracks album\album.cue --da
       <div class="cell">
         <h2 class="spec-module-title">CdBurner.Cli &amp; App</h2>
         <ul class="spec-module-list">
-          <li><code>IgnisDisc.exe</code>: WPF desktop studio with 8 dedicated workspaces and OS-synced Dark/Light theme (<code>ThemeManager</code>).</li>
+          <li><code>IgnisDisc.exe</code>: WPF desktop studio with 8 dedicated workspaces, OS-synced Dark/Light theme (<code>ThemeManager</code>), per-movie DVD subtitle controls, burn-finished notice (sound + taskbar flash), instant-save settings, eject-after-burn on by default, and pinned-SHA-256 1-click downloads for optional <code>ffmpeg</code>, <code>par2cmdline-turbo</code> 1.5.0, and <code>whisper.cpp</code> 1.9.5.</li>
           <li><code>ignisdisc-cli.exe</code>: 37 commands with <code>--json</code> output; it refuses to replace the contents of a rewritable disc unless <code>--overwrite</code> is given.</li>
           <li>Per-user installer (<code>net48</code> bootstrapper, no administrator rights) with a small separate <code>Uninstall-IgnisDisc.exe</code>.</li>
         </ul>
@@ -494,6 +519,6 @@ PS C:\&gt; ignisdisc-cli.exe burn-audio --drive H: --tracks album\album.cue --da
     </footer>
   </main>
 
-  <script src="/app.js?v=1.12.1"></script>
+  <script src="/app.js?v=1.15"></script>
 </body>
 </html>

@@ -6,7 +6,7 @@
   <title>tetherworks — Independent Software Workbench</title>
   <meta name="description" content="tetherworks: independent open-source software workbench. IgnisDisc Optical Studio (Windows 10/11 CD/DVD burner and audio CD ripper) and KiloOS (1999-style browser desktop environment)." />
   <link rel="icon" type="image/x-icon" href="/assets/IgnisDisc.ico" />
-  <link rel="stylesheet" href="/styles.css?v=1.10.4" />
+  <link rel="stylesheet" href="/styles.css?v=1.15" />
 </head>
 <body>
   <!-- Top Bar -->
@@ -72,7 +72,7 @@
           <a href="https://ignisdisc.tetherworks.dev">IgnisDisc Optical Studio (v1.15)</a>
         </h2>
         <p class="spec-lead">
-          Free, open-source CD and DVD burner, audio CD ripper, and multi-disc backup tool for Windows 10 and 11. Burn files, folders, and disc images, author DVD-Video discs, make music CDs, rip audio CDs to WAV, FLAC, MP3, Opus or AAC with automatic track names, or split large folders across several discs — from the desktop app or the command line.
+          Free, open-source CD and DVD burner, DVD-Video authoring tool, audio CD ripper, and multi-disc backup tool for Windows 10 and 11. Burn files, folders, and disc images, author playable DVD-Video discs with menus and subtitles, make music CDs with loudness normalisation, rip audio CDs to WAV, FLAC, MP3, Opus or AAC with automatic track names and cover art, or split large folders across several discs with PAR2 recovery data — from the desktop app or the command line.
         </p>
 
         <div class="table-scroll">
@@ -86,19 +86,23 @@
             <tbody>
               <tr>
                 <td><strong>Data &amp; Boot Mastering</strong></td>
-                <td>ISO 9660 + Joliet UCS-2BE + UDF bridge (UDF 1.02 to 2.60), hybrid BIOS/UEFI El Torito boot catalogs, multi-session append, optional <code>SHA256SUMS</code> / <code>BLAKE3SUMS</code> hash lists, and streaming <code>.nrg</code> / <code>.mdf</code> / <code>.ccd</code> / <code>.cdi</code> conversion.</td>
+                <td>ISO 9660 + Joliet UCS-2BE + UDF bridge (UDF 1.02 to 2.60), hybrid BIOS/UEFI El Torito boot catalogs, multi-session append, optional <code>SHA256SUMS</code> / <code>BLAKE3SUMS</code> hash lists, dual-layer DVD+R layer-break control, and streaming <code>.nrg</code> / <code>.mdf</code> / <code>.ccd</code> / <code>.cdi</code> conversion.</td>
+              </tr>
+              <tr>
+                <td><strong>DVD-Video Authoring</strong></td>
+                <td>Multi-title <code>IFO</code>/<code>VOB</code> authoring with still-frame title menus, 5-minute chapters, <code>.srt</code> subpictures (or optional <code>whisper.cpp</code> speech-recognition subtitles), and dual-layer DVD-9 cell-boundary layer break (played across the layer change on an Xbox Series X).</td>
               </tr>
               <tr>
                 <td><strong>Audio CD Rip &amp; Burn</strong></td>
-                <td>Secure SCSI extraction with 294-byte C2 error pointers, AccurateRip verification, drive offset detection, MusicBrainz lookup, and Red Book DAO/TAO burning (WAV, FLAC, MP3, Opus, Ogg, M4A, WMA, CUE). Direct drive commands (experimental; default in the app for audio CDs) write CD-Text and read the disc back.</td>
+                <td>Secure SCSI extraction with 294-byte C2 error pointers, AccurateRip verification, drive offset detection, MusicBrainz lookup, cover art + ReplayGain 2.0 tags, and Red Book DAO/TAO burning (WAV, FLAC, MP3, Opus, Ogg, M4A, WMA, CUE) with BS.1770-4 <code>-18 LUFS</code> loudness normalisation. Direct drive commands (default in the app for audio CDs) write CD-Text and read the disc back.</td>
               </tr>
               <tr>
                 <td><strong>Multi-Disc Cold Archive</strong></td>
-                <td>Folder spanning across discs with per-disc SHA-256 manifests, optional PAR2 recovery data split across three disc zones, and a <code>recover</code> command for damaged discs.</td>
+                <td>Folder spanning across discs with per-disc SHA-256 manifests, optional <code>par2cmdline-turbo</code> recovery data split across inner, middle and outer disc zones with duplicate volume descriptors, and a <code>recover</code> command for damaged discs.</td>
               </tr>
               <tr>
                 <td><strong>Hardware Verification</strong></td>
-                <td>Tested on physical CD-R, CD-RW, DVD-R, DVD+R, DVD+RW, and dual-layer DVD+R media on one drive model, plus an in-memory virtual drive simulator.</td>
+                <td>Tested on physical CD-R, CD-RW, DVD-R, DVD+R, DVD+RW, and dual-layer DVD+R media (LG GP60NB50) and stand-alone DVD-Video playback on an Xbox Series X, plus an in-memory virtual drive simulator and 37-command CLI.</td>
               </tr>
             </tbody>
           </table>
@@ -167,6 +171,6 @@
     </footer>
   </main>
 
-  <script src="/app.js?v=1.10.4"></script>
+  <script src="/app.js?v=1.15"></script>
 </body>
 </html>
