@@ -1,0 +1,258 @@
+// SPDX-License-Identifier: GPL-3.0-or-later
+// Copyright (c) 2026 Disc Image Studio contributors
+// Ported to IgnisDisc from DiscImageStudio src/DiscImageStudio.Dvd/DvdStreamingGenerator.cs at commit 619ec7505ac8955f35fe2f353ebda74b6ea90dda:
+// https://github.com/JiaFeiMiao-K-Cat/DiscImageStudio/blob/619ec7505ac8955f35fe2f353ebda74b6ea90dda/src/DiscImageStudio.Dvd/DvdStreamingGenerator.cs
+// IgnisDisc change: namespace; calibration targets and the files-plus-picture (hybrid) stream are not ported. See THIRD-PARTY-NOTICES.md.
+
+using System.Diagnostics;
+using CdBurner.Lithography.Dvd;
+using CdBurner.Lithography.Dvd.Encoding;
+using CdBurner.Lithography.Dvd.Solver;
+
+namespace CdBurner.Lithography.Dvd;
+
+public sealed record DvdStreamingOptions(
+    uint TotalSectors,
+    double InnerRadiusMm,
+    double OuterRadiusMm,
+    double ChannelBitLengthNm = 133.3,
+    double StartAngleDegrees = 0,
+    byte LuminanceThreshold = 128,
+    byte AlphaThreshold = 1,
+    int RandomSeed = 1,
+    int FastParallelism = 0,
+    double PitchLinear = 0,
+    double PitchQuadratic = 0,
+    double PitchCubic = 0,
+    ToneProfile? Tone = null,
+    bool UseSampleReuse = true,
+    bool ReadCompatibility = false,
+    uint? UsableSectors = null,
+    double? SourceImageOuterRadiusMm = null,
+    string ReadCompatibilityMode = DvdReadCompatibilityModes.Current)
+{
+    /// <summary>Physical channel-bit length of the DVD scheme; the UI no longer exposes it.</summary>
+    public const double StandardChannelBitLengthNm = 133.3;
+
+    public uint OutputSectors => UsableSectors ?? TotalSectors;
+    public long ContentLength => checked(
+        (long)OutputSectors * DvdEccBlockEncoder.PayloadBytesPerSector);
+    public double SamplingImageOuterRadiusMm => SourceImageOuterRadiusMm ?? OutputOuterRadiusMm;
+    public double OutputOuterRadiusMm => OutputSectors == TotalSectors ? OuterRadiusMm
+        : DvdTrackGeometry.Create(InnerRadiusMm, OuterRadiusMm,
+            TotalSectors * (double)DvdEccBlockEncoder.ChannelBitsPerSector * ChannelBitLengthNm * 1e-6,
+            PitchLinear, PitchQuadratic, PitchCubic).RadiusAtArcLength(
+                OutputSectors * (double)DvdEccBlockEncoder.ChannelBitsPerSector * ChannelBitLengthNm * 1e-6);
+
+    public void Validate()
+    {
+        if (ReadCompatibility && !DvdReadCompatibilityModes.IsSupported(ReadCompatibilityMode))
+            throw new ArgumentException("Unsupported DVD read compatibility recipe.", nameof(ReadCompatibilityMode));
+        DvdTrackGeometry.ValidatePitchCoefficients(PitchLinear, PitchQuadratic, PitchCubic);
+        if (Tone is { } tone)
+        {
+            tone.Validate();
+            if (!tone.IsDvdCompatible)
+            {
+                throw new ArgumentOutOfRangeException(
+                    nameof(Tone),
+                    "DVD dispersion uses two textures; tone levels must be 2.");
+            }
+        }
+        if (TotalSectors == 0 || OutputSectors == 0 || OutputSectors > TotalSectors
+            || OutputSectors % DvdEccBlockEncoder.SectorCount != 0)
+        {
+            throw new ArgumentOutOfRangeException(
+                nameof(TotalSectors),
+                "DVD streaming sector count must be a positive multiple of 16.");
+        }
+
+        if (!double.IsFinite(InnerRadiusMm)
+            || !double.IsFinite(OuterRadiusMm)
+            || InnerRadiusMm <= 0
+            || OuterRadiusMm <= InnerRadiusMm)
+        {
+            throw new ArgumentOutOfRangeException(
+                nameof(OuterRadiusMm),
+                "DVD outer radius must be greater than its positive inner radius.");
+        }
+
+        if (!double.IsFinite(ChannelBitLengthNm) || ChannelBitLengthNm <= 0)
+        {
+            throw new ArgumentOutOfRangeException(
+                nameof(ChannelBitLengthNm),
+                "DVD channel-bit length must be positive.");
+        }
+
+        if (!double.IsFinite(StartAngleDegrees))
+        {
+            throw new ArgumentOutOfRangeException(nameof(StartAngleDegrees));
+        }
+
+        if (FastParallelism is < 0 or > 64)
+        {
+            throw new ArgumentOutOfRangeException(
+                nameof(FastParallelism),
+                "DVD streaming parallelism must be automatic (0) or 1..64.");
+        }
+
+        if (SourceImageOuterRadiusMm is { } sourceRadius && (!double.IsFinite(sourceRadius) || sourceRadius <= 0))
+            throw new ArgumentOutOfRangeException(nameof(SourceImageOuterRadiusMm), "Source image radius must be positive and finite.");
+        _ = ContentLength;
+        // Resolve the complete curve before a hybrid stream writes its filesystem
+        // prefix. Positive coefficients alone do not guarantee numerical resolution.
+        double trackLengthMm = TotalSectors * (double)DvdEccBlockEncoder.ChannelBitsPerSector
+            * ChannelBitLengthNm * 1e-6;
+        _ = DvdTrackGeometry.Create(InnerRadiusMm, OuterRadiusMm, trackLengthMm,
+            PitchLinear, PitchQuadratic, PitchCubic);
+    }
+}
+
+public sealed record DvdStreamingProgress(
+    long CompletedBytes,
+    long TotalBytes,
+    int CompletedBlocks,
+    int TotalBlocks,
+    TimeSpan Elapsed)
+{
+    public double Fraction => TotalBytes == 0 ? 0 : (double)CompletedBytes / TotalBytes;
+}
+
+public sealed record DvdStreamingSummary(
+    string SourceImage,
+    uint Sectors,
+    long BytesWritten,
+    long ControlledWords,
+    TimeSpan Elapsed,
+    long CompatibilityChanges = 0);
+
+public static class DvdStreamingGenerator
+{
+    private const uint PsnOffset = 0x30000;
+
+    public static DvdStreamingSummary Generate(
+        string imagePath,
+        Stream output,
+        DvdStreamingOptions options,
+        Action<DvdStreamingProgress>? progress = null,
+        CancellationToken cancellationToken = default)
+    {
+        ArgumentException.ThrowIfNullOrWhiteSpace(imagePath);
+        ArgumentNullException.ThrowIfNull(output);
+        ArgumentNullException.ThrowIfNull(options);
+        options.Validate();
+        string sourceFullPath = Path.GetFullPath(imagePath);
+        MultiBlockSolveOptions solveOptions = CreateSolveOptions(
+            options,
+            startLba: 0,
+            fillSectors: options.OutputSectors);
+        FastDvdStreamSummary summary = FastDispersionImageWriter.WriteStream(
+            sourceFullPath,
+            output,
+            solveOptions,
+            value => progress?.Invoke(new DvdStreamingProgress(
+                value.BytesWritten,
+                value.TotalBytes,
+                value.CompletedBlocks,
+                value.TotalBlocks,
+                value.Elapsed)),
+            cancellationToken);
+        return new DvdStreamingSummary(
+            sourceFullPath,
+            summary.SectorsWritten,
+            summary.BytesWritten,
+            summary.ControlledWords,
+            summary.Elapsed,
+            summary.CompatibilityChanges);
+    }
+
+    /// <summary>
+    /// Generates calibration payload sectors directly from an analytic grayscale
+    /// pattern. Coordinates are millimetres from the disc centre, x right and y down.
+    /// The callback must support concurrent calls when parallel generation is enabled.
+    /// </summary>
+    public static DvdStreamingSummary GeneratePattern(
+        Func<double, double, byte> sampleGray,
+        Stream output,
+        DvdStreamingOptions options,
+        Action<DvdStreamingProgress>? progress = null,
+        CancellationToken cancellationToken = default)
+    {
+        ArgumentNullException.ThrowIfNull(sampleGray);
+        return GeneratePattern(sampleGray, null, output, options, progress, cancellationToken);
+    }
+
+    private static DvdStreamingSummary GeneratePattern(
+        Func<double, double, byte> sampleGray, Func<uint, byte>? sectorLuminance,
+        Stream output, DvdStreamingOptions options,
+        Action<DvdStreamingProgress>? progress, CancellationToken cancellationToken)
+    {
+        ArgumentNullException.ThrowIfNull(output);
+        ArgumentNullException.ThrowIfNull(options);
+        options.Validate();
+        MultiBlockSolveOptions solveOptions = CreateSolveOptions(
+            options,
+            startLba: 0,
+            fillSectors: options.OutputSectors);
+        void Report(FastDvdStreamProgress value) => progress?.Invoke(new DvdStreamingProgress(
+            value.BytesWritten, value.TotalBytes, value.CompletedBlocks, value.TotalBlocks, value.Elapsed));
+        FastDvdStreamSummary summary = sectorLuminance is null
+            ? FastDispersionImageWriter.WritePatternStream(sampleGray, output, solveOptions, Report, cancellationToken)
+            : FastDispersionImageWriter.WriteSectorPatternStream(sectorLuminance, output, solveOptions, Report, cancellationToken);
+        return new DvdStreamingSummary(
+            "calibration",
+            summary.SectorsWritten,
+            summary.BytesWritten,
+            summary.ControlledWords,
+            summary.Elapsed,
+            summary.CompatibilityChanges);
+    }
+
+    internal static MultiBlockSolveOptions CreateSolveOptions(
+        DvdStreamingOptions options,
+        uint startLba,
+        uint fillSectors)
+    {
+        ImageMappingOptions imageMapping = new(
+            options.TotalSectors,
+            options.InnerRadiusMm,
+            options.OuterRadiusMm,
+            options.ChannelBitLengthNm,
+            options.StartAngleDegrees,
+            Clockwise: true,
+            options.LuminanceThreshold,
+            options.AlphaThreshold,
+            SampleEveryChannelBits: 1,
+            PitchLinear: options.PitchLinear,
+            PitchQuadratic: options.PitchQuadratic,
+            PitchCubic: options.PitchCubic,
+            Tone: options.Tone,
+            UsableSectors: options.UsableSectors,
+            ImageOuterRadiusMm: options.SourceImageOuterRadiusMm
+                ?? (options.UsableSectors.HasValue ? options.OutputOuterRadiusMm : null));
+        return new MultiBlockSolveOptions(
+            startLba,
+            fillSectors,
+            PsnOffset,
+            IterationsPerBlock: 1,
+            MutationBytes: 4,
+            RandomSeed: options.RandomSeed,
+            InitialTemperature: 64.0,
+            FinalTemperature: 0.25,
+            ZeroInitialPayload: false,
+            imageMapping,
+            Algorithm: SolverAlgorithm.Dispersion,
+            FastParallelism: options.FastParallelism,
+            UseSampleReuse: options.UseSampleReuse,
+            ReadCompatibility: options.ReadCompatibility,
+            ReadCompatibilityMode: options.ReadCompatibilityMode);
+    }
+
+    private static uint AlignToEccBlock(uint lba, uint psnOffset)
+    {
+        uint remainder = (lba + psnOffset) & (DvdEccBlockEncoder.SectorCount - 1);
+        return remainder == 0
+            ? lba
+            : checked(lba + DvdEccBlockEncoder.SectorCount - remainder);
+    }
+}

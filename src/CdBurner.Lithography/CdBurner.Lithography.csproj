@@ -8,6 +8,13 @@
   <ItemGroup>
     <EmbeddedResource Include="Ported\DiscImageStudio\Presets\built-in-disc-presets.json"
                       LogicalName="CdBurner.Lithography.Presets.BuiltInDiscPresets.json" />
+    <EmbeddedResource Include="Ported\DiscImageStudio\Dvd\dispersion-byte-pools.json"
+                      LogicalName="CdBurner.Lithography.Dvd.DispersionBytePools.json" />
+  </ItemGroup>
+
+  <ItemGroup>
+    <!-- The ported encoders are internal; their tests check tables and sector layouts directly. -->
+    <InternalsVisibleTo Include="CdBurner.Lithography.Tests" />
   </ItemGroup>
 
 </Project>

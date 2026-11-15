@@ -237,6 +237,23 @@ one assembly with a clear provenance boundary. Nothing in it touches a drive.
   CIRC delay interleaver (`CddaInterleaver`, from CDImage); `RenderTrack`/`PreviewTrack` read a track back into the
   picture (from a file or from sectors read off a disc). `CdMode1Drawing` makes 2,048-byte Mode 1 sectors whose bytes
   after the drive's ECMA-130 scrambler are palette bytes, and reads them back. Constant track pitch only for now.
+- `Ported/DiscImageStudio/Dvd/` (namespaces `CdBurner.Lithography.Dvd`, `.Dvd.Encoding`, `.Dvd.Solver`; ported from
+  DiscImageStudio's `DvdImageSolver` and `DiscImageStudio.Dvd`): the DVD picture solver. A picture pixel becomes a
+  scrambled byte `0xA5` (dark: many short pits) or `0x92` (light: few long pits); the sector stores that byte XOR the
+  sector's scrambler byte. `Encoding/` holds the ECMA-267 data frame, EDC, PI/PO Reed-Solomon, the EFMPlus table
+  with its sync codes (including the SY6 state 3/4 words) and NRZI; `Solver/` holds the dispersion writer
+  (`FastDispersionImageWriter`, `FastDvdImageFileWriter`: a raw 2,048-byte-sector image plus a `.json` sidecar), the
+  exact per-block solvers (`MultiBlockImageSolver`, `StateControlSolver`, `LocalSearchSolver`) and
+  `IsoReadbackRenderer`, which turns an image file back into the picture. `dispersion-byte-pools.json` (embedded) is
+  upstream's record of clustered and dispersed bytes. Upstream's `DvdTrackGeometry` is ported with it
+  (`Core/DvdTrackGeometry.cs`) so the output matches upstream byte for byte; moving the solver onto `SpiralGeometry`
+  is a later, separate change.
+  - `Solver/DvdReadCompatibilityGuard.cs` is **not** ported: the `periodic-9b-16-v1` rule (at sector offsets 0, 16,
+    ..., 2032 a picture-owned byte whose scrambled value is not `A5` or `9B` becomes `9B`) is written for IgnisDisc
+    from that description. The older `bridge-9b-v1` rule is left out.
+  - Left out of the DVD port: upstream's command line (`Program.cs`, `CliArguments`), its module catalog, its
+    calibration targets and reference sampler, and writing a picture into an image that already holds files
+    (upstream's own file system writer). No IgnisDisc command writes a DVD picture yet.
 - `Imaging/PngRaster.cs` + `Imaging/WicPngDecoder.cs`: IgnisDisc's PNG framing/CRC-32 validator and Windows Imaging
   Component (`windowscodecs.dll`) decoder producing straight `32bppBGRA` `BgraRaster` buffers (plus 8-bit RGBA PNG writer)
   for picture input and read-back previews without a WPF dependency.
