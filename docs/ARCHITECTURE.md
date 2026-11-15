@@ -228,14 +228,18 @@ LBA and track length to radius and angle, polar page layout and a streaming rast
 `tests/CdBurner.Lithography.Tests`. It was split out of Core so that code ported from an upstream project stays in
 one assembly with a clear provenance boundary. Nothing in it touches a drive.
 
+- `Geometry/DiscPresetGeometry.cs`: clean-room conversion of schema-4 disc presets (including normalized cubic pitch coefficients `p(x) = p0 * (1 + c1*x + c2*x^2 + c3*x^3)`) into IgnisDisc's unified `SpiralGeometry` + `ConstantTrackPitch` / `CubicTrackPitch` by solving the exact arc-length integral.
+- `Ported/DiscImageStudio/Core/ToneProfile.cs` (namespace `CdBurner.Lithography`): shared `ToneProfile` and `ToneDither` (sRGB linearization, brightness offset, and hashed per-sample dither) used across CD, DVD, and Blu-ray encoders.
+- `Ported/DiscImageStudio/Presets/` (namespace `CdBurner.Lithography.Presets`): `DiscPresetJsonStore` and embedded `built-in-disc-presets.json` (schema 4 catalog with schema 2/3 load compatibility and `%APPDATA%\IgnisDisc\disc-presets.json` user overrides).
 - `Ported/DiscImageStudio/Cd/` (namespace `CdBurner.Lithography.Cd`, ported from DiscImageStudio, see
   `THIRD-PARTY-NOTICES.md`): `CdTrackGenerator` turns a picture into a CD-DA picture track (`.wav` + one-track
   `.cue`, or big-endian `.raw`) through the `0x0D`/`0xAA` palette (`CdToneMapping`, `ToneProfile` dither) and the
   CIRC delay interleaver (`CddaInterleaver`, from CDImage); `RenderTrack`/`PreviewTrack` read a track back into the
   picture (from a file or from sectors read off a disc). `CdMode1Drawing` makes 2,048-byte Mode 1 sectors whose bytes
   after the drive's ECMA-130 scrambler are palette bytes, and reads them back. Constant track pitch only for now.
-- `Imaging/PngRaster.cs`: IgnisDisc's own minimal PNG reader/writer (8-bit, non-interlaced) for picture input and
-  read-back previews.
+- `Imaging/PngRaster.cs` + `Imaging/WicPngDecoder.cs`: IgnisDisc's PNG framing/CRC-32 validator and Windows Imaging
+  Component (`windowscodecs.dll`) decoder producing straight `32bppBGRA` `BgraRaster` buffers (plus 8-bit RGBA PNG writer)
+  for picture input and read-back previews without a WPF dependency.
 - Burning: `CdBurner.Core.Images.PictureTrackCue` adds the picture WAV as the last audio track of an audio or
   mixed-mode CUE sheet, which then goes through the direct Session-at-Once writer (`burn-audio --tracks <cue> --dao
   --native`) and `verify --cue` like any other CUE. Core does not reference this project.

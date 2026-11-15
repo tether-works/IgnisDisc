@@ -5,4 +5,9 @@
     <AssemblyName>CdBurner.Lithography</AssemblyName>
   </PropertyGroup>
 
+  <ItemGroup>
+    <EmbeddedResource Include="Ported\DiscImageStudio\Presets\built-in-disc-presets.json"
+                      LogicalName="CdBurner.Lithography.Presets.BuiltInDiscPresets.json" />
+  </ItemGroup>
+
 </Project>

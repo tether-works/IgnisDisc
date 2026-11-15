@@ -19,9 +19,9 @@ public sealed record BgraRaster(int Width, int Height, byte[] Pixels)
 }
 
 /// <summary>
-/// Minimal PNG reader and writer (ISO/IEC 15948, W3C PNG 2nd edition): reads non-interlaced 8-bit greyscale, grey +
-/// alpha, RGB, RGBA and palette images and writes 8-bit RGBA. Enough for picture input and read-back previews without
-/// a desktop-UI dependency in this library. Interlaced and 1/2/4/16-bit images are refused with a clear message.
+/// PNG reader and writer (ISO/IEC 15948, W3C PNG 2nd edition): validates chunk framing and CRC-32 checksums
+/// and decodes PNGs (including interlaced, 1/2/4/8/16-bit, greyscale, RGB, RGBA, and palette with tRNS) to
+/// straight 32-bit BGRA via Windows Imaging Component (<c>windowscodecs.dll</c>), and writes 8-bit RGBA PNGs.
 /// </summary>
 public static class PngRaster
 {
@@ -42,141 +42,154 @@ public static class PngRaster
     public static BgraRaster Read(Stream stream)
     {
         ArgumentNullException.ThrowIfNull(stream);
-        Span<byte> signature = stackalloc byte[8];
-        stream.ReadExactly(signature);
-        if (!signature.SequenceEqual(Signature))
-            throw new InvalidDataException("Not a PNG file (signature missing).");
-
-        int width = 0, height = 0, colorType = -1;
-        byte[]? palette = null;
-        byte[]? paletteAlpha = null;
-        using MemoryStream compressed = new();
-        Span<byte> header = stackalloc byte[8];
-        Span<byte> crcBytes = stackalloc byte[4];
-        bool sawHeader = false, sawEnd = false;
-        while (!sawEnd)
-        {
-            stream.ReadExactly(header);
-            uint length = BinaryPrimitives.ReadUInt32BigEndian(header);
-            if (length > int.MaxValue) throw new InvalidDataException("PNG chunk length is invalid.");
-            byte[] typeAndData = new byte[4 + (int)length];
-            header[4..].CopyTo(typeAndData);
-            stream.ReadExactly(typeAndData.AsSpan(4));
-            stream.ReadExactly(crcBytes);
-            if (BinaryPrimitives.ReadUInt32BigEndian(crcBytes) != Crc32(typeAndData))
-                throw new InvalidDataException("PNG chunk CRC does not match (damaged file).");
-            string type = System.Text.Encoding.ASCII.GetString(typeAndData, 0, 4);
-            ReadOnlySpan<byte> data = typeAndData.AsSpan(4);
-            switch (type)
-            {
-                case "IHDR":
-                    if (data.Length != 13) throw new InvalidDataException("PNG header chunk has the wrong size.");
-                    width = checked((int)BinaryPrimitives.ReadUInt32BigEndian(data));
-                    height = checked((int)BinaryPrimitives.ReadUInt32BigEndian(data[4..]));
-                    int bitDepth = data[8];
-                    colorType = data[9];
-                    if (data[10] != 0 || data[11] != 0)
-                        throw new InvalidDataException("PNG uses an unknown compression or filter method.");
-                    if (data[12] != 0)
-                        throw new InvalidDataException("Interlaced PNG files are not supported; save the picture without interlacing.");
-                    if (bitDepth != 8 || colorType is not (0 or 2 or 3 or 4 or 6))
-                        throw new InvalidDataException("Only 8-bit greyscale, RGB, palette or RGBA PNG files are supported.");
-                    if (width <= 0 || height <= 0 || (long)width * height > BgraRaster.MaxPixels)
-                        throw new InvalidDataException("PNG picture size is out of range.");
-                    sawHeader = true;
-                    break;
-                case "PLTE":
-                    if (data.Length % 3 != 0 || data.Length == 0) throw new InvalidDataException("PNG palette is malformed.");
-                    palette = data.ToArray();
-                    break;
-                case "tRNS":
-                    paletteAlpha = data.ToArray();
-                    break;
-                case "IDAT":
-                    if (!sawHeader) throw new InvalidDataException("PNG image data comes before its header.");
-                    compressed.Write(data);
-                    break;
-                case "IEND":
-                    sawEnd = true;
-                    break;
-                default:
-                    if ((typeAndData[0] & 0x20) == 0)
-                        throw new InvalidDataException($"PNG contains an unknown critical chunk '{type}'.");
-                    break;
-            }
-        }
-
-        if (!sawHeader) throw new InvalidDataException("PNG has no header chunk.");
-        if (colorType == 3 && palette is null) throw new InvalidDataException("Palette PNG has no palette.");
-        int channels = colorType switch { 0 => 1, 2 => 3, 3 => 1, 4 => 2, _ => 4 };
-        int stride = checked(width * channels);
-        byte[] previous = new byte[stride];
-        byte[] current = new byte[stride];
-        byte[] pixels = new byte[checked(width * height * 4)];
-        compressed.Position = 0;
-        using ZLibStream inflater = new(compressed, CompressionMode.Decompress);
-        for (int y = 0; y < height; y++)
-        {
-            int filter = inflater.ReadByte();
-            if (filter < 0) throw new InvalidDataException("PNG image data ends early.");
-            inflater.ReadExactly(current);
-            Unfilter(filter, current, previous, channels);
-            int outRow = y * width * 4;
-            for (int x = 0; x < width; x++)
-            {
-                byte r, g, b, a = 255;
-                switch (colorType)
-                {
-                    case 0: r = g = b = current[x]; break;
-                    case 4: r = g = b = current[2 * x]; a = current[2 * x + 1]; break;
-                    case 2: r = current[3 * x]; g = current[3 * x + 1]; b = current[3 * x + 2]; break;
-                    case 3:
-                        int entry = current[x];
-                        if (entry * 3 + 2 >= palette!.Length) throw new InvalidDataException("PNG palette index out of range.");
-                        r = palette[entry * 3]; g = palette[entry * 3 + 1]; b = palette[entry * 3 + 2];
-                        if (paletteAlpha is not null && entry < paletteAlpha.Length) a = paletteAlpha[entry];
-                        break;
-                    default: r = current[4 * x]; g = current[4 * x + 1]; b = current[4 * x + 2]; a = current[4 * x + 3]; break;
-                }
-                int o = outRow + x * 4;
-                pixels[o] = b; pixels[o + 1] = g; pixels[o + 2] = r; pixels[o + 3] = a;
-            }
-            (previous, current) = (current, previous);
-        }
-        return new BgraRaster(width, height, pixels);
+        byte[] pngBytes = ReadPngBytes(stream);
+        ValidatePngFraming(pngBytes);
+        return WicPngDecoder.Decode(pngBytes);
     }
 
-    private static void Unfilter(int filter, byte[] row, byte[] previous, int bytesPerPixel)
+    private static byte[] ReadPngBytes(Stream stream)
     {
-        switch (filter)
+        if (stream.CanSeek)
         {
-            case 0: return;
-            case 1:
-                for (int i = bytesPerPixel; i < row.Length; i++) row[i] += row[i - bytesPerPixel];
-                return;
-            case 2:
-                for (int i = 0; i < row.Length; i++) row[i] += previous[i];
-                return;
-            case 3:
-                for (int i = 0; i < row.Length; i++)
+            long remaining = stream.Length - stream.Position;
+            if (remaining > MaxFileBytes)
+            {
+                throw new InvalidDataException($"PNG stream is larger than {MaxFileBytes / (1024 * 1024)} MiB.");
+            }
+        }
+
+        using MemoryStream buffer = new();
+        byte[] chunk = new byte[64 * 1024];
+        long totalRead = 0;
+        while (true)
+        {
+            int maxToRead = (int)Math.Min(chunk.Length, (MaxFileBytes + 1) - totalRead);
+            int read = stream.Read(chunk, 0, maxToRead);
+            if (read == 0)
+            {
+                break;
+            }
+            totalRead += read;
+            if (totalRead > MaxFileBytes)
+            {
+                throw new InvalidDataException($"PNG stream is larger than {MaxFileBytes / (1024 * 1024)} MiB.");
+            }
+            buffer.Write(chunk, 0, read);
+        }
+
+        return buffer.ToArray();
+    }
+
+    private static void ValidatePngFraming(ReadOnlySpan<byte> data)
+    {
+        if (data.Length < 8 || !data[..8].SequenceEqual(Signature))
+        {
+            throw new InvalidDataException("Not a PNG file (signature missing).");
+        }
+
+        int offset = 8;
+        int colorType = -1;
+        bool sawHeader = false;
+        bool sawPalette = false;
+        bool sawIdat = false;
+        bool sawEnd = false;
+
+        while (!sawEnd)
+        {
+            if (data.Length - offset < 12)
+            {
+                throw new InvalidDataException("PNG file ends early.");
+            }
+
+            uint length = BinaryPrimitives.ReadUInt32BigEndian(data.Slice(offset, 4));
+            if (length > int.MaxValue || (long)offset + 12L + length > data.Length)
+            {
+                throw new InvalidDataException("PNG chunk length is invalid or truncated.");
+            }
+
+            ReadOnlySpan<byte> typeAndData = data.Slice(offset + 4, 4 + (int)length);
+            uint expectedCrc = BinaryPrimitives.ReadUInt32BigEndian(data.Slice(offset + 8 + (int)length, 4));
+            if (expectedCrc != Crc32(typeAndData))
+            {
+                throw new InvalidDataException("PNG chunk CRC does not match (damaged file).");
+            }
+
+            ReadOnlySpan<byte> type = typeAndData[..4];
+            ReadOnlySpan<byte> chunkData = typeAndData[4..];
+
+            if (type.SequenceEqual("IHDR"u8))
+            {
+                if (sawHeader)
                 {
-                    int left = i >= bytesPerPixel ? row[i - bytesPerPixel] : 0;
-                    row[i] += (byte)((left + previous[i]) >> 1);
+                    throw new InvalidDataException("PNG contains multiple header chunks.");
                 }
-                return;
-            case 4:
-                for (int i = 0; i < row.Length; i++)
+                if (chunkData.Length != 13)
                 {
-                    int a = i >= bytesPerPixel ? row[i - bytesPerPixel] : 0;
-                    int b = previous[i];
-                    int c = i >= bytesPerPixel ? previous[i - bytesPerPixel] : 0;
-                    int p = a + b - c;
-                    int pa = Math.Abs(p - a), pb = Math.Abs(p - b), pc = Math.Abs(p - c);
-                    row[i] += (byte)(pa <= pb && pa <= pc ? a : pb <= pc ? b : c);
+                    throw new InvalidDataException("PNG header chunk has the wrong size.");
                 }
-                return;
-            default:
-                throw new InvalidDataException($"PNG row uses unknown filter type {filter}.");
+
+                uint width = BinaryPrimitives.ReadUInt32BigEndian(chunkData);
+                uint height = BinaryPrimitives.ReadUInt32BigEndian(chunkData[4..]);
+                int bitDepth = chunkData[8];
+                colorType = chunkData[9];
+                if (chunkData[10] != 0 || chunkData[11] != 0)
+                {
+                    throw new InvalidDataException("PNG uses an unknown compression or filter method.");
+                }
+                if (chunkData[12] is not (0 or 1))
+                {
+                    throw new InvalidDataException("PNG uses an unknown interlace method.");
+                }
+                if (colorType is not (0 or 2 or 3 or 4 or 6) || bitDepth is not (1 or 2 or 4 or 8 or 16))
+                {
+                    throw new InvalidDataException("PNG uses an unsupported colour type or bit depth.");
+                }
+                if (width == 0 || height == 0 || (long)width * height > BgraRaster.MaxPixels)
+                {
+                    throw new InvalidDataException("PNG picture size is out of range.");
+                }
+
+                sawHeader = true;
+            }
+            else if (type.SequenceEqual("PLTE"u8))
+            {
+                if (chunkData.Length == 0 || chunkData.Length % 3 != 0 || chunkData.Length > 256 * 3)
+                {
+                    throw new InvalidDataException("PNG palette is malformed.");
+                }
+                sawPalette = true;
+            }
+            else if (type.SequenceEqual("IDAT"u8))
+            {
+                if (!sawHeader)
+                {
+                    throw new InvalidDataException("PNG image data comes before its header.");
+                }
+                sawIdat = true;
+            }
+            else if (type.SequenceEqual("IEND"u8))
+            {
+                if (chunkData.Length != 0)
+                {
+                    throw new InvalidDataException("PNG end chunk is malformed.");
+                }
+                sawEnd = true;
+            }
+
+            offset += 12 + (int)length;
+        }
+
+        if (!sawHeader)
+        {
+            throw new InvalidDataException("PNG has no header chunk.");
+        }
+        if (colorType == 3 && !sawPalette)
+        {
+            throw new InvalidDataException("Palette PNG has no palette.");
+        }
+        if (!sawIdat)
+        {
+            throw new InvalidDataException("PNG has no image data.");
         }
     }
 

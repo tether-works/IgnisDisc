@@ -49,6 +49,54 @@ public sealed class SpiralGeometry
         double sectorLengthMeters,
         long lbaAtStartRadius,
         double startAngleRadians)
+        : this(
+            pitch,
+            startRadiusMeters,
+            maxRadiusMeters,
+            explicitSectorLengthMeters: sectorLengthMeters,
+            spanningTotalSectors: null,
+            lbaAtStartRadius,
+            startAngleRadians)
+    {
+    }
+
+    /// <summary>
+    /// Creates a spiral whose lookup table is built once and whose sector length is derived by dividing
+    /// <see cref="TotalTrackLengthMeters"/> evenly across <paramref name="totalSectors"/>, clamped via
+    /// <see cref="Math.BitDecrement(double)"/> so the end of the last sector never exceeds the spiral.
+    /// </summary>
+    public static SpiralGeometry CreateSpanningSectors(
+        ITrackPitchModel pitch,
+        double startRadiusMeters,
+        double maxRadiusMeters,
+        long totalSectors,
+        long lbaAtStartRadius = 0,
+        double startAngleRadians = 0.0)
+    {
+        if (totalSectors <= 0)
+        {
+            throw new ArgumentOutOfRangeException(nameof(totalSectors), totalSectors,
+                "Total sector count must be greater than zero.");
+        }
+
+        return new SpiralGeometry(
+            pitch,
+            startRadiusMeters,
+            maxRadiusMeters,
+            explicitSectorLengthMeters: null,
+            spanningTotalSectors: totalSectors,
+            lbaAtStartRadius,
+            startAngleRadians);
+    }
+
+    private SpiralGeometry(
+        ITrackPitchModel pitch,
+        double startRadiusMeters,
+        double maxRadiusMeters,
+        double? explicitSectorLengthMeters,
+        long? spanningTotalSectors,
+        long lbaAtStartRadius,
+        double startAngleRadians)
     {
         ArgumentNullException.ThrowIfNull(pitch);
         if (!double.IsFinite(startRadiusMeters) || startRadiusMeters <= 0.0)
@@ -61,9 +109,10 @@ public sealed class SpiralGeometry
             throw new ArgumentOutOfRangeException(nameof(maxRadiusMeters), maxRadiusMeters,
                 "Maximum radius must be finite and greater than the start radius (meters).");
         }
-        if (!double.IsFinite(sectorLengthMeters) || sectorLengthMeters <= 0.0)
+        if (explicitSectorLengthMeters.HasValue
+            && (!double.IsFinite(explicitSectorLengthMeters.Value) || explicitSectorLengthMeters.Value <= 0.0))
         {
-            throw new ArgumentOutOfRangeException(nameof(sectorLengthMeters), sectorLengthMeters,
+            throw new ArgumentOutOfRangeException(nameof(explicitSectorLengthMeters), explicitSectorLengthMeters.Value,
                 "Sector length must be a finite number greater than zero (meters).");
         }
         if (!double.IsFinite(startAngleRadians))
@@ -75,7 +124,6 @@ public sealed class SpiralGeometry
         _pitch = pitch;
         StartRadiusMeters = startRadiusMeters;
         MaxRadiusMeters = maxRadiusMeters;
-        SectorLengthMeters = sectorLengthMeters;
         LbaAtStartRadius = lbaAtStartRadius;
         StartAngleRadians = startAngleRadians;
 
@@ -127,6 +175,25 @@ public sealed class SpiralGeometry
         }
 
         TotalTrackLengthMeters = TrackLengthAtRadiusUnchecked(maxRadiusMeters);
+        if (explicitSectorLengthMeters.HasValue)
+        {
+            SectorLengthMeters = explicitSectorLengthMeters.Value;
+        }
+        else
+        {
+            long totalSectors = spanningTotalSectors!.Value;
+            double sectorLengthMeters = TotalTrackLengthMeters / totalSectors;
+            if (!double.IsFinite(sectorLengthMeters) || sectorLengthMeters <= 0.0)
+            {
+                throw new ArgumentOutOfRangeException(nameof(spanningTotalSectors), totalSectors,
+                    "Computed sector length must be finite and greater than zero.");
+            }
+            while ((double)totalSectors * sectorLengthMeters > TotalTrackLengthMeters)
+            {
+                sectorLengthMeters = Math.BitDecrement(sectorLengthMeters);
+            }
+            SectorLengthMeters = sectorLengthMeters;
+        }
     }
 
     /// <summary>Radius r0 where the spiral starts, in meters.</summary>

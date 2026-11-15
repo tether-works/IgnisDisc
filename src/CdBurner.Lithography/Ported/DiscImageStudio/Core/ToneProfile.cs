@@ -2,11 +2,11 @@
 // Copyright (c) 2026 Disc Image Studio contributors
 // Ported to IgnisDisc from DiscImageStudio src/DiscImageStudio.Core/ToneProfile.cs at commit 619ec7505ac8955f35fe2f353ebda74b6ea90dda:
 // https://github.com/JiaFeiMiao-K-Cat/DiscImageStudio/blob/619ec7505ac8955f35fe2f353ebda74b6ea90dda/src/DiscImageStudio.Core/ToneProfile.cs
-// IgnisDisc change: namespace only (kept next to the CD code that uses it). See THIRD-PARTY-NOTICES.md.
+// IgnisDisc change: namespace changed to CdBurner.Lithography so CD, DVD, and Blu-ray encoders share one ToneProfile. See THIRD-PARTY-NOTICES.md.
 
 using System.Text.Json.Serialization;
 
-namespace CdBurner.Lithography.Cd;
+namespace CdBurner.Lithography;
 
 /// <summary>
 /// How a source grey ramp is translated into the disc's recordable levels.

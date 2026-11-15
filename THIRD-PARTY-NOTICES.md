@@ -8,7 +8,7 @@ IgnisDisc is licensed under the GNU General Public License v3.0 or later (`GPL-3
 | CommunityToolkit.Mvvm | MVVM helpers in the desktop app | MIT — https://github.com/CommunityToolkit/dotnet/blob/main/License.md |
 | Microsoft.Extensions.DependencyInjection | Service wiring in the desktop app | MIT — https://github.com/dotnet/runtime/blob/main/LICENSE.TXT |
 
-Windows components used at runtime but **not** redistributed: IMAPIv2 (`imapi2.dll`, `imapi2fs.dll`) and Media Foundation.
+Windows components used at runtime but **not** redistributed: IMAPIv2 (`imapi2.dll`, `imapi2fs.dll`), Media Foundation, and Windows Imaging Component (`windowscodecs.dll`).
 
 ## ffmpeg (optional, 1-click install available)
 
@@ -35,7 +35,7 @@ it offers the 1-click update. You can also put any `par2.exe` on `PATH`; the 1-c
 
 ## DiscImageStudio and CDImage (ported source code, GPL-3.0-or-later)
 
-The CD picture-track code in `src/CdBurner.Lithography/Ported/DiscImageStudio/Cd/` is ported from
+The lithography code under `src/CdBurner.Lithography/Ported/DiscImageStudio/` is ported from
 [DiscImageStudio](https://github.com/JiaFeiMiao-K-Cat/DiscImageStudio) at commit
 `619ec7505ac8955f35fe2f353ebda74b6ea90dda` (Copyright (c) 2026 Disc Image Studio contributors,
 GPL-3.0-or-later). Its CD-DA delay interleaver and delay table come from
@@ -48,14 +48,17 @@ Ported files (each keeps its upstream copyright lines and names its source file 
 
 | IgnisDisc file | Upstream file |
 | --- | --- |
-| `CddaInterleaver.cs`, `CddaInterleaveTable.cs` | `src/DiscImageStudio.Cd/`, same names (adapted from CDImage) |
-| `CdTrackGenerator.cs`, `CdImageSampler.cs`, `CdDiscParameters.cs`, `RasterImage.cs` | `src/DiscImageStudio.Cd/`, same names |
-| `CdToneMapping.cs`, `CdWaveFile.cs`, `CdAudioByteOrder.cs`, `CdBlockPipeline.cs`, `CdPreviewMask.cs` | `src/DiscImageStudio.Cd/`, same names |
-| `CdMode1Drawing.cs` | `src/DiscImageStudio.Cd/CdDataImageGenerator.cs` (drawing part only) |
-| `ToneProfile.cs` | `src/DiscImageStudio.Core/ToneProfile.cs` |
+| `Cd/CddaInterleaver.cs`, `Cd/CddaInterleaveTable.cs` | `src/DiscImageStudio.Cd/`, same names (adapted from CDImage) |
+| `Cd/CdTrackGenerator.cs`, `Cd/CdImageSampler.cs`, `Cd/CdDiscParameters.cs`, `Cd/RasterImage.cs` | `src/DiscImageStudio.Cd/`, same names |
+| `Cd/CdToneMapping.cs`, `Cd/CdWaveFile.cs`, `Cd/CdAudioByteOrder.cs`, `Cd/CdBlockPipeline.cs`, `Cd/CdPreviewMask.cs` | `src/DiscImageStudio.Cd/`, same names |
+| `Cd/CdMode1Drawing.cs` | `src/DiscImageStudio.Cd/CdDataImageGenerator.cs` (drawing part only) |
+| `Core/ToneProfile.cs` | `src/DiscImageStudio.Core/ToneProfile.cs` |
+| `Presets/DiscPresetJsonStore.cs`, `Presets/built-in-disc-presets.json` | `src/DiscImageStudio.Core/DiscPresetJsonStore.cs`, `src/DiscImageStudio.Core/Presets/built-in-disc-presets.json` |
 
-Not ported: upstream's ISO writer, image codecs, calibration targets and variable track-pitch geometry. The PNG
-reader and writer in `src/CdBurner.Lithography/Imaging/` are IgnisDisc's own code.
+Not ported: upstream's ISO writer, image codecs, calibration targets, and `DvdTrackGeometry`/`BluRayTrackGeometry`.
+Preset cubic pitch coefficients are converted into IgnisDisc's unified `SpiralGeometry`
+(`src/CdBurner.Lithography/Geometry/DiscPresetGeometry.cs`), and PNG input in `src/CdBurner.Lithography/Imaging/`
+uses IgnisDisc's framing validator and Windows Imaging Component (`windowscodecs.dll`).
 
 ## Online services (optional, 1-click lookup & configurable defaults)
 
