@@ -4,10 +4,16 @@ using CdBurner.Core.Primitives;
 namespace CdBurner.Core.DvdVideo;
 
 /// <summary>
-/// One VOBU (video object unit) of a VOB stream: the sector of its NAV pack counted from the start of the stream, and
-/// its start and end presentation times in 90 kHz units (-1 when the stream gave none).
+/// One VOBU (video object unit) of a VOB stream: the sector of its NAV pack counted from the start of the stream, its
+/// start and end presentation times in 90 kHz units (-1 when the stream gave none), and the cell (chapter) it belongs to.
 /// </summary>
-public readonly record struct DvdVobu(int Sector, long StartPts, long EndPts);
+public readonly record struct DvdVobu(int Sector, long StartPts, long EndPts, int CellId = 1);
+
+/// <summary>
+/// A menu button: its rectangle on the 720-pixel-wide picture (inclusive), the buttons (1-based) the remote's up, down,
+/// left and right move to, and the VM command it runs when activated.
+/// </summary>
+public sealed record DvdMenuButton(int X1, int Y1, int X2, int Y2, int Up, int Down, int Left, int Right, byte[] Command);
 
 /// <summary>
 /// Fills the NAV packs of an MPEG-2 program stream (one per VOBU, as FFmpeg's DVD muxer leaves them: pack header, system
@@ -16,7 +22,9 @@ public readonly record struct DvdVobu(int Sector, long StartPts, long EndPts);
 /// end presentation time, cell elapsed time) and, for a menu, one highlight button; DSI general information (SCR,
 /// address, VOBU end address, the ends of the first three reference pictures, VOB and cell ids, cell elapsed time), the
 /// search information (next and previous VOBU, which libdvdnav follows from VOBU to VOBU, and the fast forward and
-/// reverse table at 120 s down to 0.5 s) and the offset of the first audio pack. The whole stream is one cell.
+/// reverse table at 120 s down to 0.5 s) and the offset of the first audio pack. The stream is one cell, or with a chapter
+/// length one cell per chapter: a new cell starts at the first VOBU at or after each multiple of that length, and the
+/// search information and cell elapsed time stay within the cell, as libdvdnav steps from cell to cell.
 /// </summary>
 public static class DvdNavPackWriter
 {
@@ -58,7 +66,8 @@ public static class DvdNavPackWriter
     /// a NAV pack gets one formatted there (the synthetic streams of tests). <paramref name="buttonCommand"/> makes a menu
     /// VOB: one highlight button over the whole picture, selected from the start, that runs the command.
     /// </summary>
-    public static IReadOnlyList<DvdVobu> Patch(Stream vob, int vobId = 1, int cellId = 1, byte[]? buttonCommand = null)
+    public static IReadOnlyList<DvdVobu> Patch(Stream vob, int vobId = 1, int cellId = 1, byte[]? buttonCommand = null, int chapterSeconds = 0,
+        IReadOnlyList<DvdMenuButton>? buttons = null, bool wideButtons = false)
     {
         ArgumentNullException.ThrowIfNull(vob);
         int totalSectors = (int)(vob.Length / SectorSize);
@@ -78,8 +87,7 @@ public static class DvdNavPackWriter
         }
 
         var (scans, frameDuration, thirtyFps, height) = Scan(vob, totalSectors);
-        var vobus = Times(scans, totalSectors, frameDuration);
-        long cellStart = vobus[0].StartPts >= 0 ? vobus[0].StartPts : 0;
+        var vobus = AssignCells(Times(scans, totalSectors, frameDuration), cellId, chapterSeconds);
 
         for (int i = 0; i < scans.Count; i++)
         {
@@ -100,6 +108,8 @@ public static class DvdNavPackWriter
             pci.Clear();
             dsi.Clear();
 
+            var (cellFirst, cellLast) = CellRange(vobus, i);
+            long cellStart = vobus[cellFirst].StartPts >= 0 ? vobus[cellFirst].StartPts : 0;
             byte[] elapsed = Bcd(vobu.StartPts >= 0 ? vobu.StartPts - cellStart : 0, thirtyFps);
             // PCI_GI
             BinaryPrimitives.WriteUInt32BigEndian(pci, (uint)scan.Sector);
@@ -110,7 +120,11 @@ public static class DvdNavPackWriter
                 BinaryPrimitives.WriteUInt32BigEndian(pci[20..], (uint)Math.Max(0, vobu.EndPts)); // the sequence ends here
             }
             elapsed.CopyTo(pci[24..]);
-            if (buttonCommand != null)
+            if (buttons is { Count: > 0 })
+            {
+                WriteButtons(pci[HliOffset..], vobu, buttons, wideButtons);
+            }
+            else if (buttonCommand != null)
             {
                 WriteButton(pci[HliOffset..], vobu, height, buttonCommand);
             }
@@ -124,19 +138,19 @@ public static class DvdNavPackWriter
             BinaryPrimitives.WriteUInt32BigEndian(dsi[16..], (uint)refs[1]);
             BinaryPrimitives.WriteUInt32BigEndian(dsi[20..], (uint)refs[2]);
             BinaryPrimitives.WriteUInt16BigEndian(dsi[24..], (ushort)vobId);
-            dsi[27] = (byte)cellId;
+            dsi[27] = (byte)vobu.CellId;
             elapsed.CopyTo(dsi[28..]);
 
             // VOBU_SRI: every VOBU holds video, so next/previous video equal next/previous VOBU.
             var sri = dsi[SriOffset..];
-            uint next = i + 1 < vobus.Count ? 0x80000000u | (uint)(vobus[i + 1].Sector - scan.Sector) : EndOfCell;
-            uint prev = i > 0 ? 0x80000000u | (uint)(scan.Sector - vobus[i - 1].Sector) : EndOfCell;
+            uint next = i < cellLast ? 0x80000000u | (uint)(vobus[i + 1].Sector - scan.Sector) : EndOfCell;
+            uint prev = i > cellFirst ? 0x80000000u | (uint)(scan.Sector - vobus[i - 1].Sector) : EndOfCell;
             BinaryPrimitives.WriteUInt32BigEndian(sri, next);
             for (int k = 0; k < ScanHalfSeconds.Length; k++)
             {
-                BinaryPrimitives.WriteUInt32BigEndian(sri[(4 + 4 * k)..], Forward(vobus, i, ScanHalfSeconds[k] * 45_000L));
+                BinaryPrimitives.WriteUInt32BigEndian(sri[(4 + 4 * k)..], Forward(vobus, i, cellLast, ScanHalfSeconds[k] * 45_000L));
                 // BWDA runs nearest first, the mirror of FWDA.
-                BinaryPrimitives.WriteUInt32BigEndian(sri[(88 + 4 * k)..], Backward(vobus, i, ScanHalfSeconds[ScanHalfSeconds.Length - 1 - k] * 45_000L));
+                BinaryPrimitives.WriteUInt32BigEndian(sri[(88 + 4 * k)..], Backward(vobus, i, cellFirst, ScanHalfSeconds[ScanHalfSeconds.Length - 1 - k] * 45_000L));
             }
             BinaryPrimitives.WriteUInt32BigEndian(sri[80..], next);
             BinaryPrimitives.WriteUInt32BigEndian(sri[84..], prev);
@@ -154,10 +168,50 @@ public static class DvdNavPackWriter
     }
 
     /// <summary>Patches a VOB file in place; see <see cref="Patch(Stream, int, int, byte[])"/>.</summary>
-    public static IReadOnlyList<DvdVobu> PatchFile(string path, int vobId = 1, int cellId = 1, byte[]? buttonCommand = null)
+    public static IReadOnlyList<DvdVobu> PatchFile(string path, int vobId = 1, int cellId = 1, byte[]? buttonCommand = null, int chapterSeconds = 0,
+        IReadOnlyList<DvdMenuButton>? buttons = null, bool wideButtons = false)
     {
         using var fs = new FileStream(path, FileMode.Open, FileAccess.ReadWrite, FileShare.Read, 1 << 20);
-        return Patch(fs, vobId, cellId, buttonCommand);
+        return Patch(fs, vobId, cellId, buttonCommand, chapterSeconds, buttons, wideButtons);
+    }
+
+    /// <summary>
+    /// Cell numbers: <paramref name="firstCell"/> for every VOBU, or with <paramref name="chapterSeconds"/> &gt; 0 a new
+    /// cell at the first VOBU whose start is at or past each multiple of it (at most 99 cells, the chapter limit), except
+    /// within half a chapter (at most 60 s) of the end, so the last chapter is never a sliver.
+    /// </summary>
+    private static List<DvdVobu> AssignCells(List<DvdVobu> vobus, int firstCell, int chapterSeconds)
+    {
+        if (chapterSeconds <= 0 || vobus.Count == 0 || vobus[0].StartPts < 0)
+        {
+            return vobus.Select(v => v with { CellId = firstCell }).ToList();
+        }
+        long origin = vobus[0].StartPts;
+        long length = chapterSeconds * 90_000L;
+        long end = vobus[^1].EndPts;
+        long shortest = Math.Min(60 * 90_000L, length / 2); // no chapter mark this close to the end
+        int cell = firstCell;
+        long nextMark = origin + length;
+        var result = new List<DvdVobu>(vobus.Count);
+        foreach (var v in vobus)
+        {
+            if (v.StartPts >= nextMark && cell < 99 && end - v.StartPts >= shortest)
+            {
+                cell++;
+                nextMark = origin + (1 + (v.StartPts - origin) / length) * length;
+            }
+            result.Add(v with { CellId = cell });
+        }
+        return result;
+    }
+
+    /// <summary>The first and last VOBU index of the cell VOBU <paramref name="i"/> is in.</summary>
+    private static (int First, int Last) CellRange(List<DvdVobu> vobus, int i)
+    {
+        int first = i, last = i;
+        while (first > 0 && vobus[first - 1].CellId == vobus[i].CellId) first--;
+        while (last + 1 < vobus.Count && vobus[last + 1].CellId == vobus[i].CellId) last++;
+        return (first, last);
     }
 
     /// <summary>True when the sector starts with a pack header and holds a PCI packet where a NAV pack has it.</summary>
@@ -322,14 +376,14 @@ public static class DvdNavPackWriter
         return ends;
     }
 
-    private static uint Forward(List<DvdVobu> vobus, int i, long distance)
+    private static uint Forward(List<DvdVobu> vobus, int i, int cellLast, long distance)
     {
         if (vobus[i].StartPts < 0)
         {
             return EndOfCell;
         }
         long target = vobus[i].StartPts + distance;
-        for (int j = i + 1; j < vobus.Count; j++)
+        for (int j = i + 1; j <= cellLast; j++)
         {
             if (vobus[j].StartPts >= target)
             {
@@ -339,14 +393,14 @@ public static class DvdNavPackWriter
         return EndOfCell;
     }
 
-    private static uint Backward(List<DvdVobu> vobus, int i, long distance)
+    private static uint Backward(List<DvdVobu> vobus, int i, int cellFirst, long distance)
     {
         if (vobus[i].StartPts < 0)
         {
             return EndOfCell;
         }
         long target = vobus[i].StartPts - distance;
-        for (int j = i - 1; j >= 0; j--)
+        for (int j = i - 1; j >= cellFirst; j--)
         {
             if (vobus[j].StartPts >= 0 && vobus[j].StartPts <= target)
             {
@@ -381,6 +435,47 @@ public static class DvdNavPackWriter
         button[5] = (byte)yEnd;
         button[6] = button[7] = button[8] = button[9] = 1;          // up, down, left, right: itself
         command.AsSpan(0, 8).CopyTo(button[10..]);
+    }
+
+    /// <summary>
+    /// Highlight information for menu buttons (one group of up to 36): selected button 1 at the start; colour scheme 1
+    /// shows the button's subpicture pixels of value 1 in palette entry 4 (amber) when selected and 5 (white) when
+    /// activated, fully opaque (BTN_COLIT: four colour nibbles e2 e1 p b, then four contrast nibbles). Each button: colour
+    /// scheme 1, its rectangle (10-bit coordinates), no auto action, neighbours, command (18 bytes, as read_hli parses).
+    /// </summary>
+    private static void WriteButtons(Span<byte> hli, DvdVobu vobu, IReadOnlyList<DvdMenuButton> buttons, bool wide)
+    {
+        int count = Math.Min(36, buttons.Count);
+        BinaryPrimitives.WriteUInt16BigEndian(hli, 1);
+        BinaryPrimitives.WriteUInt32BigEndian(hli[2..], (uint)Math.Max(0, vobu.StartPts));
+        BinaryPrimitives.WriteUInt32BigEndian(hli[6..], 0xFFFFFFFF);
+        BinaryPrimitives.WriteUInt32BigEndian(hli[10..], 0xFFFFFFFF);
+        hli[14] = (byte)(0x10 | (wide ? 0x01 : 0x00)); // one button group; display type 1 = wide (16:9)
+        hli[16] = 0;
+        hli[17] = (byte)count;
+        hli[18] = (byte)count;
+        hli[20] = 1;
+        var colors = hli[22..];
+        BinaryPrimitives.WriteUInt32BigEndian(colors, 0x004000F0);      // scheme 1, selected: pattern = amber, opaque
+        BinaryPrimitives.WriteUInt32BigEndian(colors[4..], 0x005000F0); // scheme 1, activated: pattern = white, opaque
+        for (int i = 0; i < count; i++)
+        {
+            var b = buttons[i];
+            var e = hli[(22 + 24 + 18 * i)..];
+            int x1 = Math.Clamp(b.X1, 0, 1023), x2 = Math.Clamp(b.X2, x1, 1023);
+            int y1 = Math.Clamp(b.Y1, 0, 1023), y2 = Math.Clamp(b.Y2, y1, 1023);
+            e[0] = (byte)((1 << 6) | (x1 >> 4));
+            e[1] = (byte)(((x1 & 0x0F) << 4) | (x2 >> 8));
+            e[2] = (byte)x2;
+            e[3] = (byte)(y1 >> 4);
+            e[4] = (byte)(((y1 & 0x0F) << 4) | (y2 >> 8));
+            e[5] = (byte)y2;
+            e[6] = (byte)Math.Clamp(b.Up, 1, count);
+            e[7] = (byte)Math.Clamp(b.Down, 1, count);
+            e[8] = (byte)Math.Clamp(b.Left, 1, count);
+            e[9] = (byte)Math.Clamp(b.Right, 1, count);
+            b.Command.AsSpan(0, 8).CopyTo(e[10..]);
+        }
     }
 
     /// <summary>A time as DVD BCD hours, minutes, seconds, frames, with the frame rate in the top two frame bits.</summary>

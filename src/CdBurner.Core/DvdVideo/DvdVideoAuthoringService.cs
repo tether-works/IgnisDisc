@@ -68,6 +68,22 @@ public sealed class DvdAuthoringOptions
     /// layer, which puts a title start (a cell boundary) where the layer break can go. Default: false.
     /// </summary>
     public bool DualLayer { get; set; }
+
+    /// <summary>
+    /// Chapter length in seconds: each title gets a chapter mark (a new cell and program) at the first VOBU on or after
+    /// every multiple of it, so a player's next / previous chapter and chapter search work. 0: one chapter per title.
+    /// Default: 300 (5 minutes).
+    /// </summary>
+    public int ChapterIntervalSeconds { get; set; } = 300;
+
+    /// <summary>
+    /// English subtitles for movie files, by movie path: an .srt each. A movie not listed uses an .srt beside it with the
+    /// same name (name.srt, name.en.srt or name.eng.srt) when <see cref="UseSubtitleFilesBesideMovies"/> is set.
+    /// </summary>
+    public IDictionary<string, string> SubtitleFiles { get; } = new Dictionary<string, string>(StringComparer.OrdinalIgnoreCase);
+
+    /// <summary>Look for an .srt beside each movie file (see <see cref="SubtitleFiles"/>). Default: true.</summary>
+    public bool UseSubtitleFilesBesideMovies { get; set; } = true;
 }
 
 /// <summary>The video bitrate chosen for an authoring run, and why it was lowered (null when it was not).</summary>
@@ -124,6 +140,112 @@ public sealed class DvdVideoAuthoringService
     /// disc before it and lies within the first layer: a usable layer break. With one title, or a last title longer
     /// than all the others together, there is no such boundary; the note says so.
     /// </summary>
+    /// <summary>Cue text that is a download site's advert rather than dialogue (release groups add these to .srt files).</summary>
+    private static readonly System.Text.RegularExpressions.Regex Advert = new(@"\bYTS\b|YTS\.|YIFY|opensubtitles|Downloaded from",
+        System.Text.RegularExpressions.RegexOptions.IgnoreCase | System.Text.RegularExpressions.RegexOptions.CultureInvariant);
+
+    /// <summary>
+    /// The movie's .srt (from <see cref="DvdAuthoringOptions.SubtitleFiles"/>, else beside it) written as VobSub in the
+    /// work folder, for FFmpeg to mux as subpicture stream 0; null when there is none or it cannot be read (noted).
+    /// </summary>
+    private static string? PrepareSubtitles(string moviePath, DvdAuthoringOptions options, int setNum, List<string> logNotes)
+    {
+        string? srt = FindSubtitleFile(moviePath, options);
+        if (srt == null)
+        {
+            return null;
+        }
+        try
+        {
+            var cues = DvdSubtitleWriter.ReadSrt(srt);
+            var kept = cues.Where(c => !c.Lines.Any(l => Advert.IsMatch(l))).ToList();
+            if (kept.Count == 0)
+            {
+                logNotes.Add($"Subtitles '{Path.GetFileName(srt)}' hold no cues; title {setNum} has none.");
+                return null;
+            }
+            string workDir = Path.Combine(Path.GetTempPath(), "IgnisDisc_Subtitles_" + Guid.NewGuid().ToString("N"));
+            Directory.CreateDirectory(workDir); // outside VIDEO_TS: nothing but DVD-Video files may sit there
+            string idx;
+            try
+            {
+                idx = DvdSubtitleWriter.WriteVobSub(kept, Path.Combine(workDir, $"subtitles_{setNum}.sub"));
+            }
+            catch
+            {
+                try { Directory.Delete(workDir, recursive: true); } catch (IOException) { } catch (UnauthorizedAccessException) { }
+                throw;
+            }
+            logNotes.Add($"English subtitles for title {setNum} from '{Path.GetFileName(srt)}': {kept.Count} cues" +
+                (kept.Count < cues.Count ? $" ({cues.Count - kept.Count} download-site adverts left out)." : "."));
+            return idx;
+        }
+        catch (Exception ex) when (ex is IOException or UnauthorizedAccessException or InvalidOperationException or FormatException or ArgumentException)
+        {
+            logNotes.Add($"Subtitles '{Path.GetFileName(srt)}' could not be used ({ex.Message}); title {setNum} has none.");
+            return null;
+        }
+    }
+
+    /// <summary>The .srt for a movie: given in <see cref="DvdAuthoringOptions.SubtitleFiles"/>, else beside it; null when none.</summary>
+    private static string? FindSubtitleFile(string moviePath, DvdAuthoringOptions options)
+    {
+        if (options.SubtitleFiles.TryGetValue(moviePath, out var given))
+        {
+            return File.Exists(given) ? given : null;
+        }
+        if (!options.UseSubtitleFilesBesideMovies)
+        {
+            return null;
+        }
+        string stem = Path.Combine(Path.GetDirectoryName(moviePath) ?? ".", Path.GetFileNameWithoutExtension(moviePath));
+        return new[] { stem + ".srt", stem + ".en.srt", stem + ".eng.srt" }.FirstOrDefault(File.Exists);
+    }
+
+    /// <summary>One frame of the movie at <paramref name="seconds"/>, 640 pixels wide, as PNG; false when FFmpeg fails.</summary>
+    private static async Task<bool> ExtractStillAsync(string ffmpegExe, string moviePath, double seconds, string pngPath, CancellationToken cancellationToken)
+    {
+        var psi = new System.Diagnostics.ProcessStartInfo
+        {
+            FileName = ffmpegExe,
+            UseShellExecute = false,
+            CreateNoWindow = true,
+            RedirectStandardError = true,
+            RedirectStandardOutput = true
+        };
+        foreach (string a in new[] { "-y", "-ss", Math.Max(0, seconds).ToString("F1", System.Globalization.CultureInfo.InvariantCulture),
+                     "-i", moviePath, "-frames:v", "1", "-vf", "scale=640:-2", pngPath })
+        {
+            psi.ArgumentList.Add(a);
+        }
+        try
+        {
+            using var proc = System.Diagnostics.Process.Start(psi);
+            if (proc == null)
+            {
+                return false;
+            }
+            var err = proc.StandardError.ReadToEndAsync(cancellationToken);
+            var outp = proc.StandardOutput.ReadToEndAsync(cancellationToken);
+            await proc.WaitForExitAsync(cancellationToken).ConfigureAwait(false);
+            await Task.WhenAll(err, outp).ConfigureAwait(false);
+            return proc.ExitCode == 0 && File.Exists(pngPath);
+        }
+        catch (Exception ex) when (ex is System.ComponentModel.Win32Exception or IOException)
+        {
+            return false;
+        }
+    }
+
+    private static void DeleteSubtitleFiles(string? idxPath)
+    {
+        if (idxPath == null)
+        {
+            return;
+        }
+        try { Directory.Delete(Path.GetDirectoryName(idxPath)!, recursive: true); } catch (IOException) { } catch (UnauthorizedAccessException) { }
+    }
+
     public static DvdBitratePlan PlanVideoBitrate(IReadOnlyList<double> titleSeconds, DvdAuthoringOptions options)
     {
         ArgumentNullException.ThrowIfNull(titleSeconds);
@@ -407,33 +529,9 @@ public sealed class DvdVideoAuthoringService
             titleCount = Math.Min(analyzed.MovieFilePaths.Count, 99);
             int menuVobSectors = 0;
             IReadOnlyList<DvdVobu> menuVobus = Array.Empty<DvdVobu>();
+            bool menuHasButtons = false;
 
-            // 1. Generate Menu VOB if requested
-            if (options.AutoCreatePlayMenu)
-            {
-                progress?.Report((8.0, "Generating interactive DVD Root Menu..."));
-                var menuOpts = new DvdMenuOptions
-                {
-                    MenuTitle = menuTitle,
-                    TitleNames = analyzed.CleanedMovieTitles,
-                    Standard = options.Standard,
-                    AspectRatio = options.AspectRatio
-                };
-
-                byte[] menuBytes = await DvdMenuGenerator.GenerateMenuVobAsync(
-                    menuOpts,
-                    options.CustomFfmpegPath,
-                    options.UseFfmpegWhenAvailable,
-                    cancellationToken).ConfigureAwait(false);
-
-                string menuVobPath = Path.Combine(videoTsDir, "VIDEO_TS.VOB");
-                await File.WriteAllBytesAsync(menuVobPath, menuBytes, cancellationToken).ConfigureAwait(false);
-                menuVobSectors = menuBytes.Length / OpticalConstants.DataSectorSize;
-                menuVobus = DvdIfoGenerator.PatchVobNavPacketsInFile(menuVobPath, isMenu: true);
-                logNotes.Add($"Generated menu 'VIDEO_TS.VOB' ({menuVobSectors} sectors).");
-            }
-
-            // Probe movie durations if FFmpeg is available so we can auto-fit bitrate to Single-Layer DVD-5 and show accurate % progress
+            // Probe movie durations if FFmpeg is available, to fit the bitrate to the disc, pick menu stills and show progress
             string? ffmpegExe = null;
             bool ffmpegReady = options.UseFfmpegWhenAvailable &&
                                FfmpegLocator.IsFfmpegAvailable(out ffmpegExe, options.CustomFfmpegPath) &&
@@ -448,6 +546,69 @@ public sealed class DvdVideoAuthoringService
                 }
             }
 
+            // 1. Generate Menu VOB if requested
+            if (options.AutoCreatePlayMenu)
+            {
+                progress?.Report((8.0, "Generating the DVD title menu..."));
+                string menuVobPath = Path.Combine(videoTsDir, "VIDEO_TS.VOB");
+                if (ffmpegReady)
+                {
+                    // A still from each film and a Play (and Play with subtitles) button per title.
+                    string stills = Path.Combine(Path.GetTempPath(), "IgnisDisc_MenuStills_" + Guid.NewGuid().ToString("N"));
+                    Directory.CreateDirectory(stills);
+                    try
+                    {
+                        var menuTitles = new List<DvdMenuTitle>();
+                        for (int i = 0; i < titleCount; i++)
+                        {
+                            string still = Path.Combine(stills, $"title{i + 1}.png");
+                            bool haveStill = await ExtractStillAsync(ffmpegExe!, analyzed.MovieFilePaths[i], probedDurations[i] * 0.3, still, cancellationToken).ConfigureAwait(false);
+                            string name = i < analyzed.CleanedMovieTitles.Count ? analyzed.CleanedMovieTitles[i] : $"Title {i + 1}";
+                            menuTitles.Add(new DvdMenuTitle(name, haveStill ? still : null, FindSubtitleFile(analyzed.MovieFilePaths[i], options) != null));
+                        }
+                        var menu = await DvdStillMenu.BuildAsync(menuTitle, menuTitles, options.Standard, options.AspectRatio, ffmpegExe!,
+                            b => DvdIfoGenerator.LinkPgc(DvdIfoGenerator.TitlePlayPgcNumber(b.Title, titleCount, b.WithSubtitles)),
+                            cancellationToken).ConfigureAwait(false);
+                        if (menu != null)
+                        {
+                            await File.WriteAllBytesAsync(menuVobPath, menu.Vob, cancellationToken).ConfigureAwait(false);
+                            menuVobSectors = menu.Vob.Length / OpticalConstants.DataSectorSize;
+                            menuVobus = menu.Vobus;
+                            menuHasButtons = true;
+                            logNotes.Add($"Generated the title menu 'VIDEO_TS.VOB' ({menuVobSectors} sectors, {menu.Buttons.Count} buttons).");
+                        }
+                        else
+                        {
+                            logNotes.Add("The title menu with buttons could not be encoded; using the plain menu.");
+                        }
+                    }
+                    finally
+                    {
+                        try { Directory.Delete(stills, recursive: true); } catch (IOException) { } catch (UnauthorizedAccessException) { }
+                    }
+                }
+
+                if (!menuHasButtons)
+                {
+                    var menuOpts = new DvdMenuOptions
+                    {
+                        MenuTitle = menuTitle,
+                        TitleNames = analyzed.CleanedMovieTitles,
+                        Standard = options.Standard,
+                        AspectRatio = options.AspectRatio
+                    };
+                    byte[] menuBytes = await DvdMenuGenerator.GenerateMenuVobAsync(
+                        menuOpts,
+                        options.CustomFfmpegPath,
+                        options.UseFfmpegWhenAvailable,
+                        cancellationToken).ConfigureAwait(false);
+                    await File.WriteAllBytesAsync(menuVobPath, menuBytes, cancellationToken).ConfigureAwait(false);
+                    menuVobSectors = menuBytes.Length / OpticalConstants.DataSectorSize;
+                    menuVobus = DvdIfoGenerator.PatchVobNavPacketsInFile(menuVobPath, isMenu: true);
+                    logNotes.Add($"Generated menu 'VIDEO_TS.VOB' ({menuVobSectors} sectors).");
+                }
+            }
+
             // Video bitrate so feature-length movies fit on the disc (single-layer DVD-5, or DVD-9 with a usable break)
             var bitratePlan = PlanVideoBitrate(probedDurations, options);
             int targetVideoBitrateKbps = bitratePlan.VideoKbps;
@@ -459,7 +620,7 @@ public sealed class DvdVideoAuthoringService
 
             // 2. Process each movie track into a Title Set (VTS_xx)
             var titleTotalSectors = new Dictionary<int, int>();
-            var titleSetIfoInputs = new List<(int SetNum, int VobSectors, int DurationSeconds, IReadOnlyList<DvdVobu> Vobus, int NextTitle)>();
+            var titleSetIfoInputs = new List<(int SetNum, int VobSectors, int DurationSeconds, IReadOnlyList<DvdVobu> Vobus, int NextTitle, bool Subtitles)>();
 
             for (int i = 0; i < titleCount; i++)
             {
@@ -475,6 +636,7 @@ public sealed class DvdVideoAuthoringService
 
                 // Place tempVob inside videoTsDir so it is on the same filesystem volume for fast 0ms File.Move
                 string tempVob = Path.Combine(videoTsDir, $"_temp_transcode_{setNum}_{Guid.NewGuid():N}.vob");
+                string? subtitleIndex = ffmpegReady ? PrepareSubtitles(moviePath, options, setNum, logNotes) : null;
                 bool transcodeSuccess = false;
                 double detectedDurationSeconds = probedDurations[i];
 
@@ -487,7 +649,8 @@ public sealed class DvdVideoAuthoringService
                             : FfmpegDvdTranscodeBuilder.ForNtsc(moviePath, tempVob, options.AspectRatio))
                             .WithScaleAndPadFilter(true)
                             .WithVideoBitrate(targetVideoBitrateKbps, targetMaxVideoBitrateKbps)
-                            .WithAudio("ac3", options.AudioBitrateKbps);
+                            .WithAudio("ac3", options.AudioBitrateKbps)
+                            .WithSubtitles(subtitleIndex);
 
                         (transcodeSuccess, detectedDurationSeconds) = await RunFfmpegTranscodeWithProgressAsync(
                             ffmpegExe!,
@@ -528,7 +691,8 @@ public sealed class DvdVideoAuthoringService
                 // Patch NAV packets on the contiguous VOB stream before splitting into 1 GB extents
                 double navPct = titleStartPct + titleSpanPct * 0.92;
                 progress?.Report((navPct, $"Patching DVD NAV packets & VOBU address maps for Title {setNum}/{titleCount}..."));
-                var vobus = DvdIfoGenerator.PatchVobNavPacketsInFile(tempVob, vobId: 1, cellId: 1, isMenu: false).ToList();
+                var vobus = DvdIfoGenerator.PatchVobNavPacketsInFile(tempVob, vobId: 1, cellId: 1, isMenu: false,
+                    chapterSeconds: Math.Max(0, options.ChapterIntervalSeconds)).ToList();
 
                 // Split oversized VOB (> 1 GB)
                 double splitPct = titleStartPct + titleSpanPct * 0.96;
@@ -572,20 +736,22 @@ public sealed class DvdVideoAuthoringService
                     menuVobSectors: 0,
                     nextTitleNumber: nextTitle,
                     vobus: vobus,
-                    callMenuAtEnd: menuVobSectors > 0);
+                    callMenuAtEnd: menuVobSectors > 0,
+                    subtitleStream: subtitleIndex != null && transcodeSuccess);
 
                 string vtsIfoPath = Path.Combine(videoTsDir, $"VTS_{setNum:D2}_0.IFO");
                 string vtsBupPath = Path.Combine(videoTsDir, $"VTS_{setNum:D2}_0.BUP");
 
                 await File.WriteAllBytesAsync(vtsIfoPath, vtsIfoBytes, cancellationToken).ConfigureAwait(false);
                 await File.WriteAllBytesAsync(vtsBupPath, vtsIfoBytes, cancellationToken).ConfigureAwait(false);
-                titleSetIfoInputs.Add((setNum, totalVobSecs, effectiveDurationSec, vobus, nextTitle));
+                titleSetIfoInputs.Add((setNum, totalVobSecs, effectiveDurationSec, vobus, nextTitle, subtitleIndex != null && transcodeSuccess));
+                DeleteSubtitleFiles(subtitleIndex);
             }
 
             // 3. Plan preliminary layout to determine exact VTS start sector offsets
             progress?.Report((86.0, "Building Video Manager (VIDEO_TS.IFO / VIDEO_TS.BUP) navigation tables..."));
             var layoutPlanner = new DvdVideoLayoutPlanner();
-            int vmgIfoSectors = DvdIfoGenerator.CalculateVmgIfoSectors(titleCount, menuVobSectors, menuVobus.Count);
+            int vmgIfoSectors = DvdIfoGenerator.CalculateVmgIfoSectors(titleCount, menuVobSectors, menuVobus.Count, menuHasButtons);
 
             List<IDvdVideoFileEntry> PreliminaryFiles()
             {
@@ -626,7 +792,8 @@ public sealed class DvdVideoAuthoringService
                     nextTitleNumber: input.NextTitle,
                     ifoSectors: ifoSectors,
                     vobus: input.Vobus,
-                    callMenuAtEnd: menuVobSectors > 0);
+                    callMenuAtEnd: menuVobSectors > 0,
+                    subtitleStream: input.Subtitles);
                 await File.WriteAllBytesAsync(Path.Combine(videoTsDir, $"VTS_{input.SetNum:D2}_0.IFO"), alignedIfo, cancellationToken).ConfigureAwait(false);
                 await File.WriteAllBytesAsync(Path.Combine(videoTsDir, $"VTS_{input.SetNum:D2}_0.BUP"), alignedIfo, cancellationToken).ConfigureAwait(false);
                 logNotes.Add($"VTS_{input.SetNum:D2}_0.IFO padded to {ifoSectors} sectors so title {input.SetNum} starts on a 16-sector block.");
@@ -650,7 +817,10 @@ public sealed class DvdVideoAuthoringService
                 menuVobSectors: menuVobSectors,
                 vtsStartSectorOffsets: vtsStartOffsets,
                 autoPlayMenu: options.AutoCreatePlayMenu,
-                menuVobus: menuVobus);
+                menuVobus: menuVobus,
+                chapterCounts: titleSetIfoInputs.Select(t => t.Vobus.Select(v => v.CellId).Distinct().Count()).ToList(),
+                subtitleStreams: titleSetIfoInputs.Select(t => t.Subtitles).ToList(),
+                menuHasButtons: menuHasButtons);
 
             string vmgIfoPath = Path.Combine(videoTsDir, "VIDEO_TS.IFO");
             string vmgBupPath = Path.Combine(videoTsDir, "VIDEO_TS.BUP");

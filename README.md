@@ -197,10 +197,11 @@ simulator, and multi-layer Blu-ray discs go to the Windows writer. On a dual-lay
 writing: an image that fits on the first layer stays there, a larger one is split in half (the first layer never
 smaller than the second), or the break goes where `--layer-break <sectors>` puts it (`burn-iso`, `burn-data`). On real
 hardware: the Ubuntu 26.04 image (6.5 GB) on a Verbatim DVD+R DL with the break moved to 1,800,000 sectors; the drive
-reported the break there afterwards and the disc's SHA-256 matched the image. On the DVD-Video screen, "Direct drive commands" puts the break of a
-dual-layer DVD+R on a cell boundary instead, read from the title sets' IFO files, where players expect the layer
-change (simulator only). The DVD-Video screen's direct path has also written a 60 s test disc to a used DVD+RW on
-real hardware: every sector read back and the title decodes in full; it has not been played in a stand-alone player.
+reported the break there afterwards and the disc's SHA-256 matched the image. For DVD-Video ("Direct drive commands" on
+the DVD-Video screen, or `burn-dvd --native`), the break goes on a cell boundary read from the title sets' IFO files,
+where players expect the layer change. On real hardware: two films (103 and 86 minutes, authored with `--dual-layer`)
+on a Verbatim DVD+R DL with the break where the second film starts; an Xbox Series X played both, and playing on
+through the end of the first film into the second crossed the layer change without a stop.
 An audio CD written this way can be left open for a second session, and a data session can be added after it (CD-Extra); this and the optional recovery-data session on an audio CD have run only in the built-in drive simulator, not on a real disc.
 `--test-write` and
 `--test-first` work as for audio (DVD+R has no test write). On real hardware it has run on one drive so far; other

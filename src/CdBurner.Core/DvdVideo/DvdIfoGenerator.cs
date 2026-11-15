@@ -51,6 +51,46 @@ public static class DvdIfoGenerator
     /// </summary>
     public static int TitleJumpPgcNumber(int title, bool hasTitleMenu) => (hasTitleMenu ? 1 : 0) + Math.Max(2, title) - 1;
 
+    /// <summary>
+    /// Subpicture stream control word for a title with one subtitle stream: present (bit 31), stream 0 for every display
+    /// mode (4:3, wide, letterbox, pan and scan).
+    /// </summary>
+    internal const uint SubtitleStreamControl = 0x80000000;
+
+    /// <summary>
+    /// The 16-colour palette of a PGC with subpictures, as 0, Y, Cr, Cb (ITU-R BT.601, video range): 0 black, 1 white,
+    /// 2 black (outline), 3 grey (edge smoothing), 4 amber and 5 white for menu highlights, the rest black.
+    /// </summary>
+    internal static readonly uint[] SubtitlePalette =
+    [
+        0x00108080, 0x00EB8080, 0x00108080, 0x007D8080, 0x00A4B33B, 0x00EB8080,
+        0x00108080, 0x00108080, 0x00108080, 0x00108080, 0x00108080, 0x00108080,
+        0x00108080, 0x00108080, 0x00108080, 0x00108080
+    ];
+
+    /// <summary>subp_attr_t: run-length coded, language given ("en"), normal captions.</summary>
+    private static void WriteSubtitleAttributes(Span<byte> a)
+    {
+        a[0] = 0x01;
+        a[2] = (byte)'e';
+        a[3] = (byte)'n';
+        a[5] = 0x01;
+    }
+
+    /// <summary>LinkPGCN n: go to program chain n of the current domain (a menu button to a VMGM chain).</summary>
+    public static byte[] LinkPgc(int pgcNumber) => [0x20, 0x04, 0x00, 0x00, 0x00, 0x00, (byte)(pgcNumber >> 8), (byte)pgcNumber];
+
+    /// <summary>SetSTN: subpicture stream 0, shown (0x40) or not; libdvdnav's eval_system_set reads byte 4 (0x80 = set).</summary>
+    private static byte[] SetSubtitles(bool on) => [0x51, 0x00, 0x00, 0x00, (byte)(0x80 | (on ? 0x40 : 0x00)), 0x00, 0x00, 0x00];
+
+    /// <summary>
+    /// Number of the VMGM program chain a menu button links to for <paramref name="title"/>: after the title menu (1) and
+    /// the chains for titles 2 to n come one chain per title that switches subtitles off and plays it, then one per title
+    /// that switches them on and plays it.
+    /// </summary>
+    public static int TitlePlayPgcNumber(int title, int titleCount, bool withSubtitles) =>
+        1 + (titleCount - 1) + (withSubtitles ? titleCount : 0) + title;
+
     /// <summary>Exit: stop playback.</summary>
     private static readonly byte[] Exit = [0x30, 0x01, 0x00, 0x00, 0x00, 0x00, 0x00, 0x00];
 
@@ -69,15 +109,19 @@ public static class DvdIfoGenerator
         return DvdNavPackWriter.Patch(stream, vobId, cellId, isMenu ? JumpTitle1 : null);
     }
 
-    /// <summary>Fills the NAV packs of a VOB file in place and returns its VOBUs.</summary>
-    public static IReadOnlyList<DvdVobu> PatchVobNavPacketsInFile(string vobFilePath, int vobId = 1, int cellId = 1, bool isMenu = false, int buttonCount = 1)
+    /// <summary>
+    /// Fills the NAV packs of a VOB file in place and returns its VOBUs; with <paramref name="chapterSeconds"/> &gt; 0 the
+    /// VOB is split into chapter cells of that length.
+    /// </summary>
+    public static IReadOnlyList<DvdVobu> PatchVobNavPacketsInFile(string vobFilePath, int vobId = 1, int cellId = 1, bool isMenu = false,
+        int buttonCount = 1, int chapterSeconds = 0)
     {
         ArgumentException.ThrowIfNullOrWhiteSpace(vobFilePath);
         if (!File.Exists(vobFilePath) || new FileInfo(vobFilePath).Length < SectorSize)
         {
             return Array.Empty<DvdVobu>();
         }
-        return DvdNavPackWriter.PatchFile(vobFilePath, vobId, cellId, isMenu ? JumpTitle1 : null);
+        return DvdNavPackWriter.PatchFile(vobFilePath, vobId, cellId, isMenu ? JumpTitle1 : null, chapterSeconds);
     }
 
     /// <summary>
@@ -105,11 +149,11 @@ public static class DvdIfoGenerator
     }
 
     /// <summary>Sectors of the VIDEO_TS.IFO <see cref="BuildVmgIfo"/> builds for these contents.</summary>
-    public static int CalculateVmgIfoSectors(int titleSetCount, int menuVobSectors, int menuVobuCount = 1)
+    public static int CalculateVmgIfoSectors(int titleSetCount, int menuVobSectors, int menuVobuCount = 1, bool menuHasButtons = false)
     {
         titleSetCount = Math.Clamp(titleSetCount, 1, 99);
         int sectors = 1 + Sectors(8 + 12 * titleSetCount) + Sectors(8 + titleSetCount * (4 + VtsAttributesSize));
-        if (PgciUtBytes(titleSetCount, menuVobSectors > 0) is int ut and > 0)
+        if (PgciUtBytes(titleSetCount, menuVobSectors > 0, menuHasButtons && menuVobSectors > 0) is int ut and > 0)
         {
             sectors += Sectors(ut);
         }
@@ -133,21 +177,28 @@ public static class DvdIfoGenerator
         int menuVobSectors,
         IReadOnlyList<int>? vtsStartSectorOffsets = null,
         bool autoPlayMenu = true,
-        IReadOnlyList<DvdVobu>? menuVobus = null)
+        IReadOnlyList<DvdVobu>? menuVobus = null,
+        IReadOnlyList<int>? chapterCounts = null,
+        IReadOnlyList<bool>? subtitleStreams = null,
+        bool menuHasButtons = false)
     {
         titleSetCount = Math.Clamp(titleSetCount, 1, 99);
         bool hasMenu = menuVobSectors > 0;
         var menuUnits = hasMenu ? (menuVobus is { Count: > 0 } ? menuVobus : new[] { new DvdVobu(0, -1, -1) }) : Array.Empty<DvdVobu>();
+        var menuCells = hasMenu
+            ? new List<CellInfo> { new(0, menuUnits[^1].Sector, menuVobSectors - 1, menuHasButtons ? 0xFF : MenuStillSeconds, Duration(menuUnits)) }
+            : new List<CellInfo>();
 
         int ttSrptSector = 1;
         int atrtSector = ttSrptSector + Sectors(8 + 12 * titleSetCount);
         int atrtBytes = 8 + titleSetCount * (4 + VtsAttributesSize);
         int next = atrtSector + Sectors(atrtBytes);
         int pgciUtSector = 0, cAdtSector = 0, admapSector = 0;
-        if (PgciUtBytes(titleSetCount, hasMenu) > 0)
+        bool buttonMenu = hasMenu && menuHasButtons;
+        if (PgciUtBytes(titleSetCount, hasMenu, buttonMenu) > 0)
         {
             pgciUtSector = next;
-            next += Sectors(PgciUtBytes(titleSetCount, hasMenu));
+            next += Sectors(PgciUtBytes(titleSetCount, hasMenu, buttonMenu));
         }
         if (hasMenu)
         {
@@ -174,8 +225,8 @@ public static class DvdIfoGenerator
         W16(mat, 0x3E, titleSetCount);
         Encoding.ASCII.GetBytes("IGNISDISC").CopyTo(ifo, 0x40); // provider id, zero padded
 
-        byte[] firstPlay = BuildPgc(programs: 0, cells: 0, durationPts: 0, thirtyFps: true, hasAudio: false,
-            pre: hasMenu && autoPlayMenu ? JumpTitleMenu : JumpTitle1, post: null, cell: null);
+        byte[] firstPlay = BuildPgc(Array.Empty<CellInfo>(), thirtyFps: true, hasAudio: false,
+            pre: hasMenu && autoPlayMenu ? JumpTitleMenu : JumpTitle1, post: null);
         firstPlay.CopyTo(ifo, 0x400);
         W32(mat, 0x80, 0x400 + firstPlay.Length - 1); // last byte of VMGI_MAT with the first-play PGC
         W32(mat, 0x84, 0x400);                        // first-play PGC
@@ -189,6 +240,10 @@ public static class DvdIfoGenerator
         if (hasMenu)
         {
             WriteVideoAttributes(mat[0x100..], standard, aspect); // menu video; the menu declares no audio
+            if (buttonMenu)
+            {
+                mat[0x155] = 1; // one subpicture stream: the button highlights (attributes left zero: run-length coded)
+            }
         }
 
         // --- TT_SRPT: one title per title set ---
@@ -202,7 +257,7 @@ public static class DvdIfoGenerator
             // of a disc without a menu.
             t[0] = (byte)(i < titleSetCount || hasMenu ? 0x10 : 0x00);
             t[1] = 1;      // angles
-            W16(t, 2, 1);  // chapters
+            W16(t, 2, chapterCounts != null && i <= chapterCounts.Count ? Math.Max(1, chapterCounts[i - 1]) : 1); // chapters
             t[6] = (byte)i; // title set
             t[7] = 1;      // title within the title set
             int start = vtsStartSectorOffsets != null && i <= vtsStartSectorOffsets.Count
@@ -224,6 +279,11 @@ public static class DvdIfoGenerator
             WriteVideoAttributes(e[264..], standard, aspect); // title VOBs' video
             e[267] = 1;                                        // one audio stream
             WriteAc3Stereo(e[268..]);
+            if (subtitleStreams != null && i < subtitleStreams.Count && subtitleStreams[i])
+            {
+                e[349] = 1;                                    // one subpicture stream
+                WriteSubtitleAttributes(e[350..]);
+            }
         }
 
         if (pgciUtSector > 0)
@@ -233,14 +293,26 @@ public static class DvdIfoGenerator
             var pgcs = new List<(byte EntryId, byte[] Pgc)>();
             if (hasMenu)
             {
-                pgcs.Add((0x82, BuildPgc(programs: 1, cells: 1, durationPts: Duration(menuUnits), thirtyFps: standard == DvdVideoStandard.Ntsc,
-                    hasAudio: false, pre: null, post: JumpTitle1,
-                    cell: new CellInfo(0, menuUnits[^1].Sector, menuVobSectors - 1, MenuStillSeconds))));
+                pgcs.Add((0x82, buttonMenu
+                    // Stays until a button is used; a player that skips the still comes back to the menu.
+                    ? BuildPgc(menuCells, thirtyFps: standard == DvdVideoStandard.Ntsc, hasAudio: false, pre: null, post: LinkPgc(1),
+                        subpictureControl: SubtitleStreamControl, palette: SubtitlePalette)
+                    : BuildPgc(menuCells, thirtyFps: standard == DvdVideoStandard.Ntsc, hasAudio: false, pre: null, post: JumpTitle1)));
             }
             for (int title = 2; title <= titleSetCount; title++)
             {
-                pgcs.Add((0x00, BuildPgc(programs: 0, cells: 0, durationPts: 0, thirtyFps: true, hasAudio: false,
-                    pre: JumpTitle(title), post: null, cell: null)));
+                pgcs.Add((0x00, BuildPgc(Array.Empty<CellInfo>(), thirtyFps: true, hasAudio: false, pre: JumpTitle(title), post: null)));
+            }
+            if (buttonMenu)
+            {
+                foreach (bool on in new[] { false, true })
+                {
+                    for (int title = 1; title <= titleSetCount; title++)
+                    {
+                        pgcs.Add((0x00, BuildPgc(Array.Empty<CellInfo>(), thirtyFps: true, hasAudio: false,
+                            pre: SetSubtitles(on), pre2: JumpTitle(title), post: null)));
+                    }
+                }
             }
 
             var ut = mat[(pgciUtSector * SectorSize)..];
@@ -266,7 +338,7 @@ public static class DvdIfoGenerator
 
         if (hasMenu)
         {
-            WriteCellAddressTable(mat[(cAdtSector * SectorSize)..], menuVobSectors);
+            WriteCellAddressTable(mat[(cAdtSector * SectorSize)..], menuCells);
             WriteVobuAddressMap(mat[(admapSector * SectorSize)..], menuUnits);
         }
 
@@ -277,15 +349,16 @@ public static class DvdIfoGenerator
     /// The bytes of the VMGM PGCI_UT (0 when there is none): header and language unit (16), PGCIT header (8), a search
     /// pointer (8) and the PGC for the title menu and for each title from 2 on.
     /// </summary>
-    private static int PgciUtBytes(int titleSetCount, bool hasMenu)
+    private static int PgciUtBytes(int titleSetCount, bool hasMenu, bool buttonMenu)
     {
         int jumps = Math.Max(0, titleSetCount - 1);
+        int plays = buttonMenu ? 2 * titleSetCount : 0;
         if (!hasMenu && jumps == 0)
         {
             return 0;
         }
-        int bytes = 16 + 8 + 8 * (jumps + (hasMenu ? 1 : 0)) + jumps * PgcBytes(programs: 0, cells: 0, commands: 1);
-        return hasMenu ? bytes + PgcBytes(programs: 1, cells: 1, commands: 1) : bytes;
+        int bytes = 16 + 8 + 8 * (jumps + plays + (hasMenu ? 1 : 0)) + jumps * PgcBytes(cells: 0, commands: 1) + plays * PgcBytes(cells: 0, commands: 2);
+        return hasMenu ? bytes + PgcBytes(cells: 1, commands: 1) : bytes;
     }
 
     /// <summary>
@@ -310,7 +383,8 @@ public static class DvdIfoGenerator
         int nextTitleNumber = 0,
         int ifoSectors = 0,
         IReadOnlyList<DvdVobu>? vobus = null,
-        bool callMenuAtEnd = true)
+        bool callMenuAtEnd = true,
+        bool subtitleStream = false)
     {
         titleSetNumber = Math.Clamp(titleSetNumber, 1, 99);
         titleVobTotalSectors = Math.Max(16, titleVobTotalSectors);
@@ -324,13 +398,15 @@ public static class DvdIfoGenerator
         byte[] post = nextTitleNumber > 0
             ? CallVmgmPgc(TitleJumpPgcNumber(nextTitleNumber, hasTitleMenu: callMenuAtEnd))
             : (callMenuAtEnd ? CallTitleMenu : Exit);
-        byte[] pgc = BuildPgc(programs: 1, cells: 1, durationPts, thirtyFps, hasAudio: true, pre: null, post: post,
-            cell: new CellInfo(0, units[^1].Sector, titleVobTotalSectors - 1, 0));
+        var cells = CellsOf(units, titleVobTotalSectors, durationPts);
+        byte[] pgc = BuildPgc(cells, thirtyFps, hasAudio: true, pre: null, post: post,
+            subpictureControl: subtitleStream ? SubtitleStreamControl : 0, palette: subtitleStream ? SubtitlePalette : null);
         byte[] timeMap = BuildTimeMap(units, timed);
 
-        const int pttSector = 1, pgcitSector = 2, tmaptSector = 3;
+        const int pttSector = 1, pgcitSector = 2;
+        int tmaptSector = pgcitSector + Sectors(16 + pgc.Length);
         int cAdtSector = tmaptSector + Sectors(timeMap.Length);
-        int admapSector = cAdtSector + 1;
+        int admapSector = cAdtSector + Sectors(8 + 12 * cells.Count);
         int natural = admapSector + Sectors(4 + 4 * units.Count);
         int total = Math.Max(natural, ifoSectors);
         byte[] ifo = new byte[total * SectorSize];
@@ -353,13 +429,22 @@ public static class DvdIfoGenerator
         mat[0x203] = 1; // one audio stream
         WriteAc3Stereo(mat[0x204..]);
 
-        // --- VTS_PTT_SRPT: title 1, chapter 1 = PGC 1, program 1 ---
+        if (subtitleStream)
+        {
+            mat[0x255] = 1; // one subpicture stream
+            WriteSubtitleAttributes(mat[0x256..]);
+        }
+
+        // --- VTS_PTT_SRPT: title 1, chapter n = PGC 1, program n ---
         var ptt = mat[(pttSector * SectorSize)..];
         W16(ptt, 0, 1);
-        W32(ptt, 4, 15);
+        W32(ptt, 4, 12 + 4 * cells.Count - 1);
         W32(ptt, 8, 12);
-        W16(ptt, 12, 1);
-        W16(ptt, 14, 1);
+        for (int i = 0; i < cells.Count; i++)
+        {
+            W16(ptt, 12 + 4 * i, 1);
+            W16(ptt, 14 + 4 * i, i + 1);
+        }
 
         // --- VTS_PGCIT: the title's entry PGC ---
         var pgcit = mat[(pgcitSector * SectorSize)..];
@@ -370,74 +455,128 @@ public static class DvdIfoGenerator
         pgc.CopyTo(pgcit[16..]);
 
         timeMap.CopyTo(mat[(tmaptSector * SectorSize)..]);
-        WriteCellAddressTable(mat[(cAdtSector * SectorSize)..], titleVobTotalSectors);
+        WriteCellAddressTable(mat[(cAdtSector * SectorSize)..], cells);
         WriteVobuAddressMap(mat[(admapSector * SectorSize)..], units);
         return ifo;
     }
 
-    /// <summary>Where a cell lies in its VOB, counted in sectors, and how long it stays as a still at its end.</summary>
-    private readonly record struct CellInfo(int FirstSector, int LastVobuStartSector, int LastSector, int StillSeconds);
+    /// <summary>
+    /// Where a cell lies in its VOB (sectors counted from the VOB's start), how long it plays and how long it stays as a
+    /// still at its end (0xFF: until a button is used).
+    /// </summary>
+    private readonly record struct CellInfo(int FirstSector, int LastVobuStartSector, int LastSector, int StillSeconds, long DurationPts);
 
-    private static int PgcBytes(int programs, int cells, int commands)
+    private static int PgcBytes(int cells, int commands)
     {
         int size = PgcSize + 8 + 8 * commands;
         if (cells > 0)
         {
-            size = Align4(size + programs) + 24 * cells + 4 * cells;
+            size = Align4(size + cells) + 24 * cells + 4 * cells;
         }
         return size;
     }
 
     /// <summary>
-    /// A program chain (pgc_t): programs and cells counts, running time, audio stream 0 present when
-    /// <paramref name="hasAudio"/>, then its command table (one pre or post command), program map, cell playback and
-    /// cell position tables, with their offsets at 0xE4-0xEA.
+    /// A program chain (pgc_t) with one program per cell (each a chapter), cells in VOB 1 numbered from 1: running time,
+    /// audio stream 0 present when <paramref name="hasAudio"/>, subpicture stream control word 0 when
+    /// <paramref name="subpictureControl"/> is not 0 (bit 31: present; bits 28-24 the stream shown on 4:3, 20-16 wide,
+    /// 12-8 letterbox, 4-0 pan and scan), the 16-colour palette (0, Y, Cr, Cb), then its command table (one pre and/or
+    /// one post command), program map, cell playback and cell position tables, with their offsets at 0xE4-0xEA. Cells
+    /// after the first are marked seamless: they follow on in the same VOB without a pause.
     /// </summary>
-    private static byte[] BuildPgc(int programs, int cells, long durationPts, bool thirtyFps, bool hasAudio, byte[]? pre, byte[]? post, CellInfo? cell)
+    private static byte[] BuildPgc(IReadOnlyList<CellInfo> cells, bool thirtyFps, bool hasAudio, byte[]? pre, byte[]? post,
+        uint subpictureControl = 0, IReadOnlyList<uint>? palette = null, byte[]? pre2 = null)
     {
-        int commands = (pre != null ? 1 : 0) + (post != null ? 1 : 0);
-        byte[] pgc = new byte[PgcBytes(programs, cells, commands)];
+        int preCount = (pre != null ? 1 : 0) + (pre2 != null ? 1 : 0);
+        int commands = preCount + (post != null ? 1 : 0);
+        byte[] pgc = new byte[PgcBytes(cells.Count, commands)];
         var p = pgc.AsSpan();
-        p[2] = (byte)programs;
-        p[3] = (byte)cells;
-        if (cells > 0)
+        p[2] = (byte)cells.Count; // programs
+        p[3] = (byte)cells.Count; // cells
+        if (cells.Count > 0)
         {
-            DvdNavPackWriter.Bcd(durationPts, thirtyFps).CopyTo(p[4..]);
+            DvdNavPackWriter.Bcd(cells.Sum(c => c.DurationPts), thirtyFps).CopyTo(p[4..]);
         }
         if (hasAudio)
         {
             W16(p, 0x0C, 0x8000); // audio stream 0 present, decoding stream 0
         }
+        if (subpictureControl != 0)
+        {
+            W32(p, 0x1C, subpictureControl);
+        }
+        if (palette != null)
+        {
+            for (int i = 0; i < Math.Min(16, palette.Count); i++)
+            {
+                W32(p, 0xA4 + 4 * i, palette[i]);
+            }
+        }
 
         int at = PgcSize;
         W16(p, 0xE4, at);
         var table = p[at..];
-        W16(table, 0, pre != null ? 1 : 0);
+        W16(table, 0, preCount);
         W16(table, 2, post != null ? 1 : 0);
         W16(table, 6, 8 + 8 * commands - 1);
         int c = 8;
         if (pre != null) { pre.CopyTo(table[c..]); c += 8; }
+        if (pre2 != null) { pre2.CopyTo(table[c..]); c += 8; }
         if (post != null) { post.CopyTo(table[c..]); c += 8; }
         at += c;
 
-        if (cells > 0 && cell is { } info)
+        if (cells.Count > 0)
         {
             W16(p, 0xE6, at);
-            p[at] = 1; // program 1 starts at cell 1
-            at = Align4(at + programs);
+            for (int i = 0; i < cells.Count; i++)
+            {
+                p[at + i] = (byte)(i + 1); // program i+1 starts at cell i+1
+            }
+            at = Align4(at + cells.Count);
             W16(p, 0xE8, at);
-            var playback = p[at..];
-            playback[2] = (byte)info.StillSeconds;
-            DvdNavPackWriter.Bcd(durationPts, thirtyFps).CopyTo(playback[4..]);
-            W32(playback, 8, info.FirstSector);
-            W32(playback, 16, info.LastVobuStartSector);
-            W32(playback, 20, info.LastSector);
-            at += 24;
+            for (int i = 0; i < cells.Count; i++)
+            {
+                var playback = p[(at + 24 * i)..];
+                playback[0] = (byte)(i > 0 ? 0x08 : 0x00); // seamless play from the cell before
+                playback[2] = (byte)cells[i].StillSeconds;
+                DvdNavPackWriter.Bcd(cells[i].DurationPts, thirtyFps).CopyTo(playback[4..]);
+                W32(playback, 8, cells[i].FirstSector);
+                W32(playback, 16, cells[i].LastVobuStartSector);
+                W32(playback, 20, cells[i].LastSector);
+            }
+            at += 24 * cells.Count;
             W16(p, 0xEA, at);
-            W16(p, at, 1);   // VOB id 1
-            p[at + 3] = 1;   // cell id 1
+            for (int i = 0; i < cells.Count; i++)
+            {
+                W16(p, at + 4 * i, 1);         // VOB id 1
+                p[at + 4 * i + 3] = (byte)(i + 1); // cell id
+            }
         }
         return pgc;
+    }
+
+    /// <summary>
+    /// The cells of a title VOB from its VOBUs' cell numbers: each runs from its first VOBU to the sector before the next
+    /// cell (the last to the VOB's end); its running time from its VOBUs' times, else <paramref name="untimedPts"/>.
+    /// </summary>
+    private static List<CellInfo> CellsOf(IReadOnlyList<DvdVobu> units, int vobSectors, long untimedPts, int stillSeconds = 0)
+    {
+        var cells = new List<CellInfo>();
+        int first = 0;
+        for (int i = 1; i <= units.Count; i++)
+        {
+            if (i < units.Count && units[i].CellId == units[first].CellId)
+            {
+                continue;
+            }
+            int last = i == units.Count ? vobSectors - 1 : units[i].Sector - 1;
+            long duration = units[first].StartPts >= 0 && units[i - 1].EndPts > units[first].StartPts
+                ? units[i - 1].EndPts - units[first].StartPts
+                : untimedPts;
+            cells.Add(new CellInfo(units[first].Sector, units[i - 1].Sector, last, stillSeconds, duration));
+            first = i;
+        }
+        return cells;
     }
 
     /// <summary>
@@ -478,15 +617,19 @@ public static class DvdIfoGenerator
         return map;
     }
 
-    /// <summary>C_ADT with one cell, VOB 1 cell 1, over the whole VOB.</summary>
-    private static void WriteCellAddressTable(Span<byte> t, int vobSectors)
+    /// <summary>C_ADT: VOB 1 with its cells, numbered from 1, each from its first to its last sector.</summary>
+    private static void WriteCellAddressTable(Span<byte> t, IReadOnlyList<CellInfo> cells)
     {
         W16(t, 0, 1);
-        W32(t, 4, 8 + 12 - 1);
-        W16(t, 8, 1);
-        t[10] = 1;
-        W32(t, 12, 0);
-        W32(t, 16, Math.Max(1, vobSectors) - 1);
+        W32(t, 4, 8 + 12 * cells.Count - 1);
+        for (int i = 0; i < cells.Count; i++)
+        {
+            var e = t[(8 + 12 * i)..];
+            W16(e, 0, 1);
+            e[2] = (byte)(i + 1);
+            W32(e, 4, cells[i].FirstSector);
+            W32(e, 8, cells[i].LastSector);
+        }
     }
 
     /// <summary>VOBU_ADMAP: the first sector of every VOBU.</summary>

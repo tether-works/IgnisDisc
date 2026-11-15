@@ -72,6 +72,12 @@ public sealed class FfmpegDvdTranscodeBuilder
     public bool EnableScaleAndPadFilter { get; set; } = false;
 
     /// <summary>
+    /// A VobSub index (.idx, from <see cref="DvdSubtitleWriter.WriteVobSub"/>) muxed in as DVD subpicture stream 0
+    /// (copied as it is); null for no subtitles.
+    /// </summary>
+    public string? SubtitleIndexPath { get; set; }
+
+    /// <summary>
     /// Optional target video bitrate in kilobits per second (e.g. 6000 for 6 Mbps).
     /// </summary>
     public int? VideoBitrateKbps { get; set; }
@@ -168,6 +174,12 @@ public sealed class FfmpegDvdTranscodeBuilder
         return this;
     }
 
+    public FfmpegDvdTranscodeBuilder WithSubtitles(string? vobSubIndexPath)
+    {
+        SubtitleIndexPath = vobSubIndexPath;
+        return this;
+    }
+
     public FfmpegDvdTranscodeBuilder WithScaleAndPadFilter(bool enabled = true)
     {
         EnableScaleAndPadFilter = enabled;
@@ -198,6 +210,12 @@ public sealed class FfmpegDvdTranscodeBuilder
 
         args.Add("-i");
         args.Add(InputPath);
+        if (!string.IsNullOrWhiteSpace(SubtitleIndexPath))
+        {
+            args.Add("-i");
+            args.Add(SubtitleIndexPath);
+            args.AddRange(["-map", "0:v:0", "-map", "0:a:0", "-map", "1:s:0", "-c:s", "copy"]);
+        }
 
         // Target preset: -target ntsc-dvd or -target pal-dvd
         string target = Standard switch
