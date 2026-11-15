@@ -260,6 +260,14 @@ one assembly with a clear provenance boundary. Nothing in it touches a drive.
 - Burning: `CdBurner.Core.Images.PictureTrackCue` adds the picture WAV as the last audio track of an audio or
   mixed-mode CUE sheet, which then goes through the direct Session-at-Once writer (`burn-audio --tracks <cue> --dao
   --native`) and `verify --cue` like any other CUE. Core does not reference this project.
+- Files and picture on one DVD or BD: `CdBurner.Core.Iso.PictureDiscLayoutPlanner` and `PictureDiscImageComposer`
+  (not upstream's ISO writer). `IsoUdfImageBuilder` builds the files; the ISO 9660 volume space size and the UDF
+  partition (with its closing anchor) end where the files end, at least 2 MiB (1,024 sectors) of zero sectors
+  follow, and the picture zone starts and ends on a 16-sector (DVD ECC block) or 32-sector (BD cluster) boundary.
+  Inner files: files from LBA 0, picture to the end of the disc. Outer files: picture from LBA 0, files as an
+  appended session at the end of the disc (ISO 9660 + Joliet only, as for every appended session; the volume space
+  size then counts from LBA 0 as usual for a multisession disc, but no descriptor, directory or file extent lies
+  below the session start). The picture comes in through a block callback, so any encoder can fill it.
 - Upstream issues kept as-is in the port until the goldens are reproduced (to be fixed separately): the
   interleaved track starts with 1,332 placeholder bytes and the delay line drops the last 1,332 logical bytes of a
   drawn stretch (upstream's `docs/PHYSICAL_MODEL_AUDIT.md`); the picture sits about 111 frames late against CIRC reference timing.

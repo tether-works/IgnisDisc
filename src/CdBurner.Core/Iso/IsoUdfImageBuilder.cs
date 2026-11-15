@@ -127,6 +127,17 @@ public static class IsoUdfImageBuilder
     }
 
     /// <summary>
+    /// End of the volume space (exclusive, absolute LBA) for a session of <paramref name="root"/> that starts at
+    /// <paramref name="sessionStartLba"/>, from the same layout the build uses, without reading any file data.
+    /// </summary>
+    public static int CalculateTotalSectors(CompilationDirectory root, IsoBuildOptions? options, int sessionStartLba)
+    {
+        ArgumentNullException.ThrowIfNull(root);
+        ArgumentOutOfRangeException.ThrowIfNegative(sessionStartLba);
+        return LayoutContext.Create(root, options ?? new IsoBuildOptions(), sessionStartLba).TotalSectors;
+    }
+
+    /// <summary>
     /// Where the image of <paramref name="root"/> puts its recovery zones and descriptor copies (archive discs), from
     /// the same layout the build uses, without reading or writing any file data.
     /// </summary>
