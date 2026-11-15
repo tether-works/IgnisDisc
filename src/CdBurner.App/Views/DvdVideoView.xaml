@@ -1,4 +1,4 @@
-<UserControl x:Class="CdBurner.App.Views.DvdVideoView"
+﻿<UserControl x:Class="CdBurner.App.Views.DvdVideoView"
              xmlns="http://schemas.microsoft.com/winfx/2006/xaml/presentation"
              xmlns:x="http://schemas.microsoft.com/winfx/2006/xaml"
              xmlns:d="http://schemas.microsoft.com/expression/blend/2008"
@@ -42,6 +42,7 @@
                 Margin="0,0,0,12">
             <Grid>
                 <Grid.RowDefinitions>
+                    <RowDefinition Height="Auto" />
                     <RowDefinition Height="Auto" />
                     <RowDefinition Height="Auto" />
                 </Grid.RowDefinitions>
@@ -201,6 +202,62 @@
                             FontSize="11.5"
                             VerticalAlignment="Center" />
                 </WrapPanel>
+
+                <!-- Subtitles per movie: which .srt was found or chosen, with Choose / No subtitles -->
+                <StackPanel Grid.Row="2" Grid.Column="0" Grid.ColumnSpan="5"
+                            Margin="0,10,0,0"
+                            Visibility="{Binding HasSubtitleRows, Converter={StaticResource BoolToVis}}">
+                    <TextBlock Text="Subtitles:"
+                               FontWeight="SemiBold"
+                               Foreground="{DynamicResource TextSecondaryBrush}"
+                               Margin="0,0,0,4" />
+                    <ItemsControl ItemsSource="{Binding SubtitleRows}" AutomationProperties.Name="Subtitles per movie">
+                        <ItemsControl.ItemTemplate>
+                            <DataTemplate>
+                                <Grid Margin="0,2,0,2">
+                                    <Grid.ColumnDefinitions>
+                                        <ColumnDefinition Width="Auto" MaxWidth="320" />
+                                        <ColumnDefinition Width="*" />
+                                        <ColumnDefinition Width="Auto" />
+                                        <ColumnDefinition Width="Auto" />
+                                    </Grid.ColumnDefinitions>
+                                    <TextBlock Grid.Column="0"
+                                               Text="{Binding MovieName}"
+                                               ToolTip="{Binding MoviePath}"
+                                               TextTrimming="CharacterEllipsis"
+                                               FontWeight="SemiBold"
+                                               Foreground="{DynamicResource TextPrimaryBrush}"
+                                               VerticalAlignment="Center"
+                                               Margin="0,0,10,0" />
+                                    <TextBlock Grid.Column="1"
+                                               Text="{Binding StatusText}"
+                                               ToolTip="{Binding SubtitlePath}"
+                                               TextWrapping="Wrap"
+                                               Foreground="{DynamicResource TextSecondaryBrush}"
+                                               VerticalAlignment="Center"
+                                               Margin="0,0,10,0" />
+                                    <Button Grid.Column="2"
+                                            Content="Choose .srt..."
+                                            AutomationProperties.Name="Choose subtitle file"
+                                            Command="{Binding DataContext.ChooseSubtitleFileCommand, RelativeSource={RelativeSource AncestorType=ItemsControl}}"
+                                            CommandParameter="{Binding}"
+                                            Padding="10,3"
+                                            FontSize="11.5"
+                                            Margin="0,0,6,0" />
+                                    <Button Grid.Column="3"
+                                            Content="No subtitles"
+                                            AutomationProperties.Name="Use no subtitle file"
+                                            ToolTip="Leave this movie's subtitle file off the disc (with Generate subtitles on, they are made by speech recognition instead)"
+                                            Command="{Binding DataContext.ClearSubtitleFileCommand, RelativeSource={RelativeSource AncestorType=ItemsControl}}"
+                                            CommandParameter="{Binding}"
+                                            Visibility="{Binding HasSubtitleFile, Converter={StaticResource BoolToVis}}"
+                                            Padding="10,3"
+                                            FontSize="11.5" />
+                                </Grid>
+                            </DataTemplate>
+                        </ItemsControl.ItemTemplate>
+                    </ItemsControl>
+                </StackPanel>
             </Grid>
         </Border>
 

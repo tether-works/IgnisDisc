@@ -79,6 +79,21 @@ public class DvdVideoViewModel : ObservableObject
     public ObservableCollection<string> SourceMediaFiles { get; } = new();
 
     /// <summary>
+    /// One row per movie in <see cref="SourceMediaFiles"/>: the subtitle file it will get (found beside it, chosen by
+    /// the user, generated, or none), so it is clear before authoring which .srt goes on the disc.
+    /// </summary>
+    public ObservableCollection<DvdSubtitleChoiceRow> SubtitleRows { get; } = new();
+
+    /// <summary>True when there is at least one movie to show subtitles for.</summary>
+    public bool HasSubtitleRows => SubtitleRows.Count > 0;
+
+    /// <summary>
+    /// Subtitle files the user picked, by movie path. An empty string means "no subtitle file for this movie" (the
+    /// one found beside it was cleared).
+    /// </summary>
+    private readonly Dictionary<string, string> _chosenSubtitles = new(StringComparer.OrdinalIgnoreCase);
+
+    /// <summary>
     /// Physical path to the VIDEO_TS directory, root folder containing VIDEO_TS, or delimited movie file list.
     /// </summary>
     public string VideoTsFolderPath
@@ -168,6 +183,7 @@ public class DvdVideoViewModel : ObservableObject
             if (SetProperty(ref _generateSubtitles, value))
             {
                 OnPropertyChanged(nameof(IsSubtitleToolOfferVisible));
+                RefreshSubtitleRows();
             }
         }
     }
@@ -527,6 +543,12 @@ public class DvdVideoViewModel : ObservableObject
     #region Commands
 
     public RelayCommand AddMovieFilesCommand { get; }
+
+    /// <summary>Opens a file dialog to pick the .srt for one movie (parameter: its <see cref="DvdSubtitleChoiceRow"/>).</summary>
+    public RelayCommand ChooseSubtitleFileCommand { get; }
+
+    /// <summary>Uses no subtitle file for one movie (parameter: its <see cref="DvdSubtitleChoiceRow"/>).</summary>
+    public RelayCommand ClearSubtitleFileCommand { get; }
     public RelayCommand ClearSourceCommand { get; }
     public RelayCommand SelectVideoTsFolderCommand { get; }
     public RelayCommand ValidateAndPlanLayoutCommand { get; }
@@ -546,6 +568,9 @@ public class DvdVideoViewModel : ObservableObject
         _burnEngine = burnEngine ?? new VirtualBurnEngine();
 
         AddMovieFilesCommand = new RelayCommand(ExecuteAddMovieFiles);
+        ChooseSubtitleFileCommand = new RelayCommand(p => { if (p is DvdSubtitleChoiceRow row) PickSubtitleFile(row); }, _ => !IsBusy);
+        ClearSubtitleFileCommand = new RelayCommand(p => { if (p is DvdSubtitleChoiceRow row) ChooseSubtitleFile(row.MoviePath, null); }, _ => !IsBusy);
+        SourceMediaFiles.CollectionChanged += (_, _) => RefreshSubtitleRows();
         ClearSourceCommand = new RelayCommand(_ => ClearSource());
         SelectVideoTsFolderCommand = new RelayCommand(ExecuteSelectVideoTsFolder);
         ValidateAndPlanLayoutCommand = new RelayCommand(_ => ValidateAndPlanLayout());
@@ -725,11 +750,100 @@ public class DvdVideoViewModel : ObservableObject
     }
 
     /// <summary>
+    /// Uses <paramref name="subtitlePath"/> as the subtitles for <paramref name="moviePath"/>; null means no subtitle
+    /// file for that movie (made by speech recognition instead when "Generate subtitles" is on).
+    /// </summary>
+    public void ChooseSubtitleFile(string moviePath, string? subtitlePath)
+    {
+        _chosenSubtitles[Path.GetFullPath(moviePath)] = subtitlePath == null ? string.Empty : Path.GetFullPath(subtitlePath);
+        RefreshSubtitleRows();
+    }
+
+    private void PickSubtitleFile(DvdSubtitleChoiceRow row)
+    {
+        var dlg = new Microsoft.Win32.OpenFileDialog
+        {
+            Title = $"Subtitles for {row.MovieName}",
+            Filter = "SubRip subtitles (*.srt)|*.srt|All Files (*.*)|*.*",
+            InitialDirectory = Path.GetDirectoryName(row.SubtitlePath ?? row.MoviePath) ?? string.Empty
+        };
+        if (dlg.ShowDialog() == true && !string.IsNullOrEmpty(dlg.FileName))
+        {
+            ChooseSubtitleFile(row.MoviePath, dlg.FileName);
+        }
+    }
+
+    /// <summary>
+    /// Rebuilds <see cref="SubtitleRows"/> from the movie list, the user's picks and the "Generate subtitles" switch,
+    /// using the same lookup authoring uses (<see cref="DvdVideoAuthoringService.FindSubtitleFile"/>), and reads each
+    /// .srt so the row can say how many subtitles it holds or that it cannot be read.
+    /// </summary>
+    public void RefreshSubtitleRows()
+    {
+        var lookup = new DvdAuthoringOptions();
+        foreach (var (movie, srt) in _chosenSubtitles)
+        {
+            lookup.SubtitleFiles[movie] = srt;
+        }
+
+        SubtitleRows.Clear();
+        foreach (string movie in SourceMediaFiles)
+        {
+            var row = new DvdSubtitleChoiceRow(movie);
+            bool chosen = _chosenSubtitles.TryGetValue(movie, out string? pick);
+            string? srt = DvdVideoAuthoringService.FindSubtitleFile(movie, lookup);
+            string ifNone = GenerateSubtitles
+                ? "they will be made by speech recognition (Generate subtitles is on)."
+                : "this movie gets no subtitles. Choose an .srt file, or tick Generate subtitles.";
+
+            if (srt != null)
+            {
+                row.SubtitlePath = srt;
+                string? problem = null;
+                int cues = 0;
+                try
+                {
+                    cues = DvdSubtitleWriter.ReadSrt(srt).Count;
+                    if (cues == 0) problem = "it holds no subtitles";
+                }
+                catch (Exception ex) when (ex is IOException or UnauthorizedAccessException or FormatException or InvalidOperationException or ArgumentException)
+                {
+                    problem = ex.Message;
+                }
+
+                if (problem != null)
+                {
+                    row.Source = DvdSubtitleSource.Unreadable;
+                    row.StatusText = $"{Path.GetFileName(srt)} cannot be used ({problem}); " + ifNone;
+                }
+                else
+                {
+                    row.Source = chosen ? DvdSubtitleSource.Chosen : DvdSubtitleSource.FoundBesideMovie;
+                    row.StatusText = (chosen ? "Using the file you chose: " : "Found beside the movie: ")
+                        + $"{Path.GetFileName(srt)} ({cues:N0} subtitle{(cues == 1 ? "" : "s")}).";
+                }
+            }
+            else
+            {
+                row.Source = GenerateSubtitles ? DvdSubtitleSource.WillBeGenerated : DvdSubtitleSource.None;
+                row.StatusText = chosen && string.IsNullOrEmpty(pick)
+                    ? "Subtitle file left off: " + ifNone
+                    : chosen
+                        ? $"The chosen file {Path.GetFileName(pick)} is gone: " + ifNone
+                        : "No .srt file with the movie's name beside it: " + ifNone;
+            }
+            SubtitleRows.Add(row);
+        }
+        OnPropertyChanged(nameof(HasSubtitleRows));
+    }
+
+    /// <summary>
     /// Clears all source media files and resets state.
     /// </summary>
     public void ClearSource()
     {
         CleanupTempAuthoredDirectory();
+        _chosenSubtitles.Clear();
         SourceMediaFiles.Clear();
         VideoTsFolderPath = string.Empty;
     }
@@ -1041,6 +1155,11 @@ public class DvdVideoViewModel : ObservableObject
             GenerateSubtitles = GenerateSubtitles,
             SubtitleLanguage = string.IsNullOrWhiteSpace(SubtitleLanguage) ? "en" : SubtitleLanguage.Trim().ToLowerInvariant()
         };
+
+        foreach (var (movie, srt) in _chosenSubtitles)
+        {
+            options.SubtitleFiles[movie] = srt; // the user's picks; "" = no file for that movie
+        }
 
         var authoringService = new DvdVideoAuthoringService
         {
