@@ -35,8 +35,8 @@ write; a used and a new DVD+RW; a DVD+R finalized by the drive; three added sess
 four on a DVD-R, every file of every session identical; a 60 s DVD-Video test disc on a DVD+RW, read back and decoded
 in full; and a dual-layer DVD+R with the layer break where IgnisDisc was told to put it (the Ubuntu 26.04 image, 6.5 GB,
 SHA-256 of the disc equal to the image). Also real: a two-film DVD-9 on a dual-layer DVD+R with the break on the second film's first cell, played on an Xbox Series X across the layer change. Still simulator only: DVD-RW, DVD-RAM, dual-layer DVD-R, Blu-ray, the open audio session with a data
-session after it (CD-Extra), the Audio CD recovery session, the radial spread of archive recovery data, and the `eject`
-and `load` commands.
+session after it (CD-Extra), the Audio CD recovery session, CD picture tracks, the radial spread of archive recovery data, the archive
+`HEALTH.json` certificates, and the `eject` and `load` commands.
 
 Phases 5–6 below are still plans.
 
