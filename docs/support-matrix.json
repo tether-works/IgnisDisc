@@ -148,8 +148,8 @@
     "featureHtml": "DVD-Video authoring",
     "physical": "⚠️",
     "virtual": "✅",
-    "notesMarkdown": "Requires `ffmpeg.exe`; test on a standalone player before relying on it. With direct drive commands one 60 s test disc was burned to a DVD+RW on a real drive (read back and decoded in full), but not played in a stand-alone player",
-    "notesHtml": "Requires <code>ffmpeg.exe</code>; test on a standalone player before relying on it. With direct drive commands one 60 s test disc was burned to a DVD+RW on a real drive (read back and decoded in full), but not played in a stand-alone player"
+    "notesMarkdown": "Requires `ffmpeg.exe` (the 1-click download). Each film becomes a title with a chapter every 5 minutes, English subtitles from an `.srt` beside it (or generated with the optional subtitle tool), and a title menu with a still from each film and Play / Play with subtitles buttons. The navigation tables follow libdvdread's structures and were checked with libdvdnav (mpv, VLC). Played on one stand-alone player so far, an Xbox Series X: a film with menu, chapters and subtitles on a DVD+RW, and two films on a dual-layer DVD+R played across the layer change. Discs authored before 2026-11-14 did not play there",
+    "notesHtml": "Requires <code>ffmpeg.exe</code> (the 1-click download). Each film becomes a title with a chapter every 5 minutes, English subtitles from an <code>.srt</code> beside it (or generated with the optional subtitle tool), and a title menu with a still from each film and Play / Play with subtitles buttons. The navigation tables follow libdvdread's structures and were checked with libdvdnav (mpv, VLC). Played on one stand-alone player so far, an Xbox Series X: a film with menu, chapters and subtitles on a DVD+RW, and two films on a dual-layer DVD+R played across the layer change. Discs authored before 2026-11-14 did not play there"
   },
   {
     "featureMarkdown": "Generate subtitles for DVD-Video (speech recognition)",
