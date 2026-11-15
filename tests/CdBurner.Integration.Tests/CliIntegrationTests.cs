@@ -1150,7 +1150,21 @@ public sealed class CliIntegrationTests : IDisposable
         _recorder.InsertMedia(medium);
 
         string mkvPath = Path.Combine(_tempDir, "SampleMovie.mkv");
-        File.WriteAllBytes(mkvPath, new byte[65536]);
+        if (CdBurner.Core.DvdVideo.FfmpegLocator.IsFfmpegAvailable(out string? ffmpeg) && ffmpeg != null)
+        {
+            // With FFmpeg present authoring converts the movie for real (and fails on one it cannot read), so give it
+            // two seconds of real video and sound.
+            var make = System.Diagnostics.Process.Start(new System.Diagnostics.ProcessStartInfo(ffmpeg,
+                ["-y", "-f", "lavfi", "-i", "testsrc2=size=320x240:rate=25:duration=2", "-f", "lavfi", "-i", "sine=duration=2",
+                 "-c:v", "mpeg4", "-c:a", "ac3", mkvPath]) { UseShellExecute = false, CreateNoWindow = true, RedirectStandardError = true })!;
+            _ = make.StandardError.ReadToEndAsync();
+            await make.WaitForExitAsync();
+            Assert.Equal(0, make.ExitCode);
+        }
+        else
+        {
+            File.WriteAllBytes(mkvPath, new byte[65536]); // without FFmpeg authoring writes a synthetic test stream
+        }
 
         var (stdout, stderr) = CreateStringWriters();
         int exitCode = await CliCommandRunner.RunAsync(

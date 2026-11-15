@@ -673,31 +673,33 @@ public sealed class DvdVideoAuthoringService
                 bool transcodeSuccess = false;
                 double detectedDurationSeconds = probedDurations[i];
 
+                async Task<(bool, double)> TranscodeAsync(string? subtitles)
+                {
+                    var transcodeBuilder = (options.Standard == DvdVideoStandard.Pal
+                        ? FfmpegDvdTranscodeBuilder.ForPal(moviePath, tempVob, options.AspectRatio)
+                        : FfmpegDvdTranscodeBuilder.ForNtsc(moviePath, tempVob, options.AspectRatio))
+                        .WithScaleAndPadFilter(true)
+                        .WithVideoBitrate(targetVideoBitrateKbps, targetMaxVideoBitrateKbps)
+                        .WithAudio("ac3", options.AudioBitrateKbps)
+                        .WithSubtitles(subtitles);
+                    return await RunFfmpegTranscodeWithProgressAsync(ffmpegExe!, transcodeBuilder.BuildArgumentList(), tempVob, setNum,
+                        titleCount, movieName, detectedDurationSeconds, titleStartPct, titleSpanPct, progress, logNotes, cancellationToken).ConfigureAwait(false);
+                }
+
                 try
                 {
                     if (ffmpegReady)
                     {
-                        var transcodeBuilder = (options.Standard == DvdVideoStandard.Pal
-                            ? FfmpegDvdTranscodeBuilder.ForPal(moviePath, tempVob, options.AspectRatio)
-                            : FfmpegDvdTranscodeBuilder.ForNtsc(moviePath, tempVob, options.AspectRatio))
-                            .WithScaleAndPadFilter(true)
-                            .WithVideoBitrate(targetVideoBitrateKbps, targetMaxVideoBitrateKbps)
-                            .WithAudio("ac3", options.AudioBitrateKbps)
-                            .WithSubtitles(subtitleIndex);
-
-                        (transcodeSuccess, detectedDurationSeconds) = await RunFfmpegTranscodeWithProgressAsync(
-                            ffmpegExe!,
-                            transcodeBuilder.BuildArgumentList(),
-                            tempVob,
-                            setNum,
-                            titleCount,
-                            movieName,
-                            detectedDurationSeconds,
-                            titleStartPct,
-                            titleSpanPct,
-                            progress,
-                            logNotes,
-                            cancellationToken).ConfigureAwait(false);
+                        (transcodeSuccess, detectedDurationSeconds) = await TranscodeAsync(subtitleIndex).ConfigureAwait(false);
+                        if (!transcodeSuccess && subtitleIndex != null)
+                        {
+                            // Some FFmpeg builds fail to mux large subtitle pictures; the film matters more than its subtitles.
+                            logNotes.Add($"FFmpeg could not write title {setNum} with its subtitles; writing it again without them.");
+                            DeleteSubtitleFiles(subtitleIndex);
+                            subtitleIndex = null;
+                            try { if (File.Exists(tempVob)) File.Delete(tempVob); } catch (IOException) { } catch (UnauthorizedAccessException) { }
+                            (transcodeSuccess, detectedDurationSeconds) = await TranscodeAsync(null).ConfigureAwait(false);
+                        }
                     }
                 }
                 catch (OperationCanceledException)
@@ -705,9 +707,23 @@ public sealed class DvdVideoAuthoringService
                     try { if (File.Exists(tempVob)) File.Delete(tempVob); } catch { }
                     throw;
                 }
-                catch (Exception ex)
+                catch (Exception ex) when (ex is IOException or System.ComponentModel.Win32Exception or InvalidOperationException)
                 {
-                    logNotes.Add($"Transcode attempt failed for '{Path.GetFileName(moviePath)}': {ex.Message}. Falling back to synthetic VOB.");
+                    logNotes.Add($"Transcode attempt failed for '{Path.GetFileName(moviePath)}': {ex.Message}.");
+                }
+
+                if (!transcodeSuccess && ffmpegReady)
+                {
+                    // A disc of placeholder video in place of the film is never what was asked for.
+                    DeleteSubtitleFiles(subtitleIndex);
+                    try { if (File.Exists(tempVob)) File.Delete(tempVob); } catch (IOException) { } catch (UnauthorizedAccessException) { }
+                    return new DvdAuthoringResult
+                    {
+                        Success = false,
+                        ErrorMessage = $"FFmpeg could not convert '{movieName}' to DVD video (see the log notes). Nothing was authored; check the file plays, or update FFmpeg.",
+                        InputKind = analyzed.Kind,
+                        LogNotes = logNotes
+                    };
                 }
 
                 if (!transcodeSuccess)
@@ -1014,6 +1030,8 @@ public sealed class DvdVideoAuthoringService
 
         double durationSec = initialDurationSeconds;
         long lastReportTick = 0;
+        long lastOutput = Stopwatch.GetTimestamp(); // any line from FFmpeg; read by the watchdog below
+        bool stalled = false;
         long throttleTicks = Stopwatch.Frequency / 4; // Max 4 UI updates per second
 
         // Drain stdout in background
@@ -1072,6 +1090,7 @@ public sealed class DvdVideoAuthoringService
 
         void ProcessFfmpegLine(string line)
         {
+            Interlocked.Exchange(ref lastOutput, Stopwatch.GetTimestamp());
             if (durationSec <= 0 && line.Contains("Duration:", StringComparison.Ordinal))
             {
                 var durMatch = FfmpegDurationRegex.Match(line);
@@ -1116,7 +1135,37 @@ public sealed class DvdVideoAuthoringService
             }
         }
 
+        // Watchdog: FFmpeg prints progress about twice a second. One that stays silent this long has hung (an old build
+        // was seen to crash while muxing subtitles and never exit); it is stopped so authoring can go on or fail.
+        using var watchdogStop = CancellationTokenSource.CreateLinkedTokenSource(cancellationToken);
+        var watchdog = Task.Run(async () =>
+        {
+            try
+            {
+                while (!proc.HasExited)
+                {
+                    await Task.Delay(TimeSpan.FromSeconds(5), watchdogStop.Token).ConfigureAwait(false);
+                    if (Stopwatch.GetElapsedTime(Interlocked.Read(ref lastOutput)) > FfmpegNoOutputTimeout && !proc.HasExited)
+                    {
+                        stalled = true;
+                        try { proc.Kill(entireProcessTree: true); } catch (InvalidOperationException) { } catch (System.ComponentModel.Win32Exception) { }
+                        return;
+                    }
+                }
+            }
+            catch (OperationCanceledException)
+            {
+            }
+        }, CancellationToken.None);
+
         await Task.WhenAll(stdOutTask, stdErrTask, proc.WaitForExitAsync(cancellationToken)).ConfigureAwait(false);
+        watchdogStop.Cancel();
+        await watchdog.ConfigureAwait(false);
+        if (stalled)
+        {
+            logNotes.Add($"FFmpeg printed nothing for {FfmpegNoOutputTimeout.TotalMinutes:F0} minutes while converting '{movieName}' and was stopped.");
+            return (false, durationSec);
+        }
 
         if (proc.ExitCode == 0 && File.Exists(tempVob) && new FileInfo(tempVob).Length >= OpticalConstants.DataSectorSize)
         {
@@ -1124,9 +1173,12 @@ public sealed class DvdVideoAuthoringService
             return (true, durationSec);
         }
 
-        logNotes.Add($"FFmpeg exited with code {proc.ExitCode} for '{movieName}'. Falling back to synthetic VOB.");
+        logNotes.Add($"FFmpeg exited with code {proc.ExitCode} for '{movieName}'.");
         return (false, durationSec);
     }
+
+    /// <summary>How long FFmpeg may print nothing before a transcode counts as hung.</summary>
+    internal static TimeSpan FfmpegNoOutputTimeout { get; set; } = TimeSpan.FromMinutes(3);
 
     private static double ParseHms(Match match)
     {

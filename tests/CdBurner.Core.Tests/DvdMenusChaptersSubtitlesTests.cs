@@ -221,6 +221,34 @@ public sealed class DvdMenusChaptersSubtitlesTests
     }
 
     [Fact]
+    public async Task FfmpegThatFails_StopsAuthoring_InsteadOfPuttingPlaceholderVideoOnTheDisc()
+    {
+        // findstr.exe stands in for a broken FFmpeg: it rejects FFmpeg's arguments and exits with an error.
+        string fake = Path.Combine(Environment.SystemDirectory, "findstr.exe");
+        Assert.True(File.Exists(fake));
+        string dir = Path.Combine(Path.GetTempPath(), "DvdFfmpegFails_" + Guid.NewGuid().ToString("N"));
+        Directory.CreateDirectory(dir);
+        try
+        {
+            string movie = Path.Combine(dir, "Film.mp4");
+            File.WriteAllBytes(movie, new byte[64 * 2048]);
+            var options = new DvdAuthoringOptions { CustomFfmpegPath = fake, AutoCreatePlayMenu = false };
+
+            var result = await new DvdVideoAuthoringService().AuthorAsync(new[] { movie }, Path.Combine(dir, "Disc"), options);
+
+            Assert.False(result.Success);
+            Assert.Contains("could not convert", result.ErrorMessage);
+            Assert.DoesNotContain(result.LogNotes, n => n.Contains("synthetic", StringComparison.OrdinalIgnoreCase));
+            Assert.False(Directory.Exists(Path.Combine(dir, "Disc", "VIDEO_TS")) &&
+                         Directory.GetFiles(Path.Combine(dir, "Disc", "VIDEO_TS"), "VTS_*.VOB").Length > 0);
+        }
+        finally
+        {
+            try { Directory.Delete(dir, recursive: true); } catch { }
+        }
+    }
+
+    [Fact]
     public void MenuButtons_AreWrittenToEveryNavPack_WithNeighboursAndCommands()
     {
         byte[] vob = new byte[2 * 2048];
