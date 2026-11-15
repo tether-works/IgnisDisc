@@ -1,4 +1,4 @@
-using CdBurner.Core.Abstractions;
+﻿using CdBurner.Core.Abstractions;
 using CdBurner.Core.Primitives;
 using CdBurner.Core.Utilities;
 
@@ -167,6 +167,12 @@ public class VirtualDiscRecorder : IDiscRecorderBackend, IDriveMediaReportProvid
     }
 
     /// <summary>
+    /// Whether this simulated drive reports Session-at-Once writing (on, like the real test drive). Switch it off to
+    /// act like a drive that cannot take direct audio burns.
+    /// </summary>
+    public bool SupportsSessionAtOnce { get; set; } = true;
+
+    /// <summary>
     /// Returns drive hardware writing capabilities, buffer size, and supported speeds.
     /// </summary>
     public DriveCapabilitiesDto GetCapabilities()
@@ -186,7 +192,7 @@ public class VirtualDiscRecorder : IDiscRecorderBackend, IDriveMediaReportProvid
             SupportsBufferUnderrunProtection = true,
             SupportsBufferUnderrunFree = true,
             SupportsNativeTao = true,
-            SupportsNativeSao = true,
+            SupportsNativeSao = SupportsSessionAtOnce,
             SupportsNativeCdText = true,
             SupportsNativeRawDao = true,
             SupportsLayerJump = true,

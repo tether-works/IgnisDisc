@@ -376,6 +376,7 @@ public class DvdVideoViewModel : ObservableObject
             if (SetProperty(ref _isDualLayerRequired, value))
             {
                 OnPropertyChanged(nameof(MediaRequirementText));
+                ApplyDirectDefaultForLayers();
             }
         }
     }
@@ -397,10 +398,40 @@ public class DvdVideoViewModel : ObservableObject
     public bool UseDirectDriveCommands
     {
         get => _useDirectDriveCommands;
-        set => SetProperty(ref _useDirectDriveCommands, value);
+        set
+        {
+            _directChosenByUser = true; // from here on the user's choice stands, whatever the disc needs
+            _directTurnedOnForDualLayer = false;
+            SetProperty(ref _useDirectDriveCommands, value);
+        }
     }
 
     private bool _useDirectDriveCommands;
+    private bool _directChosenByUser;
+    private bool _directTurnedOnForDualLayer;
+
+    /// <summary>
+    /// Default for direct drive commands, decided by the disc the movies need, until the user sets it: on for a
+    /// dual-layer disc (only the direct writer puts the layer break on a cell boundary, where players expect it),
+    /// back off for a single-layer one (the Windows writer is the better-proven choice there).
+    /// </summary>
+    private void ApplyDirectDefaultForLayers()
+    {
+        if (_directChosenByUser)
+        {
+            return;
+        }
+        if (IsDualLayerRequired && !_useDirectDriveCommands)
+        {
+            _directTurnedOnForDualLayer = true;
+            SetProperty(ref _useDirectDriveCommands, true, nameof(UseDirectDriveCommands));
+        }
+        else if (!IsDualLayerRequired && _directTurnedOnForDualLayer)
+        {
+            _directTurnedOnForDualLayer = false;
+            SetProperty(ref _useDirectDriveCommands, false, nameof(UseDirectDriveCommands));
+        }
+    }
 
     /// <summary>Folder for the command logs of direct burns; null for the default under %LOCALAPPDATA%.</summary>
     public string? DirectBurnLogDirectory { get; set; }

@@ -303,23 +303,40 @@ public class AudioBurnViewModel : ObservableObject, IDisposable
     }
 
     private bool _useDirectDriveCommands;
+    private bool _directIsAppDefault;
     private bool _testWriteFirst;
 
     /// <summary>
-    /// Burn with IgnisDisc's own drive commands (Session-at-Once) instead of the Windows burning service. Off by
-    /// default, chosen per burn. This writes CD-Text, ISRC and catalog codes, pre-emphasis flags and a CUE sheet's
-    /// gap marks to the disc, and reads the disc back afterwards.
+    /// Burn with IgnisDisc's own drive commands (Session-at-Once) instead of the Windows burning service. This
+    /// writes CD-Text, ISRC and catalog codes, pre-emphasis flags and a CUE sheet's gap marks to the disc, and reads
+    /// the disc back afterwards. Off for a new view model; the app turns it on by default
+    /// (<see cref="UseDirectDriveCommandsByDefault"/>). Setting it is the user's own choice.
     /// </summary>
     public bool UseDirectDriveCommands
     {
         get => _useDirectDriveCommands;
         set
         {
+            _directIsAppDefault = false;
             if (SetProperty(ref _useDirectDriveCommands, value) && !value)
             {
                 TestWriteFirst = false;
                 IncludeRecoverySession = false;
             }
+        }
+    }
+
+    /// <summary>
+    /// Turns direct drive commands on as the app's default rather than the user's choice: the only way the Windows
+    /// burning service could write the album and track names (CD-Text) is not there, so direct is the better default.
+    /// A drive that cannot take them (no Session-at-Once) then burns with the Windows writer and says so, instead of
+    /// refusing as it does when the user ticked the box.
+    /// </summary>
+    public void UseDirectDriveCommandsByDefault()
+    {
+        if (SetProperty(ref _useDirectDriveCommands, true, nameof(UseDirectDriveCommands)))
+        {
+            _directIsAppDefault = true;
         }
     }
 
@@ -1908,8 +1925,15 @@ public class AudioBurnViewModel : ObservableObject, IDisposable
                 StatusMessage = $"{p.CurrentActionDescription} ({BurnProgress:F0}%)";
             });
 
-            // Direct drive commands are opt-in per burn and only for drives whose probe shows Session-at-Once.
+            // Direct drive commands only for drives whose probe shows Session-at-Once. When they are on only as the
+            // app's default, a drive without it burns with the Windows writer instead of refusing.
             bool direct = UseDirectDriveCommands || IncludeRecoverySession;
+            string? writerNote = null;
+            if (direct && _directIsAppDefault && !IncludeRecoverySession && !recorder.GetCapabilities().SupportsNativeSao)
+            {
+                direct = false;
+                writerNote = "This drive does not report Session-at-Once writing, so the Windows writer burned the disc (no CD-Text, track codes or exact gaps).";
+            }
             CdBurner.Hardware.NativeWriting.NativeAudioBurnEngine? directEngine = null;
             CdBurner.Hardware.NativeWriting.NativeDataBurnEngine? directDataEngine = null;
             LastDirectBurnResult = null;
@@ -2011,6 +2035,10 @@ public class AudioBurnViewModel : ObservableObject, IDisposable
                     StatusMessage += " Note: CD-Text and ISRC metadata are not written to physical discs in this version (they are kept in the project and .cue files).";
                 }
                 BurnProgress = 100.0;
+                if (writerNote != null)
+                {
+                    StatusMessage += " " + writerNote;
+                }
             }
             if (burnResult.Success && !(direct && directEngine?.LastResult?.Verification?.Warning != null))
             {

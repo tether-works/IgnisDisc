@@ -450,6 +450,7 @@ public class MainViewModel : ObservableObject, IDisposable
         // One settings service shared by the Settings screen and the audio rip options, so both save the same file.
         var settingsService = new AppSettingsService();
         _audioBurn = new AudioBurnViewModel(_deviceService, _burnEngine, settingsService: settingsService);
+        _audioBurn.UseDirectDriveCommandsByDefault(); // CD-Text needs it; drives without Session-at-Once fall back
         _imageStudio = new ImageStudioViewModel(_deviceService, _burnEngine);
         _archive = new ArchiveViewModel(_deviceService, _burnEngine);
         _driveUtilities = new DriveUtilitiesViewModel(_deviceService, _burnEngine);
