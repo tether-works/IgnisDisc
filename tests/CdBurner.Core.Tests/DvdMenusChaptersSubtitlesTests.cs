@@ -186,6 +186,40 @@ public sealed class DvdMenusChaptersSubtitlesTests
         Assert.Equal(new byte[] { 0x20, 0x04, 0, 0, 0, 0, 0, 6 }, DvdIfoGenerator.LinkPgc(6));
     }
 
+    [Theory]
+    [InlineData(1, true, DvdVideoStandard.Ntsc)]
+    [InlineData(1, false, DvdVideoStandard.Ntsc)]
+    [InlineData(2, true, DvdVideoStandard.Ntsc)]
+    [InlineData(3, true, DvdVideoStandard.Ntsc)]
+    [InlineData(6, true, DvdVideoStandard.Ntsc)]
+    [InlineData(1, true, DvdVideoStandard.Pal)]
+    public void MenuButtons_StayInsideTheTitleSafeArea_AndDoNotOverlap(int titleCount, bool subtitles, DvdVideoStandard standard)
+    {
+        // A single film with subtitles once put its second button off the bottom of the picture.
+        var titles = Enumerable.Range(1, titleCount).Select(i => new DvdMenuTitle($"Film {i}", null, subtitles)).ToList();
+
+        var (picture, buttons) = DvdStillMenu.Render("Heading", titles, standard, DvdAspectRatio.Widescreen16x9);
+
+        using (picture)
+        {
+            int height = standard == DvdVideoStandard.Pal ? 576 : 480;
+            Assert.Equal(height, picture.Height);
+            Assert.Equal(titleCount * (subtitles ? 2 : 1), buttons.Count);
+            foreach (var b in buttons)
+            {
+                Assert.True(b.Bounds.Top >= 90 && b.Bounds.Bottom <= height - 36 && b.Bounds.Left >= 0 && b.Bounds.Right < 720,
+                    $"button for title {b.Title} at {b.Bounds}");
+            }
+            for (int i = 0; i < buttons.Count; i++)
+            {
+                for (int j = i + 1; j < buttons.Count; j++)
+                {
+                    Assert.False(buttons[i].Bounds.IntersectsWith(buttons[j].Bounds), $"buttons {i + 1} and {j + 1} overlap");
+                }
+            }
+        }
+    }
+
     [Fact]
     public void MenuButtons_AreWrittenToEveryNavPack_WithNeighboursAndCommands()
     {

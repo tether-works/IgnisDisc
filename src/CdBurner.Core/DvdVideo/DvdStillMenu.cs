@@ -103,12 +103,17 @@ public static class DvdStillMenu
         int n = Math.Max(1, titles.Count);
         const float margin = 40, gap = 30;
         float column = (width - 2 * margin - (n - 1) * gap) / n;
-        float stillW = Math.Min(column, n == 1 ? 420 : 300);
-        float stillH = stillW * 9 / 16;
         float buttonW = Math.Min(column, 260), buttonH = 38;
         int maxButtons = titles.Any(t => t.HasSubtitles) ? 2 : 1;
-        float block = stillH + 12 + 52 + 10 + maxButtons * buttonH + (maxButtons - 1) * 10;
-        float top = 100 + Math.Max(0, (height - 30 - 100 - block) / 2);
+        float below = 12 + 52 + 10 + maxButtons * buttonH + (maxButtons - 1) * 10;
+        // Everything between the heading (100) and the bottom of the title-safe area (40 lines up): the still gets
+        // what the name and buttons leave.
+        float room = height - 40 - 100;
+        float stillW = Math.Min(column, n == 1 ? 420 : 300);
+        float stillH = Math.Min(stillW * 9 / 16, room - below - 8);
+        stillW = stillH * 16 / 9;
+        float block = stillH + below;
+        float top = 100 + Math.Max(0, (room - block) / 2);
 
         using var nameFont = new Font("Segoe UI Semibold", 21, GraphicsUnit.Pixel);
         using var labelFont = new Font("Segoe UI Semibold", 19, GraphicsUnit.Pixel);
