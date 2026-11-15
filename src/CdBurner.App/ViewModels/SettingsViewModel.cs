@@ -1,4 +1,4 @@
-using CdBurner.App.Resources;
+﻿using CdBurner.App.Resources;
 using System.Collections.ObjectModel;
 using System.Net.Http;
 using CdBurner.App.Mvvm;
@@ -38,6 +38,32 @@ public class SettingsViewModel : ObservableObject
     private bool _checkForUpdatesOnStartup;
     private string _updateStatusMessage = Strings.StatusSettingsUpdateCheckHasNotBeenRun;
     private bool _isCheckingForUpdates;
+    private bool _notifyWhenBurnFinishes = true;
+    private bool _autoSave;
+    private bool _loading;
+
+    /// <summary>
+    /// The settings stored in the settings file; a change to any of them is saved at once while <see cref="AutoSave"/>
+    /// is on.
+    /// </summary>
+    private static readonly HashSet<string> PersistedProperties =
+    [
+        nameof(DefaultWriteSpeedMultiplier), nameof(VerifyAfterBurnByDefault), nameof(StrictVerify),
+        nameof(EjectAfterBurnByDefault), nameof(NotifyWhenBurnFinishes), nameof(EnableBurnFreeByDefault),
+        nameof(TempStagingDirectory), nameof(ThemeMode), nameof(FfmpegExecutablePath), nameof(EnableVirtualDrive),
+        nameof(LogRingBufferCapacity), nameof(LookupMusicBrainzByDefault), nameof(VerifyAccurateRipByDefault),
+        nameof(CheckForUpdatesOnStartup)
+    ];
+
+    /// <summary>
+    /// Save every change to the settings file as soon as it is made. Off until the app turns it on after loading the
+    /// saved settings, so building this view model (in tests, or before the file is read) never writes the file.
+    /// </summary>
+    public bool AutoSave
+    {
+        get => _autoSave;
+        set => _autoSave = value;
+    }
     private bool _isInstallingTool;
     private bool _isFfmpegInstalled;
     private string _ffmpegStatusText = string.Empty;
@@ -106,6 +132,15 @@ public class SettingsViewModel : ObservableObject
     {
         get => _ejectAfterBurnByDefault;
         set => SetProperty(ref _ejectAfterBurnByDefault, value);
+    }
+
+    /// <summary>
+    /// Whether a finished or failed burn is announced with a sound, a flashing taskbar button and a message.
+    /// </summary>
+    public bool NotifyWhenBurnFinishes
+    {
+        get => _notifyWhenBurnFinishes;
+        set => SetProperty(ref _notifyWhenBurnFinishes, value);
     }
 
     /// <summary>
@@ -338,6 +373,25 @@ public class SettingsViewModel : ObservableObject
         InstallPar2Command = new AsyncRelayCommand(async _ => await InstallPar2Async(), _ => !_isInstallingTool);
 
         LoadSettings();
+        PropertyChanged += SaveOnChange;
+    }
+
+    private void SaveOnChange(object? sender, System.ComponentModel.PropertyChangedEventArgs e)
+    {
+        if (!_autoSave || _loading || e.PropertyName == null || !PersistedProperties.Contains(e.PropertyName))
+        {
+            return;
+        }
+        try
+        {
+            // The FFmpeg path's own setter re-checks the tools; doing it on every change would start par2 each time.
+            SaveSettings(refreshTools: false);
+        }
+        catch (Exception ex) when (ex is System.IO.IOException or UnauthorizedAccessException)
+        {
+            // Say so instead of losing the change silently; the value stays on screen and the next change retries.
+            StatusMessage = $"Could not save the settings: {ex.Message}";
+        }
     }
 
     /// <summary>
@@ -366,6 +420,21 @@ public class SettingsViewModel : ObservableObject
     /// </summary>
     public void LoadSettings()
     {
+        _loading = true;
+        try
+        {
+            LoadValues();
+        }
+        finally
+        {
+            _loading = false;
+        }
+        RefreshToolStatuses();
+        StatusMessage = Strings.StatusSettingsSettingsLoaded;
+    }
+
+    private void LoadValues()
+    {
         var settings = _settingsService.CurrentSettings;
         DefaultWriteSpeedMultiplier = settings.DefaultWriteSpeedMultiplier;
         VerifyAfterBurnByDefault = settings.VerifyAfterBurnByDefault;
@@ -380,14 +449,15 @@ public class SettingsViewModel : ObservableObject
         LookupMusicBrainzByDefault = settings.LookupMusicBrainzByDefault;
         VerifyAccurateRipByDefault = settings.VerifyAccurateRipByDefault;
         CheckForUpdatesOnStartup = settings.CheckForUpdatesOnStartup;
-        RefreshToolStatuses();
-        StatusMessage = Strings.StatusSettingsSettingsLoaded;
+        NotifyWhenBurnFinishes = settings.NotifyWhenBurnFinishes;
     }
 
     /// <summary>
     /// Persists current view model properties to the settings service and file.
     /// </summary>
-    public void SaveSettings()
+    public void SaveSettings() => SaveSettings(refreshTools: true);
+
+    private void SaveSettings(bool refreshTools)
     {
         // Start from the current settings so values owned by other screens (e.g. audio read offset) are kept.
         var settings = _settingsService.CurrentSettings.Clone();
@@ -404,6 +474,7 @@ public class SettingsViewModel : ObservableObject
         settings.LookupMusicBrainzByDefault = LookupMusicBrainzByDefault;
         settings.VerifyAccurateRipByDefault = VerifyAccurateRipByDefault;
         settings.CheckForUpdatesOnStartup = CheckForUpdatesOnStartup;
+        settings.NotifyWhenBurnFinishes = NotifyWhenBurnFinishes;
 
         _settingsService.CurrentSettings = settings;
         _settingsService.Save();
@@ -412,7 +483,10 @@ public class SettingsViewModel : ObservableObject
         {
             _mainViewModel.SelectedRecorder = SelectedRecorder;
         }
-        RefreshToolStatuses();
+        if (refreshTools)
+        {
+            RefreshToolStatuses();
+        }
         StatusMessage = Strings.StatusSettingsSettingsSavedSuccessfully;
         SettingsSaved?.Invoke(this, EventArgs.Empty);
     }
@@ -424,6 +498,11 @@ public class SettingsViewModel : ObservableObject
     {
         _settingsService.ResetToDefaults();
         LoadSettings();
+        if (_autoSave)
+        {
+            // Nothing else saves now that there is no Save button: write the defaults to the file too.
+            _settingsService.Save();
+        }
         StatusMessage = Strings.StatusSettingsSettingsResetToDefaultValues;
         SettingsSaved?.Invoke(this, EventArgs.Empty);
     }

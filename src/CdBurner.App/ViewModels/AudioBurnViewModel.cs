@@ -1,4 +1,4 @@
-using CdBurner.App.Resources;
+﻿using CdBurner.App.Resources;
 using System.Collections.ObjectModel;
 using System.IO;
 using System.Net.Http;
@@ -2011,6 +2011,11 @@ public class AudioBurnViewModel : ObservableObject, IDisposable
                     StatusMessage += " Note: CD-Text and ISRC metadata are not written to physical discs in this version (they are kept in the project and .cue files).";
                 }
                 BurnProgress = 100.0;
+            }
+            if (burnResult.Success && !(direct && directEngine?.LastResult?.Verification?.Warning != null))
+            {
+                // A failed burn and a hard-to-read warning already show their own message box.
+                CompletionNotice.Show("Audio CD finished", StatusMessage, success: true);
             }
             else
             {

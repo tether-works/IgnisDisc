@@ -1,4 +1,4 @@
-using CdBurner.App.Resources;
+﻿using CdBurner.App.Resources;
 using System.Collections.ObjectModel;
 using System.Windows.Input;
 using CdBurner.App.Mvvm;
@@ -573,6 +573,7 @@ public class MainViewModel : ObservableObject, IDisposable
 
         // Every burn path builds its own options; this default reaches all of them.
         CdBurner.Core.Abstractions.VerifyPreferences.StrictByDefault = _settings.StrictVerify;
+        CdBurner.App.Mvvm.CompletionNotice.Enabled = _settings.NotifyWhenBurnFinishes;
 
         if (_settings.SelectedRecorder != null && AvailableRecorders.Contains(_settings.SelectedRecorder))
         {

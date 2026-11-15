@@ -1,4 +1,4 @@
-using CdBurner.App.Resources;
+﻿using CdBurner.App.Resources;
 using System.Collections.ObjectModel;
 using System.IO;
 using System.Windows.Input;
@@ -1355,6 +1355,7 @@ public class DvdVideoViewModel : ObservableObject
             {
                 StatusMessage = $"Burn failed: {result.ErrorMessage}";
             }
+            CompletionNotice.Show(result.Success ? "DVD-Video disc finished" : "DVD-Video burn failed", StatusMessage, result.Success);
             return result;
         }
         catch (OperationCanceledException)

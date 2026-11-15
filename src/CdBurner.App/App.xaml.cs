@@ -1,4 +1,4 @@
-using CdBurner.App.Resources;
+﻿using CdBurner.App.Resources;
 using System.Windows;
 using CdBurner.App.Themes;
 using CdBurner.App.ViewModels;
@@ -74,6 +74,7 @@ public partial class App : Application
             mainVm.Settings.LoadSettings();
             mainVm.ApplySettingsToWorkspaces();
             mainVm.SelectDefaultWriteSpeed();
+            mainVm.Settings.AutoSave = true; // only now, so loading the saved values never writes them back
         }
         catch (Exception ex)
         {

@@ -413,8 +413,8 @@
                     <ColumnDefinition Width="Auto" />
                 </Grid.ColumnDefinitions>
 
-                <!-- Left: Status Line & Progress Bar -->
-                <StackPanel Grid.Row="0" Grid.Column="0" VerticalAlignment="Center" Margin="0,0,20,0">
+                <!-- Status line and progress bar: their own full-width row, so the buttons above can never squeeze them to nothing -->
+                <StackPanel Grid.Row="1" Grid.Column="0" Grid.ColumnSpan="2" VerticalAlignment="Center" Margin="0,10,0,0">
                     <Grid>
                         <Grid.ColumnDefinitions>
                             <ColumnDefinition Width="*" />
@@ -444,8 +444,8 @@
                                  Visibility="{Binding IsBusy, Converter={StaticResource BoolToVis}}" />
                 </StackPanel>
 
-                <!-- Right: Action Buttons -->
-                <StackPanel Grid.Row="0" Grid.Column="1" Orientation="Horizontal" VerticalAlignment="Center">
+                <!-- Action buttons: wrap onto a second line on a narrow window instead of running off the edge -->
+                <WrapPanel Grid.Row="0" Grid.Column="0" Grid.ColumnSpan="2" Orientation="Horizontal" HorizontalAlignment="Right" VerticalAlignment="Center">
                     <TextBlock Text="Burn To:"
                                FontWeight="SemiBold"
                                VerticalAlignment="Center"
@@ -494,7 +494,7 @@
                             Style="{StaticResource AccentButtonStyle}"
                             ToolTip="Burn DVD-Video structure directly to selected optical recorder"
                             MinWidth="130" />
-                </StackPanel>
+                </WrapPanel>
             </Grid>
         </Border>
     </Grid>

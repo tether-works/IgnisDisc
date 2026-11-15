@@ -1,4 +1,4 @@
-using System.Text.Json;
+﻿using System.Text.Json;
 using CdBurner.Core.Primitives;
 
 namespace CdBurner.Core.Persistence;
@@ -37,9 +37,15 @@ public class AppSettings
     public bool StrictVerify { get; set; }
 
     /// <summary>
-    /// Whether to eject the optical drive tray after a burn operation completes.
+    /// Whether to eject the optical drive tray after a burn operation completes (on by default: an open tray is the
+    /// clearest sign a disc is finished).
     /// </summary>
-    public bool EjectAfterBurnByDefault { get; set; } = false;
+    public bool EjectAfterBurnByDefault { get; set; } = true;
+
+    /// <summary>
+    /// Whether the app announces a finished or failed burn with a sound, a flashing taskbar button and a message.
+    /// </summary>
+    public bool NotifyWhenBurnFinishes { get; set; } = true;
 
     /// <summary>
     /// Whether to enable buffer underrun protection (BURN-Proof / Burn-Free) by default.
@@ -98,7 +104,7 @@ public class AppSettings
     public bool CheckForUpdatesOnStartup { get; set; } = false;
 
     /// <summary>The settings layout version this build writes.</summary>
-    public const int CurrentVersion = 2;
+    public const int CurrentVersion = 3;
 
     /// <summary>
     /// Layout version of the stored settings. A file written before versions existed reads as 0.
@@ -121,6 +127,11 @@ public class AppSettings
             if (!SecureAudioRipByDefault) SecureAudioRipByDefault = true;                              // old default off
         }
 
+        if (SettingsVersion < 3)
+        {
+            if (!EjectAfterBurnByDefault) EjectAfterBurnByDefault = true;                              // old default off
+        }
+
         SettingsVersion = CurrentVersion;
         return true;
     }
@@ -136,6 +147,7 @@ public class AppSettings
             VerifyAfterBurnByDefault = VerifyAfterBurnByDefault,
             StrictVerify = StrictVerify,
             EjectAfterBurnByDefault = EjectAfterBurnByDefault,
+            NotifyWhenBurnFinishes = NotifyWhenBurnFinishes,
             EnableBurnFreeByDefault = EnableBurnFreeByDefault,
             TempStagingDirectory = TempStagingDirectory,
             ThemeMode = ThemeMode,

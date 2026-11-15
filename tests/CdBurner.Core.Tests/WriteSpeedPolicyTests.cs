@@ -1,4 +1,4 @@
-using System.Text.Json.Nodes;
+﻿using System.Text.Json.Nodes;
 using CdBurner.Core.Persistence;
 using CdBurner.Core.Primitives;
 using Xunit;
@@ -212,7 +212,8 @@ public class WriteSpeedPolicyTests
         Assert.True(s.EnableBurnFreeByDefault);
         Assert.True(s.SecureAudioRipByDefault);
         Assert.False(s.EnableVirtualDrive);
-        Assert.False(s.EjectAfterBurnByDefault);
+        Assert.True(s.EjectAfterBurnByDefault); // an open tray is the clearest sign the disc is finished
+        Assert.True(s.NotifyWhenBurnFinishes);
         Assert.False(s.CheckForUpdatesOnStartup);
     }
 
@@ -250,6 +251,52 @@ public class WriteSpeedPolicyTests
             Assert.True(loaded.SecureAudioRipByDefault);
             Assert.True(loaded.StrictVerify); // not one of the changed defaults: kept
             Assert.Equal(AppSettings.CurrentVersion, loaded.SettingsVersion);
+        }
+        finally { Directory.Delete(dir, true); }
+    }
+
+    [Fact]
+    public void Version2File_WithEjectOff_MovesToEjectOn_AndKeepsTheNotifySetting()
+    {
+        string dir = Directory.CreateTempSubdirectory("ignis-settings-").FullName;
+        try
+        {
+            // Written by the build before eject-after-burn became the default: eject off, version 2.
+            var node = JsonNode.Parse(System.Text.Json.JsonSerializer.Serialize(
+                new AppSettings { EjectAfterBurnByDefault = false, SettingsVersion = 2 }, ProjectSerializer.JsonOptions))!.AsObject();
+            foreach (var key in node.Select(p => p.Key).Where(k => k.Equals(nameof(AppSettings.NotifyWhenBurnFinishes), StringComparison.OrdinalIgnoreCase)).ToList())
+            {
+                node.Remove(key); // that build had no such setting
+            }
+            string path = Path.Combine(dir, "settings.json");
+            File.WriteAllText(path, node.ToJsonString());
+
+            var loaded = AppSettingsService.LoadFromFile(path);
+
+            Assert.True(loaded.EjectAfterBurnByDefault);
+            Assert.True(loaded.NotifyWhenBurnFinishes); // missing from the file: the default
+            Assert.Equal(AppSettings.CurrentVersion, loaded.SettingsVersion);
+        }
+        finally { Directory.Delete(dir, true); }
+    }
+
+    [Fact]
+    public async Task EjectOff_ChosenOnThisBuild_StaysOff()
+    {
+        string dir = Directory.CreateTempSubdirectory("ignis-settings-").FullName;
+        try
+        {
+            string path = Path.Combine(dir, "settings.json");
+            var service = new AppSettingsService(path)
+            {
+                CurrentSettings = new AppSettings { EjectAfterBurnByDefault = false, NotifyWhenBurnFinishes = false, SettingsVersion = AppSettings.CurrentVersion }
+            };
+            await service.SaveAsync();
+
+            var loaded = AppSettingsService.LoadFromFile(path);
+
+            Assert.False(loaded.EjectAfterBurnByDefault);
+            Assert.False(loaded.NotifyWhenBurnFinishes);
         }
         finally { Directory.Delete(dir, true); }
     }

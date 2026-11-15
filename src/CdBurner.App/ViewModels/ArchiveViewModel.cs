@@ -1,4 +1,4 @@
-using CdBurner.App.Resources;
+﻿using CdBurner.App.Resources;
 using System.Collections.ObjectModel;
 using System.IO;
 using System.Net.Http;
@@ -908,6 +908,7 @@ public class ArchiveViewModel : ObservableObject
                 StatusMessage = $"Burn failed: {result.ErrorMessage}"
                     + (directEngine?.LastFallbackReason is { } why ? " " + why : "");
             }
+            CompletionNotice.Show(result.Success ? $"Archive disc {row.DiscNumber} finished" : $"Archive disc {row.DiscNumber} failed", StatusMessage, result.Success);
 
             return result;
         }

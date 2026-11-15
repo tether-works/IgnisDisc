@@ -1,4 +1,4 @@
-using System.IO;
+﻿using System.IO;
 using CdBurner.App.ViewModels;
 using CdBurner.Core.Abstractions;
 using CdBurner.Core.Persistence;
@@ -326,6 +326,54 @@ public sealed class ProgressAndUtilitiesViewModelTests : IDisposable
     #endregion
 
     #region 4. SettingsViewModel & MainViewModel Integration Tests
+
+    [Fact]
+    public void SettingsViewModel_WithAutoSave_SavesEachChangeAtOnce_AndWithoutItWritesNothing()
+    {
+        string tempSettingsFile = Path.Combine(Path.GetTempPath(), $"cdburner_test_settings_{Guid.NewGuid():N}.json");
+        try
+        {
+            var service = new AppSettingsService(tempSettingsFile);
+            var vm = new SettingsViewModel(service);
+            int saves = 0;
+            vm.SettingsSaved += (_, _) => saves++;
+
+            // Off (as in tests and before the app has read the file): a change stays in memory only.
+            vm.NotifyWhenBurnFinishes = false;
+            Assert.False(File.Exists(tempSettingsFile));
+            Assert.Equal(0, saves);
+
+            vm.AutoSave = true;
+            vm.EjectAfterBurnByDefault = false;
+            Assert.True(File.Exists(tempSettingsFile));
+            var onDisk = AppSettingsService.LoadFromFile(tempSettingsFile);
+            Assert.False(onDisk.EjectAfterBurnByDefault);
+            Assert.False(onDisk.NotifyWhenBurnFinishes); // the earlier change goes out with the next save
+            Assert.Equal(1, saves); // the shell re-applies settings once per change
+
+            vm.DefaultWriteSpeedMultiplier = 24;
+            Assert.Equal(24, AppSettingsService.LoadFromFile(tempSettingsFile).DefaultWriteSpeedMultiplier);
+
+            // A status-only property is not a setting: no save.
+            vm.StatusMessage = "x";
+            Assert.Equal(2, saves);
+
+            // Loading the stored values must not write them back.
+            vm.LoadSettings();
+            Assert.Equal(2, saves);
+
+            // Reset writes the defaults to the file, as there is no Save button any more.
+            vm.ResetSettingsCommand.Execute(null);
+            var reset = AppSettingsService.LoadFromFile(tempSettingsFile);
+            Assert.True(reset.EjectAfterBurnByDefault);
+            Assert.True(reset.NotifyWhenBurnFinishes);
+            Assert.Equal(CdBurner.Core.Primitives.WriteSpeedPolicy.Recommended, reset.DefaultWriteSpeedMultiplier);
+        }
+        finally
+        {
+            if (File.Exists(tempSettingsFile)) File.Delete(tempSettingsFile);
+        }
+    }
 
     [Fact]
     public void SettingsViewModel_SavesAndResetsSettings()

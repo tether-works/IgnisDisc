@@ -1,4 +1,4 @@
-using CdBurner.App.Resources;
+﻿using CdBurner.App.Resources;
 using System.Collections.ObjectModel;
 using System.IO;
 using System.Security.Cryptography;
@@ -1202,6 +1202,7 @@ public class ImageStudioViewModel : ObservableObject
                 StatusMessage = $"Burn queue finished with errors: {queueResult.ErrorMessage} ({queueResult.CompletedItems}/{queueResult.TotalItems} completed).";
                 AppendLog(StatusMessage);
             }
+            CompletionNotice.Show(queueResult.Success ? "Burn queue finished" : "Burn queue stopped", StatusMessage, queueResult.Success);
 
             return queueResult;
         }
@@ -1403,6 +1404,7 @@ public class ImageStudioViewModel : ObservableObject
             {
                 StatusMessage = $"Burn failed: {burnResult.ErrorMessage}";
             }
+            CompletionNotice.Show(burnResult.Success ? "Image burn finished" : "Image burn failed", StatusMessage, burnResult.Success);
 
             return burnResult;
         }
@@ -1964,6 +1966,7 @@ public class ImageStudioViewModel : ObservableObject
                 StatusMessage = $"Disc Copy failed: {copyResult.ErrorMessage}";
                 AppendLog(StatusMessage);
             }
+            CompletionNotice.Show(copyResult.Success ? "Disc copy finished" : "Disc copy failed", StatusMessage, copyResult.Success);
 
             return copyResult;
         }

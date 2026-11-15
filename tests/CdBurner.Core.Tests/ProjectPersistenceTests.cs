@@ -1,4 +1,4 @@
-using System.Text.Json;
+﻿using System.Text.Json;
 using CdBurner.Core.Audio;
 using CdBurner.Core.Compilation;
 using CdBurner.Core.Iso;
@@ -515,7 +515,8 @@ public class ProjectPersistenceTests : IDisposable
         Assert.Equal(WriteSpeedPolicy.Recommended, def.DefaultWriteSpeedMultiplier);
         Assert.True(def.SecureAudioRipByDefault);
         Assert.True(def.VerifyAfterBurnByDefault);
-        Assert.False(def.EjectAfterBurnByDefault);
+        Assert.True(def.EjectAfterBurnByDefault);
+        Assert.True(def.NotifyWhenBurnFinishes);
         Assert.True(def.EnableBurnFreeByDefault);
         Assert.Equal(ThemeMode.System, def.ThemeMode);
         Assert.Equal("ffmpeg.exe", def.FfmpegExecutablePath);
