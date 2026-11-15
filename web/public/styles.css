@@ -358,6 +358,97 @@ p code, td code, li code {
   color: var(--accent-laser);
 }
 
+/* Hero: first-run note directly under the download buttons */
+.first-run-note {
+  margin: 0 0 18px 0;
+  font-size: 13px;
+  line-height: 1.5;
+  color: var(--text-secondary);
+}
+
+.first-run-note strong {
+  color: var(--accent-amber);
+  font-weight: 600;
+}
+
+/* Hero: what the app does, as a 2-column hairline grid instead of a paragraph */
+.feature-grid {
+  list-style: none;
+  margin: 0 0 18px 0;
+  padding: 0;
+  display: grid;
+  grid-template-columns: 1fr 1fr;
+  gap: 1px;
+  background-color: var(--border-hairline);
+  border: 1px solid var(--border-hairline);
+}
+
+.feature-grid > li {
+  background-color: var(--bg-elevated);
+  padding: 10px 12px;
+}
+
+.feature-label {
+  display: block;
+  font-family: var(--font-mono);
+  font-size: 11px;
+  font-weight: 600;
+  letter-spacing: 0.06em;
+  text-transform: uppercase;
+  color: var(--accent-laser);
+  margin-bottom: 3px;
+}
+
+.feature-text {
+  display: block;
+  font-size: 13.5px;
+  line-height: 1.5;
+  color: var(--text-secondary);
+}
+
+.feature-text code {
+  font-size: 12px;
+  background-color: var(--bg-code);
+  border: 1px solid var(--border-hairline);
+  padding: 0 4px;
+  color: var(--text-primary);
+}
+
+/* Plain section headings (no numbered kickers) */
+.section-heading {
+  font-size: 18px;
+  font-weight: 700;
+  letter-spacing: -0.01em;
+  margin: 0;
+  color: var(--text-primary);
+}
+
+.section-heading-cell {
+  margin-bottom: 12px;
+}
+
+.section-subnote .badge-warn {
+  font-size: 10.5px;
+  padding: 0 4px;
+}
+
+/* Key/value spec table (technical overview) */
+.spec-table-kv td:first-child {
+  width: 160px;
+  white-space: nowrap;
+  font-family: var(--font-mono);
+  font-size: 11px;
+  font-weight: 600;
+  letter-spacing: 0.05em;
+  text-transform: uppercase;
+  color: var(--text-secondary);
+  background-color: var(--bg-elevated);
+}
+
+.spec-table-kv td {
+  font-size: 13.5px;
+}
+
 .signpath-note {
   padding: 8px 12px;
   font-family: var(--font-mono);
@@ -378,7 +469,6 @@ p code, td code, li code {
   background-color: var(--bg-code);
   display: flex;
   flex-direction: column;
-  height: 100%;
 }
 
 .instrument-bar {
@@ -576,7 +666,14 @@ p code, td code, li code {
 .spec-table-matrix th:nth-child(2),
 .spec-table-matrix th:nth-child(3) {
   white-space: nowrap;
-  width: 145px;
+  width: 112px;
+}
+
+.spec-table-matrix td:first-child,
+.spec-table-matrix th:first-child {
+  width: 240px;
+  min-width: 180px;
+  color: var(--text-primary);
 }
 
 /* Monospace Status Badges (Replaces Emojis) */
@@ -734,8 +831,22 @@ p code, td code, li code {
   .digest-row {
     grid-template-columns: 1fr auto;
   }
-  .digest-hash {
+  .digest-hash,
+  .digest-row code {
     grid-column: 1 / -1;
+    order: 3;
+  }
+  .feature-grid {
+    grid-template-columns: 1fr;
+  }
+  .spec-table-kv td:first-child {
+    width: auto;
+    white-space: normal;
+  }
+  .grid-1px > .cell,
+  .section-header-cell {
+    padding-left: 16px;
+    padding-right: 16px;
   }
   .telemetry-cell {
     border-top: 1px solid var(--border-hairline);

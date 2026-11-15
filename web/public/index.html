@@ -6,7 +6,7 @@
   <title>IgnisDisc Optical Studio — Windows CD/DVD Burner, Audio CD Ripper &amp; Archiver</title>
   <meta name="description" content="IgnisDisc Optical Studio (v1.15): free, open-source Windows 10/11 desktop app and command-line tool for burning data, audio and DVD-Video discs (ISO 9660 / Joliet / UDF, El Torito, menus and subtitles), ripping audio CDs with C2 error pointers and AccurateRip, and multi-disc archives with SHA-256 manifests and PAR2 recovery data." />
   <link rel="icon" type="image/x-icon" href="/assets/IgnisDisc.ico" />
-  <link rel="stylesheet" href="/styles.css?v=1.15" />
+  <link rel="stylesheet" href="/styles.css?v=1.15-2" />
 </head>
 <body>
   <!-- Top Bar -->
@@ -33,7 +33,7 @@
       <div class="cell">
         <h1 class="spec-title">Burn CDs and DVDs, rip music CDs, and back up folders on Windows.</h1>
         <p class="spec-lead">
-          <strong>IgnisDisc</strong> is a free, open-source disc burner, DVD-Video authoring tool, and audio CD ripper for Windows 10 and 11. Burn files, folders, and <code>.iso</code> / legacy disc images to CD or DVD, author playable DVD-Video discs with title menus, chapters and subtitles (from <code>.srt</code> files or optional speech recognition), make audio CDs from WAV, FLAC, MP3, Opus, Ogg, M4A, or WMA tracks with optional loudness normalisation, rip your music CDs to WAV, FLAC, MP3, Opus, or AAC with automatic track names and cover art, or split a large folder across several numbered backup discs with PAR2 recovery data. After a burn it reads the disc back, compares it with what you asked for, and notifies you when finished. In the app, audio CDs (on drives that offer Session-at-Once) and dual-layer DVD-Video discs use IgnisDisc's own drive commands by default; data discs, single-layer DVDs and the command line use Windows' built-in disc burning service by default unless direct drive commands are switched on. No extra drivers, no ads, no bundled offers, and no tracking.
+          <strong>IgnisDisc</strong> is a free, open-source disc burner for Windows 10 and 11 (64-bit). No extra drivers, no ads, no bundled offers, and no tracking.
         </p>
 
         <!-- Download & Verification Block -->
@@ -50,10 +50,38 @@
           </a>
         </div>
 
+        <p class="first-run-note">
+          <strong>First run:</strong> installs for your user account, no administrator rights needed. The download is not code-signed yet, so Windows SmartScreen may warn the first time: click <code>More info</code> → <code>Run anyway</code>, or check the SHA-256 checksums below.
+        </p>
+
+        <ul class="feature-grid" aria-label="What IgnisDisc does">
+          <li>
+            <span class="feature-label">Data discs</span>
+            <span class="feature-text">Burn files, folders and <code>.iso</code> images to CD or DVD. Nero, Alcohol 120%, CloneCD and DiscJuggler images work too.</span>
+          </li>
+          <li>
+            <span class="feature-label">DVD-Video</span>
+            <span class="feature-text">Turn movie files into discs that play in a DVD player, with a title menu, chapters and subtitles (from <code>.srt</code> files or optional speech recognition).</span>
+          </li>
+          <li>
+            <span class="feature-label">Audio CDs</span>
+            <span class="feature-text">From WAV, FLAC, MP3, Opus, Ogg, M4A or WMA tracks, with optional loudness levelling and CD-Text.</span>
+          </li>
+          <li>
+            <span class="feature-label">Rip music CDs</span>
+            <span class="feature-text">To WAV, FLAC, MP3, Opus or AAC, with track names and cover art filled in for you.</span>
+          </li>
+          <li>
+            <span class="feature-label">Multi-disc backups</span>
+            <span class="feature-text">Split a large folder across numbered discs, with PAR2 recovery data to rebuild damaged files.</span>
+          </li>
+          <li>
+            <span class="feature-label">Checked every time</span>
+            <span class="feature-text">After a burn it reads the disc back, compares it with what you asked for, and tells you when it is done.</span>
+          </li>
+        </ul>
+
         <div class="digest-block">
-          <div class="signpath-note">
-            <strong>First-run note:</strong> Installs for your user account on Windows 10/11 (64-bit) without needing administrator rights. Because builds are not code-signed yet (SignPath Foundation application pending), Windows SmartScreen may warn the first time you run the installer — click <code>More info</code> → <code>Run anyway</code>, or verify the SHA-256 checksums below.
-          </div>
           <div class="digest-header">
             <span>SHA-256 CHECKSUMS</span>
             <a id="ctaGithub" href="https://github.com/tether-works/IgnisDisc/releases" target="_blank" rel="noopener">RELEASE NOTES ON GITHUB ↗</a>
@@ -142,6 +170,10 @@ PS C:\&gt; ignisdisc-cli.exe burn-audio --drive H: --tracks album\album.cue --da
 
     <!-- Hardware & Virtual Drive Verification Matrix -->
     <section class="grid-1px" id="support">
+      <div class="section-header-cell">
+        <h2 class="section-heading">What works, and how it was tested</h2>
+        <span class="section-subnote">PHYSICAL = real discs in a real drive · VIRTUAL = the drive simulator in the test suite · <span class="badge-warn">[ PARTIAL ]</span> = works, limits in the notes</span>
+      </div>
       <div class="table-scroll">
         <table class="spec-table spec-table-flush spec-table-matrix">
           <thead>
@@ -189,6 +221,7 @@ PS C:\&gt; ignisdisc-cli.exe burn-audio --drive H: --tracks album\album.cue --da
     <section class="grid-1px grid-2col" id="cli">
       <!-- Left Column: Command Syntax Table -->
       <div class="cell">
+        <h2 class="section-heading section-heading-cell">Command line</h2>
         <p class="spec-lead">
           <code>ignisdisc-cli.exe</code> has 37 commands. Every command accepts <code>--json</code> for machine-readable output and exits with code <code>0</code> on success.
         </p>
@@ -356,6 +389,7 @@ PS C:\&gt; ignisdisc-cli.exe burn-audio --drive H: --tracks album\album.cue --da
 
       <!-- Right Column: Copyable Real-World Command Examples -->
       <div class="cell">
+        <h2 class="section-heading section-heading-cell">Examples</h2>
         <div class="cli-example-stack">
           <div class="cli-block">
             <div class="cli-block-head">
@@ -435,10 +469,21 @@ PS C:\&gt; ignisdisc-cli.exe burn-audio --drive H: --tracks album\album.cue --da
     <!-- Technical Architecture & Power-User Specifications -->
     <section class="grid-1px" id="architecture">
       <div class="cell">
-        <h2 class="spec-module-title">Technical Overview &amp; Subsystem Architecture</h2>
-        <p class="spec-lead">
-          IgnisDisc Optical Studio is a .NET 10 WPF desktop application (<code>IgnisDisc.exe</code>) and a command-line tool (<code>ignisdisc-cli.exe</code>). Its own image builder writes ISO 9660 + Joliet + UDF bridge volumes (UDF 1.02 by default, 1.50 to 2.60 on request), El Torito BIOS/UEFI boot images, and optional <code>SHA256SUMS</code> / <code>BLAKE3SUMS</code> hash lists; legacy disc images (<code>.nrg</code>, <code>.mdf</code>/<code>.mds</code>, <code>.ccd</code>/<code>.img</code>, and <code>.cdi</code>) are read and converted. Its DVD-Video author builds <code>IFO</code> and <code>NAV</code> pack tables with a still-frame title menu (<em>Create title menu</em>), 5-minute chapters, English subtitles from <code>.srt</code> files or the optional <code>whisper.cpp</code> speech-recognition download, and cell-boundary layer breaks on dual-layer DVD-9 discs. Audio CDs support BS.1770-4 <code>-18 LUFS</code> gated loudness normalisation and gapless lossy decoding via optional FFmpeg. Data discs and single-layer DVDs burn through Windows IMAPIv2 by default, while in the desktop app audio CDs (on drives that report Session-at-Once) and dual-layer DVD-Video discs use IgnisDisc's own SCSI MMC commands by default (<code>--native</code> on the command line). Reading uses Win32 SCSI pass-through: 294-byte C2 error pointers, AccurateRip checksums and read-offset detection for audio, and after a burn a sector-by-sector comparison in which the drive is told to read the disc rather than its buffer. Multi-disc archives carry per-disc SHA-256 manifests and PAR2 recovery volumes split across inner, middle and outer zones with duplicate volume descriptors. In-memory virtual drives stand in for hardware in the test suite.
-        </p>
+        <h2 class="section-heading section-heading-cell">Technical overview</h2>
+        <div class="table-scroll">
+          <table class="spec-table spec-table-kv">
+            <tbody>
+              <tr><td>Built with</td><td>.NET 10 WPF desktop app (<code>IgnisDisc.exe</code>) and a command-line tool (<code>ignisdisc-cli.exe</code>)</td></tr>
+              <tr><td>Disc images</td><td>Own builder for ISO 9660 + Joliet + UDF bridge volumes (UDF 1.02 by default, 1.50 to 2.60 on request), El Torito BIOS/UEFI boot images, optional <code>SHA256SUMS</code> / <code>BLAKE3SUMS</code> lists. Reads and converts <code>.nrg</code>, <code>.mdf</code>/<code>.mds</code>, <code>.ccd</code>/<code>.img</code> and <code>.cdi</code></td></tr>
+              <tr><td>DVD-Video</td><td><code>IFO</code> and <code>NAV</code> pack tables, still-frame title menu, 5-minute chapters, English subtitles from <code>.srt</code> or the optional <code>whisper.cpp</code> download, layer break on a cell boundary for dual-layer DVD-9</td></tr>
+              <tr><td>Audio CDs</td><td>BS.1770-4 <code>-18 LUFS</code> gated loudness normalisation; gapless lossy decoding through the optional FFmpeg download</td></tr>
+              <tr><td>Writing</td><td>Windows IMAPIv2 by default for data discs and single-layer DVDs. In the app, audio CDs (drives that report Session-at-Once) and dual-layer DVD-Video use IgnisDisc's own SCSI MMC commands by default; <code>--native</code> on the command line</td></tr>
+              <tr><td>Reading &amp; checks</td><td>Win32 SCSI pass-through: 294-byte C2 error pointers, AccurateRip checksums and read-offset detection. After a burn, a sector-by-sector comparison read from the disc, not the drive's buffer</td></tr>
+              <tr><td>Archives</td><td>Per-disc SHA-256 manifests; PAR2 recovery split over inner, middle and outer zones, each with a copy of the volume descriptor</td></tr>
+              <tr><td>Testing</td><td>In-memory virtual drives stand in for hardware in the test suite</td></tr>
+            </tbody>
+          </table>
+        </div>
       </div>
       <div class="grid-1px grid-4col">
       <div class="cell">
@@ -475,7 +520,9 @@ PS C:\&gt; ignisdisc-cli.exe burn-audio --drive H: --tracks album\album.cue --da
           <li><strong>Audio CDs:</strong> Session-at-Once with <code>SEND CUE SHEET</code> and <code>WRITE (10)</code>: CD-Text in the lead-in (R-W sub-channel), ISRC and catalog codes, pre-emphasis and copy bits, <code>INDEX 00</code> gaps, and audio in front of track 1.</li>
           <li><strong>Data discs:</strong> CD Track-at-Once; DVD-R and DVD-RW Disc-At-Once, or in packets when left open; DVD+R written in sequence and finalized; DVD+RW written over from sector 0. A disc left open gets its next session the same way, with the earlier files kept. Speed is taken from the drive's own list.</li>
           <li><strong>Checks:</strong> every direct burn is read back and compared (track list, CD-Text, codes, every audio sample or data sector). A laser-off test write is available, and every drive command is logged.</li>
-          <li><strong>Status:</strong> on by default in the app for audio CDs (when the drive offers Session-at-Once) and dual-layer DVD-Video; off by default elsewhere (<code>--native</code> on the command line), with IMAPIv2 as the default elsewhere and the fallback. Run on real hardware on one drive (LG GP60NB50): audio and data CDs on CD-R and CD-RW; data on DVD-R, DVD+R and DVD+RW; a dual-layer DVD+R with the layer break where it was asked for (6.5 GB, SHA-256 equal to the image); a two-film DVD-9 on a dual-layer DVD+R with the break on the second film's first cell, played on an Xbox Series X across the layer change; and three or four sessions added one after another on a CD-R, a CD-RW, a DVD-R and a DVD+R, every file read back identical. DVD-RW, DVD-RAM, dual-layer DVD-R, Blu-ray, CD-Extra / Audio CD PAR2 recovery sessions, and CD picture tracks have run only in the built-in drive simulator so far.</li>
+          <li><strong>When it is used:</strong> on by default in the app for audio CDs (when the drive offers Session-at-Once) and dual-layer DVD-Video. Elsewhere it is off by default (<code>--native</code> on the command line) and IMAPIv2 writes, which is also the fallback.</li>
+          <li><strong>Tested on real discs</strong> (one drive, LG GP60NB50): audio and data CDs on CD-R and CD-RW; data on DVD-R, DVD+R and DVD+RW; a 6.5 GB dual-layer DVD+R with the layer break where it was asked for (SHA-256 equal to the image); a two-film DVD-9 played on an Xbox Series X across the layer change; three or four sessions added in turn on a CD-R, a CD-RW, a DVD-R and a DVD+R, every file read back identical.</li>
+          <li><strong>Simulator only so far:</strong> DVD-RW, DVD-RAM, dual-layer DVD-R, Blu-ray, CD-Extra / Audio CD PAR2 recovery sessions, and CD picture tracks.</li>
         </ul>
       </div>
       </div>
@@ -486,9 +533,10 @@ PS C:\&gt; ignisdisc-cli.exe burn-audio --drive H: --tracks album\album.cue --da
       <div class="cell">
         <h2 class="spec-module-title">Code signing policy</h2>
         <p class="spec-lead">
-          Free code signing on Windows is provided by <a href="https://signpath.io" target="_blank" rel="noopener">SignPath.io</a>, certificate by the <a href="https://signpath.org" target="_blank" rel="noopener">SignPath Foundation</a> (application and CI pipeline configured; until certificate provisioning completes, verify the SHA-256 digests above).
+          Free code signing on Windows is provided by <a href="https://signpath.io" target="_blank" rel="noopener">SignPath.io</a>, certificate by the <a href="https://signpath.org" target="_blank" rel="noopener">SignPath Foundation</a>.
         </p>
         <ul class="spec-module-list">
+          <li><strong>Status:</strong> current releases are not signed yet. The release pipeline is ready to sign; until the certificate is in place, check downloads against the SHA-256 checksums above.</li>
           <li><strong>Committers, reviewers, and approvers:</strong> <a href="https://github.com/tether-works" target="_blank" rel="noopener">tether-works</a> maintainers.</li>
           <li><strong>Build provenance:</strong> Official release binaries are built exclusively from tagged commits by <code>.github/workflows/release.yml</code> on GitHub-hosted runners.</li>
         </ul>
