@@ -209,9 +209,14 @@ public sealed class DvdVideoAuthoringService
     /// <summary>The .srt for a movie: given in <see cref="DvdAuthoringOptions.SubtitleFiles"/>, else beside it; null when none.</summary>
     public static string? FindSubtitleFile(string moviePath, DvdAuthoringOptions options)
     {
-        if (options.SubtitleFiles.TryGetValue(moviePath, out var given))
+        // Matched by full path, so F:/a/b.mp4, F:\a\b.mp4 and a relative spelling of it are the same movie.
+        string full = NormalizedPath(moviePath);
+        foreach (var (key, given) in options.SubtitleFiles)
         {
-            return File.Exists(given) ? given : null;
+            if (string.Equals(NormalizedPath(key), full, StringComparison.OrdinalIgnoreCase))
+            {
+                return File.Exists(given) ? given : null;
+            }
         }
         if (!options.UseSubtitleFilesBesideMovies)
         {
@@ -219,6 +224,18 @@ public sealed class DvdVideoAuthoringService
         }
         string stem = Path.Combine(Path.GetDirectoryName(moviePath) ?? ".", Path.GetFileNameWithoutExtension(moviePath));
         return new[] { stem + ".srt", stem + ".en.srt", stem + ".eng.srt" }.FirstOrDefault(File.Exists);
+    }
+
+    private static string NormalizedPath(string path)
+    {
+        try
+        {
+            return Path.GetFullPath(path);
+        }
+        catch (Exception ex) when (ex is ArgumentException or NotSupportedException or PathTooLongException)
+        {
+            return path;
+        }
     }
 
     /// <summary>One frame of the movie at <paramref name="seconds"/>, 640 pixels wide, as PNG; false when FFmpeg fails.</summary>

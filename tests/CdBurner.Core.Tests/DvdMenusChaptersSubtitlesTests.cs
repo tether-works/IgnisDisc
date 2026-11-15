@@ -221,6 +221,28 @@ public sealed class DvdMenusChaptersSubtitlesTests
     }
 
     [Fact]
+    public void SubtitleFileForAMovie_IsFound_HoweverItsPathIsSpelled()
+    {
+        string dir = Path.Combine(Path.GetTempPath(), "DvdSubsLookup_" + Guid.NewGuid().ToString("N"));
+        Directory.CreateDirectory(dir);
+        try
+        {
+            string movie = Path.Combine(dir, "Film.mp4");
+            string srt = Path.Combine(dir, "made.srt");
+            File.WriteAllText(srt, "1\n00:00:01,000 --> 00:00:02,000\nHi\n");
+            var options = new DvdAuthoringOptions();
+            options.SubtitleFiles[movie.Replace('\\', '/')] = srt; // given with forward slashes
+
+            Assert.Equal(srt, DvdVideoAuthoringService.FindSubtitleFile(movie, options));
+            Assert.Equal(srt, DvdVideoAuthoringService.FindSubtitleFile(movie.ToUpperInvariant(), options));
+        }
+        finally
+        {
+            try { Directory.Delete(dir, recursive: true); } catch { }
+        }
+    }
+
+    [Fact]
     public async Task FfmpegThatFails_StopsAuthoring_InsteadOfPuttingPlaceholderVideoOnTheDisc()
     {
         // findstr.exe stands in for a broken FFmpeg: it rejects FFmpeg's arguments and exits with an error.
