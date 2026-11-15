@@ -68,6 +68,21 @@ public static class FfmpegLocator
             }
         }
 
+        // 2b. The copy IgnisDisc's own 1-click download installed: the user chose it, so it wins over whatever build
+        //     happens to be on PATH (an old one there was seen to fail when muxing DVD subtitles).
+        try
+        {
+            string managed = Path.Combine(CdBurner.Core.Utilities.ExternalToolInstallerService.GetDefaultFfmpegInstallDirectory(), "ffmpeg.exe");
+            if (File.Exists(managed))
+            {
+                return Path.GetFullPath(managed);
+            }
+        }
+        catch (Exception ex) when (ex is IOException or UnauthorizedAccessException or ArgumentException or NotSupportedException)
+        {
+            // Fall through to PATH
+        }
+
         // 3. System PATH environment directories
         string? pathEnv = Environment.GetEnvironmentVariable("PATH");
         if (!string.IsNullOrWhiteSpace(pathEnv))

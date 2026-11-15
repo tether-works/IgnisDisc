@@ -294,7 +294,8 @@ public sealed class RipAudioCliTests : IAsyncLifetime, IDisposable
         var (stdout, stderr) = CreateStringWriters();
 
         int exitCode = await CliCommandRunner.RunAsync(
-            new[] { "rip-audio", "--drive", "VDRV-01", "--output", outDir, "--format", "mp3" },
+            // A format no build can make: "mp3" depended on whether the installed FFmpeg has an MP3 encoder.
+            new[] { "rip-audio", "--drive", "VDRV-01", "--output", outDir, "--format", "xyz" },
             stdout,
             stderr,
             _deviceService,
@@ -302,7 +303,7 @@ public sealed class RipAudioCliTests : IAsyncLifetime, IDisposable
 
         Assert.Equal(1, exitCode);
         string err = stderr.ToString();
-        Assert.Contains("mp3", err, StringComparison.OrdinalIgnoreCase);
+        Assert.Contains("Invalid audio format 'xyz'", err, StringComparison.OrdinalIgnoreCase);
     }
 
     [Fact]
