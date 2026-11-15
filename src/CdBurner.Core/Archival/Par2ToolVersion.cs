@@ -49,12 +49,46 @@ public sealed partial record Par2ToolVersion(string Product, Version Version)
     }
 
     /// <summary>
+    /// True when the file starts like a Windows program: an "MZ" header whose offset at 0x3C points at a "PE\0\0"
+    /// signature inside the file. False for anything else, or when it cannot be read.
+    /// </summary>
+    public static bool LooksLikeWindowsProgram(string path)
+    {
+        try
+        {
+            using var fs = new FileStream(path, FileMode.Open, FileAccess.Read, FileShare.ReadWrite | FileShare.Delete);
+            Span<byte> head = stackalloc byte[64];
+            if (fs.ReadAtLeast(head, head.Length, throwOnEndOfStream: false) < head.Length || head[0] != (byte)'M' || head[1] != (byte)'Z')
+            {
+                return false;
+            }
+
+            int peOffset = System.Buffers.Binary.BinaryPrimitives.ReadInt32LittleEndian(head[0x3C..]);
+            if (peOffset < head.Length || peOffset > fs.Length - 4)
+            {
+                return false;
+            }
+
+            fs.Position = peOffset;
+            Span<byte> signature = stackalloc byte[4];
+            return fs.ReadAtLeast(signature, 4, throwOnEndOfStream: false) == 4
+                && signature[0] == (byte)'P' && signature[1] == (byte)'E' && signature[2] == 0 && signature[3] == 0;
+        }
+        catch (Exception ex) when (ex is IOException or UnauthorizedAccessException)
+        {
+            return false;
+        }
+    }
+
+    /// <summary>
     /// Runs <c>par2 -V</c> and parses its answer. Returns null if the file cannot be started, does not answer within
     /// <paramref name="timeout"/> (default 5 s), exits with an error, or prints something else.
     /// </summary>
     public static Par2ToolVersion? Query(string par2Path, TimeSpan? timeout = null)
     {
-        if (string.IsNullOrWhiteSpace(par2Path) || !File.Exists(par2Path))
+        // Not started unless it is a real Windows program: Windows answers an attempt to start anything else (a broken
+        // download, a text file named par2.exe) with an "Unsupported 16-Bit Application" window the user has to close.
+        if (string.IsNullOrWhiteSpace(par2Path) || !File.Exists(par2Path) || !LooksLikeWindowsProgram(par2Path))
         {
             return null;
         }

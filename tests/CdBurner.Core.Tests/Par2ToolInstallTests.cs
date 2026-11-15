@@ -173,7 +173,39 @@ public sealed class Par2ToolInstallTests : IDisposable
         string fake = Path.Combine(_tempDir, "par2.exe");
         File.WriteAllText(fake, "not a program");
 
+        // Refused before starting it, so Windows shows no "Unsupported 16-Bit Application" window during the tests.
+        Assert.False(Par2ToolVersion.LooksLikeWindowsProgram(fake));
         Assert.Null(Par2ToolVersion.Query(fake));
+    }
+
+    [Fact]
+    public void LooksLikeWindowsProgram_NeedsAnMzHeaderPointingAtAPeSignature()
+    {
+        Directory.CreateDirectory(_tempDir);
+        string Write(string name, byte[] bytes) { string p = Path.Combine(_tempDir, name); File.WriteAllBytes(p, bytes); return p; }
+
+        byte[] pe = new byte[0x90];
+        pe[0] = (byte)'M'; pe[1] = (byte)'Z';
+        BitConverter.GetBytes(0x80).CopyTo(pe, 0x3C);
+        pe[0x80] = (byte)'P'; pe[0x81] = (byte)'E';
+        Assert.True(Par2ToolVersion.LooksLikeWindowsProgram(Write("good.exe", pe)));
+
+        byte[] dosOnly = (byte[])pe.Clone();
+        dosOnly[0x80] = (byte)'N'; // an old DOS / 16-bit program: the kind Windows refuses with that window
+        Assert.False(Par2ToolVersion.LooksLikeWindowsProgram(Write("dos.exe", dosOnly)));
+
+        byte[] pastEnd = (byte[])pe.Clone();
+        BitConverter.GetBytes(0x1000).CopyTo(pastEnd, 0x3C);
+        Assert.False(Par2ToolVersion.LooksLikeWindowsProgram(Write("short.exe", pastEnd)));
+
+        Assert.False(Par2ToolVersion.LooksLikeWindowsProgram(Write("tiny.exe", [(byte)'M', (byte)'Z'])));
+        Assert.False(Par2ToolVersion.LooksLikeWindowsProgram(Path.Combine(_tempDir, "missing.exe")));
+
+        // The real thing, when installed on this PC.
+        if (Par2Runner.FindPar2Executable() is string real)
+        {
+            Assert.True(Par2ToolVersion.LooksLikeWindowsProgram(real));
+        }
     }
 
     [Fact]
