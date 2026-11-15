@@ -61,6 +61,12 @@ public class DvdVideoViewModel : ObservableObject
     private bool _ejectAfterBurn;
     private CancellationTokenSource? _activeCts;
 
+    /// <summary>Running times read so far, by movie path (0: could not be read), for <see cref="FitEstimate"/>.</summary>
+    private readonly Dictionary<string, double> _probedSeconds = new(StringComparer.OrdinalIgnoreCase);
+    private int _probeGeneration;
+    private DvdFitEstimate? _fitEstimate;
+    private string _fitSummaryText = string.Empty;
+
     #region Properties
 
     /// <summary>
@@ -243,7 +249,7 @@ public class DvdVideoViewModel : ObservableObject
         {
             if (SetProperty(ref _requiresAutoAuthoring, value))
             {
-                OnPropertyChanged(nameof(ValidationStatusText));
+                RefreshFitState();
             }
         }
     }
@@ -487,7 +493,13 @@ public class DvdVideoViewModel : ObservableObject
     public int TotalSectors
     {
         get => _totalSectors;
-        private set => SetProperty(ref _totalSectors, value);
+        private set
+        {
+            if (SetProperty(ref _totalSectors, value))
+            {
+                RefreshFitState();
+            }
+        }
     }
 
     /// <summary>
@@ -519,7 +531,72 @@ public class DvdVideoViewModel : ObservableObject
     public string ValidationStatusText =>
         SourceMediaFiles.Count == 0 && string.IsNullOrWhiteSpace(VideoTsFolderPath)
             ? "No movies added yet"
-            : !IsStructureValid ? "Structure Invalid" : (RequiresAutoAuthoring ? "Ready (Auto-Convert & Menu)" : "DVD-Video Compliant");
+            : !IsStructureValid ? "Structure Invalid"
+            : IsTooLongForDvd ? "Too long for one DVD"
+            : (RequiresAutoAuthoring ? "Ready (Auto-Convert & Menu)" : "DVD-Video Compliant");
+
+    /// <summary>
+    /// Reads a movie's running time in seconds (0 when it cannot) for <see cref="FitEstimate"/>. Null reads it with
+    /// FFmpeg when <see cref="UseFfmpegWhenAvailable"/> is on. Tests set a fake.
+    /// </summary>
+    public Func<string, CancellationToken, Task<double>>? DurationProbe { get; set; }
+
+    /// <summary>Finishes once the running times being read are in and the plan has been redone with them.</summary>
+    public Task FitEstimateTask { get; private set; } = Task.CompletedTask;
+
+    /// <summary>
+    /// How the movies fit onto a DVD once converted (the video bitrate and size the authoring will use); null for a
+    /// VIDEO_TS folder, before the running times are read, or when they cannot be.
+    /// </summary>
+    public DvdFitEstimate? FitEstimate
+    {
+        get => _fitEstimate;
+        private set
+        {
+            if (SetProperty(ref _fitEstimate, value))
+            {
+                RefreshFitState();
+            }
+        }
+    }
+
+    /// <summary>One line on how the movies fit: full quality, compressed to fit, needs a dual-layer DVD, or too long.</summary>
+    public string FitSummaryText
+    {
+        get => _fitSummaryText;
+        private set
+        {
+            if (SetProperty(ref _fitSummaryText, value))
+            {
+                OnPropertyChanged(nameof(HasFitSummary));
+            }
+        }
+    }
+
+    public bool HasFitSummary => !string.IsNullOrEmpty(FitSummaryText);
+
+    /// <summary>
+    /// No DVD can hold this: movies longer than a dual-layer DVD holds at the lowest bitrate, or a VIDEO_TS folder
+    /// bigger than a dual-layer DVD. Burn and Build ISO are off.
+    /// </summary>
+    public bool IsTooLongForDvd =>
+        FitEstimate?.Kind == DvdFitKind.TooLong ||
+        (!RequiresAutoAuthoring && TotalSectors > DvdLayerBreakCalculator.MaxDvd9Sectors);
+
+    /// <summary>Colour of <see cref="FitSummaryText"/>: warning for a dual-layer DVD, error when no DVD holds it.</summary>
+    public CapacityStatus FitStatus =>
+        IsTooLongForDvd ? CapacityStatus.ExceedsMediaCapacity
+        : FitEstimate?.Kind == DvdFitKind.NeedsDualLayer ? CapacityStatus.NearCapacityWarning
+        : CapacityStatus.FitsComfortably;
+
+    private void RefreshFitState()
+    {
+        OnPropertyChanged(nameof(IsTooLongForDvd));
+        OnPropertyChanged(nameof(FitStatus));
+        OnPropertyChanged(nameof(ValidationStatusText));
+        StartDvdBurnCommand?.RaiseCanExecuteChanged();
+        BuildDvdIsoCommand?.RaiseCanExecuteChanged();
+    }
 
     /// <summary>
     /// Display text describing media type requirement.
@@ -633,8 +710,8 @@ public class DvdVideoViewModel : ObservableObject
                 path = dlg.FileName;
             }
             await BuildDvdIsoAsync(path);
-        }, _ => IsStructureValid);
-        StartDvdBurnCommand = new AsyncRelayCommand(async param => await StartDvdBurnAsync(param), _ => IsStructureValid);
+        }, _ => IsStructureValid && !IsTooLongForDvd);
+        StartDvdBurnCommand = new AsyncRelayCommand(async param => await StartDvdBurnAsync(param), _ => IsStructureValid && !IsTooLongForDvd);
         InstallFfmpegCommand = new AsyncRelayCommand(async _ => await InstallFfmpegAsync(), _ => !IsBusy);
         InstallSubtitleToolCommand = new AsyncRelayCommand(async _ => await InstallSubtitleToolAsync(), _ => !IsBusy);
 
@@ -904,6 +981,7 @@ public class DvdVideoViewModel : ObservableObject
 
         ClearSource();
         ResetState(); // ClearSource only resets when the path changed; a path already blank would leave the old plan
+        _probedSeconds.Clear();
         VolumeLabel = "DVD_VIDEO";
         MenuTitle = "DVD Video";
         LastBuiltIsoPath = null;
@@ -948,6 +1026,8 @@ public class DvdVideoViewModel : ObservableObject
         HasAudioTs = false;
         LastAuthoredVideoTsPath = null;
         RequiresAutoAuthoring = false;
+        FitEstimate = null;
+        FitSummaryText = string.Empty;
 
         List<string> inputs;
         if (SourceMediaFiles.Count > 0)
@@ -1112,12 +1192,20 @@ public class DvdVideoViewModel : ObservableObject
             }
             previewEntries.Add(new DvdVideoMemoryFileEntry("VIDEO_TS.BUP", new byte[ifoBytes]));
 
+            // Each title's size once converted, from its running time and the bitrate the authoring will use; the
+            // movie file's own size only while the running times are being read or cannot be (it says nothing about
+            // the converted size: a small HEVC file can grow, a large one shrink).
+            var fit = PlanFit(analysis.MovieFilePaths, out bool readNeeded);
             int count = Math.Max(1, analysis.MovieFilePaths.Count);
             for (int i = 0; i < count; i++)
             {
                 int setNum = i + 1;
                 long fileLength = 65536L;
-                if (i < analysis.MovieFilePaths.Count)
+                if (fit != null && i < fit.TitleBytes.Count)
+                {
+                    fileLength = fit.TitleBytes[i];
+                }
+                else if (i < analysis.MovieFilePaths.Count)
                 {
                     try
                     {
@@ -1127,7 +1215,10 @@ public class DvdVideoViewModel : ObservableObject
                             fileLength = fi.Length;
                         }
                     }
-                    catch { }
+                    catch (Exception ex) when (ex is IOException or UnauthorizedAccessException or ArgumentException or NotSupportedException)
+                    {
+                        // the placeholder size stays; authoring reports the file itself if it cannot be read
+                    }
                 }
                 long vobSize = Math.Max(65536L, fileLength);
 
@@ -1149,7 +1240,96 @@ public class DvdVideoViewModel : ObservableObject
             TotalSizeBytes = previewEntries.Sum(e => e.SizeBytes);
             TitleSetCount = count;
             HasAudioTs = true;
+            FitEstimate = fit;
             PopulateLayoutAndDualLayer(layout);
+
+            // Last, once this plan is complete: a read that answers at once redoes the plan inside this call, and
+            // nothing after it may overwrite that newer plan.
+            if (readNeeded)
+            {
+                StartReadingRunningTimes(analysis.MovieFilePaths);
+            }
+        }
+    }
+
+    /// <summary>
+    /// The fit of <paramref name="movies"/> from their running times, or null while they still have to be read
+    /// (<paramref name="readNeeded"/>: the caller starts the read, which redoes the plan when it finishes) or when one
+    /// cannot be read. Sets <see cref="FitSummaryText"/>.
+    /// </summary>
+    private DvdFitEstimate? PlanFit(IReadOnlyList<string> movies, out bool readNeeded)
+    {
+        readNeeded = false;
+        var seconds = new List<double>(movies.Count);
+        bool missing = false;
+        foreach (string movie in movies)
+        {
+            if (_probedSeconds.TryGetValue(movie, out double s))
+            {
+                seconds.Add(s);
+            }
+            else
+            {
+                missing = true;
+            }
+        }
+
+        if (missing)
+        {
+            if (DurationProbe != null || UseFfmpegWhenAvailable)
+            {
+                readNeeded = true; // started by the caller once this plan is done (see ValidateAndPlanLayout)
+                FitSummaryText = "Reading the running times to work out how much fits on a DVD...";
+            }
+            return null;
+        }
+
+        var fit = DvdDiscFit.Estimate(seconds, new DvdAuthoringOptions());
+        FitSummaryText = fit.Kind == DvdFitKind.Unknown
+            ? "The running time of a movie could not be read, so the size shown is the movie files' own size, not the size once converted."
+            : fit.Summary;
+        return fit.Kind == DvdFitKind.Unknown ? null : fit;
+    }
+
+    private void StartReadingRunningTimes(IReadOnlyList<string> movies)
+    {
+        int generation = ++_probeGeneration;
+        var probe = DurationProbe ?? ((movie, ct) => Task.Run(() => DvdVideoAuthoringService.ProbeDurationSecondsAsync(
+            movie, string.IsNullOrWhiteSpace(CustomFfmpegPath) ? null : CustomFfmpegPath, ct), ct));
+        FitEstimateTask = ReadRunningTimesAsync(generation, movies.Where(m => !_probedSeconds.ContainsKey(m)).ToList(), probe);
+    }
+
+    /// <summary>
+    /// Reads the running times of <paramref name="movies"/>, then redoes the plan with them, unless the movie list
+    /// changed meanwhile (a newer read is running) or a burn or build has started (it waits for this first).
+    /// </summary>
+    private async Task ReadRunningTimesAsync(int generation, List<string> movies, Func<string, CancellationToken, Task<double>> probe)
+    {
+        var found = new List<(string Movie, double Seconds)>(movies.Count);
+        foreach (string movie in movies)
+        {
+            double seconds;
+            try
+            {
+                seconds = await probe(movie, CancellationToken.None);
+            }
+            catch (Exception ex) when (ex is not OutOfMemoryException)
+            {
+                // Unreadable counts as unknown: the screen then says the running time could not be read.
+                System.Diagnostics.Debug.WriteLine($"Running time of '{movie}' could not be read: {ex.Message}");
+                seconds = 0;
+            }
+            found.Add((movie, seconds));
+        }
+
+        foreach (var (movie, seconds) in found)
+        {
+            _probedSeconds[movie] = seconds;
+        }
+
+        if (generation == _probeGeneration && !IsBusy)
+        {
+            ValidateAndPlanLayout();
         }
     }
 
@@ -1216,7 +1396,9 @@ public class DvdVideoViewModel : ObservableObject
             UseFfmpegWhenAvailable = UseFfmpegWhenAvailable,
             CustomFfmpegPath = string.IsNullOrWhiteSpace(CustomFfmpegPath) ? null : CustomFfmpegPath,
             GenerateSubtitles = GenerateSubtitles,
-            SubtitleLanguage = string.IsNullOrWhiteSpace(SubtitleLanguage) ? "en" : SubtitleLanguage.Trim().ToLowerInvariant()
+            SubtitleLanguage = string.IsNullOrWhiteSpace(SubtitleLanguage) ? "en" : SubtitleLanguage.Trim().ToLowerInvariant(),
+            // Too long for a 4.7 GB DVD even compressed: author for a dual-layer disc (higher bitrate, a cell for the break)
+            DualLayer = FitEstimate?.DualLayer == true
         };
 
         foreach (var (movie, srt) in _chosenSubtitles)
@@ -1316,13 +1498,20 @@ public class DvdVideoViewModel : ObservableObject
             Directory.CreateDirectory(dir);
         }
 
+        await FitEstimateTask;
         if (!IsStructureValid)
         {
             ValidateAndPlanLayout();
+            await FitEstimateTask;
             if (!IsStructureValid)
             {
                 throw new InvalidOperationException($"Cannot build DVD ISO: structure is not valid. {string.Join("; ", ValidationMessages)}");
             }
+        }
+
+        if (IsTooLongForDvd)
+        {
+            throw new InvalidOperationException(HasFitSummary ? FitSummaryText : "Too big for any DVD.");
         }
 
         using var cts = CancellationTokenSource.CreateLinkedTokenSource(cancellationToken);
@@ -1387,13 +1576,21 @@ public class DvdVideoViewModel : ObservableObject
     /// </summary>
     public async Task<DataBurnResult> StartDvdBurnAsync(object? parameter = null, CancellationToken cancellationToken = default)
     {
+        await FitEstimateTask; // running times still being read: plan with them, not with the movie files' sizes
         if (!IsStructureValid)
         {
             ValidateAndPlanLayout();
+            await FitEstimateTask;
             if (!IsStructureValid)
             {
                 return DataBurnResult.Failed($"Cannot burn DVD: VIDEO_TS structure is invalid. {string.Join("; ", ValidationMessages)}");
             }
+        }
+
+        if (IsTooLongForDvd)
+        {
+            StatusMessage = HasFitSummary ? FitSummaryText : "Too big for any DVD: remove a movie and burn it on another disc.";
+            return DataBurnResult.Failed(StatusMessage);
         }
 
         // Resolve and confirm the target optical recorder FIRST before running lengthy transcoding/authoring
@@ -1447,6 +1644,12 @@ public class DvdVideoViewModel : ObservableObject
             {
                 vRec.InsertMedia(VirtualDiscMedium.CreateBlankDvdR47());
             }
+        }
+
+        if (DiscTooSmallMessage(targetRecorder) is string tooSmall)
+        {
+            StatusMessage = tooSmall;
+            return DataBurnResult.Failed(tooSmall);
         }
 
         using var cts = CancellationTokenSource.CreateLinkedTokenSource(cancellationToken);
@@ -1596,7 +1799,13 @@ public class DvdVideoViewModel : ObservableObject
 
         // 4. Dual-Layer assessment
         IsDualLayerRequired = DvdLayerBreakCalculator.RequiresLayerBreak(layout.TotalSectors);
-        if (IsDualLayerRequired && PlannedCellBreaks(layout, videoTsFolder) is { Count: > 0 } cellBreaks)
+        if (layout.TotalSectors > DvdLayerBreakCalculator.MaxDvd9Sectors)
+        {
+            // No layer break to plan: no DVD holds it (the layer break calculator refuses sizes past a DVD-9).
+            ValidationMessages.Add($"[Error] Too big for any DVD: {CompilationItemViewModel.FormatBytes(layout.TotalSectors * 2048L)} " +
+                                   $"({layout.TotalSectors:N0} sectors); a dual-layer DVD holds {DvdLayerBreakCalculator.MaxDvd9Sectors:N0}.");
+        }
+        else if (IsDualLayerRequired && PlannedCellBreaks(layout, videoTsFolder) is { Count: > 0 } cellBreaks)
         {
             // Real cell starts in the allowed range (layer 0 at least half, within its capacity). Whether a cell also
             // lands on a 16-sector block is only known on the built image, so that is checked at burn time.
@@ -1750,6 +1959,52 @@ public class DvdVideoViewModel : ObservableObject
         TotalSectors = 0;
         TitleSetCount = 0;
         HasAudioTs = false;
+        _probeGeneration++; // a running-time read still under way must not bring the old movies back into the plan
+        FitEstimate = null;
+        FitSummaryText = string.Empty;
+    }
+
+    /// <summary>
+    /// A message when the disc in <paramref name="recorder"/> cannot hold this DVD (<see cref="TotalSectors"/>: the
+    /// planned size, converted size for movies). Checked before converting, so a too-small disc is found in seconds,
+    /// not after an hour of conversion. Null when it fits or the drive does not say how much the disc holds (the burn
+    /// itself checks again once the image is built).
+    /// </summary>
+    private string? DiscTooSmallMessage(IDiscRecorderBackend recorder)
+    {
+        if (TotalSectors <= 0)
+        {
+            return null;
+        }
+
+        MediaStatusDto status;
+        try
+        {
+            status = recorder.QueryMediaStatus();
+        }
+        catch (Exception ex) when (ex is not OutOfMemoryException)
+        {
+            System.Diagnostics.Debug.WriteLine($"Disc size not readable before the DVD-Video burn: {ex.Message}");
+            return null;
+        }
+
+        if (!status.MediaPresent)
+        {
+            return null;
+        }
+
+        // A rewritable disc with data is erased first, so all of it counts; otherwise only the free part.
+        int room = status.IsRewritable && !status.IsBlank ? Math.Max(status.FreeSectors, status.TotalSectors) : status.FreeSectors;
+        if (room <= 0 || TotalSectors <= room)
+        {
+            return null;
+        }
+
+        return $"This disc holds {CompilationItemViewModel.FormatBytes(room * 2048L)}, but this DVD needs about " +
+               $"{CompilationItemViewModel.FormatBytes(TotalSectors * 2048L)}. " +
+               (TotalSectors <= DvdLayerBreakCalculator.MaxDvd9Sectors
+                   ? "Put in a dual-layer DVD (DVD+R DL, 8.5 GB), or remove a movie and burn it on another disc."
+                   : "Remove a movie and burn it on another disc.");
     }
 
     private void ExecuteAddMovieFiles(object? parameter)

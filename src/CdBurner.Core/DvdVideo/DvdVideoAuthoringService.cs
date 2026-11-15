@@ -147,7 +147,10 @@ public sealed class DvdVideoAuthoringService
     public const double Dvd9Layer0PayloadBytes = 3_850_000_000.0;
 
     /// <summary>MPEG program stream and DVD navigation overhead on top of the audio and video bitrates.</summary>
-    private const double MuxOverhead = 1.07;
+    public const double MuxOverhead = 1.07;
+
+    /// <summary>The lowest video bitrate <see cref="PlanVideoBitrate"/> goes to: below it MPEG-2 at DVD size turns blocky.</summary>
+    public const int MinimumVideoKbps = 1800;
 
     /// <summary>
     /// Chooses the video bitrate for titles of the given running times (seconds, in disc order; 0 when unknown). The
@@ -335,7 +338,7 @@ public sealed class DvdVideoAuthoringService
             }
         }
 
-        int fittedVideoKbps = Math.Clamp(allowedKbps - options.AudioBitrateKbps, 1800, options.VideoBitrateKbps);
+        int fittedVideoKbps = Math.Clamp(allowedKbps - options.AudioBitrateKbps, MinimumVideoKbps, options.VideoBitrateKbps);
         if (fittedVideoKbps >= options.VideoBitrateKbps)
         {
             return new DvdBitratePlan(options.VideoBitrateKbps, options.MaxVideoBitrateKbps, warning);
@@ -934,7 +937,22 @@ public sealed class DvdVideoAuthoringService
         };
     }
 
+    /// <summary>
+    /// A movie's running time in seconds, read by FFmpeg (at <paramref name="customFfmpegPath"/>, else the one found);
+    /// 0 when FFmpeg is missing or cannot read it.
+    /// </summary>
+    public static async Task<double> ProbeDurationSecondsAsync(string moviePath, string? customFfmpegPath, CancellationToken cancellationToken = default)
+    {
+        if (!FfmpegLocator.IsFfmpegAvailable(out string? ffmpegExe, customFfmpegPath) || string.IsNullOrEmpty(ffmpegExe))
+        {
+            return 0;
+        }
+
+        return await ProbeVideoDurationSecondsAsync(ffmpegExe, moviePath, cancellationToken).ConfigureAwait(false);
+    }
+
     private static async Task<double> ProbeVideoDurationSecondsAsync(
+
         string ffmpegExe,
         string moviePath,
         CancellationToken cancellationToken)

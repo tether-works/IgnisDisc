@@ -45,6 +45,7 @@
                     <RowDefinition Height="Auto" />
                     <RowDefinition Height="Auto" />
                     <RowDefinition Height="Auto" />
+                    <RowDefinition Height="Auto" />
                 </Grid.RowDefinitions>
                 <Grid.ColumnDefinitions>
                     <ColumnDefinition Width="Auto" />
@@ -266,6 +267,28 @@
                         </ItemsControl.ItemTemplate>
                     </ItemsControl>
                 </StackPanel>
+
+                <!-- How the movies fit on a DVD once converted: full quality, compressed to fit, dual-layer, or too long -->
+                <Grid Grid.Row="3" Grid.Column="0" Grid.ColumnSpan="6"
+                      Margin="0,10,0,0"
+                      Visibility="{Binding HasFitSummary, Converter={StaticResource BoolToVis}}">
+                    <Grid.ColumnDefinitions>
+                        <ColumnDefinition Width="Auto" />
+                        <ColumnDefinition Width="*" />
+                    </Grid.ColumnDefinitions>
+                    <TextBlock Grid.Column="0"
+                               Text="Fits on disc:"
+                               FontWeight="SemiBold"
+                               Foreground="{DynamicResource TextSecondaryBrush}"
+                               VerticalAlignment="Top"
+                               Margin="0,0,10,0" />
+                    <TextBlock Grid.Column="1"
+                               Text="{Binding FitSummaryText}"
+                               AutomationProperties.AutomationId="FitSummary"
+                               TextWrapping="Wrap"
+                               FontWeight="SemiBold"
+                               Foreground="{Binding FitStatus, Converter={StaticResource CapacityStatusToBrushConverter}}" />
+                </Grid>
             </Grid>
         </Border>
 
