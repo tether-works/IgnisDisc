@@ -103,6 +103,7 @@ public class DvdVideoViewModel : ObservableObject
         {
             if (SetProperty(ref _videoTsFolderPath, value))
             {
+                OnPropertyChanged(nameof(ValidationStatusText));
                 SourceMediaFiles.Clear();
                 LastAuthoredVideoTsPath = null;
                 if (!string.IsNullOrWhiteSpace(value))
@@ -515,7 +516,10 @@ public class DvdVideoViewModel : ObservableObject
     /// <summary>
     /// Display status of DVD-Video structure check.
     /// </summary>
-    public string ValidationStatusText => !IsStructureValid ? "Structure Invalid" : (RequiresAutoAuthoring ? "Ready (Auto-Convert & Menu)" : "DVD-Video Compliant");
+    public string ValidationStatusText =>
+        SourceMediaFiles.Count == 0 && string.IsNullOrWhiteSpace(VideoTsFolderPath)
+            ? "No movies added yet"
+            : !IsStructureValid ? "Structure Invalid" : (RequiresAutoAuthoring ? "Ready (Auto-Convert & Menu)" : "DVD-Video Compliant");
 
     /// <summary>
     /// Display text describing media type requirement.
@@ -534,6 +538,7 @@ public class DvdVideoViewModel : ObservableObject
             {
                 OnPropertyChanged(nameof(CanCancel));
                 CancelCommand?.RaiseCanExecuteChanged();
+                NewDvdCommand?.RaiseCanExecuteChanged();
                 BuildDvdIsoCommand?.RaiseCanExecuteChanged();
                 StartDvdBurnCommand?.RaiseCanExecuteChanged();
                 InstallFfmpegCommand?.RaiseCanExecuteChanged();
@@ -581,6 +586,9 @@ public class DvdVideoViewModel : ObservableObject
     /// <summary>Uses no subtitle file for one movie (parameter: its <see cref="DvdSubtitleChoiceRow"/>).</summary>
     public RelayCommand ClearSubtitleFileCommand { get; }
     public RelayCommand ClearSourceCommand { get; }
+
+    /// <summary>Starts a new DVD: forgets the movies, subtitle picks, disc name and menu title (see <see cref="StartNewDvd"/>).</summary>
+    public RelayCommand NewDvdCommand { get; }
     public RelayCommand SelectVideoTsFolderCommand { get; }
     public RelayCommand ValidateAndPlanLayoutCommand { get; }
     public AsyncRelayCommand BuildDvdIsoCommand { get; }
@@ -603,6 +611,7 @@ public class DvdVideoViewModel : ObservableObject
         ClearSubtitleFileCommand = new RelayCommand(p => { if (p is DvdSubtitleChoiceRow row) ChooseSubtitleFile(row.MoviePath, null); }, _ => !IsBusy);
         SourceMediaFiles.CollectionChanged += (_, _) => RefreshSubtitleRows();
         ClearSourceCommand = new RelayCommand(_ => ClearSource());
+        NewDvdCommand = new RelayCommand(_ => StartNewDvd(), _ => !IsBusy);
         SelectVideoTsFolderCommand = new RelayCommand(ExecuteSelectVideoTsFolder);
         ValidateAndPlanLayoutCommand = new RelayCommand(_ => ValidateAndPlanLayout());
         CancelCommand = new RelayCommand(_ => CancelActiveOperation(), _ => CanCancel);
@@ -777,6 +786,7 @@ public class DvdVideoViewModel : ObservableObject
 
         _videoTsFolderPath = string.Join("; ", SourceMediaFiles);
         OnPropertyChanged(nameof(VideoTsFolderPath));
+        OnPropertyChanged(nameof(ValidationStatusText));
         ValidateAndPlanLayout();
     }
 
@@ -877,6 +887,28 @@ public class DvdVideoViewModel : ObservableObject
         _chosenSubtitles.Clear();
         SourceMediaFiles.Clear();
         VideoTsFolderPath = string.Empty;
+    }
+
+    /// <summary>
+    /// Gets the screen ready for a different DVD after a burn: forgets the movies or VIDEO_TS folder, the subtitle
+    /// picks, the planned layout, the last ISO, and the disc name and menu title (which were filled in from the old
+    /// movies, so the next movies get their own). Standard, aspect, menu, subtitle and writer settings are kept, as
+    /// they are the user's preferences rather than part of one disc. Does nothing while a burn or build is running.
+    /// </summary>
+    public void StartNewDvd()
+    {
+        if (IsBusy)
+        {
+            return;
+        }
+
+        ClearSource();
+        ResetState(); // ClearSource only resets when the path changed; a path already blank would leave the old plan
+        VolumeLabel = "DVD_VIDEO";
+        MenuTitle = "DVD Video";
+        LastBuiltIsoPath = null;
+        BurnProgress = 0;
+        StatusMessage = "New DVD: add movies or choose a VIDEO_TS folder.";
     }
 
     private void CleanupTempAuthoredDirectory()

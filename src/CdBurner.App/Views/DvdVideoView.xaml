@@ -52,6 +52,7 @@
                     <ColumnDefinition Width="Auto" />
                     <ColumnDefinition Width="Auto" />
                     <ColumnDefinition Width="Auto" />
+                    <ColumnDefinition Width="Auto" />
                 </Grid.ColumnDefinitions>
 
                 <!-- Source Path Row -->
@@ -88,9 +89,16 @@
                         Command="{Binding ValidateAndPlanLayoutCommand}"
                         Style="{StaticResource AccentButtonStyle}"
                         VerticalAlignment="Center" />
+                <Button Grid.Row="0" Grid.Column="5"
+                        Content="📄 New DVD"
+                        AutomationProperties.Name="New DVD"
+                        Command="{Binding NewDvdCommand}"
+                        ToolTip="Start a different DVD: clears the movies, subtitle choices, disc name and menu title. Standard, aspect and other settings stay."
+                        VerticalAlignment="Center"
+                        Margin="8,0,0,0" />
 
                 <!-- Options Sub-row -->
-                <WrapPanel Grid.Row="1" Grid.Column="0" Grid.ColumnSpan="5"
+                <WrapPanel Grid.Row="1" Grid.Column="0" Grid.ColumnSpan="6"
                            Orientation="Horizontal"
                            Margin="0,10,0,0"
                            VerticalAlignment="Center">
@@ -204,7 +212,7 @@
                 </WrapPanel>
 
                 <!-- Subtitles per movie: which .srt was found or chosen, with Choose / No subtitles -->
-                <StackPanel Grid.Row="2" Grid.Column="0" Grid.ColumnSpan="5"
+                <StackPanel Grid.Row="2" Grid.Column="0" Grid.ColumnSpan="6"
                             Margin="0,10,0,0"
                             Visibility="{Binding HasSubtitleRows, Converter={StaticResource BoolToVis}}">
                     <TextBlock Text="Subtitles:"

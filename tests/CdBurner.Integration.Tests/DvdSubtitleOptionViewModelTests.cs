@@ -101,6 +101,66 @@ public sealed class DvdSubtitleOptionViewModelTests : IDisposable
     }
 
     [Fact]
+    public void NewDvd_ClearsTheLastDisc_SoTheNextMoviesStartFresh()
+    {
+        Directory.CreateDirectory(_tempDir);
+        string first = Path.Combine(_tempDir, "First Film.mp4");
+        string second = Path.Combine(_tempDir, "Second Film.mp4");
+        File.WriteAllBytes(first, new byte[16]);
+        File.WriteAllBytes(second, new byte[16]);
+        string picked = Path.Combine(_tempDir, "first.srt");
+        File.WriteAllText(picked, "1\r\n00:00:01,000 --> 00:00:02,000\r\nHello\r\n");
+
+        var vm = new DvdVideoViewModel(_deviceManager, new VirtualBurnEngine()) { UseFfmpegWhenAvailable = false };
+        vm.SelectedStandard = CdBurner.Core.DvdVideo.DvdVideoStandard.Pal; // a preference: must survive New DVD
+        vm.AddMovieFiles([first]);
+        vm.ChooseSubtitleFile(first, picked);
+        string firstLabel = vm.VolumeLabel;
+        string firstTitle = vm.MenuTitle;
+        Assert.NotEqual("DVD_VIDEO", firstLabel); // filled in from the first movie's name
+        Assert.True(vm.IsStructureValid);
+        Assert.NotEmpty(vm.ExtentLayoutRows);
+        Assert.True(vm.NewDvdCommand.CanExecute(null));
+
+        vm.NewDvdCommand.Execute(null);
+
+        Assert.Empty(vm.SourceMediaFiles);
+        Assert.Equal(string.Empty, vm.VideoTsFolderPath);
+        Assert.Empty(vm.SubtitleRows);
+        Assert.Empty(vm.ExtentLayoutRows);
+        Assert.Empty(vm.ValidationMessages);
+        Assert.False(vm.IsStructureValid);
+        Assert.Equal(0, vm.TotalSectors);
+        Assert.Null(vm.LastBuiltIsoPath);
+        Assert.Equal("DVD_VIDEO", vm.VolumeLabel);
+        Assert.Equal("DVD Video", vm.MenuTitle);
+        Assert.Contains("New DVD", vm.StatusMessage);
+        Assert.Equal("No movies added yet", vm.ValidationStatusText); // not a red "Structure Invalid" on an empty screen
+        Assert.Equal(CdBurner.Core.DvdVideo.DvdVideoStandard.Pal, vm.SelectedStandard);
+
+        // The next disc gets its own name and title, not the first movie's, and no leftover subtitle pick.
+        vm.AddMovieFiles([second]);
+        Assert.Single(vm.SourceMediaFiles);
+        Assert.NotEqual(firstLabel, vm.VolumeLabel);
+        Assert.NotEqual(firstTitle, vm.MenuTitle);
+        Assert.Equal(DvdSubtitleSource.None, vm.SubtitleRows[0].Source);
+
+        // A typed VIDEO_TS folder path is cleared too.
+        vm.VideoTsFolderPath = _tempDir;
+        vm.StartNewDvd();
+        Assert.Equal(string.Empty, vm.VideoTsFolderPath);
+        Assert.False(vm.IsStructureValid);
+
+        // While a burn runs the button is off and the call does nothing.
+        vm.AddMovieFiles([second]);
+        vm.IsBusy = true;
+        Assert.False(vm.NewDvdCommand.CanExecute(null));
+        vm.StartNewDvd();
+        Assert.Single(vm.SourceMediaFiles);
+        vm.IsBusy = false;
+    }
+
+    [Fact]
     public async Task InstallOffer_ShowsOnlyWhenAskedForAndMissing_AndHidesAfterInstall()
     {
         var vm = new DvdVideoViewModel(_deviceManager, new VirtualBurnEngine())
