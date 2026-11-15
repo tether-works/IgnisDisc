@@ -1,0 +1,37 @@
+{
+  "schemaVersion": 1,
+  "presets": [
+    {
+      "id": "hobbyist",
+      "name": "Hobbyist",
+      "targetMedia": "DVD-R",
+      "cellWidthUm": 100.0,
+      "cellHeightUm": 150.0,
+      "columns": 30,
+      "rows": 13,
+      "radialGutterUm": 200.0,
+      "tangentialGutterUm": 200.0
+    },
+    {
+      "id": "high-density",
+      "name": "High-density",
+      "targetMedia": "DVD-R",
+      "cellWidthUm": 26.0,
+      "cellHeightUm": 34.0,
+      "columns": 30,
+      "rows": 17,
+      "radialGutterUm": 60.0,
+      "tangentialGutterUm": 60.0
+    }
+  ],
+  "ladder": [
+    { "cellWidthUm": 250.0, "cellHeightUm": 375.0, "columns": 30, "rows": 13, "radialGutterUm": 300.0, "tangentialGutterUm": 300.0, "cdSupported": true },
+    { "cellWidthUm": 150.0, "cellHeightUm": 225.0, "columns": 30, "rows": 13, "radialGutterUm": 250.0, "tangentialGutterUm": 250.0, "cdSupported": true },
+    { "cellWidthUm": 100.0, "cellHeightUm": 150.0, "columns": 30, "rows": 13, "radialGutterUm": 200.0, "tangentialGutterUm": 200.0, "cdSupported": true },
+    { "cellWidthUm": 75.0,  "cellHeightUm": 113.0, "columns": 30, "rows": 13, "radialGutterUm": 150.0, "tangentialGutterUm": 150.0, "cdSupported": true },
+    { "cellWidthUm": 50.0,  "cellHeightUm": 75.0,  "columns": 30, "rows": 15, "radialGutterUm": 100.0, "tangentialGutterUm": 100.0, "cdSupported": true },
+    { "cellWidthUm": 34.0,  "cellHeightUm": 51.0,  "columns": 30, "rows": 17, "radialGutterUm": 80.0,  "tangentialGutterUm": 80.0,  "cdSupported": false },
+    { "cellWidthUm": 26.0,  "cellHeightUm": 34.0,  "columns": 30, "rows": 17, "radialGutterUm": 60.0,  "tangentialGutterUm": 60.0,  "cdSupported": false },
+    { "cellWidthUm": 13.0,  "cellHeightUm": 17.0,  "columns": 30, "rows": 17, "radialGutterUm": 40.0,  "tangentialGutterUm": 40.0,  "cdSupported": false }
+  ]
+}

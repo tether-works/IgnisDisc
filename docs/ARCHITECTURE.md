@@ -257,6 +257,13 @@ one assembly with a clear provenance boundary. Nothing in it touches a drive.
 - `Imaging/PngRaster.cs` + `Imaging/WicPngDecoder.cs`: IgnisDisc's PNG framing/CRC-32 validator and Windows Imaging
   Component (`windowscodecs.dll`) decoder producing straight `32bppBGRA` `BgraRaster` buffers (plus 8-bit RGBA PNG writer)
   for picture input and read-back previews without a WPF dependency.
+- `Rosetta/` (namespace `CdBurner.Lithography.Rosetta` and `.Rosetta.Fonts`): clean-room optical text-page engine for
+  DVD-R (`RosettaPresetCatalog` loading cell presets and the 8-rung resolution ladder from embedded JSON; `Spleen5x8Font`
+  parsing embedded Adobe BDF 2.1 `spleen-5x8.bdf`; `UnifontBitmapFont` stream-parsing embedded `unifont.hex.gz`;
+  `RosettaBook` paginating `R00-S00` Contents, `R00-S01+` Unifont reader instructions at the largest cell size on the
+  disc, and document pages across one or two concentric bands; `RosettaPagePixelSource` implementing `IPagePixelSource`
+  with zero-allocation glyph and `3×3` `+` crosshair rendering; and `RosettaDvdEncoder` driving `FastDispersionImageWriter`
+  with strict binary strokes and zero dithering).
 - Burning: `CdBurner.Core.Images.PictureTrackCue` adds the picture WAV as the last audio track of an audio or
   mixed-mode CUE sheet, which then goes through the direct Session-at-Once writer (`burn-audio --tracks <cue> --dao
   --native`) and `verify --cue` like any other CUE. Core does not reference this project.

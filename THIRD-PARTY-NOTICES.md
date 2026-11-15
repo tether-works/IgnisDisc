@@ -7,6 +7,8 @@ IgnisDisc is licensed under the GNU General Public License v3.0 or later (`GPL-3
 | .NET runtime and Windows Desktop runtime (self-contained builds) | Runs the app | MIT — https://github.com/dotnet/runtime/blob/main/LICENSE.TXT |
 | CommunityToolkit.Mvvm | MVVM helpers in the desktop app | MIT — https://github.com/CommunityToolkit/dotnet/blob/main/License.md |
 | Microsoft.Extensions.DependencyInjection | Service wiring in the desktop app | MIT — https://github.com/dotnet/runtime/blob/main/LICENSE.TXT |
+| Spleen 5×8 bitmap font | Latin glyph strokes on Rosetta optical text pages | BSD-2-Clause — https://github.com/fcambus/spleen/blob/2.2.0/LICENSE |
+| GNU Unifont bitmap font | Non-Latin scripts and reader instructions on Rosetta optical text pages | SIL Open Font License 1.1 — https://unifoundry.com/unifont/ |
 
 Windows components used at runtime but **not** redistributed: IMAPIv2 (`imapi2.dll`, `imapi2fs.dll`), Media Foundation, and Windows Imaging Component (`windowscodecs.dll`).
 
@@ -79,6 +81,13 @@ byte for byte. Preset cubic pitch coefficients are converted into IgnisDisc's un
 (`src/CdBurner.Lithography/Geometry/DiscPresetGeometry.cs`), and PNG input and output in
 `src/CdBurner.Lithography/Imaging/` uses IgnisDisc's framing validator and Windows Imaging Component
 (`windowscodecs.dll`).
+
+## Rosetta bitmap fonts (Spleen 5×8 and GNU Unifont)
+
+IgnisDisc bundles two bitmap fonts as embedded resources in `CdBurner.Lithography` for rendering optical text pages:
+
+- **Spleen 5×8** (`src/CdBurner.Lithography/Fonts/Spleen/spleen-5x8.bdf`, version 2.2.0) and its licence text (`src/CdBurner.Lithography/Fonts/Spleen/LICENSE`): Copyright (c) 2018-2026, Frederic Cambus, licensed under the BSD 2-Clause License (`BSD-2-Clause`).
+- **GNU Unifont** (`src/CdBurner.Lithography/Fonts/Unifont/unifont.hex.gz`, version 17.0.05 BMP precompiled hex) and its licence text (`src/CdBurner.Lithography/Fonts/Unifont/OFL.txt`): IgnisDisc distributes the Unifont glyph data under the **SIL Open Font License 1.1** (`OFL-1.1`) option of GNU Unifont's dual licence (as stated in upstream `COPYING`: *"License for font files except the jiskan16 files mentioned above are dual-licensed under the SIL Open Font License version 1.1, and under this GNU license: All glyphs are released under the GNU General Public License (GPL) version 2 or (at your option) a later version, with the GNU font embedding exception"*). The font software remains under SIL OFL 1.1 (Reserved Font Name: `Unifont`), may not be sold by itself, and its full licence text ships in `src/CdBurner.Lithography/Fonts/Unifont/OFL.txt`.
 
 ## Online services (optional, 1-click lookup & configurable defaults)
 
