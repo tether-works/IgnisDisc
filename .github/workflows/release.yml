@@ -8,6 +8,8 @@ on:
 
 permissions:
   contents: write
+  # SignPath fetches the unsigned build artifacts through GITHUB_TOKEN, which needs actions:read.
+  actions: read
 
 jobs:
   build:
