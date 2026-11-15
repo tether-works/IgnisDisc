@@ -71,6 +71,52 @@ public sealed class DvdDiscFitTests
     }
 
     [Fact]
+    public void AFilmThatMustBeCompressed_OffersADualLayerDvd_AtAHigherBitrate()
+    {
+        // 2 h 45 min: a 4.7 GB DVD has to compress it; a dual-layer DVD keeps nearly twice the bitrate.
+        var single = DvdDiscFit.Estimate([165 * 60.0], Defaults);
+        Assert.Equal(DvdFitKind.Compressed, single.Kind);
+        Assert.True(single.HasLayerChoice);
+        Assert.Equal(single.VideoKbps, single.SingleLayerKbps);
+        Assert.True(single.DualLayerKbps >= single.VideoKbps * DvdDiscFit.WorthwhileGain);
+        Assert.False(single.DualLayer);
+
+        var dual = DvdDiscFit.Estimate([165 * 60.0], Defaults, preferDualLayer: true);
+        Assert.Equal(DvdFitKind.DualLayerChosen, dual.Kind);
+        Assert.True(dual.DualLayer);
+        Assert.True(dual.HasLayerChoice);
+        Assert.Equal(single.DualLayerKbps, dual.VideoKbps);
+        Assert.Equal(single.SingleLayerKbps, dual.SingleLayerKbps);
+        Assert.Contains("on a dual-layer DVD", dual.Summary);
+        long sectors = dual.TotalBytes / 2048;
+        Assert.True(sectors > DvdLayerBreakCalculator.Dvd5SectorLimit && sectors <= DvdLayerBreakCalculator.MaxDvd9Sectors, $"{sectors} sectors");
+    }
+
+    [Fact]
+    public void TwoHours_OnADualLayerDvd_NeedsNoCompression()
+    {
+        var dual = DvdDiscFit.Estimate([60 * 60.0, 60 * 60.0], Defaults, preferDualLayer: true);
+
+        Assert.Equal(DvdFitKind.DualLayerChosen, dual.Kind);
+        Assert.Equal(Defaults.VideoBitrateKbps, dual.VideoKbps);
+        Assert.Contains("full quality", dual.Summary);
+    }
+
+    [Theory]
+    [InlineData(80)]  // fits a 4.7 GB DVD at full quality: nothing to gain
+    [InlineData(300)] // only a dual-layer DVD can take it: nothing to choose
+    [InlineData(600)] // no DVD can take it
+    public void NoChoice_WhenADualLayerDvdWouldNotHelp(int minutes)
+    {
+        var fit = DvdDiscFit.Estimate([minutes * 60.0], Defaults);
+        var preferred = DvdDiscFit.Estimate([minutes * 60.0], Defaults, preferDualLayer: true);
+
+        Assert.False(fit.HasLayerChoice);
+        Assert.Equal(fit.Kind, preferred.Kind); // asking for dual layer changes nothing then
+        Assert.Equal(fit.VideoKbps, preferred.VideoKbps);
+    }
+
+    [Fact]
     public void TheEdgeOfA47GbDvd_IsTheLowestBitrate()
     {
         // 4 h 25 min fits compressed at the floor; 4 h 27 min no longer does.

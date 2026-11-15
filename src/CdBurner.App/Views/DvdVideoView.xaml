@@ -282,12 +282,33 @@
                                Foreground="{DynamicResource TextSecondaryBrush}"
                                VerticalAlignment="Top"
                                Margin="0,0,10,0" />
-                    <TextBlock Grid.Column="1"
-                               Text="{Binding FitSummaryText}"
-                               AutomationProperties.AutomationId="FitSummary"
-                               TextWrapping="Wrap"
-                               FontWeight="SemiBold"
-                               Foreground="{Binding FitStatus, Converter={StaticResource CapacityStatusToBrushConverter}}" />
+                    <StackPanel Grid.Column="1">
+                        <TextBlock Text="{Binding FitSummaryText}"
+                                   AutomationProperties.AutomationId="FitSummary"
+                                   TextWrapping="Wrap"
+                                   FontWeight="SemiBold"
+                                   Foreground="{Binding FitStatus, Converter={StaticResource CapacityStatusToBrushConverter}}" />
+                        <!-- Offered when a 4.7 GB DVD has to compress and a dual-layer DVD would keep it clearly sharper -->
+                        <StackPanel Orientation="Horizontal"
+                                    Margin="0,6,0,0"
+                                    Visibility="{Binding HasLayerChoice, Converter={StaticResource BoolToVis}}">
+                            <TextBlock Text="Disc:"
+                                       Foreground="{DynamicResource TextSecondaryBrush}"
+                                       VerticalAlignment="Center"
+                                       Margin="0,0,10,0" />
+                            <RadioButton GroupName="DvdLayerChoice"
+                                         Content="{Binding SingleLayerChoiceText}"
+                                         AutomationProperties.Name="Use a 4.7 GB DVD"
+                                         IsChecked="{Binding UseSingleLayerDisc}"
+                                         VerticalAlignment="Center"
+                                         Margin="0,0,18,0" />
+                            <RadioButton GroupName="DvdLayerChoice"
+                                         Content="{Binding DualLayerChoiceText}"
+                                         AutomationProperties.Name="Use a dual-layer DVD"
+                                         IsChecked="{Binding UseDualLayerDisc}"
+                                         VerticalAlignment="Center" />
+                        </StackPanel>
+                    </StackPanel>
                 </Grid>
             </Grid>
         </Border>

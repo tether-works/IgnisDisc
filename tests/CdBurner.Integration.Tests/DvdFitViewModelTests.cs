@@ -99,6 +99,61 @@ public sealed class DvdFitViewModelTests : IDisposable
     }
 
     [Fact]
+    public async Task ALongFilm_OffersADualLayerDvd_AndChoosingItPlansTheBiggerDisc()
+    {
+        var vm = NewViewModel();
+        vm.AddMovieFiles([Movie("Epic.mkv", 165)]);
+        await vm.FitEstimateTask;
+
+        Assert.True(vm.HasLayerChoice);
+        Assert.True(vm.UseSingleLayerDisc);
+        Assert.Equal(DvdFitKind.Compressed, vm.FitEstimate?.Kind);
+        Assert.StartsWith("4.7 GB DVD: compressed to", vm.SingleLayerChoiceText);
+        Assert.StartsWith("Dual-layer DVD (DVD+R DL, 8.5 GB):", vm.DualLayerChoiceText);
+        Assert.False(vm.IsDualLayerRequired);
+        int singleSectors = vm.TotalSectors;
+
+        vm.UseDualLayerDisc = true;
+
+        Assert.False(vm.UseSingleLayerDisc);
+        Assert.True(vm.HasLayerChoice); // still offered, so the user can go back
+        Assert.Equal(DvdFitKind.DualLayerChosen, vm.FitEstimate?.Kind);
+        Assert.True(vm.TotalSectors > DvdLayerBreakCalculator.Dvd5SectorLimit && vm.TotalSectors > singleSectors);
+        Assert.True(vm.IsDualLayerRequired);
+        Assert.Equal("Dual-Layer DVD-9 (OTP)", vm.MediaRequirementText);
+        Assert.Equal(CapacityStatus.FitsComfortably, vm.FitStatus); // a choice, not a warning
+
+        // A 4.7 GB disc in the drive: refused before converting, pointing back to the other choice.
+        var drive = _deviceManager.GetRecorders().OfType<VirtualDiscRecorder>().First(r => r.UniqueId == "VDRV-01");
+        drive.InsertMedia(VirtualDiscMedium.CreateBlankDvdR47());
+        var result = await vm.StartDvdBurnAsync("VDRV-01");
+        Assert.False(result.Success);
+        Assert.Contains("choose the 4.7 GB DVD", result.ErrorMessage);
+
+        vm.UseSingleLayerDisc = true;
+        Assert.Equal(DvdFitKind.Compressed, vm.FitEstimate?.Kind);
+        Assert.Equal(singleSectors, vm.TotalSectors);
+        Assert.False(vm.IsDualLayerRequired);
+
+        // New DVD goes back to the cheaper disc.
+        vm.UseDualLayerDisc = true;
+        vm.StartNewDvd();
+        Assert.False(vm.UseDualLayerDisc);
+        Assert.False(vm.HasLayerChoice);
+    }
+
+    [Fact]
+    public async Task AShortFilm_OffersNoChoice()
+    {
+        var vm = NewViewModel();
+        vm.AddMovieFiles([Movie("Short.mkv", 80)]);
+        await vm.FitEstimateTask;
+
+        Assert.Equal(DvdFitKind.FullQuality, vm.FitEstimate?.Kind);
+        Assert.False(vm.HasLayerChoice);
+    }
+
+    [Fact]
     public async Task NineHours_IsTooLongForAnyDvd_AndCannotBeBurnedOrBuilt()
     {
         var vm = NewViewModel();

@@ -66,6 +66,7 @@ public class DvdVideoViewModel : ObservableObject
     private int _probeGeneration;
     private DvdFitEstimate? _fitEstimate;
     private string _fitSummaryText = string.Empty;
+    private bool _useDualLayerDisc;
 
     #region Properties
 
@@ -589,8 +590,51 @@ public class DvdVideoViewModel : ObservableObject
         : FitEstimate?.Kind == DvdFitKind.NeedsDualLayer ? CapacityStatus.NearCapacityWarning
         : CapacityStatus.FitsComfortably;
 
+    /// <summary>
+    /// The user's pick when both discs are offered (<see cref="HasLayerChoice"/>): a dual-layer DVD at a higher
+    /// bitrate instead of compressing more for a 4.7 GB DVD. Redoes the plan.
+    /// </summary>
+    public bool UseDualLayerDisc
+    {
+        get => _useDualLayerDisc;
+        set
+        {
+            if (SetProperty(ref _useDualLayerDisc, value))
+            {
+                OnPropertyChanged(nameof(UseSingleLayerDisc));
+                if (RequiresAutoAuthoring && !IsBusy)
+                {
+                    ValidateAndPlanLayout();
+                }
+            }
+        }
+    }
+
+    /// <summary>The other radio button of <see cref="UseDualLayerDisc"/>.</summary>
+    public bool UseSingleLayerDisc
+    {
+        get => !UseDualLayerDisc;
+        set => UseDualLayerDisc = !value;
+    }
+
+    /// <summary>Both a 4.7 GB DVD (compressed) and a dual-layer DVD (sharper) can take these movies: show the choice.</summary>
+    public bool HasLayerChoice => FitEstimate?.HasLayerChoice == true;
+
+    /// <summary>Label of the 4.7 GB DVD choice: its bitrate and how it will look.</summary>
+    public string SingleLayerChoiceText => FitEstimate?.SingleLayerKbps is int k
+        ? $"4.7 GB DVD: compressed to {k:N0} kbps, {DvdDiscFit.Quality(k, new DvdAuthoringOptions())}"
+        : string.Empty;
+
+    /// <summary>Label of the dual-layer DVD choice: its bitrate and how it will look.</summary>
+    public string DualLayerChoiceText => FitEstimate?.DualLayerKbps is int k
+        ? $"Dual-layer DVD (DVD+R DL, 8.5 GB): {k:N0} kbps, {DvdDiscFit.Quality(k, new DvdAuthoringOptions())}"
+        : string.Empty;
+
     private void RefreshFitState()
     {
+        OnPropertyChanged(nameof(HasLayerChoice));
+        OnPropertyChanged(nameof(SingleLayerChoiceText));
+        OnPropertyChanged(nameof(DualLayerChoiceText));
         OnPropertyChanged(nameof(IsTooLongForDvd));
         OnPropertyChanged(nameof(FitStatus));
         OnPropertyChanged(nameof(ValidationStatusText));
@@ -982,6 +1026,9 @@ public class DvdVideoViewModel : ObservableObject
         ClearSource();
         ResetState(); // ClearSource only resets when the path changed; a path already blank would leave the old plan
         _probedSeconds.Clear();
+        _useDualLayerDisc = false; // a choice for the last movies; the next ones start on the cheaper disc
+        OnPropertyChanged(nameof(UseDualLayerDisc));
+        OnPropertyChanged(nameof(UseSingleLayerDisc));
         VolumeLabel = "DVD_VIDEO";
         MenuTitle = "DVD Video";
         LastBuiltIsoPath = null;
@@ -1284,7 +1331,7 @@ public class DvdVideoViewModel : ObservableObject
             return null;
         }
 
-        var fit = DvdDiscFit.Estimate(seconds, new DvdAuthoringOptions());
+        var fit = DvdDiscFit.Estimate(seconds, new DvdAuthoringOptions(), UseDualLayerDisc);
         FitSummaryText = fit.Kind == DvdFitKind.Unknown
             ? "The running time of a movie could not be read, so the size shown is the movie files' own size, not the size once converted."
             : fit.Summary;
@@ -2002,7 +2049,9 @@ public class DvdVideoViewModel : ObservableObject
 
         return $"This disc holds {CompilationItemViewModel.FormatBytes(room * 2048L)}, but this DVD needs about " +
                $"{CompilationItemViewModel.FormatBytes(TotalSectors * 2048L)}. " +
-               (TotalSectors <= DvdLayerBreakCalculator.MaxDvd9Sectors
+               (FitEstimate?.Kind == DvdFitKind.DualLayerChosen
+                   ? "Put in a dual-layer DVD (DVD+R DL, 8.5 GB), or choose the 4.7 GB DVD (compressed more)."
+                   : TotalSectors <= DvdLayerBreakCalculator.MaxDvd9Sectors
                    ? "Put in a dual-layer DVD (DVD+R DL, 8.5 GB), or remove a movie and burn it on another disc."
                    : "Remove a movie and burn it on another disc.");
     }
