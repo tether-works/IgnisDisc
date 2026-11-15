@@ -151,6 +151,30 @@
                               Foreground="{DynamicResource TextPrimaryBrush}"
                               Margin="0,0,14,0" />
 
+                    <CheckBox Content="Generate subtitles"
+                              AutomationProperties.Name="Generate subtitles"
+                              IsChecked="{Binding GenerateSubtitles}"
+                              ToolTip="Makes subtitles by speech recognition for movies with no .srt file next to them. Machine-generated: names and quiet speech are sometimes misheard. Fast on an NVIDIA GPU, much slower on the processor."
+                              VerticalAlignment="Center"
+                              Foreground="{DynamicResource TextPrimaryBrush}"
+                              Margin="0,0,6,0" />
+                    <TextBox Width="44"
+                             AutomationProperties.Name="Subtitle language"
+                             Text="{Binding SubtitleLanguage, UpdateSourceTrigger=PropertyChanged}"
+                             IsEnabled="{Binding GenerateSubtitles}"
+                             ToolTip="Spoken language: a two-letter code such as en, de, fr, or auto"
+                             VerticalAlignment="Center"
+                             Margin="0,0,8,0" />
+                    <Button Content="&#x2B07; Install subtitle tool (1-Click)"
+                            AutomationProperties.Name="Install subtitle tool (1-Click)"
+                            Command="{Binding InstallSubtitleToolCommand}"
+                            Visibility="{Binding IsSubtitleToolOfferVisible, Converter={StaticResource BoolToVis}}"
+                            ToolTip="{Binding SubtitleToolOfferText}"
+                            Padding="10,3"
+                            FontSize="11.5"
+                            VerticalAlignment="Center"
+                            Margin="0,0,14,0" />
+
                     <Separator Style="{x:Null}" Width="1" Height="18" Background="{DynamicResource CardBorderBrush}" Margin="4,0,14,0" VerticalAlignment="Center" />
 
                     <TextBlock Text="Target Media:"

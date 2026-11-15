@@ -37,6 +37,7 @@ pipeline can be tested without hardware or blank media.
 | Append a session (multi-session) | ✅ | ✅ | Open and appended sessions omit UDF 1.02 so Windows mounts Joliet across all sessions; names longer than 64 characters are shortened there, and the burn result says so. With the Windows writer on real discs: a DVD-R and a DVD+R, two sessions each, every file of both sessions identical; the DVD+R showed the new session at once, the DVD-R only after the disc was put back in |
 | Bootable discs (El Torito BIOS + UEFI) | ✅ | ✅ | Hybrid BIOS + UEFI Boot Catalog verified via physical burn, readback, and rip; boot behaviour depends on your loaders |
 | DVD-Video authoring | ⚠️ | ✅ | Requires `ffmpeg.exe`; test on a standalone player before relying on it. With direct drive commands one 60 s test disc was burned to a DVD+RW on a real drive (read back and decoded in full), but not played in a stand-alone player |
+| Generate subtitles for DVD-Video (speech recognition) | ⚠️ | — | Optional 1-click download, nothing bundled: whisper.cpp 1.9.5 and its models, every file pinned by SHA-256 (`install-subtitle-tool`, or the button on the DVD-Video screen). On a PC with an NVIDIA GPU and driver 551.61 or newer it gets the CUDA build and the large-v3-turbo model (2.3 GB download); every other PC gets the processor build and the smaller base model (160 MB). AMD and Intel GPUs are not used: whisper.cpp publishes no Windows GPU build for them. Measured on one PC, on an 86-minute animated feature with English dialogue, against its human-made subtitles: on an RTX 3090, 3.3 min from movie file to .srt (26 times real time) with a word error rate of 24.9%; processor build only (16-core desktop processor, base model), 3.4 min and 34.3%. The large model on that processor ran at 1.7 times real time (178 s for 5 minutes, about 50 minutes for this film), so the better model needs a GPU. The error rate counts wording the human subtitles shorten too; an invented place name was never heard right. The subtitles are machine-generated: check them before relying on them. `burn-dvd --generate-subtitles` ("Generate subtitles" on the DVD-Video screen) makes them for movies with no .srt beside them and puts them on the disc as its subtitle track. Authored end to end on the test PC from a 5-minute excerpt: the generated lines appear as the DVD subtitle track and on the menu's "Play with subtitles" button; such a disc has not yet been burned and played in a stand-alone player. Muxing the subtitle track needs a recent FFmpeg (the 1-click download): a 2021 build crashed on it |
 | Blu-ray (BD-R / BD-RE) | ❌ | — | Not yet: Blu-ray discs are recognised (type, size, layers) and archive sets can be planned for them, and the experimental direct writer handles single-layer BD-R and BD-RE in the drive simulator, but burning one has never been tried on a real drive |
 | Burn CDs with direct drive commands (experimental, off by default) | ⚠️ | ✅ | Audio CDs Session-at-Once and data CDs Track-at-Once without the Windows writer (`--native`, or "Direct drive commands" in the app); the disc is always read back and compared. Run on real hardware on one drive so far (LG GP60NB50), on CD-R and CD-RW. Mixed-mode CDs (a Mode 1 data track, then audio) from a `.cue` file too: one CD-RW so far, where Windows read the data track's files back identical. Blank single-layer DVD-R, DVD-RW and DVD+R can also be written this way. A further session on a CD-R, CD-RW, DVD-R, DVD-RW or DVD+R left open is added the same way: on real discs on the same drive, three sessions each on a CD-RW, a CD-R and a DVD+R and four on a DVD-R, every file of every session identical (the first DVD-R try was refused with nothing written, because the drive rejects the writer's old track query on DVD; fixed before these runs); DVD-RW only in the simulator so far. On real hardware so far two DVD-Rs on the same drive (Verbatim): one closed in one pass (372 MB), one left open, after which Windows' own writer added a second session; every file of each session identical when read through Windows. Two DVD+RWs too (Verbatim, 372 MB each, every file identical): a used one written over with leave to replace its data, and a new one, formatted first by the drive. A single-layer DVD+R too (Verbatim, 198 MB, finalized by the drive, every file identical). A DVD-Video disc was written to a used DVD+RW this way too (a 60 s test card, 44 MB): every sector read back and the title decodes in full, but it has not been played in a stand-alone player. A dual-layer DVD+R too (Verbatim, the Ubuntu 26.04 image, 6.5 GB, with the layer break moved to where it was asked for; the drive reported it there and the disc's SHA-256 equalled the image). Dual-layer DVD-R (layer jump recording, on drives that offer it), DVD-RW (sequential or in overwrite mode), DVD-RAM and single-layer BD-R and BD-RE have run only in the built-in drive simulator. Dual-layer DVD-R on a drive without layer jump recording, and multi-layer Blu-ray discs, still use the Windows writer |
 | CD-Text / ISRC on burned audio CDs | ⚠️ | ✅ | The Windows writer (the default) cannot write lead-in CD-Text. The experimental direct writer (`--native`, or "Direct drive commands" in the app) writes CD-Text, ISRC and catalog codes, then reads the disc back and compares it. Run on real hardware on one drive so far (LG GP60NB50): a CD-RW and a CD-R, where CD-Text, ISRC and catalog codes and the audio all read back correctly |
@@ -85,6 +86,7 @@ ignisdisc-cli <command> [options]
              [--speed <X|max>] [--dao] [--allow-damaged] [--native [--test-write | --test-first] [--write-offset <n|auto>]
              [--log-dir <folder>]]
   burn-dvd   --drive <id> --video-ts <folder|movie> [--label <vol>] [--speed <X|max>] [--no-verify] [--overwrite]
+             [--generate-subtitles [--subtitle-language <code|auto>]]
              [--native [--test-write | --test-first] [--log-dir <folder>]]
   rip        --drive <id> --output <file.iso|file.bin> [--raw]
   rip-audio  --drive <id> --output <folder> [--format wav|flac|mp3|opus|aac] [--bitrate <kbps>] [--tracks 1,3,5] [--lookup]
@@ -114,6 +116,9 @@ ignisdisc-cli <command> [options]
   scan       --drive <id> [--block-size <sectors>] [--csv <file.csv>]
   drive-report --drive <id>                    Build a drive compatibility report (capabilities and media ID)
   eject      --drive <id>                      Open the tray
+  install-subtitle-tool [--plan-only]          Optional download for subtitles: whisper.cpp and speech models, SHA-256 pinned
+  generate-subtitles --input <movie> [--output <file.srt>] [--language <code|auto>] [--ffmpeg <path>]
+                                               Machine-generated subtitles by speech recognition (see below)
   load       --drive <id>                      Close the tray and wait until the drive is ready; on a drive that
                                                cannot close its own tray (a spring tray, as on slim USB drives) it
                                                sends nothing, says to push the tray in by hand and exits 1
@@ -224,6 +229,44 @@ ignisdisc-cli recover --drive D: --out C:\Rescued\disc01
 ignisdisc-cli erase --drive D:
 ```
 
+### Subtitles by speech recognition (optional)
+
+IgnisDisc can make English (or other-language) subtitles for a movie that has none, with
+[whisper.cpp](https://github.com/ggml-org/whisper.cpp) (MIT). It is not bundled: `install-subtitle-tool` or the
+*Install subtitle tool (1-Click)* button on the DVD-Video screen downloads whisper.cpp 1.9.5 and its models into
+`%LOCALAPPDATA%\Programs\whisper.cpp`, each file checked against a SHA-256 pinned in IgnisDisc. The build is picked
+from the display adapters Windows lists: NVIDIA with driver 551.61 or newer gets the CUDA build and the large-v3-turbo
+model (2.3 GB); any other PC runs on the processor with the base model (160 MB). AMD and Intel GPUs are not used,
+because whisper.cpp publishes no Windows GPU build for them.
+
+```powershell
+ignisdisc-cli install-subtitle-tool --plan-only          # what would be downloaded for this PC, and why
+ignisdisc-cli install-subtitle-tool
+ignisdisc-cli generate-subtitles --input "D:\Movies\Film.mp4" --output "D:\Movies\Film.srt"
+ignisdisc-cli burn-dvd --drive E: --video-ts "D:\Movies\Film.mp4" --generate-subtitles
+```
+
+FFmpeg extracts the first audio track, whisper.cpp writes the subtitles with voice activity detection (so music and
+silence are skipped instead of filled with invented lines), and long or repeated lines are tidied. The result is kept in
+`%LOCALAPPDATA%\IgnisDisc\SubtitleCache`, never next to the movie, and reused while the movie file is unchanged.
+`burn-dvd` only generates subtitles for movies with no `.srt` beside them, and puts them on the disc as its subtitle
+track with a "Play with subtitles" menu button (authored end to end from a 5-minute excerpt on the test PC; not yet
+burned and played in a stand-alone player). Muxing the subtitle track needs a recent FFmpeg, such as the 1-click
+download: a 2021 build crashed on it.
+
+Measured on one PC, on an 86-minute animated feature, against its human-made subtitles:
+
+| Hardware | Model | Movie to `.srt` | Word error rate |
+| --- | --- | ---: | ---: |
+| NVIDIA RTX 3090 | large-v3-turbo | 3.3 min (26x real time) | 24.9% |
+| 16-core desktop processor, no GPU | base | 3.4 min | 34.3% |
+
+The error rate also counts places where the human subtitles shorten the dialogue. Names suffer most: an invented place
+name was never heard right. The large model on that processor ran at 1.7 times real time (178 s for 5 minutes of
+audio, about 50 minutes for this film), so the better model needs a GPU; a laptop processor will be slower than the
+figures above. Read the subtitles
+before relying on them.
+
 ---
 
 ## Desktop app
@@ -291,7 +334,8 @@ unsigned until certificate provisioning completes).
   `.github/workflows/release.yml` on GitHub-hosted runners.
 - **Privacy policy:** This program will not transfer any information to other networked systems unless specifically
   requested by the user or the person installing or operating it. See [SECURITY.md](SECURITY.md) for full details on
-  optional MusicBrainz, AccurateRip, and release update checks.
+  optional MusicBrainz, AccurateRip, and release update checks, and the optional tool downloads (FFmpeg, par2, subtitle tool)
+  you start yourself.
 
 ---
 

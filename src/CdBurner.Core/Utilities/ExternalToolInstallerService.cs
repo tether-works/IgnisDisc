@@ -195,7 +195,7 @@ public static class ExternalToolInstallerService
                $"{Par2TurboVersion}, which creates recovery data about 10 times faster and reads the same files.";
     }
 
-    private static bool IsSha256Hex(string value) => value.Length == 64 && value.All(Uri.IsHexDigit);
+    internal static bool IsSha256Hex(string value) => value.Length == 64 && value.All(Uri.IsHexDigit);
 
     private static async Task<ToolInstallResult> DownloadAndExtractToolAsync(
         string toolDisplayName,
@@ -222,68 +222,11 @@ public static class ExternalToolInstallerService
             }
 
             Directory.CreateDirectory(installDirectory);
-            progress?.Report($"Downloading {toolDisplayName}...");
-
-            using var hasher = IncrementalHash.CreateHash(HashAlgorithmName.SHA256);
-            using (var request = new HttpRequestMessage(HttpMethod.Get, downloadUrl))
+            string? downloadError = await DownloadToFileAsync(
+                client, downloadUrl, tempZipPath, expectedSha256, toolDisplayName, progress, cancellationToken).ConfigureAwait(false);
+            if (downloadError != null)
             {
-                if (!request.Headers.UserAgent.Any())
-                {
-                    request.Headers.UserAgent.ParseAdd(DefaultUserAgent);
-                }
-
-                using var response = await client.SendAsync(
-                    request,
-                    HttpCompletionOption.ResponseHeadersRead,
-                    cancellationToken).ConfigureAwait(false);
-
-                if (!response.IsSuccessStatusCode)
-                {
-                    return new ToolInstallResult(
-                        false,
-                        null,
-                        null,
-                        $"HTTP {(int)response.StatusCode} ({response.ReasonPhrase}) while downloading {toolDisplayName}.");
-                }
-
-                long? totalBytes = response.Content.Headers.ContentLength;
-                await using var networkStream = await response.Content.ReadAsStreamAsync(cancellationToken).ConfigureAwait(false);
-                await using var fileStream = new FileStream(tempZipPath, FileMode.Create, FileAccess.Write, FileShare.None, 81920, useAsync: true);
-
-                byte[] buffer = new byte[81920];
-                long totalRead = 0;
-                int bytesRead;
-                while ((bytesRead = await networkStream.ReadAsync(buffer, cancellationToken).ConfigureAwait(false)) > 0)
-                {
-                    await fileStream.WriteAsync(buffer.AsMemory(0, bytesRead), cancellationToken).ConfigureAwait(false);
-                    hasher.AppendData(buffer, 0, bytesRead);
-                    totalRead += bytesRead;
-
-                    if (totalBytes is > 0)
-                    {
-                        double pct = (double)totalRead / totalBytes.Value * 100.0;
-                        double mbRead = totalRead / (1024.0 * 1024.0);
-                        double mbTotal = totalBytes.Value / (1024.0 * 1024.0);
-                        progress?.Report($"Downloading {toolDisplayName}... {pct:F0}% ({mbRead:F1} / {mbTotal:F1} MB)");
-                    }
-                }
-            }
-
-            if (expectedSha256 != null)
-            {
-                // Checked before the archive is opened: a download that is not the pinned release is never unpacked.
-                string actualSha256 = Convert.ToHexStringLower(hasher.GetHashAndReset());
-                if (!string.Equals(actualSha256, expectedSha256, StringComparison.OrdinalIgnoreCase))
-                {
-                    return new ToolInstallResult(
-                        false,
-                        null,
-                        null,
-                        $"Refused {toolDisplayName}: the download's SHA-256 is {actualSha256}, expected " +
-                        $"{expectedSha256.ToLowerInvariant()}. Nothing was installed.");
-                }
-
-                progress?.Report($"{toolDisplayName}: SHA-256 matches the pinned release.");
+                return new ToolInstallResult(false, null, null, downloadError);
             }
 
             progress?.Report($"Extracting {executableFileName}...");
@@ -355,6 +298,145 @@ public static class ExternalToolInstallerService
             catch
             {
             }
+        }
+    }
+
+    /// <summary>
+    /// Longest time a download may go without receiving a byte before it is abandoned. Large downloads (the
+    /// subtitle model is 1.6 GB) use a client with no overall timeout, so this is what stops a stalled connection.
+    /// </summary>
+    internal static readonly TimeSpan DownloadStallTimeout = TimeSpan.FromMinutes(2);
+
+    /// <summary>
+    /// Downloads <paramref name="url"/> to <paramref name="destinationPath"/> while computing its SHA-256. When
+    /// <paramref name="expectedSha256"/> is given and the download does not match, the file is deleted and an error
+    /// is returned, so nothing that is not the pinned release is ever opened. Returns null on success.
+    /// </summary>
+    internal static async Task<string?> DownloadToFileAsync(
+        HttpClient client,
+        string url,
+        string destinationPath,
+        string? expectedSha256,
+        string displayName,
+        IProgress<string>? progress,
+        CancellationToken cancellationToken)
+    {
+        if (expectedSha256 != null && !IsSha256Hex(expectedSha256))
+        {
+            return $"The expected SHA-256 for {displayName} is not 64 hexadecimal digits; nothing was downloaded.";
+        }
+
+        progress?.Report($"Downloading {displayName}...");
+        bool complete = false;
+        try
+        {
+            using var hasher = IncrementalHash.CreateHash(HashAlgorithmName.SHA256);
+            using (var request = new HttpRequestMessage(HttpMethod.Get, url))
+            {
+                if (!request.Headers.UserAgent.Any())
+                {
+                    request.Headers.UserAgent.ParseAdd(DefaultUserAgent);
+                }
+
+                using var response = await client.SendAsync(
+                    request,
+                    HttpCompletionOption.ResponseHeadersRead,
+                    cancellationToken).ConfigureAwait(false);
+
+                if (!response.IsSuccessStatusCode)
+                {
+                    return $"HTTP {(int)response.StatusCode} ({response.ReasonPhrase}) while downloading {displayName}.";
+                }
+
+                long? totalBytes = response.Content.Headers.ContentLength;
+                await using var networkStream = await response.Content.ReadAsStreamAsync(cancellationToken).ConfigureAwait(false);
+                await using var fileStream = new FileStream(destinationPath, FileMode.Create, FileAccess.Write, FileShare.None, 81920, useAsync: true);
+
+                byte[] buffer = new byte[81920];
+                long totalRead = 0;
+                int lastReportedPercent = -1;
+                using var stallGuard = CancellationTokenSource.CreateLinkedTokenSource(cancellationToken);
+                while (true)
+                {
+                    stallGuard.CancelAfter(DownloadStallTimeout);
+                    int bytesRead;
+                    try
+                    {
+                        bytesRead = await networkStream.ReadAsync(buffer, stallGuard.Token).ConfigureAwait(false);
+                    }
+                    catch (OperationCanceledException) when (!cancellationToken.IsCancellationRequested)
+                    {
+                        return $"The download of {displayName} stopped receiving data for " +
+                               $"{DownloadStallTimeout.TotalMinutes:F0} minutes and was abandoned.";
+                    }
+
+                    if (bytesRead == 0)
+                    {
+                        break;
+                    }
+
+                    await fileStream.WriteAsync(buffer.AsMemory(0, bytesRead), cancellationToken).ConfigureAwait(false);
+                    hasher.AppendData(buffer, 0, bytesRead);
+                    totalRead += bytesRead;
+
+                    if (totalBytes is > 0)
+                    {
+                        int pct = (int)(totalRead * 100 / totalBytes.Value);
+                        if (pct != lastReportedPercent)
+                        {
+                            lastReportedPercent = pct;
+                            double mbRead = totalRead / (1024.0 * 1024.0);
+                            double mbTotal = totalBytes.Value / (1024.0 * 1024.0);
+                            progress?.Report($"Downloading {displayName}... {pct}% ({mbRead:F1} / {mbTotal:F1} MB)");
+                        }
+                    }
+                }
+
+                if (totalBytes is > 0 && totalRead != totalBytes.Value)
+                {
+                    return $"The download of {displayName} ended after {totalRead:N0} of {totalBytes.Value:N0} bytes.";
+                }
+            }
+
+            if (expectedSha256 != null)
+            {
+                // Checked before the file is opened or unpacked: a download that is not the pinned release is never used.
+                string actualSha256 = Convert.ToHexStringLower(hasher.GetHashAndReset());
+                if (!string.Equals(actualSha256, expectedSha256, StringComparison.OrdinalIgnoreCase))
+                {
+                    return $"Refused {displayName}: the download's SHA-256 is {actualSha256}, expected " +
+                           $"{expectedSha256.ToLowerInvariant()}. Nothing was installed.";
+                }
+
+                progress?.Report($"{displayName}: SHA-256 matches the pinned release.");
+            }
+
+            complete = true;
+            return null;
+        }
+        finally
+        {
+            if (!complete)
+            {
+                TryDeleteFile(destinationPath);
+            }
+        }
+    }
+
+    internal static void TryDeleteFile(string path)
+    {
+        try
+        {
+            if (File.Exists(path))
+            {
+                File.Delete(path);
+            }
+        }
+        catch (IOException)
+        {
+        }
+        catch (UnauthorizedAccessException)
+        {
         }
     }
 

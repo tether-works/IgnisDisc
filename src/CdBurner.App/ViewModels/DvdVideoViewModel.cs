@@ -10,6 +10,7 @@ using CdBurner.Core.DvdVideo;
 using CdBurner.Core.Iso;
 using System.Net.Http;
 using CdBurner.Core.Primitives;
+using CdBurner.Core.Subtitles;
 using CdBurner.Core.Utilities;
 using CdBurner.Hardware.Devices;
 using CdBurner.Hardware.Simulation;
@@ -43,6 +44,11 @@ public class DvdVideoViewModel : ObservableObject
     private DvdVideoStandard _selectedStandard = DvdVideoStandard.Ntsc;
     private DvdAspectRatio _selectedAspectRatio = DvdAspectRatio.Widescreen16x9;
     private bool _autoCreatePlayMenu = true;
+    private bool _generateSubtitles;
+    private string _subtitleLanguage = "en";
+    private WhisperInstallation? _subtitleTool;
+    private string _subtitleToolStatusText = string.Empty;
+    private string _subtitleToolOfferText = string.Empty;
     private string _menuTitle = "DVD Video";
     private bool _requiresAutoAuthoring;
     private string? _lastAuthoredVideoTsPath;
@@ -149,6 +155,56 @@ public class DvdVideoViewModel : ObservableObject
                 }
             }
         }
+    }
+
+    /// <summary>
+    /// Make subtitles by speech recognition for movies with no .srt next to them (optional whisper.cpp download).
+    /// </summary>
+    public bool GenerateSubtitles
+    {
+        get => _generateSubtitles;
+        set
+        {
+            if (SetProperty(ref _generateSubtitles, value))
+            {
+                OnPropertyChanged(nameof(IsSubtitleToolOfferVisible));
+            }
+        }
+    }
+
+    /// <summary>
+    /// Spoken language for generated subtitles: a two- or three-letter code such as "en", or "auto".
+    /// </summary>
+    public string SubtitleLanguage
+    {
+        get => _subtitleLanguage;
+        set => SetProperty(ref _subtitleLanguage, value);
+    }
+
+    /// <summary>
+    /// Folder the subtitle tool is installed in and looked for; null means the default
+    /// (<c>%LOCALAPPDATA%\Programs\whisper.cpp</c>). Tests point it at a temporary folder.
+    /// </summary>
+    public string? SubtitleToolInstallRoot { get; set; }
+
+    /// <summary>True when the subtitle tool (whisper.cpp and a model) is installed.</summary>
+    public bool IsSubtitleToolInstalled => _subtitleTool != null;
+
+    /// <summary>Show the 1-click subtitle tool offer: generation is switched on and the tool is missing.</summary>
+    public bool IsSubtitleToolOfferVisible => _generateSubtitles && _subtitleTool == null;
+
+    /// <summary>Which subtitle tool is installed, or that it is missing.</summary>
+    public string SubtitleToolStatusText
+    {
+        get => _subtitleToolStatusText;
+        private set => SetProperty(ref _subtitleToolStatusText, value);
+    }
+
+    /// <summary>What the 1-click install would download for this PC and why (button tooltip).</summary>
+    public string SubtitleToolOfferText
+    {
+        get => _subtitleToolOfferText;
+        private set => SetProperty(ref _subtitleToolOfferText, value);
     }
 
     /// <summary>
@@ -434,6 +490,7 @@ public class DvdVideoViewModel : ObservableObject
                 BuildDvdIsoCommand?.RaiseCanExecuteChanged();
                 StartDvdBurnCommand?.RaiseCanExecuteChanged();
                 InstallFfmpegCommand?.RaiseCanExecuteChanged();
+                InstallSubtitleToolCommand?.RaiseCanExecuteChanged();
             }
         }
     }
@@ -476,6 +533,7 @@ public class DvdVideoViewModel : ObservableObject
     public AsyncRelayCommand BuildDvdIsoCommand { get; }
     public AsyncRelayCommand StartDvdBurnCommand { get; }
     public AsyncRelayCommand InstallFfmpegCommand { get; }
+    public AsyncRelayCommand InstallSubtitleToolCommand { get; }
     public RelayCommand CancelCommand { get; }
 
     #endregion
@@ -513,8 +571,10 @@ public class DvdVideoViewModel : ObservableObject
         }, _ => IsStructureValid);
         StartDvdBurnCommand = new AsyncRelayCommand(async param => await StartDvdBurnAsync(param), _ => IsStructureValid);
         InstallFfmpegCommand = new AsyncRelayCommand(async _ => await InstallFfmpegAsync(), _ => !IsBusy);
+        InstallSubtitleToolCommand = new AsyncRelayCommand(async _ => await InstallSubtitleToolAsync(), _ => !IsBusy);
 
         RefreshFfmpegStatus();
+        RefreshSubtitleToolStatus();
 
         RefreshDrives();
     }
@@ -571,6 +631,68 @@ public class DvdVideoViewModel : ObservableObject
             else
             {
                 StatusMessage = $"FFmpeg install failed: {result.ErrorMessage}";
+            }
+
+            return result;
+        }
+        finally
+        {
+            IsBusy = false;
+        }
+    }
+
+    /// <summary>
+    /// Re-checks whether the subtitle tool is installed and what the 1-click install would download.
+    /// </summary>
+    public void RefreshSubtitleToolStatus()
+    {
+        _subtitleTool = WhisperLocator.Find(SubtitleToolInstallRoot);
+        SubtitleToolStatusText = _subtitleTool != null
+            ? $"Subtitles: {_subtitleTool.Describe()}"
+            : "Subtitle tool not installed";
+        try
+        {
+            WhisperInstallPlan plan = WhisperCatalog.ChoosePlanForThisPc();
+            SubtitleToolOfferText = $"Downloads whisper.cpp {WhisperCatalog.WhisperVersion} and the {plan.Model.FileName} speech model " +
+                $"({plan.DownloadBytes / 1_000_000.0:N0} MB, each checked against a pinned SHA-256) into %LOCALAPPDATA%\\Programs\\whisper.cpp. " +
+                plan.Reason + " Subtitles are machine-generated and will mishear some words, especially names.";
+        }
+        catch (Exception ex) when (ex is IOException or UnauthorizedAccessException or System.Security.SecurityException)
+        {
+            SubtitleToolOfferText = "Downloads whisper.cpp and a speech model for subtitles.";
+        }
+
+        OnPropertyChanged(nameof(IsSubtitleToolInstalled));
+        OnPropertyChanged(nameof(IsSubtitleToolOfferVisible));
+    }
+
+    /// <summary>
+    /// 1-click install of the subtitle tool (whisper.cpp and a speech model) chosen for this PC.
+    /// </summary>
+    public async Task<WhisperInstallResult> InstallSubtitleToolAsync(
+        WhisperInstallPlan? plan = null,
+        HttpClient? httpClient = null,
+        CancellationToken cancellationToken = default)
+    {
+        IsBusy = true;
+        BurnProgress = 0;
+        StatusMessage = "Downloading the subtitle tool...";
+        try
+        {
+            plan ??= WhisperCatalog.ChoosePlanForThisPc();
+            var progressHandler = new Progress<string>(msg => StatusMessage = msg);
+            WhisperInstallResult result = await WhisperToolInstaller.InstallAsync(
+                plan, SubtitleToolInstallRoot, httpClient, progressHandler, cancellationToken).ConfigureAwait(true);
+
+            RefreshSubtitleToolStatus();
+            if (result.Success)
+            {
+                BurnProgress = 100.0;
+                StatusMessage = $"Subtitle tool installed: {result.Installation!.Describe()}";
+            }
+            else
+            {
+                StatusMessage = $"Subtitle tool install failed: {result.ErrorMessage}";
             }
 
             return result;
@@ -915,10 +1037,15 @@ public class DvdVideoViewModel : ObservableObject
             MenuTitle = string.IsNullOrWhiteSpace(MenuTitle) ? "DVD Video" : MenuTitle,
             AutoCreatePlayMenu = AutoCreatePlayMenu,
             UseFfmpegWhenAvailable = UseFfmpegWhenAvailable,
-            CustomFfmpegPath = string.IsNullOrWhiteSpace(CustomFfmpegPath) ? null : CustomFfmpegPath
+            CustomFfmpegPath = string.IsNullOrWhiteSpace(CustomFfmpegPath) ? null : CustomFfmpegPath,
+            GenerateSubtitles = GenerateSubtitles,
+            SubtitleLanguage = string.IsNullOrWhiteSpace(SubtitleLanguage) ? "en" : SubtitleLanguage.Trim().ToLowerInvariant()
         };
 
-        var authoringService = new DvdVideoAuthoringService();
+        var authoringService = new DvdVideoAuthoringService
+        {
+            SubtitleGenerator = GenerateSubtitles ? CreateSubtitleGenerator(options) : null
+        };
         var progressHandler = new Progress<(double Percent, string Status)>(snap =>
         {
             BurnProgress = Math.Clamp(snap.Percent, 0, 100);
@@ -978,6 +1105,16 @@ public class DvdVideoViewModel : ObservableObject
                 IsBusy = false;
             }
         }
+    }
+
+    private DvdSubtitleSourceResolver.SubtitleGenerator CreateSubtitleGenerator(DvdAuthoringOptions options)
+    {
+        WhisperInstallation? tool = WhisperLocator.Find(SubtitleToolInstallRoot);
+        return (movie, progress, ct) => new SubtitleGenerationService().GenerateAsync(
+            movie,
+            new SubtitleGenerationOptions { Language = options.SubtitleLanguage, FfmpegPath = options.CustomFfmpegPath, Whisper = tool },
+            progress,
+            ct);
     }
 
     /// <summary>

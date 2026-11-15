@@ -84,6 +84,19 @@ public sealed class DvdAuthoringOptions
 
     /// <summary>Look for an .srt beside each movie file (see <see cref="SubtitleFiles"/>). Default: true.</summary>
     public bool UseSubtitleFilesBesideMovies { get; set; } = true;
+
+    /// <summary>
+    /// Make subtitles by speech recognition for movies that have no .srt (see <see cref="SubtitleFiles"/>); the
+    /// generated .srt is added to <see cref="SubtitleFiles"/> before the menu is built. Needs the optional subtitle
+    /// tool (<see cref="CdBurner.Core.Subtitles.WhisperToolInstaller"/>). Default: false.
+    /// </summary>
+    public bool GenerateSubtitles { get; set; }
+
+    /// <summary>
+    /// Spoken language for <see cref="GenerateSubtitles"/>: a two- or three-letter code such as "en", or "auto".
+    /// Default: "en". The disc's subtitle stream is declared English whatever this is.
+    /// </summary>
+    public string SubtitleLanguage { get; set; } = "en";
 }
 
 /// <summary>The video bitrate chosen for an authoring run, and why it was lowered (null when it was not).</summary>
@@ -118,6 +131,12 @@ public sealed class DvdAuthoringResult
 /// </summary>
 public sealed class DvdVideoAuthoringService
 {
+    /// <summary>
+    /// Makes subtitles for <see cref="DvdAuthoringOptions.GenerateSubtitles"/>; null uses the speech-recognition
+    /// service. Tests set a fake.
+    /// </summary>
+    public DvdSubtitleSourceResolver.SubtitleGenerator? SubtitleGenerator { get; init; }
+
     /// <summary>Bytes of video files planned for a single-layer DVD-5 (4.7 GB disc, about 10% left for margin).</summary>
     public const double Dvd5PayloadBytes = 4_250_000_000.0;
 
@@ -188,7 +207,7 @@ public sealed class DvdVideoAuthoringService
     }
 
     /// <summary>The .srt for a movie: given in <see cref="DvdAuthoringOptions.SubtitleFiles"/>, else beside it; null when none.</summary>
-    private static string? FindSubtitleFile(string moviePath, DvdAuthoringOptions options)
+    public static string? FindSubtitleFile(string moviePath, DvdAuthoringOptions options)
     {
         if (options.SubtitleFiles.TryGetValue(moviePath, out var given))
         {
@@ -526,6 +545,20 @@ public sealed class DvdVideoAuthoringService
         }
         else if (analyzed.Kind == DvdInputKind.MovieFiles)
         {
+            // Subtitles first: generating them is the step most likely to fail, and it should fail before the transcode.
+            string? subtitleError = await DvdSubtitleSourceResolver.ResolveAsync(
+                analyzed.MovieFilePaths, options, logNotes, progress, SubtitleGenerator, cancellationToken).ConfigureAwait(false);
+            if (subtitleError != null)
+            {
+                return new DvdAuthoringResult
+                {
+                    Success = false,
+                    ErrorMessage = subtitleError,
+                    InputKind = analyzed.Kind,
+                    LogNotes = logNotes
+                };
+            }
+
             titleCount = Math.Min(analyzed.MovieFilePaths.Count, 99);
             int menuVobSectors = 0;
             IReadOnlyList<DvdVobu> menuVobus = Array.Empty<DvdVobu>();

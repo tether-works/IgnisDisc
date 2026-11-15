@@ -46,6 +46,12 @@ it:
   program is downloaded from its project's GitHub releases. The par2cmdline-turbo archive's SHA-256 is pinned in
   IgnisDisc and any other download is refused before it is unpacked; ffmpeg comes from BtbN's rolling `latest` LGPL
   build, which has no fixed hash to pin.
+- **Subtitle tool download** (only when you click *Install subtitle tool (1-Click)* or run
+  `install-subtitle-tool`): whisper.cpp 1.9.5 is downloaded from `github.com/ggml-org/whisper.cpp` releases and one
+  speech model from `huggingface.co/ggerganov/whisper.cpp` at a fixed revision. Every file's SHA-256 is pinned in
+  IgnisDisc; any other download is refused before it is unpacked or used. To pick the right build, the app reads the
+  display adapter names and driver versions from the local Windows registry; nothing about them is sent anywhere.
+  Making subtitles runs entirely on your PC: no audio or text leaves it.
 - **Update check** (*off by default*): when you turn on *Check for updates on startup* or click
   *Check for Updates Now* in Settings, the app asks `api.github.com` for the latest IgnisDisc release. No personal or
   machine identifiers are sent.

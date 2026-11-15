@@ -37,7 +37,7 @@ public sealed class CommandLineException : Exception
 /// Command-line interface orchestration engine for optical drive inspection, ISO mastering,
 /// burning, ripping, verification, erasing, and surface scanning.
 /// </summary>
-public static class CliCommandRunner
+public static partial class CliCommandRunner
 {
     private static readonly JsonSerializerOptions JsonOptions = new()
     {
@@ -50,7 +50,8 @@ public static class CliCommandRunner
     {
         "json", "udf", "joliet", "verify", "close", "no-close", "raw", "full", "dao", "help", "h", "version", "v",
         "lookup", "keep-wav", "continue-on-error", "verify-accuraterip", "secure", "plan-only",
-        "overwrite", "strict-verify", "no-verify", "no-secure", "allow-damaged", "no-fill", "keep-folders"
+        "overwrite", "strict-verify", "no-verify", "no-secure", "allow-damaged", "no-fill", "keep-folders",
+        "generate-subtitles"
     };
 
     private static void WriteJsonResult(TextWriter stdout, object payload)
@@ -209,6 +210,8 @@ public static class CliCommandRunner
             "erase" or "erase-disc" => await HandleEraseAsync(cmd, stdout, stderr, deviceService, burnEngine).ConfigureAwait(false),
             "scan" or "scan-disc" => await HandleScanAsync(cmd, stdout, stderr, deviceService, burnEngine).ConfigureAwait(false),
             "drive-report" or "drivereport" => HandleDriveReport(cmd, stdout, deviceService),
+            "install-subtitle-tool" => await HandleInstallSubtitleToolAsync(cmd, stdout, stderr).ConfigureAwait(false),
+            "generate-subtitles" => await HandleGenerateSubtitlesAsync(cmd, stdout, stderr).ConfigureAwait(false),
             "eject" => RunTrayCommand(cmd, stdout, stderr, deviceService, load: false),
             "load" => RunTrayCommand(cmd, stdout, stderr, deviceService, load: true),
             _ => throw new CommandLineException($"Unknown command '{cmd.Subcommand}'. Use --help for usage information.")
@@ -1606,8 +1609,11 @@ public static class CliCommandRunner
                     AutoCreatePlayMenu = true,
                     DualLayer = cmd.HasFlag("dual-layer")
                 };
+                ApplySubtitleOptions(cmd, authorOptions);
 
-                var authResult = await authorService.AuthorAsync(videoTsInput, tempAuthorDir, authorOptions).ConfigureAwait(false);
+                var authResult = await authorService.AuthorAsync(
+                    videoTsInput, tempAuthorDir, authorOptions,
+                    cmd.IsJson ? null : new SubtitleStepProgress(stderr)).ConfigureAwait(false);
                 if (!authResult.Success)
                 {
                     throw new InvalidOperationException($"DVD-Video authoring failed: {authResult.ErrorMessage}");
@@ -3231,9 +3237,15 @@ public static class CliCommandRunner
         stdout.WriteLine("      Compiles a folder and burns it to optical media.");
         stdout.WriteLine("  burn-audio --drive <id> --tracks <file1,file2,...> [--title <album>] [--artist <name>] [--speed <X|max>] [--dao] [--allow-damaged] [--native [--test-write | --test-first] [--recovery-session] [--write-offset <samples|auto>] [--log-dir <folder>]] [--json]");
         stdout.WriteLine("      Burns Red Book Audio CD from WAV, FLAC, MP3, AAC/M4A, or WMA tracks (--recovery-session adds session-2 PAR2 recovery; off by default).");
-        stdout.WriteLine("  burn-dvd --drive <id> --video-ts <folder|movie> [--label <vol>] [--dual-layer] [--speed <X|max>] [--no-verify] [--overwrite] [--native [--test-write | --test-first] [--log-dir <folder>]] [--json]");
+        stdout.WriteLine("  burn-dvd --drive <id> --video-ts <folder|movie> [--label <vol>] [--dual-layer] [--generate-subtitles [--subtitle-language <code>]] [--speed <X|max>] [--no-verify] [--overwrite] [--native [--test-write | --test-first] [--log-dir <folder>]] [--json]");
         stdout.WriteLine("      Validates, normalizes/authors, aligns, and burns a DVD-Video compliant disc from VIDEO_TS or movie files.");
         stdout.WriteLine("      --dual-layer authors movie files for a DVD-9 (longest title first). On a dual-layer disc, --native puts the layer break on a cell boundary.");
+        stdout.WriteLine("      --generate-subtitles makes subtitles by speech recognition for movies with no .srt next to them (needs install-subtitle-tool);");
+        stdout.WriteLine("      --subtitle-language <code|auto> sets the spoken language (default en).");
+        stdout.WriteLine("  install-subtitle-tool [--plan-only] [--json]");
+        stdout.WriteLine("      Optional download for subtitles: whisper.cpp (NVIDIA GPU build when one is found, else the processor build) and a speech model, each checked against a pinned SHA-256.");
+        stdout.WriteLine("  generate-subtitles --input <movie> [--output <file.srt>] [--language <code|auto>] [--ffmpeg <path>] [--json]");
+        stdout.WriteLine("      Makes machine-generated subtitles for a movie (FFmpeg + whisper.cpp). Fast on an NVIDIA GPU, much slower on the processor; names are often misheard.");
         stdout.WriteLine("  rip --drive <id> --output <file.iso|file.bin> [--raw] [--json]");
         stdout.WriteLine("      Rips optical disc to an ISO or raw BIN+CUE image.");
         stdout.WriteLine("  rip-audio --drive <id> --output <folder> [--format wav|flac|mp3|opus|aac] [--bitrate <kbps>] [--tracks 1,3,5] [--lookup] [--keep-wav] [--continue-on-error] [--read-offset <samples>] [--verify-accuraterip] [--no-secure] [--repair] [--json]");
