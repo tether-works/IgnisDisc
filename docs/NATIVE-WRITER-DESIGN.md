@@ -13,7 +13,7 @@
   Windows writer refuses them. Disc copy (Disc Image screen, with direct drive commands on) copies such a disc whole:
   track 1 is read as 2,048-byte user data up to the next track's 2-second pre-gap, the audio is ripped as usual,
   and both are written by this writer (once on a real drive: CD-RW to CD-R, 2026-11-11). An Enhanced CD (data after the audio, in a second
-  session) still copies its audio only.
+  session) is copied whole too, audio session then data session; that has run only in the virtual drive.
 - data discs: one Mode 1 track Track-at-Once on a blank CD-R/CD-RW, and one data track on a blank single-layer
   DVD-R, DVD-RW (sequential) or DVD+R (`NativeTaoDataWriter`, DVD half in `NativeTaoDataWriter.Dvd.cs`), through
   `burn-iso` / `burn-data --native` and the Data Disc and Disc Image screens. The DVD path has run on real discs for
@@ -35,7 +35,7 @@ write; a used and a new DVD+RW; a DVD+R finalized by the drive; three added sess
 four on a DVD-R, every file of every session identical; a 60 s DVD-Video test disc on a DVD+RW, read back and decoded
 in full; and a dual-layer DVD+R with the layer break where IgnisDisc was told to put it (the Ubuntu 26.04 image, 6.5 GB,
 SHA-256 of the disc equal to the image). Also real: a two-film DVD-9 on a dual-layer DVD+R with the break on the second film's first cell, played on an Xbox Series X across the layer change. Real since 2026-11-15: DVD-RW closed (Disc-At-Once), left open (incremental) and in restricted overwrite mode (expanded with 13h). A second session added to a real DVD-RW the same day. Still simulator only: DVD-RAM, dual-layer DVD-R, Blu-ray, a Mode 2 / XA data track in a mixed-mode CD, the write-offset correction on a mixed-mode CD, the open audio session with a data
-session after it (CD-Extra), the Audio CD recovery session, CD picture tracks, the radial spread of archive recovery data, the archive
+session after it (CD-Extra) and copying an Enhanced CD whole, the Audio CD recovery session, CD picture tracks, the radial spread of archive recovery data, the archive
 `HEALTH.json` certificates, and the `eject` and `load` commands.
 
 Phases 5–6 below are still plans.
