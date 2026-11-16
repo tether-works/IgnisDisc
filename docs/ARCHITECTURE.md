@@ -253,7 +253,8 @@ one assembly with a clear provenance boundary. Nothing in it touches a drive.
     from that description. The older `bridge-9b-v1` rule is left out.
   - Left out of the DVD port: upstream's command line (`Program.cs`, `CliArguments`), its module catalog, its
     calibration targets and reference sampler, and writing a picture into an image that already holds files
-    (upstream's own file system writer). No IgnisDisc command writes a DVD picture yet.
+    (upstream's own file system writer). General image-to-DVD picture commands are not wired yet, while
+    `rosetta ladder --media dvd` writes the DVD-R optical resolution-ladder `.iso` and JSON manifest burned via `burn-iso --native`.
 - `Imaging/PngRaster.cs` + `Imaging/WicPngDecoder.cs`: IgnisDisc's PNG framing/CRC-32 validator and Windows Imaging
   Component (`windowscodecs.dll`) decoder producing straight `32bppBGRA` `BgraRaster` buffers (plus 8-bit RGBA PNG writer)
   for picture input and read-back previews without a WPF dependency.
@@ -262,8 +263,9 @@ one assembly with a clear provenance boundary. Nothing in it touches a drive.
   parsing embedded Adobe BDF 2.1 `spleen-5x8.bdf`; `UnifontBitmapFont` stream-parsing embedded `unifont.hex.gz`;
   `RosettaBook` paginating `R00-S00` Contents, `R00-S01+` Unifont reader instructions at the largest cell size on the
   disc, and document pages across one or two concentric bands; `RosettaPagePixelSource` implementing `IPagePixelSource`
-  with zero-allocation glyph and `3×3` `+` crosshair rendering; and `RosettaDvdEncoder` driving `FastDispersionImageWriter`
-  with strict binary strokes and zero dithering).
+  with zero-allocation glyph and `3×3` `+` crosshair rendering; `RosettaDvdEncoder` driving `FastDispersionImageWriter`
+  with strict binary strokes and zero dithering; `RosettaLadderDisc` generating the 3-zone 24-rung DVD-R resolution-ladder
+  image and JSON manifest; and `RosettaLadderReadback` performing localized ECMA-267 sector readback verification).
 - Burning: `CdBurner.Core.Images.PictureTrackCue` adds the picture WAV as the last audio track of an audio or
   mixed-mode CUE sheet, which then goes through the direct Session-at-Once writer (`burn-audio --tracks <cue> --dao
   --native`) and `verify --cue` like any other CUE. Core does not reference this project.

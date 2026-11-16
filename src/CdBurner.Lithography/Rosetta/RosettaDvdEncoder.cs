@@ -17,7 +17,11 @@ public sealed record RosettaDvdEncodeOptions(
     double StartAngleDegrees = 0.0,
     bool ReadCompatibility = true,
     int FastParallelism = 0,
-    ToneProfile? Tone = null);
+    ToneProfile? Tone = null,
+    double PitchLinear = 0.0,
+    double PitchQuadratic = 0.0,
+    double PitchCubic = 0.0,
+    uint? UsableSectors = null);
 
 /// <summary>
 /// Encodes Rosetta optical text pages onto DVD-R payload sectors using strict binary dispersion strokes,
@@ -116,11 +120,25 @@ public static class RosettaDvdEncoder
                 "StartLba must be aligned to a 16-sector ECC block.");
         }
 
-        if (options.TotalSectors < DvdEccBlockEncoder.SectorCount || options.StartLba >= options.TotalSectors)
+        if (options.UsableSectors is { } usable)
+        {
+            if (usable < DvdEccBlockEncoder.SectorCount
+                || usable > options.TotalSectors
+                || usable % DvdEccBlockEncoder.SectorCount != 0)
+            {
+                throw new ArgumentOutOfRangeException(
+                    nameof(options),
+                    usable,
+                    "UsableSectors must be a positive multiple of 16 and at most TotalSectors.");
+            }
+        }
+
+        uint outputSectors = options.UsableSectors ?? options.TotalSectors;
+        if (options.TotalSectors < DvdEccBlockEncoder.SectorCount || options.StartLba >= outputSectors)
         {
             throw new ArgumentOutOfRangeException(
                 nameof(options),
-                "TotalSectors must cover at least one ECC block beyond StartLba.");
+                "OutputSectors must cover at least one ECC block beyond StartLba.");
         }
 
         uint fillSectors;
@@ -138,7 +156,7 @@ public static class RosettaDvdEncoder
         }
         else
         {
-            uint remaining = options.TotalSectors - options.StartLba;
+            uint remaining = outputSectors - options.StartLba;
             fillSectors = remaining - (remaining % DvdEccBlockEncoder.SectorCount);
             if (fillSectors < DvdEccBlockEncoder.SectorCount)
             {
@@ -148,9 +166,9 @@ public static class RosettaDvdEncoder
             }
         }
 
-        if ((ulong)options.StartLba + fillSectors > options.TotalSectors)
+        if ((ulong)options.StartLba + fillSectors > outputSectors)
         {
-            throw new ArgumentOutOfRangeException(nameof(options), "StartLba + FillSectors exceeds TotalSectors.");
+            throw new ArgumentOutOfRangeException(nameof(options), "StartLba + FillSectors exceeds OutputSectors.");
         }
 
         if (!double.IsFinite(options.InnerRadiusMm) || options.InnerRadiusMm <= 0.0)
@@ -165,6 +183,11 @@ public static class RosettaDvdEncoder
         {
             throw new ArgumentOutOfRangeException(nameof(options), options.ChannelBitLengthNm, "ChannelBitLengthNm must be positive.");
         }
+        if (!double.IsFinite(options.StartAngleDegrees))
+        {
+            throw new ArgumentOutOfRangeException(nameof(options), options.StartAngleDegrees, "StartAngleDegrees must be finite.");
+        }
+        DvdTrackGeometry.ValidatePitchCoefficients(options.PitchLinear, options.PitchQuadratic, options.PitchCubic);
 
         var mapping = new ImageMappingOptions(
             TotalSectors: options.TotalSectors,
@@ -176,7 +199,11 @@ public static class RosettaDvdEncoder
             LuminanceThreshold: 128,
             AlphaThreshold: 1,
             SampleEveryChannelBits: 1,
-            Tone: ToneProfile.LegacyBinary);
+            PitchLinear: options.PitchLinear,
+            PitchQuadratic: options.PitchQuadratic,
+            PitchCubic: options.PitchCubic,
+            Tone: ToneProfile.LegacyBinary,
+            UsableSectors: options.UsableSectors);
 
         return new MultiBlockSolveOptions(
             StartLba: options.StartLba,

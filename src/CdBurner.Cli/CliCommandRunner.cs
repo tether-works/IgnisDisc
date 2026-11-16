@@ -228,6 +228,7 @@ public static partial class CliCommandRunner
             "burn-queue" or "burnqueue" => await HandleBurnQueueAsync(cmd, stdout, stderr, deviceService, burnEngine).ConfigureAwait(false),
             "book-type" or "booktype" => HandleBookTypeCommand(cmd, stdout, stderr, deviceService),
             "repair-par2" or "repairpar2" => await HandleRepairPar2Async(cmd, stdout, stderr).ConfigureAwait(false),
+            "rosetta" or "rosetta-ladder" or "rosettaladder" => HandleRosettaCommand(cmd, stdout, stderr),
             _ => throw new CommandLineException($"Unknown command '{cmd.Subcommand}'. Use --help for usage information.")
         };
     }
@@ -3214,6 +3215,8 @@ public static partial class CliCommandRunner
         stdout.WriteLine("      Reads or updates DVD+R / DVD+RW / DVD+R DL book-type bitsetting.");
         stdout.WriteLine("  repair-par2 --path <folder> [--par2 <path>] [--delete-backups] [--json]");
         stdout.WriteLine("      Verifies and repairs a folder in place from its PAR2 recovery set (keeps backup files unless --delete-backups).");
+        stdout.WriteLine("  rosetta ladder --media dvd --output <file.iso> [--json-output <file.json>] [--disc-preset <id>] [--start-angle <deg>] [--plan-only] [--json]");
+        stdout.WriteLine("      Generates a DVD-R optical resolution-ladder image (250x375 down to 13x17 um across inner, middle, and outer radii) plus a JSON manifest of rung positions.");
         stdout.WriteLine();
         stdout.WriteLine("General Options:");
         stdout.WriteLine("  --help, -h       Show help information.");
@@ -3349,6 +3352,23 @@ public static partial class CliCommandRunner
             stdout.WriteLine("      Reads or updates DVD+R / DVD+RW / DVD+R DL book-type bitsetting.");
             stdout.WriteLine("  repair-par2 --path <folder> [--par2 <path>] [--delete-backups] [--json]");
             stdout.WriteLine("      Verifies and repairs a folder from its PAR2 recovery set (retains backup files unless --delete-backups).");
+            return;
+        }
+        if (string.Equals(subcommand, "rosetta", StringComparison.OrdinalIgnoreCase) ||
+            string.Equals(subcommand, "rosetta-ladder", StringComparison.OrdinalIgnoreCase) ||
+            string.Equals(subcommand, "rosettaladder", StringComparison.OrdinalIgnoreCase))
+        {
+            stdout.WriteLine(LegalBanner.VersionNotice);
+            stdout.WriteLine();
+            stdout.WriteLine("  rosetta ladder --media dvd --output <file.iso> [--json-output <file.json>] [--disc-preset <id>] [--disc-presets-file <path>] [--start-angle <deg>] [--plan-only] [--json]");
+            stdout.WriteLine("      Generates a DVD-R optical resolution-ladder image (250x375 down to 13x17 um across inner, middle, and outer radii) plus a JSON manifest of rung positions.");
+            stdout.WriteLine("      --media dvd              Target optical medium (DVD-R only).");
+            stdout.WriteLine("      --output, --out <path>   Destination raw DVD-R .iso file.");
+            stdout.WriteLine("      --json-output <path>     Optional manifest JSON path (default <output>.json).");
+            stdout.WriteLine("      --disc-preset <id>       DVD preset ID from DiscPresetJsonStore (default dvd-5-120mm).");
+            stdout.WriteLine("      --disc-presets-file <p>  Optional user presets JSON file to merge.");
+            stdout.WriteLine("      --start-angle <deg>      Optional angular offset in degrees (default 0).");
+            stdout.WriteLine("      --plan-only              Write only the JSON manifest without writing the .iso.");
             return;
         }
 
