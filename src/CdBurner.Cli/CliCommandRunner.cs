@@ -51,7 +51,7 @@ public static partial class CliCommandRunner
         "json", "udf", "joliet", "verify", "close", "no-close", "raw", "full", "dao", "help", "h", "version", "v",
         "lookup", "keep-wav", "continue-on-error", "verify-accuraterip", "secure", "plan-only",
         "overwrite", "strict-verify", "no-verify", "no-secure", "allow-damaged", "no-fill", "keep-folders",
-        "generate-subtitles", "no-menu", "dual-layer", "no-cd-text", "normalize", "peak-normalize", "rms-level",
+        "generate-subtitles", "no-menu", "dual-layer", "fit-to-disc", "no-ffmpeg", "no-cd-text", "normalize", "peak-normalize", "rms-level",
         "no-burnfree", "append", "delete-backups", "confirm-shutdown"
     };
 
@@ -3150,7 +3150,7 @@ public static partial class CliCommandRunner
         stdout.WriteLine("      Compiles a folder and burns it to optical media (--append merges and adds a session on an appendable disc).");
         stdout.WriteLine("  burn-audio (--drive <id> | --plan-only) (--tracks <files|.cue|.m3u|.pls> | --tracks-file <file.json>) [--title <album>] [--artist <name>] [--songwriter <name>] [--upc <13digits>] [--speed <X|max>] [--dao] [--pregap <frames>] [--normalize] [--rms-level] [--loudness track|album|off] [--crossfade <sec>] [--no-cd-text] [--no-burnfree] [--post-action none|eject|sound|eject-sound|shutdown] [--allow-damaged] [--native [--test-write | --test-first] [--recovery-session] [--write-offset <samples|auto>] [--log-dir <folder>]] [--json]");
         stdout.WriteLine("      Burns Red Book Audio CD from WAV, FLAC, MP3, AAC/M4A, WMA, .cue, .m3u/.pls, or a JSON --tracks-file (--recovery-session adds session-2 PAR2 recovery; --plan-only previews without burning).");
-        stdout.WriteLine("  burn-dvd --drive <id> --video-ts <folder|movie> [--label <vol>] [--menu-title <title>] [--no-menu] [--standard ntsc|pal] [--aspect 16:9|4:3] [--chapters <sec>] [--dual-layer] [--generate-subtitles [--subtitle-language <code>]] [--speed <X|max>] [--no-verify] [--no-burnfree] [--overwrite] [--post-action none|eject|sound|eject-sound|shutdown] [--native [--test-write | --test-first] [--log-dir <folder>]] [--json]");
+        stdout.WriteLine("  burn-dvd --drive <id> --video-ts <folder|movie> [--label <vol>] [--menu-title <title>] [--menu on|off | --no-menu] [--menu-autoplay <never|sec>] [--after-title next|menu] [--standard ntsc|pal] [--aspect 16:9|4:3] [--chapters <none|sec>] [--subtitles-default on|off] [--subtitle-size small|medium|large] [--video-bitrate <fit|kbps>] [--fit-to-disc] [--title-names <a;b;...>] [--dual-layer] [--generate-subtitles [--subtitle-language <code>]] [--speed <X|max>] [--no-verify] [--no-burnfree] [--overwrite] [--post-action none|eject|sound|eject-sound|shutdown] [--native [--test-write | --test-first] [--log-dir <folder>]] [--json]");
         stdout.WriteLine("      Validates, normalizes/authors, aligns, and burns a DVD-Video compliant disc from VIDEO_TS or movie files.");
         stdout.WriteLine("      --dual-layer authors movie files for a DVD-9 (longest title first). On a dual-layer disc, --native puts the layer break on a cell boundary.");
         stdout.WriteLine("      --generate-subtitles makes subtitles by speech recognition for movies with no .srt next to them (needs install-subtitle-tool);");
@@ -3203,7 +3203,7 @@ public static partial class CliCommandRunner
         stdout.WriteLine("      Inspects an .iso, .cue, .bin, .nrg, .mdf/.mds, .ccd/.img, or .cdi disc image.");
         stdout.WriteLine("  convert-image --input <file> --output <file> [--cue <file.cue>] [--overwrite] [--json]");
         stdout.WriteLine("      Converts legacy images or BIN+CUE to .iso, or converts .iso/legacy images to .bin + .cue.");
-        stdout.WriteLine("  author-dvd --input <folder|movies> --output <folder|file.iso> [--label <vol>] [--menu-title <title>] [--no-menu] [--standard ntsc|pal] [--aspect 16:9|4:3] [--chapters <sec>] [--dual-layer] [--generate-subtitles [--subtitle-language <code|auto>]] [--overwrite] [--json]");
+        stdout.WriteLine("  author-dvd --input <folder|movies> --output <folder|file.iso> [--label <vol>] [--menu-title <title>] [--menu on|off | --no-menu] [--menu-autoplay <never|sec>] [--after-title next|menu] [--standard ntsc|pal] [--aspect 16:9|4:3] [--chapters <none|sec>] [--subtitles-default on|off] [--subtitle-size small|medium|large] [--video-bitrate <fit|kbps>] [--fit-to-disc] [--title-names <a;b;...>] [--dual-layer] [--generate-subtitles [--subtitle-language <code|auto>]] [--overwrite] [--json]");
         stdout.WriteLine("      Authors DVD-Video files into a VIDEO_TS folder or compliant .iso without burning a disc.");
         stdout.WriteLine("  jewel-cover (--tracks <files> | --tracks-file <file.json>) --output <file.html> [--title <album>] [--artist <name>] [--songwriter <name>] [--upc <13digits>] [--dao] [--pregap <frames>] [--overwrite] [--json]");
         stdout.WriteLine("      Generates a printable HTML CD jewel case cover and tray inlay from audio tracks.");
@@ -3311,12 +3311,16 @@ public static partial class CliCommandRunner
             return;
         }
         if (string.Equals(subcommand, "author-dvd", StringComparison.OrdinalIgnoreCase) ||
-            string.Equals(subcommand, "authordvd", StringComparison.OrdinalIgnoreCase))
+            string.Equals(subcommand, "authordvd", StringComparison.OrdinalIgnoreCase) ||
+            string.Equals(subcommand, "burn-dvd", StringComparison.OrdinalIgnoreCase) ||
+            string.Equals(subcommand, "burndvd", StringComparison.OrdinalIgnoreCase))
         {
             stdout.WriteLine(LegalBanner.VersionNotice);
             stdout.WriteLine();
-            stdout.WriteLine("  author-dvd --input <folder|movies> --output <folder|file.iso> [--label <vol>] [--menu-title <title>] [--no-menu] [--standard ntsc|pal] [--aspect 16:9|4:3] [--chapters <sec>] [--dual-layer] [--generate-subtitles [--subtitle-language <code|auto>]] [--ffmpeg <path>] [--overwrite] [--json]");
+            stdout.WriteLine("  author-dvd --input <folder|movies> --output <folder|file.iso> [--label <vol>] [--menu-title <title>] [--menu on|off | --no-menu] [--menu-autoplay <never|sec>] [--after-title next|menu] [--standard ntsc|pal] [--aspect 16:9|4:3] [--chapters <none|sec>] [--subtitles-default on|off] [--subtitle-size small|medium|large] [--video-bitrate <fit|kbps>] [--fit-to-disc] [--title-names <a;b;...>] [--dual-layer] [--generate-subtitles [--subtitle-language <code|auto>]] [--ffmpeg <path>] [--no-ffmpeg] [--overwrite] [--json]");
             stdout.WriteLine("      Authors DVD-Video files into a VIDEO_TS folder or compliant ISO 9660 + UDF 1.02 image without burning.");
+            stdout.WriteLine("  burn-dvd --drive <id> --video-ts <folder|movie> [--label <vol>] [--menu-title <title>] [--menu on|off | --no-menu] [--menu-autoplay <never|sec>] [--after-title next|menu] [--standard ntsc|pal] [--aspect 16:9|4:3] [--chapters <none|sec>] [--subtitles-default on|off] [--subtitle-size small|medium|large] [--video-bitrate <fit|kbps>] [--fit-to-disc] [--title-names <a;b;...>] [--dual-layer] [--generate-subtitles [--subtitle-language <code|auto>]] [--ffmpeg <path>] [--speed <X|max>] [--no-verify] [--overwrite] [--native [--test-write | --test-first]] [--json]");
+            stdout.WriteLine("      Validates, authors, and burns a DVD-Video compliant disc from VIDEO_TS or movie files.");
             return;
         }
         if (string.Equals(subcommand, "jewel-cover", StringComparison.OrdinalIgnoreCase) ||

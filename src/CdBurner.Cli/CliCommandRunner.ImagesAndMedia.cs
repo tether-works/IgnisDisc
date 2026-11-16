@@ -248,14 +248,113 @@ public static partial class CliCommandRunner
             };
         }
 
+        bool autoCreatePlayMenu = !cmd.HasFlag("no-menu");
+        string? menuOpt = cmd.GetOption("menu");
+        if (!string.IsNullOrWhiteSpace(menuOpt))
+        {
+            bool menuOn = menuOpt.Trim().ToLowerInvariant() switch
+            {
+                "on" or "true" => true,
+                "off" or "false" => false,
+                _ => throw new CommandLineException($"Invalid --menu '{menuOpt}'. Use on or off.")
+            };
+            if (cmd.HasFlag("no-menu") && menuOn)
+            {
+                throw new CommandLineException("Cannot combine --menu on with --no-menu.");
+            }
+            autoCreatePlayMenu = menuOn;
+        }
+
+        int menuAutoPlaySeconds = 0;
+        string? menuAutoPlayRaw = cmd.GetOption("menu-autoplay");
+        if (!string.IsNullOrWhiteSpace(menuAutoPlayRaw))
+        {
+            string trimmed = menuAutoPlayRaw.Trim().ToLowerInvariant();
+            if (trimmed is "never" or "off")
+            {
+                menuAutoPlaySeconds = 0;
+            }
+            else if (!int.TryParse(trimmed, NumberStyles.Integer, CultureInfo.InvariantCulture, out menuAutoPlaySeconds) ||
+                     menuAutoPlaySeconds < 0 || menuAutoPlaySeconds > 254)
+            {
+                throw new CommandLineException($"Invalid --menu-autoplay '{menuAutoPlayRaw}'. Use 'never' or an integer from 0 to 254 seconds.");
+            }
+        }
+
+        DvdAfterTitleAction afterTitleAction = DvdAfterTitleAction.PlayNextTitle;
+        string? afterTitleRaw = cmd.GetOption("after-title");
+        if (!string.IsNullOrWhiteSpace(afterTitleRaw))
+        {
+            afterTitleAction = afterTitleRaw.Trim().ToLowerInvariant() switch
+            {
+                "next" or "play-next" => DvdAfterTitleAction.PlayNextTitle,
+                "menu" or "title-menu" => DvdAfterTitleAction.ReturnToMenu,
+                _ => throw new CommandLineException($"Invalid --after-title '{afterTitleRaw}'. Use next or menu.")
+            };
+        }
+
         int chapterSeconds = 300;
         string? chaptersRaw = cmd.GetOption("chapters");
         if (!string.IsNullOrWhiteSpace(chaptersRaw))
         {
-            if (!int.TryParse(chaptersRaw.Trim(), NumberStyles.Integer, CultureInfo.InvariantCulture, out chapterSeconds) ||
-                chapterSeconds < 0 || chapterSeconds > 3600)
+            string trimmed = chaptersRaw.Trim().ToLowerInvariant();
+            if (trimmed is "none" or "off")
             {
-                throw new CommandLineException($"Invalid --chapters '{chaptersRaw}'. Use an integer from 0 to 3600 seconds.");
+                chapterSeconds = 0;
+            }
+            else if (!int.TryParse(trimmed, NumberStyles.Integer, CultureInfo.InvariantCulture, out chapterSeconds) ||
+                     chapterSeconds < 0 || chapterSeconds > 3600)
+            {
+                throw new CommandLineException($"Invalid --chapters '{chaptersRaw}'. Use 'none' or an integer from 0 to 3600 seconds.");
+            }
+        }
+
+        bool subtitlesOnByDefault = false;
+        string? subsDefaultRaw = cmd.GetOption("subtitles-default");
+        if (!string.IsNullOrWhiteSpace(subsDefaultRaw))
+        {
+            subtitlesOnByDefault = subsDefaultRaw.Trim().ToLowerInvariant() switch
+            {
+                "on" or "true" => true,
+                "off" or "false" => false,
+                _ => throw new CommandLineException($"Invalid --subtitles-default '{subsDefaultRaw}'. Use on or off.")
+            };
+        }
+
+        DvdSubtitleSize subtitleSize = DvdSubtitleSize.Medium;
+        string? subtitleSizeRaw = cmd.GetOption("subtitle-size");
+        if (!string.IsNullOrWhiteSpace(subtitleSizeRaw))
+        {
+            subtitleSize = subtitleSizeRaw.Trim().ToLowerInvariant() switch
+            {
+                "small" => DvdSubtitleSize.Small,
+                "medium" => DvdSubtitleSize.Medium,
+                "large" => DvdSubtitleSize.Large,
+                _ => throw new CommandLineException($"Invalid --subtitle-size '{subtitleSizeRaw}'. Use small, medium, or large.")
+            };
+        }
+
+        bool fitToDisc = true;
+        int videoBitrateKbps = 6000;
+        int maxVideoBitrateKbps = 8000;
+        string? videoBitrateRaw = cmd.GetOption("video-bitrate");
+        if (!string.IsNullOrWhiteSpace(videoBitrateRaw))
+        {
+            string trimmed = videoBitrateRaw.Trim().ToLowerInvariant();
+            if (trimmed == "fit")
+            {
+                fitToDisc = true;
+            }
+            else if (int.TryParse(trimmed, NumberStyles.Integer, CultureInfo.InvariantCulture, out int kbps) &&
+                     kbps >= DvdVideoAuthoringService.MinimumVideoKbps && kbps <= 9000)
+            {
+                videoBitrateKbps = kbps;
+                maxVideoBitrateKbps = Math.Clamp(Math.Max(8000, (int)(kbps * 1.25)), kbps, 9200);
+                fitToDisc = cmd.HasFlag("fit-to-disc");
+            }
+            else
+            {
+                throw new CommandLineException($"Invalid --video-bitrate '{videoBitrateRaw}'. Use 'fit' or an integer from {DvdVideoAuthoringService.MinimumVideoKbps} to 9000 kbps.");
             }
         }
 
@@ -264,13 +363,29 @@ public static partial class CliCommandRunner
         {
             VolumeLabel = volumeLabel,
             MenuTitle = cmd.GetOption("menu-title") ?? "DVD Video",
-            AutoCreatePlayMenu = !cmd.HasFlag("no-menu"),
+            AutoCreatePlayMenu = autoCreatePlayMenu,
+            MenuAutoPlaySeconds = menuAutoPlaySeconds,
+            AfterTitleAction = afterTitleAction,
             Standard = standard,
             AspectRatio = aspect,
             ChapterIntervalSeconds = chapterSeconds,
+            SubtitlesOnByDefault = subtitlesOnByDefault,
+            SubtitleSize = subtitleSize,
+            FitToDisc = fitToDisc,
+            VideoBitrateKbps = videoBitrateKbps,
+            MaxVideoBitrateKbps = maxVideoBitrateKbps,
             DualLayer = cmd.HasFlag("dual-layer"),
+            UseFfmpegWhenAvailable = !cmd.HasFlag("no-ffmpeg"),
             CustomFfmpegPath = ffmpegOpt
         };
+        string? titleNamesRaw = cmd.GetOption("title-names");
+        if (!string.IsNullOrEmpty(titleNamesRaw))
+        {
+            foreach (string part in titleNamesRaw.Split(';'))
+            {
+                options.OrderedTitleNames.Add(part.Trim());
+            }
+        }
         ApplySubtitleOptions(cmd, options);
         return options;
     }
@@ -447,6 +562,15 @@ public static partial class CliCommandRunner
                     standard = authorOptions.Standard.ToString(),
                     aspectRatio = authorOptions.AspectRatio == DvdAspectRatio.Widescreen16x9 ? "16:9" : "4:3",
                     menuCreated = authResult != null ? authorOptions.AutoCreatePlayMenu : false,
+                    autoCreatePlayMenu = authorOptions.AutoCreatePlayMenu,
+                    menuAutoPlaySeconds = authorOptions.MenuAutoPlaySeconds,
+                    afterTitleAction = authorOptions.AfterTitleAction.ToString(),
+                    chapterIntervalSeconds = authorOptions.ChapterIntervalSeconds,
+                    subtitlesOnByDefault = authorOptions.SubtitlesOnByDefault,
+                    subtitleSize = authorOptions.SubtitleSize.ToString(),
+                    fitToDisc = authorOptions.FitToDisc,
+                    videoBitrateKbps = authorOptions.VideoBitrateKbps,
+                    dualLayer = authorOptions.DualLayer,
                     titleCount = authResult?.TitleCount ?? Math.Max(validation.TitleSetNumbers.Count, 1),
                     validatedFiles = validation.FileCount,
                     totalSectors,

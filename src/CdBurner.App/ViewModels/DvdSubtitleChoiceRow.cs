@@ -1,5 +1,6 @@
 using System.IO;
 using CdBurner.App.Mvvm;
+using CdBurner.Core.DvdVideo;
 
 namespace CdBurner.App.ViewModels;
 
@@ -31,10 +32,16 @@ public sealed class DvdSubtitleChoiceRow : ObservableObject
     private string? _subtitlePath;
     private DvdSubtitleSource _source;
     private string _statusText = string.Empty;
+    private string _menuTitleName;
+    private readonly Action<string, string>? _onTitleNameChanged;
 
-    public DvdSubtitleChoiceRow(string moviePath)
+    public DvdSubtitleChoiceRow(string moviePath, string? initialTitleName = null, Action<string, string>? onTitleNameChanged = null)
     {
         MoviePath = moviePath;
+        _menuTitleName = string.IsNullOrWhiteSpace(initialTitleName)
+            ? DvdInputNormalizer.CleanMovieTitle(moviePath)
+            : initialTitleName;
+        _onTitleNameChanged = onTitleNameChanged;
     }
 
     /// <summary>Full path of the movie.</summary>
@@ -42,6 +49,20 @@ public sealed class DvdSubtitleChoiceRow : ObservableObject
 
     /// <summary>The movie's file name, for display.</summary>
     public string MovieName => Path.GetFileName(MoviePath);
+
+    /// <summary>Editable title displayed on the DVD title menu for this movie.</summary>
+    public string MenuTitleName
+    {
+        get => _menuTitleName;
+        set
+        {
+            string normalized = value ?? string.Empty;
+            if (SetProperty(ref _menuTitleName, normalized))
+            {
+                _onTitleNameChanged?.Invoke(MoviePath, _menuTitleName);
+            }
+        }
+    }
 
     /// <summary>The .srt that will be used; null when none.</summary>
     public string? SubtitlePath

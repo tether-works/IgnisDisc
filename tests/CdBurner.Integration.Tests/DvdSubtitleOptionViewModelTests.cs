@@ -1,10 +1,15 @@
+using System.Buffers.Binary;
 using System.IO;
 using System.IO.Compression;
 using System.Net;
 using System.Net.Http;
 using System.Security.Cryptography;
 using System.Text;
+using System.Text.Json;
 using CdBurner.App.ViewModels;
+using CdBurner.Cli;
+using CdBurner.Core.DvdVideo;
+using CdBurner.Core.Iso;
 using CdBurner.Core.Subtitles;
 using CdBurner.Hardware.Devices;
 using CdBurner.Hardware.Simulation;
@@ -234,5 +239,133 @@ public sealed class DvdSubtitleOptionViewModelTests : IDisposable
 
             return Task.FromResult(new HttpResponseMessage(HttpStatusCode.NotFound));
         }
+    }
+
+    [Fact]
+    public async Task DvdVideoViewModel_AuthoringOptionsRoundTripIntoBuiltIso_AndInvalidateCache()
+    {
+        Directory.CreateDirectory(_tempDir);
+        string m1 = Path.Combine(_tempDir, "movie_one.mp4");
+        string m2 = Path.Combine(_tempDir, "movie_two.mp4");
+        File.WriteAllBytes(m1, new byte[64 * 2048]);
+        File.WriteAllBytes(m2, new byte[64 * 2048]);
+
+        var vm = new DvdVideoViewModel(_deviceManager, new VirtualBurnEngine())
+        {
+            UseFfmpegWhenAvailable = false
+        };
+        vm.AddMovieFiles([m1, m2]);
+
+        vm.DualLayer = true;
+        vm.MenuAutoPlaySeconds = 15;
+        vm.AfterTitleAction = DvdAfterTitleAction.ReturnToMenu;
+        vm.ChapterIntervalMinutes = 0;
+        vm.SubtitlesOnByDefault = true;
+        vm.SubtitleSize = DvdSubtitleSize.Large;
+        vm.SelectedQualityPreset = vm.AvailableQualityPresets.First(p => p.Id == "high");
+        vm.SubtitleRows[0].MenuTitleName = "Opening Night";
+
+        Assert.True(vm.IsDualLayerRequired);
+        Assert.Equal("Opening Night", vm.GetTitleName(m1));
+        Assert.False(vm.FitToDisc);
+        Assert.Equal(8000, vm.VideoBitrateKbps);
+
+        string iso1 = Path.Combine(_tempDir, "roundtrip1.iso");
+        string built1 = await vm.BuildDvdIsoAsync(iso1);
+        Assert.Equal(iso1, built1);
+        Assert.NotNull(vm.LastAuthoredVideoTsPath);
+
+        using (var reader = IsoImageReader.FromFile(iso1))
+        {
+            byte[] vmg = reader.ReadFileBytes("/VIDEO_TS/VIDEO_TS.IFO");
+            byte[] vts1 = reader.ReadFileBytes("/VIDEO_TS/VTS_01_0.IFO");
+
+            // First-Play PGC SetSTN ON (0xC0)
+            int fpCmd = 0x400 + BinaryPrimitives.ReadUInt16BigEndian(vmg.AsSpan(0x400 + 0xE4));
+            Assert.Equal(new byte[] { 0x51, 0x00, 0x00, 0x00, 0xC0, 0x00, 0x00, 0x00 }, vmg.AsSpan(fpCmd + 8, 8).ToArray());
+
+            // Menu still time == 15s and post == JumpTT 1
+            int ut = (int)BinaryPrimitives.ReadUInt32BigEndian(vmg.AsSpan(0xC8)) * 2048;
+            int pgcit = ut + (int)BinaryPrimitives.ReadUInt32BigEndian(vmg.AsSpan(ut + 12));
+            int menuPgc = pgcit + (int)BinaryPrimitives.ReadUInt32BigEndian(vmg.AsSpan(pgcit + 12));
+            int cell = menuPgc + BinaryPrimitives.ReadUInt16BigEndian(vmg.AsSpan(menuPgc + 0xE8));
+            int menuCmd = menuPgc + BinaryPrimitives.ReadUInt16BigEndian(vmg.AsSpan(menuPgc + 0xE4));
+            Assert.Equal(15, vmg[cell + 2]);
+            Assert.Equal(new byte[] { 0x30, 0x02, 0x00, 0x00, 0x00, 0x01, 0x00, 0x00 }, vmg.AsSpan(menuCmd + 8, 8).ToArray());
+
+            // VTS_01 post == CallSS VMGM menu 2
+            int vtsPgcit = (int)BinaryPrimitives.ReadUInt32BigEndian(vts1.AsSpan(0xCC)) * 2048;
+            int vtsPgc = vtsPgcit + (int)BinaryPrimitives.ReadUInt32BigEndian(vts1.AsSpan(vtsPgcit + 12));
+            int vtsCmd = vtsPgc + BinaryPrimitives.ReadUInt16BigEndian(vts1.AsSpan(vtsPgc + 0xE4));
+            Assert.Equal(new byte[] { 0x30, 0x08, 0x00, 0x00, 0x01, 0x42, 0x00, 0x00 }, vts1.AsSpan(vtsCmd + 8, 8).ToArray());
+        }
+
+        // Changing an authoring option invalidates cached VIDEO_TS and unchecking menu resets ReturnToMenu -> PlayNextTitle
+        vm.AutoCreatePlayMenu = false;
+        Assert.Null(vm.LastAuthoredVideoTsPath);
+        Assert.Equal(DvdAfterTitleAction.PlayNextTitle, vm.AfterTitleAction);
+    }
+
+    [Fact]
+    public async Task CliAuthorDvd_ParsesAndAppliesAllConfigurableDvdOptions()
+    {
+        Directory.CreateDirectory(_tempDir);
+        string m1 = Path.Combine(_tempDir, "clip1.mp4");
+        string m2 = Path.Combine(_tempDir, "clip2.mp4");
+        File.WriteAllBytes(m1, new byte[64 * 2048]);
+        File.WriteAllBytes(m2, new byte[64 * 2048]);
+        string outDir = Path.Combine(_tempDir, "CliAuthored");
+
+        using var stdout = new StringWriter();
+        using var stderr = new StringWriter();
+        int exit = await CliCommandRunner.RunAsync(
+            [
+                "author-dvd",
+                "--input", $"{m1};{m2}",
+                "--output", outDir,
+                "--menu-autoplay", "10",
+                "--after-title", "menu",
+                "--chapters", "none",
+                "--subtitles-default", "on",
+                "--subtitle-size", "large",
+                "--video-bitrate", "4500",
+                "--dual-layer",
+                "--title-names", "First Film;Second Film",
+                "--no-ffmpeg",
+                "--json"
+            ],
+            stdout,
+            stderr,
+            _deviceManager,
+            new VirtualBurnEngine());
+
+        Assert.Equal(0, exit);
+        using var doc = JsonDocument.Parse(stdout.ToString());
+        var root = doc.RootElement;
+        Assert.True(root.GetProperty("success").GetBoolean());
+        Assert.Equal(10, root.GetProperty("menuAutoPlaySeconds").GetInt32());
+        Assert.Equal("ReturnToMenu", root.GetProperty("afterTitleAction").GetString());
+        Assert.Equal(0, root.GetProperty("chapterIntervalSeconds").GetInt32());
+        Assert.True(root.GetProperty("subtitlesOnByDefault").GetBoolean());
+        Assert.Equal("Large", root.GetProperty("subtitleSize").GetString());
+        Assert.False(root.GetProperty("fitToDisc").GetBoolean());
+        Assert.Equal(4500, root.GetProperty("videoBitrateKbps").GetInt32());
+        Assert.True(root.GetProperty("dualLayer").GetBoolean());
+
+        byte[] vmg = File.ReadAllBytes(Path.Combine(outDir, "VIDEO_TS", "VIDEO_TS.IFO"));
+        byte[] vts1 = File.ReadAllBytes(Path.Combine(outDir, "VIDEO_TS", "VTS_01_0.IFO"));
+        int fpCmd = 0x400 + BinaryPrimitives.ReadUInt16BigEndian(vmg.AsSpan(0x400 + 0xE4));
+        Assert.Equal(new byte[] { 0x51, 0x00, 0x00, 0x00, 0xC0, 0x00, 0x00, 0x00 }, vmg.AsSpan(fpCmd + 8, 8).ToArray());
+
+        int ut = (int)BinaryPrimitives.ReadUInt32BigEndian(vmg.AsSpan(0xC8)) * 2048;
+        int pgcit = ut + (int)BinaryPrimitives.ReadUInt32BigEndian(vmg.AsSpan(ut + 12));
+        int menuPgc = pgcit + (int)BinaryPrimitives.ReadUInt32BigEndian(vmg.AsSpan(pgcit + 12));
+        int cell = menuPgc + BinaryPrimitives.ReadUInt16BigEndian(vmg.AsSpan(menuPgc + 0xE8));
+        Assert.Equal(10, vmg[cell + 2]);
+
+        int vtsPgcit = (int)BinaryPrimitives.ReadUInt32BigEndian(vts1.AsSpan(0xCC)) * 2048;
+        int vtsPgc = vtsPgcit + (int)BinaryPrimitives.ReadUInt32BigEndian(vts1.AsSpan(vtsPgcit + 12));
+        int vtsCmd = vtsPgc + BinaryPrimitives.ReadUInt16BigEndian(vts1.AsSpan(vtsPgc + 0xE4));
+        Assert.Equal(new byte[] { 0x30, 0x08, 0x00, 0x00, 0x01, 0x42, 0x00, 0x00 }, vts1.AsSpan(vtsCmd + 8, 8).ToArray());
     }
 }

@@ -17,6 +17,12 @@ using CdBurner.Hardware.Simulation;
 
 namespace CdBurner.App.ViewModels;
 
+/// <summary>Numeric option paired with a display label for DVD-Video ComboBoxes.</summary>
+public sealed record DvdIntChoice(int Value, string Label);
+
+/// <summary>Video bitrate/quality preset for DVD-Video authoring.</summary>
+public sealed record DvdQualityPreset(string Id, string Label, bool FitToDisc, int VideoKbps, int MaxVideoKbps);
+
 /// <summary>
 /// View model managing DVD-Video authoring, VIDEO_TS structure verification,
 /// 32 KB (16-sector) IFO/BUP ECC alignment gap inspection, DVD-9 layer break selection, and burning.
@@ -44,6 +50,15 @@ public class DvdVideoViewModel : ObservableObject
     private DvdVideoStandard _selectedStandard = DvdVideoStandard.Ntsc;
     private DvdAspectRatio _selectedAspectRatio = DvdAspectRatio.Widescreen16x9;
     private bool _autoCreatePlayMenu = true;
+    private int _menuAutoPlaySeconds;
+    private DvdAfterTitleAction _afterTitleAction = DvdAfterTitleAction.PlayNextTitle;
+    private int _chapterIntervalSeconds = 300;
+    private bool _subtitlesOnByDefault;
+    private DvdSubtitleSize _subtitleSize = DvdSubtitleSize.Medium;
+    private bool _fitToDisc = true;
+    private int _videoBitrateKbps = 6000;
+    private int _maxVideoBitrateKbps = 8000;
+    private DvdQualityPreset _selectedQualityPreset;
     private bool _generateSubtitles;
     private string _subtitleLanguage = "en";
     private WhisperInstallation? _subtitleTool;
@@ -67,6 +82,7 @@ public class DvdVideoViewModel : ObservableObject
     private DvdFitEstimate? _fitEstimate;
     private string _fitSummaryText = string.Empty;
     private bool _useDualLayerDisc;
+    private bool _dualLayer;
 
     #region Properties
 
@@ -100,6 +116,9 @@ public class DvdVideoViewModel : ObservableObject
     /// </summary>
     private readonly Dictionary<string, string> _chosenSubtitles = new(StringComparer.OrdinalIgnoreCase);
 
+    /// <summary>Custom menu title names entered by the user, keyed by full movie path.</summary>
+    private readonly Dictionary<string, string> _customTitleNames = new(StringComparer.OrdinalIgnoreCase);
+
     /// <summary>
     /// Physical path to the VIDEO_TS directory, root folder containing VIDEO_TS, or delimited movie file list.
     /// </summary>
@@ -111,6 +130,7 @@ public class DvdVideoViewModel : ObservableObject
             if (SetProperty(ref _videoTsFolderPath, value))
             {
                 OnPropertyChanged(nameof(ValidationStatusText));
+                OnPropertyChanged(nameof(AreAuthoringOptionsEnabled));
                 SourceMediaFiles.Clear();
                 LastAuthoredVideoTsPath = null;
                 if (!string.IsNullOrWhiteSpace(value))
@@ -172,12 +192,279 @@ public class DvdVideoViewModel : ObservableObject
         {
             if (SetProperty(ref _autoCreatePlayMenu, value))
             {
-                if (RequiresAutoAuthoring)
+                if (!value && _afterTitleAction == DvdAfterTitleAction.ReturnToMenu)
+                {
+                    AfterTitleAction = DvdAfterTitleAction.PlayNextTitle;
+                }
+                InvalidateAuthoredCache();
+                if (RequiresAutoAuthoring && !IsBusy)
                 {
                     ValidateAndPlanLayout();
                 }
             }
         }
+    }
+
+    /// <summary>True when authoring options apply (movies staged or no folder loaded yet).</summary>
+    public bool AreAuthoringOptionsEnabled =>
+        RequiresAutoAuthoring || (SourceMediaFiles.Count == 0 && string.IsNullOrWhiteSpace(VideoTsFolderPath));
+
+    /// <summary>Seconds before the title menu starts Title 1 automatically; 0 (default) waits indefinitely.</summary>
+    public int MenuAutoPlaySeconds
+    {
+        get => _menuAutoPlaySeconds;
+        set
+        {
+            int clamped = Math.Clamp(value, 0, 254);
+            if (SetProperty(ref _menuAutoPlaySeconds, clamped))
+            {
+                InvalidateAuthoredCache();
+            }
+        }
+    }
+
+    /// <summary>Choices for <see cref="MenuAutoPlaySeconds"/>.</summary>
+    public IReadOnlyList<DvdIntChoice> MenuAutoPlayChoices { get; } =
+    [
+        new(0, "Never"),
+        new(5, "After 5 s"),
+        new(10, "After 10 s"),
+        new(15, "After 15 s"),
+        new(30, "After 30 s"),
+        new(60, "After 60 s")
+    ];
+
+    /// <summary>What happens when a title finishes playing.</summary>
+    public DvdAfterTitleAction AfterTitleAction
+    {
+        get => _afterTitleAction;
+        set
+        {
+            if (SetProperty(ref _afterTitleAction, value))
+            {
+                InvalidateAuthoredCache();
+            }
+        }
+    }
+
+    /// <summary>Available post-title actions.</summary>
+    public IReadOnlyList<DvdAfterTitleAction> AvailableAfterTitleActions { get; } =
+        [DvdAfterTitleAction.PlayNextTitle, DvdAfterTitleAction.ReturnToMenu];
+
+    /// <summary>Chapter mark interval in seconds (0 = one chapter per title).</summary>
+    public int ChapterIntervalSeconds
+    {
+        get => _chapterIntervalSeconds;
+        set
+        {
+            int clamped = Math.Clamp(value, 0, 3600);
+            if (SetProperty(ref _chapterIntervalSeconds, clamped))
+            {
+                OnPropertyChanged(nameof(ChapterIntervalMinutes));
+                InvalidateAuthoredCache();
+            }
+        }
+    }
+
+    /// <summary>Chapter mark interval in whole minutes (0 = no chapters).</summary>
+    public int ChapterIntervalMinutes
+    {
+        get => _chapterIntervalSeconds / 60;
+        set => ChapterIntervalSeconds = Math.Clamp(value, 0, 60) * 60;
+    }
+
+    /// <summary>Choices for <see cref="ChapterIntervalMinutes"/>.</summary>
+    public IReadOnlyList<DvdIntChoice> ChapterIntervalChoices { get; } =
+    [
+        new(0, "No chapters"),
+        new(2, "Every 2 min"),
+        new(5, "Every 5 min"),
+        new(10, "Every 10 min"),
+        new(15, "Every 15 min"),
+        new(30, "Every 30 min")
+    ];
+
+    /// <summary>Whether First-Play turns subpicture stream 0 on by default.</summary>
+    public bool SubtitlesOnByDefault
+    {
+        get => _subtitlesOnByDefault;
+        set
+        {
+            if (SetProperty(ref _subtitlesOnByDefault, value))
+            {
+                InvalidateAuthoredCache();
+            }
+        }
+    }
+
+    /// <summary>Rendered subtitle text size.</summary>
+    public DvdSubtitleSize SubtitleSize
+    {
+        get => _subtitleSize;
+        set
+        {
+            if (SetProperty(ref _subtitleSize, value))
+            {
+                InvalidateAuthoredCache();
+            }
+        }
+    }
+
+    /// <summary>Available subtitle text sizes.</summary>
+    public IReadOnlyList<DvdSubtitleSize> AvailableSubtitleSizes { get; } =
+        [DvdSubtitleSize.Small, DvdSubtitleSize.Medium, DvdSubtitleSize.Large];
+
+    /// <summary>Video quality preset choices.</summary>
+    public IReadOnlyList<DvdQualityPreset> AvailableQualityPresets { get; } =
+    [
+        new("fit", "Fit to disc (auto)", true, 6000, 8000),
+        new("high", "High (8 Mbps)", false, 8000, 9000),
+        new("standard", "Standard (6 Mbps)", false, 6000, 8000),
+        new("longplay", "Long play (4 Mbps)", false, 4000, 5500),
+        new("extended", "Extended (2.5 Mbps)", false, 2500, 3500)
+    ];
+
+    /// <summary>Selected video quality preset.</summary>
+    public DvdQualityPreset SelectedQualityPreset
+    {
+        get => _selectedQualityPreset;
+        set
+        {
+            if (value == null) return;
+            if (SetProperty(ref _selectedQualityPreset, value))
+            {
+                _fitToDisc = value.FitToDisc;
+                _videoBitrateKbps = value.VideoKbps;
+                _maxVideoBitrateKbps = value.MaxVideoKbps;
+                OnPropertyChanged(nameof(FitToDisc));
+                OnPropertyChanged(nameof(VideoBitrateKbps));
+                OnPropertyChanged(nameof(MaxVideoBitrateKbps));
+                InvalidateAuthoredCache();
+                if (RequiresAutoAuthoring && !IsBusy)
+                {
+                    ValidateAndPlanLayout();
+                }
+            }
+        }
+    }
+
+    /// <summary>When true, lowers bitrate to fit the target disc; when false, keeps <see cref="VideoBitrateKbps"/>.</summary>
+    public bool FitToDisc
+    {
+        get => _fitToDisc;
+        set
+        {
+            if (SetProperty(ref _fitToDisc, value))
+            {
+                SyncSelectedQualityPreset();
+                InvalidateAuthoredCache();
+                if (RequiresAutoAuthoring && !IsBusy)
+                {
+                    ValidateAndPlanLayout();
+                }
+            }
+        }
+    }
+
+    /// <summary>Target video bitrate in kbps.</summary>
+    public int VideoBitrateKbps
+    {
+        get => _videoBitrateKbps;
+        set
+        {
+            int clamped = Math.Clamp(value, DvdVideoAuthoringService.MinimumVideoKbps, 9000);
+            if (SetProperty(ref _videoBitrateKbps, clamped))
+            {
+                if (_maxVideoBitrateKbps < clamped)
+                {
+                    _maxVideoBitrateKbps = Math.Clamp((int)(clamped * 1.25), clamped, 9000);
+                    OnPropertyChanged(nameof(MaxVideoBitrateKbps));
+                }
+                SyncSelectedQualityPreset();
+                InvalidateAuthoredCache();
+                if (RequiresAutoAuthoring && !IsBusy)
+                {
+                    ValidateAndPlanLayout();
+                }
+            }
+        }
+    }
+
+    /// <summary>Maximum video bitrate in kbps.</summary>
+    public int MaxVideoBitrateKbps
+    {
+        get => _maxVideoBitrateKbps;
+        set
+        {
+            int clamped = Math.Clamp(value, _videoBitrateKbps, 9600);
+            if (SetProperty(ref _maxVideoBitrateKbps, clamped))
+            {
+                InvalidateAuthoredCache();
+            }
+        }
+    }
+
+    /// <summary>Whether to author for a dual-layer DVD-9 disc.</summary>
+    public bool DualLayer
+    {
+        get => _dualLayer;
+        set
+        {
+            if (SetProperty(ref _dualLayer, value))
+            {
+                if (_useDualLayerDisc != value)
+                {
+                    _useDualLayerDisc = value;
+                    OnPropertyChanged(nameof(UseDualLayerDisc));
+                    OnPropertyChanged(nameof(UseSingleLayerDisc));
+                }
+                InvalidateAuthoredCache();
+                if (RequiresAutoAuthoring && !IsBusy)
+                {
+                    ValidateAndPlanLayout();
+                }
+            }
+        }
+    }
+
+    private void SyncSelectedQualityPreset()
+    {
+        var match = AvailableQualityPresets.FirstOrDefault(p =>
+            p.FitToDisc == _fitToDisc && (_fitToDisc || p.VideoKbps == _videoBitrateKbps));
+        if (match != null && !Equals(_selectedQualityPreset, match))
+        {
+            _selectedQualityPreset = match;
+            OnPropertyChanged(nameof(SelectedQualityPreset));
+        }
+    }
+
+    /// <summary>Sets a custom menu title name for <paramref name="moviePath"/> (empty clears back to the cleaned filename).</summary>
+    public void SetTitleName(string moviePath, string? titleName)
+    {
+        string full = Path.GetFullPath(moviePath);
+        string trimmed = (titleName ?? string.Empty).Trim();
+        if (trimmed.Length > 80)
+        {
+            trimmed = trimmed[..80];
+        }
+        if (string.IsNullOrWhiteSpace(trimmed))
+        {
+            _customTitleNames.Remove(full);
+        }
+        else
+        {
+            _customTitleNames[full] = trimmed;
+        }
+        InvalidateAuthoredCache();
+    }
+
+    /// <summary>Returns the menu title name for <paramref name="moviePath"/> (custom name or cleaned filename).</summary>
+    public string GetTitleName(string moviePath)
+    {
+        string full = Path.GetFullPath(moviePath);
+        return _customTitleNames.TryGetValue(full, out string? name) && !string.IsNullOrWhiteSpace(name)
+            ? name
+            : DvdInputNormalizer.CleanMovieTitle(moviePath);
     }
 
     /// <summary>
@@ -250,6 +537,7 @@ public class DvdVideoViewModel : ObservableObject
         {
             if (SetProperty(ref _requiresAutoAuthoring, value))
             {
+                OnPropertyChanged(nameof(AreAuthoringOptionsEnabled));
                 RefreshFitState();
             }
         }
@@ -601,6 +889,12 @@ public class DvdVideoViewModel : ObservableObject
         {
             if (SetProperty(ref _useDualLayerDisc, value))
             {
+                if (_dualLayer != value)
+                {
+                    _dualLayer = value;
+                    OnPropertyChanged(nameof(DualLayer));
+                }
+                InvalidateAuthoredCache();
                 OnPropertyChanged(nameof(UseSingleLayerDisc));
                 if (RequiresAutoAuthoring && !IsBusy)
                 {
@@ -622,12 +916,12 @@ public class DvdVideoViewModel : ObservableObject
 
     /// <summary>Label of the 4.7 GB DVD choice: its bitrate and how it will look.</summary>
     public string SingleLayerChoiceText => FitEstimate?.SingleLayerKbps is int k
-        ? $"4.7 GB DVD: compressed to {k:N0} kbps, {DvdDiscFit.Quality(k, new DvdAuthoringOptions())}"
+        ? $"4.7 GB DVD: compressed to {k:N0} kbps, {DvdDiscFit.Quality(k, BuildFitOptions())}"
         : string.Empty;
 
     /// <summary>Label of the dual-layer DVD choice: its bitrate and how it will look.</summary>
     public string DualLayerChoiceText => FitEstimate?.DualLayerKbps is int k
-        ? $"Dual-layer DVD (DVD+R DL, 8.5 GB): {k:N0} kbps, {DvdDiscFit.Quality(k, new DvdAuthoringOptions())}"
+        ? $"Dual-layer DVD (DVD+R DL, 8.5 GB): {k:N0} kbps, {DvdDiscFit.Quality(k, BuildFitOptions())}"
         : string.Empty;
 
     private void RefreshFitState()
@@ -724,6 +1018,7 @@ public class DvdVideoViewModel : ObservableObject
         IDiscDeviceService? deviceService = null,
         IBurnEngineBackend? burnEngine = null)
     {
+        _selectedQualityPreset = AvailableQualityPresets[0];
         _deviceService = deviceService ?? new DiscDeviceManager(enablePhysicalEnumeration: false);
         _burnEngine = burnEngine ?? new VirtualBurnEngine();
 
@@ -948,10 +1243,16 @@ public class DvdVideoViewModel : ObservableObject
             lookup.SubtitleFiles[movie] = srt;
         }
 
+        var activeSet = new HashSet<string>(SourceMediaFiles.Select(Path.GetFullPath), StringComparer.OrdinalIgnoreCase);
+        foreach (string staleKey in _customTitleNames.Keys.Where(k => !activeSet.Contains(k)).ToList())
+        {
+            _customTitleNames.Remove(staleKey);
+        }
+
         SubtitleRows.Clear();
         foreach (string movie in SourceMediaFiles)
         {
-            var row = new DvdSubtitleChoiceRow(movie);
+            var row = new DvdSubtitleChoiceRow(movie, GetTitleName(movie), SetTitleName);
             bool chosen = _chosenSubtitles.TryGetValue(movie, out string? pick);
             string? srt = DvdVideoAuthoringService.FindSubtitleFile(movie, lookup);
             string ifNone = GenerateSubtitles
@@ -1006,6 +1307,7 @@ public class DvdVideoViewModel : ObservableObject
     {
         CleanupTempAuthoredDirectory();
         _chosenSubtitles.Clear();
+        _customTitleNames.Clear();
         SourceMediaFiles.Clear();
         VideoTsFolderPath = string.Empty;
     }
@@ -1027,13 +1329,20 @@ public class DvdVideoViewModel : ObservableObject
         ResetState(); // ClearSource only resets when the path changed; a path already blank would leave the old plan
         _probedSeconds.Clear();
         _useDualLayerDisc = false; // a choice for the last movies; the next ones start on the cheaper disc
+        _dualLayer = false;
         OnPropertyChanged(nameof(UseDualLayerDisc));
         OnPropertyChanged(nameof(UseSingleLayerDisc));
+        OnPropertyChanged(nameof(DualLayer));
         VolumeLabel = "DVD_VIDEO";
         MenuTitle = "DVD Video";
         LastBuiltIsoPath = null;
         BurnProgress = 0;
         StatusMessage = "New DVD: add movies or choose a VIDEO_TS folder.";
+    }
+
+    private void InvalidateAuthoredCache()
+    {
+        CleanupTempAuthoredDirectory();
     }
 
     private void CleanupTempAuthoredDirectory()
@@ -1331,12 +1640,20 @@ public class DvdVideoViewModel : ObservableObject
             return null;
         }
 
-        var fit = DvdDiscFit.Estimate(seconds, new DvdAuthoringOptions(), UseDualLayerDisc);
+        var fit = DvdDiscFit.Estimate(seconds, BuildFitOptions(), DualLayer || UseDualLayerDisc);
         FitSummaryText = fit.Kind == DvdFitKind.Unknown
             ? "The running time of a movie could not be read, so the size shown is the movie files' own size, not the size once converted."
             : fit.Summary;
         return fit.Kind == DvdFitKind.Unknown ? null : fit;
     }
+
+    private DvdAuthoringOptions BuildFitOptions() => new()
+    {
+        VideoBitrateKbps = VideoBitrateKbps,
+        MaxVideoBitrateKbps = MaxVideoBitrateKbps,
+        FitToDisc = FitToDisc,
+        DualLayer = DualLayer || UseDualLayerDisc
+    };
 
     private void StartReadingRunningTimes(IReadOnlyList<string> movies)
     {
@@ -1440,17 +1757,31 @@ public class DvdVideoViewModel : ObservableObject
             VolumeLabel = string.IsNullOrWhiteSpace(VolumeLabel) ? "DVD_VIDEO" : VolumeLabel,
             MenuTitle = string.IsNullOrWhiteSpace(MenuTitle) ? "DVD Video" : MenuTitle,
             AutoCreatePlayMenu = AutoCreatePlayMenu,
+            MenuAutoPlaySeconds = MenuAutoPlaySeconds,
+            AfterTitleAction = AfterTitleAction,
+            ChapterIntervalSeconds = ChapterIntervalSeconds,
+            SubtitlesOnByDefault = SubtitlesOnByDefault,
+            SubtitleSize = SubtitleSize,
+            FitToDisc = FitToDisc,
+            VideoBitrateKbps = VideoBitrateKbps,
+            MaxVideoBitrateKbps = MaxVideoBitrateKbps,
             UseFfmpegWhenAvailable = UseFfmpegWhenAvailable,
             CustomFfmpegPath = string.IsNullOrWhiteSpace(CustomFfmpegPath) ? null : CustomFfmpegPath,
             GenerateSubtitles = GenerateSubtitles,
             SubtitleLanguage = string.IsNullOrWhiteSpace(SubtitleLanguage) ? "en" : SubtitleLanguage.Trim().ToLowerInvariant(),
-            // Too long for a 4.7 GB DVD even compressed: author for a dual-layer disc (higher bitrate, a cell for the break)
-            DualLayer = FitEstimate?.DualLayer == true
+            DualLayer = DualLayer || FitEstimate?.DualLayer == true
         };
 
         foreach (var (movie, srt) in _chosenSubtitles)
         {
             options.SubtitleFiles[movie] = srt; // the user's picks; "" = no file for that movie
+        }
+        foreach (var (movie, titleName) in _customTitleNames)
+        {
+            if (!string.IsNullOrWhiteSpace(titleName))
+            {
+                options.TitleNames[movie] = titleName.Trim();
+            }
         }
 
         var authoringService = new DvdVideoAuthoringService
@@ -1845,7 +2176,7 @@ public class DvdVideoViewModel : ObservableObject
         }
 
         // 4. Dual-Layer assessment
-        IsDualLayerRequired = DvdLayerBreakCalculator.RequiresLayerBreak(layout.TotalSectors);
+        IsDualLayerRequired = DvdLayerBreakCalculator.RequiresLayerBreak(layout.TotalSectors) || (RequiresAutoAuthoring && DualLayer);
         if (layout.TotalSectors > DvdLayerBreakCalculator.MaxDvd9Sectors)
         {
             // No layer break to plan: no DVD holds it (the layer break calculator refuses sizes past a DVD-9).
@@ -1995,6 +2326,7 @@ public class DvdVideoViewModel : ObservableObject
         CleanupTempAuthoredDirectory();
         IsStructureValid = false;
         RequiresAutoAuthoring = false;
+        OnPropertyChanged(nameof(AreAuthoringOptionsEnabled));
         LastAuthoredVideoTsPath = null;
         ValidationMessages.Clear();
         ExtentLayoutRows.Clear();

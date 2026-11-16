@@ -251,7 +251,8 @@ public static class DvdStillMenu
     /// Null when FFmpeg fails (the caller falls back to the plain menu).
     /// </summary>
     public static async Task<DvdStillMenuResult?> BuildAsync(string heading, IReadOnlyList<DvdMenuTitle> titles, DvdVideoStandard standard,
-        DvdAspectRatio aspect, string ffmpegExe, Func<DvdMenuButtonPlan, byte[]> command, CancellationToken cancellationToken)
+        DvdAspectRatio aspect, string ffmpegExe, Func<DvdMenuButtonPlan, byte[]> command, CancellationToken cancellationToken,
+        int initialButton = 1)
     {
         string work = Path.Combine(Path.GetTempPath(), "IgnisDisc_Menu_" + Guid.NewGuid().ToString("N"));
         Directory.CreateDirectory(work);
@@ -290,7 +291,8 @@ public static class DvdStillMenu
             }
 
             var buttons = Navigation(plans, command);
-            var vobus = DvdNavPackWriter.PatchFile(vob, buttons: buttons, wideButtons: aspect == DvdAspectRatio.Widescreen16x9);
+            var vobus = DvdNavPackWriter.PatchFile(vob, buttons: buttons, wideButtons: aspect == DvdAspectRatio.Widescreen16x9,
+                initialButton: initialButton);
             byte[] bytes = await File.ReadAllBytesAsync(vob, cancellationToken).ConfigureAwait(false);
             return new DvdStillMenuResult(bytes, vobus, plans);
         }

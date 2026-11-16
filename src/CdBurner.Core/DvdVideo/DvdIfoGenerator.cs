@@ -33,17 +33,17 @@ public static class DvdIfoGenerator
     private static byte[] JumpTitle(int title) => [0x30, 0x02, 0x00, 0x00, 0x00, (byte)Math.Clamp(title, 1, 99), 0x00, 0x00];
 
     /// <summary>JumpSS VMGM menu 2 (the title menu), from the first-play program chain.</summary>
-    private static readonly byte[] JumpTitleMenu = [0x30, 0x06, 0x00, 0x00, 0x00, 0x42, 0x00, 0x00];
+    public static readonly byte[] JumpTitleMenu = [0x30, 0x06, 0x00, 0x00, 0x00, 0x42, 0x00, 0x00];
 
     /// <summary>CallSS VMGM menu 2 (the title menu), resuming at cell 1, at the end of a title.</summary>
-    private static readonly byte[] CallTitleMenu = [0x30, 0x08, 0x00, 0x00, 0x01, 0x42, 0x00, 0x00];
+    public static readonly byte[] CallTitleMenu = [0x30, 0x08, 0x00, 0x00, 0x01, 0x42, 0x00, 0x00];
 
     /// <summary>
     /// CallSS VMGM PGC n, resuming at cell 1: the end of a title goes through VMGM program chain n, a command-only chain
     /// that plays the next title. JumpTT itself is only allowed in first play and the VMGM (libdvdnav's vm.c asserts it),
     /// so a title cannot jump to another title directly.
     /// </summary>
-    private static byte[] CallVmgmPgc(int pgcNumber) => [0x30, 0x08, (byte)(pgcNumber >> 8), (byte)pgcNumber, 0x01, 0xC0, 0x00, 0x00];
+    public static byte[] CallVmgmPgc(int pgcNumber) => [0x30, 0x08, (byte)(pgcNumber >> 8), (byte)pgcNumber, 0x01, 0xC0, 0x00, 0x00];
 
     /// <summary>
     /// Number of the VMGM program chain that plays <paramref name="title"/> (2 or later): the chains come after the
@@ -81,7 +81,7 @@ public static class DvdIfoGenerator
     public static byte[] LinkPgc(int pgcNumber) => [0x20, 0x04, 0x00, 0x00, 0x00, 0x00, (byte)(pgcNumber >> 8), (byte)pgcNumber];
 
     /// <summary>SetSTN: subpicture stream 0, shown (0x40) or not; libdvdnav's eval_system_set reads byte 4 (0x80 = set).</summary>
-    private static byte[] SetSubtitles(bool on) => [0x51, 0x00, 0x00, 0x00, (byte)(0x80 | (on ? 0x40 : 0x00)), 0x00, 0x00, 0x00];
+    public static byte[] SetSubtitles(bool on) => [0x51, 0x00, 0x00, 0x00, (byte)(0x80 | (on ? 0x40 : 0x00)), 0x00, 0x00, 0x00];
 
     /// <summary>
     /// Number of the VMGM program chain a menu button links to for <paramref name="title"/>: after the title menu (1) and
@@ -92,7 +92,7 @@ public static class DvdIfoGenerator
         1 + (titleCount - 1) + (withSubtitles ? titleCount : 0) + title;
 
     /// <summary>Exit: stop playback.</summary>
-    private static readonly byte[] Exit = [0x30, 0x01, 0x00, 0x00, 0x00, 0x00, 0x00, 0x00];
+    public static readonly byte[] Exit = [0x30, 0x01, 0x00, 0x00, 0x00, 0x00, 0x00, 0x00];
 
     /// <summary>
     /// Fills the NAV packs of an in-memory VOB and returns its VOBUs (see <see cref="DvdNavPackWriter"/>). A menu VOB
@@ -180,13 +180,21 @@ public static class DvdIfoGenerator
         IReadOnlyList<DvdVobu>? menuVobus = null,
         IReadOnlyList<int>? chapterCounts = null,
         IReadOnlyList<bool>? subtitleStreams = null,
-        bool menuHasButtons = false)
+        bool menuHasButtons = false,
+        int? menuAutoPlaySeconds = null,
+        bool? subtitlesOnByDefault = null,
+        bool chainTitles = true)
     {
         titleSetCount = Math.Clamp(titleSetCount, 1, 99);
         bool hasMenu = menuVobSectors > 0;
+        int effectiveAutoPlay = menuAutoPlaySeconds.HasValue
+            ? Math.Clamp(menuAutoPlaySeconds.Value, 0, 254)
+            : (menuHasButtons ? 0 : MenuStillSeconds);
+        int menuStillByte = effectiveAutoPlay == 0 ? 0xFF : effectiveAutoPlay;
+        byte[] menuPostCmd = effectiveAutoPlay == 0 ? LinkPgc(1) : JumpTitle1;
         var menuUnits = hasMenu ? (menuVobus is { Count: > 0 } ? menuVobus : new[] { new DvdVobu(0, -1, -1) }) : Array.Empty<DvdVobu>();
         var menuCells = hasMenu
-            ? new List<CellInfo> { new(0, menuUnits[^1].Sector, menuVobSectors - 1, menuHasButtons ? 0xFF : MenuStillSeconds, Duration(menuUnits)) }
+            ? new List<CellInfo> { new(0, menuUnits[^1].Sector, menuVobSectors - 1, menuStillByte, Duration(menuUnits)) }
             : new List<CellInfo>();
 
         int ttSrptSector = 1;
@@ -225,8 +233,12 @@ public static class DvdIfoGenerator
         W16(mat, 0x3E, titleSetCount);
         Encoding.ASCII.GetBytes("IGNISDISC").CopyTo(ifo, 0x40); // provider id, zero padded
 
-        byte[] firstPlay = BuildPgc(Array.Empty<CellInfo>(), thirtyFps: true, hasAudio: false,
-            pre: hasMenu && autoPlayMenu ? JumpTitleMenu : JumpTitle1, post: null);
+        byte[] firstTarget = hasMenu && autoPlayMenu ? JumpTitleMenu : JumpTitle1;
+        byte[] firstPlay = subtitlesOnByDefault.HasValue
+            ? BuildPgc(Array.Empty<CellInfo>(), thirtyFps: true, hasAudio: false,
+                pre: SetSubtitles(subtitlesOnByDefault.Value), post: null, pre2: firstTarget)
+            : BuildPgc(Array.Empty<CellInfo>(), thirtyFps: true, hasAudio: false,
+                pre: firstTarget, post: null);
         firstPlay.CopyTo(ifo, 0x400);
         W32(mat, 0x80, 0x400 + firstPlay.Length - 1); // last byte of VMGI_MAT with the first-play PGC
         W32(mat, 0x84, 0x400);                        // first-play PGC
@@ -254,8 +266,8 @@ public static class DvdIfoGenerator
         {
             var t = tt[(8 + (i - 1) * 12)..];
             // Playback type: one sequential PGC; its post command jumps (JumpTT / CallSS) unless it is the last title
-            // of a disc without a menu.
-            t[0] = (byte)(i < titleSetCount || hasMenu ? 0x10 : 0x00);
+            // of a disc without a menu (or ReturnToMenu without a menu).
+            t[0] = (byte)(((i < titleSetCount && chainTitles) || hasMenu) ? 0x10 : 0x00);
             t[1] = 1;      // angles
             W16(t, 2, chapterCounts != null && i <= chapterCounts.Count ? Math.Max(1, chapterCounts[i - 1]) : 1); // chapters
             t[6] = (byte)i; // title set
@@ -294,10 +306,9 @@ public static class DvdIfoGenerator
             if (hasMenu)
             {
                 pgcs.Add((0x82, buttonMenu
-                    // Stays until a button is used; a player that skips the still comes back to the menu.
-                    ? BuildPgc(menuCells, thirtyFps: standard == DvdVideoStandard.Ntsc, hasAudio: false, pre: null, post: LinkPgc(1),
+                    ? BuildPgc(menuCells, thirtyFps: standard == DvdVideoStandard.Ntsc, hasAudio: false, pre: null, post: menuPostCmd,
                         subpictureControl: SubtitleStreamControl, palette: SubtitlePalette)
-                    : BuildPgc(menuCells, thirtyFps: standard == DvdVideoStandard.Ntsc, hasAudio: false, pre: null, post: JumpTitle1)));
+                    : BuildPgc(menuCells, thirtyFps: standard == DvdVideoStandard.Ntsc, hasAudio: false, pre: null, post: menuPostCmd)));
             }
             for (int title = 2; title <= titleSetCount; title++)
             {

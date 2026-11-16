@@ -88,7 +88,10 @@ public static class DvdDiscFit
 
         double total = titleSeconds.Sum();
         string length = FormatLength(total);
-        int lowestKbps = DvdVideoAuthoringService.MinimumVideoKbps + options.AudioBitrateKbps;
+        int minVideoKbps = options.FitToDisc
+            ? DvdVideoAuthoringService.MinimumVideoKbps
+            : Math.Clamp(options.VideoBitrateKbps, DvdVideoAuthoringService.MinimumVideoKbps, 9000);
+        int lowestKbps = minVideoKbps + options.AudioBitrateKbps;
         int audio = options.AudioBitrateKbps;
 
         DvdBitratePlan? single = Bytes(lowestKbps, total) <= DvdVideoAuthoringService.Dvd5PayloadBytes
@@ -143,11 +146,13 @@ public static class DvdDiscFit
             };
         }
 
-        return new DvdFitEstimate(DvdFitKind.TooLong, total, DvdVideoAuthoringService.MinimumVideoKbps,
+        return new DvdFitEstimate(DvdFitKind.TooLong, total, minVideoKbps,
             TitleBytesAt(lowestKbps, titleSeconds),
-            $"{length} of video is too long for one DVD, even a dual-layer one. A 4.7 GB DVD holds about " +
-            $"{FormatLength(LongestAtLowest(DvdVideoAuthoringService.Dvd5PayloadBytes, lowestKbps))} and a dual-layer DVD about " +
-            $"{FormatLength(LongestAtLowest(DvdVideoAuthoringService.Dvd9PayloadBytes, lowestKbps))}. Remove movies and burn them on another disc.");
+            options.FitToDisc
+                ? $"{length} of video is too long for one DVD, even a dual-layer one. A 4.7 GB DVD holds about " +
+                  $"{FormatLength(LongestAtLowest(DvdVideoAuthoringService.Dvd5PayloadBytes, lowestKbps))} and a dual-layer DVD about " +
+                  $"{FormatLength(LongestAtLowest(DvdVideoAuthoringService.Dvd9PayloadBytes, lowestKbps))}. Remove movies and burn them on another disc."
+                : $"At {minVideoKbps:N0} kbps, {length} of video is too long for one DVD (choose Fit to disc, a lower bitrate, or fewer movies).");
     }
 
     /// <summary>Plain words for how the picture will look at a video bitrate.</summary>
@@ -178,6 +183,7 @@ public static class DvdDiscFit
         VideoBitrateKbps = options.VideoBitrateKbps,
         MaxVideoBitrateKbps = options.MaxVideoBitrateKbps,
         AudioBitrateKbps = options.AudioBitrateKbps,
+        FitToDisc = options.FitToDisc,
         DualLayer = dualLayer
     };
 }

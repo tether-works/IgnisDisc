@@ -7,6 +7,24 @@ using CdBurner.Core.Primitives;
 
 namespace CdBurner.Core.DvdVideo;
 
+/// <summary>What a DVD player does when a title finishes playing.</summary>
+public enum DvdAfterTitleAction
+{
+    /// <summary>Advance to the next title (then return to the title menu, or stop if there is none).</summary>
+    PlayNextTitle = 0,
+
+    /// <summary>Return directly to the title menu after each title finishes.</summary>
+    ReturnToMenu = 1
+}
+
+/// <summary>Rendered text size for authored SRT/VobSub DVD subpictures.</summary>
+public enum DvdSubtitleSize
+{
+    Small = 0,
+    Medium = 1,
+    Large = 2
+}
+
 /// <summary>
 /// User configuration options for the universal one-click DVD-Video authoring pipeline.
 /// </summary>
@@ -33,9 +51,46 @@ public sealed class DvdAuthoringOptions
     public string MenuTitle { get; set; } = "DVD Video";
 
     /// <summary>
-    /// Whether to automatically generate an interactive DVD Root Play Menu (VIDEO_TS.VOB). Default: true.
+    /// Whether to create a DVD title menu (VIDEO_TS.VOB) with a still frame and play button per title. Default: true.
     /// </summary>
     public bool AutoCreatePlayMenu { get; set; } = true;
+
+    /// <summary>
+    /// Seconds before the title menu starts Title 1 automatically; 0 (default) waits indefinitely.
+    /// </summary>
+    public int MenuAutoPlaySeconds { get; set; }
+
+    /// <summary>
+    /// What happens when a title finishes playing. Default: <see cref="DvdAfterTitleAction.PlayNextTitle"/>.
+    /// </summary>
+    public DvdAfterTitleAction AfterTitleAction { get; set; } = DvdAfterTitleAction.PlayNextTitle;
+
+    /// <summary>
+    /// Whether First-Play turns subpicture stream 0 on by default. Default: false.
+    /// </summary>
+    public bool SubtitlesOnByDefault { get; set; }
+
+    /// <summary>
+    /// Rendered text size for authored SRT/VobSub DVD subpictures. Default: <see cref="DvdSubtitleSize.Medium"/>.
+    /// </summary>
+    public DvdSubtitleSize SubtitleSize { get; set; } = DvdSubtitleSize.Medium;
+
+    /// <summary>
+    /// When true (default), lowers the video bitrate so total title duration fits the target DVD-5 / DVD-9 payload.
+    /// When false, encodes at <see cref="VideoBitrateKbps"/> without lowering for disc capacity.
+    /// </summary>
+    public bool FitToDisc { get; set; } = true;
+
+    /// <summary>
+    /// Optional custom menu title names keyed by full source movie path (case-insensitive).
+    /// </summary>
+    public IDictionary<string, string> TitleNames { get; } =
+        new Dictionary<string, string>(StringComparer.OrdinalIgnoreCase);
+
+    /// <summary>
+    /// Optional custom menu title names indexed by 0-based title order.
+    /// </summary>
+    public IList<string> OrderedTitleNames { get; } = new List<string>();
 
     /// <summary>
     /// Whether to use FFmpeg when available on the system to transcode arbitrary video streams into MPEG-2. Default: true.
@@ -191,7 +246,13 @@ public sealed class DvdVideoAuthoringService
             string idx;
             try
             {
-                idx = DvdSubtitleWriter.WriteVobSub(kept, Path.Combine(workDir, $"subtitles_{setNum}.sub"));
+                int videoHeight = options.Standard == DvdVideoStandard.Pal ? 576 : 480;
+                idx = DvdSubtitleWriter.WriteVobSub(
+                    kept,
+                    Path.Combine(workDir, $"subtitles_{setNum}.sub"),
+                    width: 720,
+                    height: videoHeight,
+                    size: options.SubtitleSize);
             }
             catch
             {
@@ -285,11 +346,91 @@ public sealed class DvdVideoAuthoringService
         try { Directory.Delete(Path.GetDirectoryName(idxPath)!, recursive: true); } catch (IOException) { } catch (UnauthorizedAccessException) { }
     }
 
+    /// <summary>
+    /// Resolves the display title for each movie from <see cref="DvdAuthoringOptions.TitleNames"/>,
+    /// <see cref="DvdAuthoringOptions.OrderedTitleNames"/>, or the cleaned filename.
+    /// </summary>
+    public static IReadOnlyList<string> ResolveTitleNames(
+        IReadOnlyList<string> movieFilePaths,
+        IReadOnlyList<string> cleanedMovieTitles,
+        DvdAuthoringOptions options)
+    {
+        ArgumentNullException.ThrowIfNull(movieFilePaths);
+        ArgumentNullException.ThrowIfNull(cleanedMovieTitles);
+        ArgumentNullException.ThrowIfNull(options);
+
+        static string ClampTitle(string value)
+        {
+            string trimmed = value.Trim();
+            return trimmed.Length > 80 ? trimmed[..80] : trimmed;
+        }
+
+        var result = new List<string>(movieFilePaths.Count);
+        for (int i = 0; i < movieFilePaths.Count; i++)
+        {
+            string path = movieFilePaths[i];
+            string full = NormalizedPath(path);
+            string? custom = null;
+
+            if (options.TitleNames.TryGetValue(full, out string? byFull) && !string.IsNullOrWhiteSpace(byFull))
+            {
+                custom = byFull;
+            }
+            else if (options.TitleNames.TryGetValue(path, out string? byRaw) && !string.IsNullOrWhiteSpace(byRaw))
+            {
+                custom = byRaw;
+            }
+            else
+            {
+                foreach (var kv in options.TitleNames)
+                {
+                    if (!string.IsNullOrWhiteSpace(kv.Value) &&
+                        string.Equals(NormalizedPath(kv.Key), full, StringComparison.OrdinalIgnoreCase))
+                    {
+                        custom = kv.Value;
+                        break;
+                    }
+                }
+            }
+
+            if (custom != null)
+            {
+                result.Add(ClampTitle(custom));
+            }
+            else if (i < options.OrderedTitleNames.Count && !string.IsNullOrWhiteSpace(options.OrderedTitleNames[i]))
+            {
+                result.Add(ClampTitle(options.OrderedTitleNames[i]));
+            }
+            else if (i < cleanedMovieTitles.Count && !string.IsNullOrWhiteSpace(cleanedMovieTitles[i]))
+            {
+                result.Add(cleanedMovieTitles[i]);
+            }
+            else
+            {
+                result.Add(DvdInputNormalizer.CleanMovieTitle(path));
+            }
+        }
+        return result;
+    }
+
     public static DvdBitratePlan PlanVideoBitrate(IReadOnlyList<double> titleSeconds, DvdAuthoringOptions options)
     {
         ArgumentNullException.ThrowIfNull(titleSeconds);
         ArgumentNullException.ThrowIfNull(options);
         double total = titleSeconds.Where(s => s > 0).Sum();
+        if (!options.FitToDisc)
+        {
+            int fixedKbps = Math.Clamp(options.VideoBitrateKbps, MinimumVideoKbps, 9000);
+            int fixedMaxKbps = Math.Clamp(Math.Max(options.MaxVideoBitrateKbps, fixedKbps), fixedKbps, 9800 - options.AudioBitrateKbps);
+            double targetBytes = options.DualLayer ? Dvd9PayloadBytes : Dvd5PayloadBytes;
+            long projectedBytes = total > 0
+                ? (long)Math.Ceiling((fixedKbps + options.AudioBitrateKbps) * 1000.0 / 8.0 * MuxOverhead * total)
+                : 0;
+            string? overNote = projectedBytes > targetBytes
+                ? $"At {fixedKbps} kbps ({FormatSeconds(total)}), the authored VOBs (~{projectedBytes / 1_000_000_000.0:F2} GB) may exceed {(options.DualLayer ? "DVD-9" : "DVD-5")} capacity."
+                : null;
+            return new DvdBitratePlan(fixedKbps, fixedMaxKbps, overNote);
+        }
         if (total <= 60)
         {
             return new DvdBitratePlan(options.VideoBitrateKbps, options.MaxVideoBitrateKbps, null);
@@ -419,7 +560,8 @@ public sealed class DvdVideoAuthoringService
         CancellationToken cancellationToken = default)
     {
         ArgumentException.ThrowIfNullOrWhiteSpace(inputPath);
-        return AuthorAsync([inputPath], outputRootDirectory, options, progress, cancellationToken);
+        var paths = inputPath.Split([';', '|'], StringSplitOptions.RemoveEmptyEntries | StringSplitOptions.TrimEntries);
+        return AuthorAsync(paths, outputRootDirectory, options, progress, cancellationToken);
     }
 
     private static readonly Regex FfmpegDurationRegex = new(
@@ -580,6 +722,7 @@ public sealed class DvdVideoAuthoringService
             }
 
             titleCount = Math.Min(analyzed.MovieFilePaths.Count, 99);
+            var resolvedTitles = ResolveTitleNames(analyzed.MovieFilePaths, analyzed.CleanedMovieTitles, options);
             int menuVobSectors = 0;
             IReadOnlyList<DvdVobu> menuVobus = Array.Empty<DvdVobu>();
             bool menuHasButtons = false;
@@ -616,12 +759,13 @@ public sealed class DvdVideoAuthoringService
                         {
                             string still = Path.Combine(stills, $"title{i + 1}.png");
                             bool haveStill = await ExtractStillAsync(ffmpegExe!, analyzed.MovieFilePaths[i], probedDurations[i] * 0.3, still, cancellationToken).ConfigureAwait(false);
-                            string name = i < analyzed.CleanedMovieTitles.Count ? analyzed.CleanedMovieTitles[i] : $"Title {i + 1}";
+                            string name = i < resolvedTitles.Count ? resolvedTitles[i] : $"Title {i + 1}";
                             menuTitles.Add(new DvdMenuTitle(name, haveStill ? still : null, FindSubtitleFile(analyzed.MovieFilePaths[i], options) != null));
                         }
+                        int initialButton = options.SubtitlesOnByDefault && menuTitles.Count > 0 && menuTitles[0].HasSubtitles ? 2 : 1;
                         var menu = await DvdStillMenu.BuildAsync(menuTitle, menuTitles, options.Standard, options.AspectRatio, ffmpegExe!,
                             b => DvdIfoGenerator.LinkPgc(DvdIfoGenerator.TitlePlayPgcNumber(b.Title, titleCount, b.WithSubtitles)),
-                            cancellationToken).ConfigureAwait(false);
+                            cancellationToken, initialButton: initialButton).ConfigureAwait(false);
                         if (menu != null)
                         {
                             await File.WriteAllBytesAsync(menuVobPath, menu.Vob, cancellationToken).ConfigureAwait(false);
@@ -646,7 +790,7 @@ public sealed class DvdVideoAuthoringService
                     var menuOpts = new DvdMenuOptions
                     {
                         MenuTitle = menuTitle,
-                        TitleNames = analyzed.CleanedMovieTitles,
+                        TitleNames = resolvedTitles,
                         Standard = options.Standard,
                         AspectRatio = options.AspectRatio
                     };
@@ -660,6 +804,10 @@ public sealed class DvdVideoAuthoringService
                     menuVobus = DvdIfoGenerator.PatchVobNavPacketsInFile(menuVobPath, isMenu: true);
                     logNotes.Add($"Generated menu 'VIDEO_TS.VOB' ({menuVobSectors} sectors).");
                 }
+            }
+            else if (options.AfterTitleAction == DvdAfterTitleAction.ReturnToMenu)
+            {
+                logNotes.Add("No title menu is enabled; playback will stop after each title instead of returning to a menu.");
             }
 
             // Video bitrate so feature-length movies fit on the disc (single-layer DVD-5, or DVD-9 with a usable break)
@@ -681,7 +829,7 @@ public sealed class DvdVideoAuthoringService
 
                 int setNum = i + 1;
                 string moviePath = analyzed.MovieFilePaths[i];
-                string movieName = i < analyzed.CleanedMovieTitles.Count ? analyzed.CleanedMovieTitles[i] : $"Title {setNum}";
+                string movieName = i < resolvedTitles.Count ? resolvedTitles[i] : $"Title {setNum}";
 
                 double titleStartPct = 12.0 + (70.0 * i / titleCount);
                 double titleSpanPct = 70.0 / titleCount;
@@ -794,7 +942,9 @@ public sealed class DvdVideoAuthoringService
                 titleTotalSectors[setNum] = totalVobSecs;
 
                 // Build VTS_xx_0.IFO and VTS_xx_0.BUP
-                int nextTitle = (setNum < titleCount) ? (setNum + 1) : 0;
+                bool hasMenu = menuVobSectors > 0;
+                bool chainToNext = options.AfterTitleAction == DvdAfterTitleAction.PlayNextTitle;
+                int nextTitle = chainToNext && setNum < titleCount ? setNum + 1 : 0;
                 int effectiveDurationSec = detectedDurationSeconds > 1.0 ? (int)Math.Round(detectedDurationSeconds) : 60;
                 byte[] vtsIfoBytes = DvdIfoGenerator.BuildVtsIfo(
                     titleSetNumber: setNum,
@@ -805,7 +955,7 @@ public sealed class DvdVideoAuthoringService
                     menuVobSectors: 0,
                     nextTitleNumber: nextTitle,
                     vobus: vobus,
-                    callMenuAtEnd: menuVobSectors > 0,
+                    callMenuAtEnd: hasMenu,
                     subtitleStream: subtitleIndex != null && transcodeSuccess);
 
                 string vtsIfoPath = Path.Combine(videoTsDir, $"VTS_{setNum:D2}_0.IFO");
@@ -885,11 +1035,14 @@ public sealed class DvdVideoAuthoringService
                 aspect: options.AspectRatio,
                 menuVobSectors: menuVobSectors,
                 vtsStartSectorOffsets: vtsStartOffsets,
-                autoPlayMenu: options.AutoCreatePlayMenu,
+                autoPlayMenu: options.AutoCreatePlayMenu && menuVobSectors > 0,
                 menuVobus: menuVobus,
                 chapterCounts: titleSetIfoInputs.Select(t => t.Vobus.Select(v => v.CellId).Distinct().Count()).ToList(),
                 subtitleStreams: titleSetIfoInputs.Select(t => t.Subtitles).ToList(),
-                menuHasButtons: menuHasButtons);
+                menuHasButtons: menuHasButtons,
+                menuAutoPlaySeconds: options.MenuAutoPlaySeconds,
+                subtitlesOnByDefault: options.SubtitlesOnByDefault,
+                chainTitles: options.AfterTitleAction == DvdAfterTitleAction.PlayNextTitle);
 
             string vmgIfoPath = Path.Combine(videoTsDir, "VIDEO_TS.IFO");
             string vmgBupPath = Path.Combine(videoTsDir, "VIDEO_TS.BUP");

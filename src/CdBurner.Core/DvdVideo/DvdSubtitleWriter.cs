@@ -84,20 +84,29 @@ public static class DvdSubtitleWriter
         return cues.OrderBy(c => c.Start).ToList();
     }
 
+    /// <summary>Font, line spacing, outline, and box margin in pixels for a <see cref="DvdSubtitleSize"/>.</summary>
+    public static (float FontPx, int LineHeight, int OutlinePx, int MarginPx) GetSizeMetrics(DvdSubtitleSize size) => size switch
+    {
+        DvdSubtitleSize.Small => (20f, 27, 3, 5),
+        DvdSubtitleSize.Large => (32f, 42, 5, 7),
+        _ => (26f, 34, 4, 6)
+    };
+
     /// <summary>
     /// Writes <paramref name="cues"/> as VobSub: <paramref name="subPath"/> (program stream packs holding the SPUs) and
     /// the matching .idx (picture size, palette, one timestamp and file position per cue) beside it. Returns the .idx
     /// path, which is what FFmpeg opens. Cues overlapping the next are cut where the next begins.
     /// </summary>
-    public static string WriteVobSub(IReadOnlyList<SubtitleCue> cues, string subPath, int width = 720, int height = 480)
-        => WriteVobSub(cues.Select(c => (c.Start, (TimeSpan?)c.End, (byte[]?)null)).ToList(), cues, subPath, width, height);
+    public static string WriteVobSub(IReadOnlyList<SubtitleCue> cues, string subPath, int width = 720, int height = 480,
+        DvdSubtitleSize size = DvdSubtitleSize.Medium)
+        => WriteVobSub(cues.Select(c => (c.Start, (TimeSpan?)c.End, (byte[]?)null)).ToList(), cues, subPath, width, height, size);
 
     /// <summary>Writes one ready-made SPU (a menu's button highlights) shown from the start, as VobSub.</summary>
     public static string WriteVobSub(byte[] spu, string subPath, int width = 720, int height = 480)
-        => WriteVobSub(new List<(TimeSpan, TimeSpan?, byte[]?)> { (TimeSpan.Zero, null, spu) }, Array.Empty<SubtitleCue>(), subPath, width, height);
+        => WriteVobSub(new List<(TimeSpan, TimeSpan?, byte[]?)> { (TimeSpan.Zero, null, spu) }, Array.Empty<SubtitleCue>(), subPath, width, height, DvdSubtitleSize.Medium);
 
     private static string WriteVobSub(List<(TimeSpan Start, TimeSpan? End, byte[]? Spu)> items, IReadOnlyList<SubtitleCue> cues,
-        string subPath, int width, int height)
+        string subPath, int width, int height, DvdSubtitleSize size)
     {
         string idxPath = Path.ChangeExtension(subPath, ".idx");
         using var sub = new FileStream(subPath, FileMode.Create, FileAccess.Write, FileShare.None);
@@ -123,7 +132,7 @@ public static class DvdSubtitleWriter
                 {
                     continue;
                 }
-                spu = EncodeCue(cues[i].Lines, end - start, width, height);
+                spu = EncodeCue(cues[i].Lines, end - start, width, height, size);
             }
             long pts = (long)Math.Round(start.TotalSeconds * 90_000);
             idx.Append(CultureInfo.InvariantCulture,
@@ -135,10 +144,19 @@ public static class DvdSubtitleWriter
     }
 
     /// <summary>Draws the lines and codes them as one SPU shown for <paramref name="duration"/>.</summary>
-    public static byte[] EncodeCue(IReadOnlyList<string> lines, TimeSpan duration, int width = 720, int height = 480)
+    public static byte[] EncodeCue(IReadOnlyList<string> lines, TimeSpan duration, int width = 720, int height = 480,
+        DvdSubtitleSize size = DvdSubtitleSize.Medium)
     {
-        var (pixels, w, h, x, y) = Render(lines, width, height);
-        return EncodeSpu(pixels, w, h, x, y, duration);
+        var (pixels, w, h, x, y) = Render(lines, width, height, size);
+        try
+        {
+            return EncodeSpu(pixels, w, h, x, y, duration);
+        }
+        catch (InvalidOperationException) when (size == DvdSubtitleSize.Large)
+        {
+            (pixels, w, h, x, y) = Render(lines, width, height, DvdSubtitleSize.Medium);
+            return EncodeSpu(pixels, w, h, x, y, duration);
+        }
     }
 
     /// <summary>
@@ -253,15 +271,25 @@ public static class DvdSubtitleWriter
     }
 
     /// <summary>
-    /// Draws up to two lines of white text with a black outline, centred, their bottom 48 lines above the picture's
+    /// Draws up to three lines of white text with a black outline, centred, their bottom 48 lines above the picture's
     /// bottom (inside the title-safe area), and maps the result to 2-bit pixels. Long lines are wrapped to fit 640 pixels.
     /// </summary>
-    private static (byte[] Pixels, int W, int H, int X, int Y) Render(IReadOnlyList<string> lines, int width, int height)
+    public static (byte[] Pixels, int W, int H, int X, int Y) Render(string text, int width = 720, int height = 480,
+        DvdSubtitleSize size = DvdSubtitleSize.Medium) =>
+        Render(string.IsNullOrEmpty(text) ? Array.Empty<string>() : text.Replace("\r\n", "\n").Replace('\r', '\n').Split('\n'),
+            width, height, size);
+
+    /// <summary>
+    /// Draws up to three lines of white text with a black outline, centred, their bottom 48 lines above the picture's
+    /// bottom (inside the title-safe area), and maps the result to 2-bit pixels. Long lines are wrapped to fit 640 pixels.
+    /// </summary>
+    public static (byte[] Pixels, int W, int H, int X, int Y) Render(IReadOnlyList<string> lines, int width = 720, int height = 480,
+        DvdSubtitleSize size = DvdSubtitleSize.Medium)
     {
-        using var font = new Font("Segoe UI Semibold", 26f, FontStyle.Regular, GraphicsUnit.Pixel);
+        var (fontPx, lineHeight, outline, margin) = GetSizeMetrics(size);
+        using var font = new Font("Segoe UI Semibold", fontPx, FontStyle.Regular, GraphicsUnit.Pixel);
         var wrapped = Wrap(lines, font, 640);
-        const int lineHeight = 34, outline = 4, margin = 6;
-        int h = wrapped.Count * lineHeight + 2 * margin;
+        int h = Math.Max(1, wrapped.Count) * lineHeight + 2 * margin;
         h += h & 1; // whole field pairs
         int w = width - 16;
         using var bmp = new Bitmap(w, h, PixelFormat.Format32bppArgb);

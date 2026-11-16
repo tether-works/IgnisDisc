@@ -67,7 +67,7 @@ public static class DvdNavPackWriter
     /// VOB: one highlight button over the whole picture, selected from the start, that runs the command.
     /// </summary>
     public static IReadOnlyList<DvdVobu> Patch(Stream vob, int vobId = 1, int cellId = 1, byte[]? buttonCommand = null, int chapterSeconds = 0,
-        IReadOnlyList<DvdMenuButton>? buttons = null, bool wideButtons = false)
+        IReadOnlyList<DvdMenuButton>? buttons = null, bool wideButtons = false, int initialButton = 1)
     {
         ArgumentNullException.ThrowIfNull(vob);
         int totalSectors = (int)(vob.Length / SectorSize);
@@ -122,7 +122,7 @@ public static class DvdNavPackWriter
             elapsed.CopyTo(pci[24..]);
             if (buttons is { Count: > 0 })
             {
-                WriteButtons(pci[HliOffset..], vobu, buttons, wideButtons);
+                WriteButtons(pci[HliOffset..], vobu, buttons, wideButtons, initialButton);
             }
             else if (buttonCommand != null)
             {
@@ -167,12 +167,12 @@ public static class DvdNavPackWriter
         return vobus;
     }
 
-    /// <summary>Patches a VOB file in place; see <see cref="Patch(Stream, int, int, byte[])"/>.</summary>
+    /// <summary>Patches a VOB file in place; see <see cref="Patch(Stream, int, int, byte[], int, IReadOnlyList{DvdMenuButton}?, bool, int)"/>.</summary>
     public static IReadOnlyList<DvdVobu> PatchFile(string path, int vobId = 1, int cellId = 1, byte[]? buttonCommand = null, int chapterSeconds = 0,
-        IReadOnlyList<DvdMenuButton>? buttons = null, bool wideButtons = false)
+        IReadOnlyList<DvdMenuButton>? buttons = null, bool wideButtons = false, int initialButton = 1)
     {
         using var fs = new FileStream(path, FileMode.Open, FileAccess.ReadWrite, FileShare.Read, 1 << 20);
-        return Patch(fs, vobId, cellId, buttonCommand, chapterSeconds, buttons, wideButtons);
+        return Patch(fs, vobId, cellId, buttonCommand, chapterSeconds, buttons, wideButtons, initialButton);
     }
 
     /// <summary>
@@ -443,7 +443,7 @@ public static class DvdNavPackWriter
     /// activated, fully opaque (BTN_COLIT: four colour nibbles e2 e1 p b, then four contrast nibbles). Each button: colour
     /// scheme 1, its rectangle (10-bit coordinates), no auto action, neighbours, command (18 bytes, as read_hli parses).
     /// </summary>
-    private static void WriteButtons(Span<byte> hli, DvdVobu vobu, IReadOnlyList<DvdMenuButton> buttons, bool wide)
+    private static void WriteButtons(Span<byte> hli, DvdVobu vobu, IReadOnlyList<DvdMenuButton> buttons, bool wide, int initialButton = 1)
     {
         int count = Math.Min(36, buttons.Count);
         BinaryPrimitives.WriteUInt16BigEndian(hli, 1);
@@ -454,7 +454,7 @@ public static class DvdNavPackWriter
         hli[16] = 0;
         hli[17] = (byte)count;
         hli[18] = (byte)count;
-        hli[20] = 1;
+        hli[20] = (byte)Math.Clamp(initialButton, 1, count);
         var colors = hli[22..];
         BinaryPrimitives.WriteUInt32BigEndian(colors, 0x004000F0);      // scheme 1, selected: pattern = amber, opaque
         BinaryPrimitives.WriteUInt32BigEndian(colors[4..], 0x005000F0); // scheme 1, activated: pattern = white, opaque

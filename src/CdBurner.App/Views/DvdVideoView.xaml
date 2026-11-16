@@ -99,10 +99,9 @@
                         Margin="8,0,0,0" />
 
                 <!-- Options Sub-row -->
-                <WrapPanel Grid.Row="1" Grid.Column="0" Grid.ColumnSpan="6"
-                           Orientation="Horizontal"
-                           Margin="0,10,0,0"
-                           VerticalAlignment="Center">
+                <StackPanel Grid.Row="1" Grid.Column="0" Grid.ColumnSpan="6" Margin="0,10,0,0">
+                    <WrapPanel Orientation="Horizontal"
+                               VerticalAlignment="Center">
                     <TextBlock Text="Volume Label:"
                                VerticalAlignment="Center"
                                FontWeight="SemiBold"
@@ -210,7 +209,80 @@
                             Padding="10,3"
                             FontSize="11.5"
                             VerticalAlignment="Center" />
-                </WrapPanel>
+                    </WrapPanel>
+
+                    <WrapPanel Orientation="Horizontal"
+                               Margin="0,8,0,0"
+                               VerticalAlignment="Center"
+                               IsEnabled="{Binding AreAuthoringOptionsEnabled}">
+                        <TextBlock Text="Menu autoplay:"
+                                   VerticalAlignment="Center"
+                                   FontWeight="SemiBold"
+                                   Foreground="{DynamicResource TextSecondaryBrush}"
+                                   Margin="0,0,6,0" />
+                        <ComboBox Width="110"
+                                  AutomationProperties.Name="Menu autoplay"
+                                  ItemsSource="{Binding MenuAutoPlayChoices}"
+                                  SelectedValuePath="Value"
+                                  DisplayMemberPath="Label"
+                                  SelectedValue="{Binding MenuAutoPlaySeconds}"
+                                  IsEnabled="{Binding AutoCreatePlayMenu}"
+                                  Margin="0,0,14,0" />
+
+                        <TextBlock Text="After a film:"
+                                   VerticalAlignment="Center"
+                                   FontWeight="SemiBold"
+                                   Foreground="{DynamicResource TextSecondaryBrush}"
+                                   Margin="0,0,6,0" />
+                        <ComboBox Width="130"
+                                  AutomationProperties.Name="Action after each film"
+                                  ItemsSource="{Binding AvailableAfterTitleActions}"
+                                  SelectedItem="{Binding AfterTitleAction}"
+                                  Margin="0,0,14,0" />
+
+                        <TextBlock Text="Chapters:"
+                                   VerticalAlignment="Center"
+                                   FontWeight="SemiBold"
+                                   Foreground="{DynamicResource TextSecondaryBrush}"
+                                   Margin="0,0,6,0" />
+                        <ComboBox Width="115"
+                                  AutomationProperties.Name="Chapter interval"
+                                  ItemsSource="{Binding ChapterIntervalChoices}"
+                                  SelectedValuePath="Value"
+                                  DisplayMemberPath="Label"
+                                  SelectedValue="{Binding ChapterIntervalMinutes}"
+                                  Margin="0,0,14,0" />
+
+                        <TextBlock Text="Video quality:"
+                                   VerticalAlignment="Center"
+                                   FontWeight="SemiBold"
+                                   Foreground="{DynamicResource TextSecondaryBrush}"
+                                   Margin="0,0,6,0" />
+                        <ComboBox Width="160"
+                                  AutomationProperties.Name="Video quality"
+                                  ItemsSource="{Binding AvailableQualityPresets}"
+                                  DisplayMemberPath="Label"
+                                  SelectedItem="{Binding SelectedQualityPreset}"
+                                  Margin="0,0,14,0" />
+
+                        <CheckBox Content="Show subtitles by default"
+                                  AutomationProperties.Name="Show subtitles by default"
+                                  IsChecked="{Binding SubtitlesOnByDefault}"
+                                  VerticalAlignment="Center"
+                                  Foreground="{DynamicResource TextPrimaryBrush}"
+                                  Margin="0,0,14,0" />
+
+                        <TextBlock Text="Subtitle size:"
+                                   VerticalAlignment="Center"
+                                   FontWeight="SemiBold"
+                                   Foreground="{DynamicResource TextSecondaryBrush}"
+                                   Margin="0,0,6,0" />
+                        <ComboBox Width="95"
+                                  AutomationProperties.Name="Subtitle text size"
+                                  ItemsSource="{Binding AvailableSubtitleSizes}"
+                                  SelectedItem="{Binding SubtitleSize}" />
+                    </WrapPanel>
+                </StackPanel>
 
                 <!-- Subtitles per movie: which .srt was found or chosen, with Choose / No subtitles -->
                 <StackPanel Grid.Row="2" Grid.Column="0" Grid.ColumnSpan="6"
@@ -225,7 +297,8 @@
                             <DataTemplate>
                                 <Grid Margin="0,2,0,2">
                                     <Grid.ColumnDefinitions>
-                                        <ColumnDefinition Width="Auto" MaxWidth="320" />
+                                        <ColumnDefinition Width="Auto" MaxWidth="240" />
+                                        <ColumnDefinition Width="190" />
                                         <ColumnDefinition Width="*" />
                                         <ColumnDefinition Width="Auto" />
                                         <ColumnDefinition Width="Auto" />
@@ -238,14 +311,25 @@
                                                Foreground="{DynamicResource TextPrimaryBrush}"
                                                VerticalAlignment="Center"
                                                Margin="0,0,10,0" />
-                                    <TextBlock Grid.Column="1"
+                                    <TextBox Grid.Column="1"
+                                             Text="{Binding MenuTitleName, UpdateSourceTrigger=PropertyChanged}"
+                                             AutomationProperties.Name="Menu title name"
+                                             ToolTip="Title shown on the DVD title menu"
+                                             MaxLength="80"
+                                             Padding="6,3"
+                                             Background="{DynamicResource ControlBackgroundBrush}"
+                                             Foreground="{DynamicResource TextPrimaryBrush}"
+                                             BorderBrush="{DynamicResource ControlBorderBrush}"
+                                             VerticalAlignment="Center"
+                                             Margin="0,0,10,0" />
+                                    <TextBlock Grid.Column="2"
                                                Text="{Binding StatusText}"
                                                ToolTip="{Binding SubtitlePath}"
                                                TextWrapping="Wrap"
                                                Foreground="{DynamicResource TextSecondaryBrush}"
                                                VerticalAlignment="Center"
                                                Margin="0,0,10,0" />
-                                    <Button Grid.Column="2"
+                                    <Button Grid.Column="3"
                                             Content="Choose .srt..."
                                             AutomationProperties.Name="Choose subtitle file"
                                             Command="{Binding DataContext.ChooseSubtitleFileCommand, RelativeSource={RelativeSource AncestorType=ItemsControl}}"
@@ -253,7 +337,7 @@
                                             Padding="10,3"
                                             FontSize="11.5"
                                             Margin="0,0,6,0" />
-                                    <Button Grid.Column="3"
+                                    <Button Grid.Column="4"
                                             Content="No subtitles"
                                             AutomationProperties.Name="Use no subtitle file"
                                             ToolTip="Leave this movie's subtitle file off the disc (with Generate subtitles on, they are made by speech recognition instead)"
