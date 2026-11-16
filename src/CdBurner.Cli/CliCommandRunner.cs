@@ -52,7 +52,7 @@ public static partial class CliCommandRunner
         "lookup", "keep-wav", "continue-on-error", "verify-accuraterip", "secure", "plan-only",
         "overwrite", "strict-verify", "no-verify", "no-secure", "allow-damaged", "no-fill", "keep-folders",
         "generate-subtitles", "no-menu", "dual-layer", "fit-to-disc", "no-ffmpeg", "no-cd-text", "normalize", "peak-normalize", "rms-level",
-        "no-burnfree", "append", "delete-backups", "confirm-shutdown"
+        "no-burnfree", "append", "delete-backups", "confirm-shutdown", "windows-writer"
     };
 
     private static void WriteJsonResult(TextWriter stdout, object payload)
@@ -706,7 +706,7 @@ public static partial class CliCommandRunner
         string driveId = cmd.GetRequiredOption("drive", "--drive <id>");
         string isoPath = cmd.GetRequiredOption("iso", "--iso <file.iso>");
         string? speedStr = cmd.GetOption("speed");
-        var (nativeEngine, testWrite) = ResolveNativeDataEngine(cmd, burnEngine);
+        var (nativeEngine, testWrite) = ResolveNativeDataEngine(cmd, burnEngine, hasDirectDefault: true);
         bool strictVerify = cmd.HasFlag("strict-verify"); // every read forced from the disc; implies --verify
         // Read back by default (--no-verify skips it; --verify is still accepted). A test write records nothing to read,
         // and a direct burn is always read back.
@@ -723,6 +723,8 @@ public static partial class CliCommandRunner
 
         var recorder = FindRecorder(deviceService, driveId);
         var mediaStatus = recorder.QueryMediaStatus();
+        nativeEngine = ApplyDirectWritingDefault(cmd, nativeEngine, burnEngine, mediaStatus, stdout);
+        verify |= nativeEngine != null && !testWrite; // a direct burn is always read back
 
         var speedDesc = ParseSpeed(speedStr, recorder, mediaStatus.MediaType);
 
@@ -805,7 +807,7 @@ public static partial class CliCommandRunner
         string? speedStr = cmd.GetOption("speed");
         string? bootBiosPath = cmd.GetOption("boot-bios");
         string? bootUefiPath = cmd.GetOption("boot-uefi");
-        var (nativeEngine, testWrite) = ResolveNativeDataEngine(cmd, burnEngine);
+        var (nativeEngine, testWrite) = ResolveNativeDataEngine(cmd, burnEngine, hasDirectDefault: true);
         bool strictVerify = cmd.HasFlag("strict-verify"); // every read forced from the disc; implies --verify
         // Read back by default (--no-verify skips it; --verify is still accepted). A test write records nothing to read,
         // and a direct burn is always read back.
@@ -833,8 +835,11 @@ public static partial class CliCommandRunner
         }
 
         var recorder = FindRecorder(deviceService, driveId);
+        var windowsStatus = recorder.QueryMediaStatus();
+        nativeEngine = ApplyDirectWritingDefault(cmd, nativeEngine, burnEngine, windowsStatus, stdout);
+        verify |= nativeEngine != null && !testWrite; // a direct burn is always read back
         // As the writer that will burn sees the disc: direct writing finds an open DVD-RW that Windows calls overwrite-only.
-        var mediaStatus = MediaStatusForWriting.Describe(nativeEngine ?? burnEngine, recorder);
+        var mediaStatus = MediaStatusForWriting.Describe(nativeEngine ?? burnEngine, recorder, windowsStatus);
         if (explicitAppend)
         {
             if (!mediaStatus.MediaPresent)
@@ -956,14 +961,21 @@ public static partial class CliCommandRunner
     /// <c>--native [--test-write | --test-first] [--log-dir]</c> for data burns: the direct writer, with the given
     /// engine kept for discs it does not cover yet, reading and erasing. Null without <c>--native</c>.
     /// </summary>
-    private static (NativeDataBurnEngine? Engine, bool TestWrite) ResolveNativeDataEngine(CommandLineArgs cmd, IBurnEngineBackend fallback)
+    /// <param name="hasDirectDefault">True for commands where <see cref="ApplyDirectWritingDefault"/> may pick the direct
+    /// writer without <c>--native</c> (burn-data, burn-iso); there <c>--log-dir</c> is accepted on its own.</param>
+    private static (NativeDataBurnEngine? Engine, bool TestWrite) ResolveNativeDataEngine(CommandLineArgs cmd, IBurnEngineBackend fallback,
+        bool hasDirectDefault = false)
     {
         bool native = cmd.HasFlag("native");
         bool testWrite = cmd.HasFlag("test-write");
         bool testFirst = cmd.HasFlag("test-first");
-        if ((testWrite || testFirst || cmd.GetOption("log-dir") != null) && !native)
+        if ((testWrite || testFirst) && !native)
         {
-            throw new CommandLineException("--test-write, --test-first and --log-dir need --native.");
+            throw new CommandLineException("--test-write and --test-first need --native.");
+        }
+        if (cmd.GetOption("log-dir") != null && !native && !hasDirectDefault)
+        {
+            throw new CommandLineException("--log-dir needs --native.");
         }
         if (testFirst && testWrite)
         {
@@ -972,6 +984,35 @@ public static partial class CliCommandRunner
         return native
             ? (new NativeDataBurnEngine(fallback, cmd.GetOption("log-dir")) { TestWriteFirst = testFirst }, testWrite)
             : (null, false);
+    }
+
+    /// <summary>
+    /// The writer for the disc in the drive: <paramref name="chosen"/> when <c>--native</c> was given; otherwise direct
+    /// drive commands for a disc they suit better (a DVD-RW, <see cref="DirectWritingDefault"/>) unless
+    /// <c>--windows-writer</c>; otherwise null, the Windows writer. Says so on <paramref name="note"/> when the default
+    /// picked the direct writer.
+    /// </summary>
+    private static NativeDataBurnEngine? ApplyDirectWritingDefault(CommandLineArgs cmd, NativeDataBurnEngine? chosen, IBurnEngineBackend fallback,
+        MediaStatusDto status, TextWriter note)
+    {
+        bool windowsWriter = cmd.HasFlag("windows-writer");
+        if (chosen != null)
+        {
+            if (windowsWriter)
+            {
+                throw new CommandLineException("--native and --windows-writer cannot be used together.");
+            }
+            return chosen;
+        }
+        if (windowsWriter || !DirectWritingDefault.Prefers(status))
+        {
+            return null;
+        }
+        if (!cmd.IsJson)
+        {
+            note.WriteLine(DirectWritingDefault.Note + " (--windows-writer uses Windows' writer.)");
+        }
+        return new NativeDataBurnEngine(fallback, cmd.GetOption("log-dir"));
     }
 
     /// <summary>
@@ -3146,10 +3187,10 @@ public static partial class CliCommandRunner
         stdout.WriteLine("      Closes the tray and waits until the drive is ready. On a drive that cannot close its own tray it says so and exits 1.");
         stdout.WriteLine("  build-iso --input <folder> --output <file.iso> [--label <vol>] [--udf] [--udf-rev <1.02|1.50|2.00|2.01|2.50|2.60>] [--joliet] [--boot-bios <img>] [--boot-uefi <img>] [--fixed-time <unix|iso8601>] [--sha256sums] [--blake3sums] [--json]");
         stdout.WriteLine("      Compiles a folder into an ISO 9660 / Joliet / UDF filesystem image.");
-        stdout.WriteLine("  burn-iso --drive <id> --iso <file.iso|.nrg|.cdi|.mdf|.mds|.ccd|.img> [--speed <X|max>] [--no-verify | --strict-verify] [--no-close] [--no-burnfree] [--overwrite] [--post-action none|eject|sound|eject-sound|shutdown] [--native [--test-write | --test-first] [--layer-break <sectors>] [--log-dir <folder>]] [--json]");
-        stdout.WriteLine("      Burns an ISO image directly to the target optical drive. --layer-break: sectors on the first layer of a DVD+R DL (multiple of 16).");
-        stdout.WriteLine("  burn-data --drive <id> --input <folder> [--label <vol>] [--speed <X|max>] [--udf] [--udf-rev <1.02|1.50|2.00|2.01|2.50|2.60>] [--joliet] [--boot-bios <img>] [--boot-uefi <img>] [--no-verify | --strict-verify] [--no-close] [--append] [--no-burnfree] [--overwrite] [--post-action none|eject|sound|eject-sound|shutdown] [--fixed-time <unix|iso8601>] [--sha256sums] [--blake3sums] [--native [--test-write | --test-first] [--layer-break <sectors>] [--log-dir <folder>]] [--json]");
-        stdout.WriteLine("      Compiles a folder and burns it to optical media (--append merges and adds a session on an appendable disc).");
+        stdout.WriteLine("  burn-iso --drive <id> --iso <file.iso|.nrg|.cdi|.mdf|.mds|.ccd|.img> [--speed <X|max>] [--no-verify | --strict-verify] [--no-close] [--no-burnfree] [--overwrite] [--post-action none|eject|sound|eject-sound|shutdown] [--windows-writer | --native [--test-write | --test-first] [--layer-break <sectors>] [--log-dir <folder>]] [--json]");
+        stdout.WriteLine("      Burns an ISO image directly to the target optical drive. --layer-break: sectors on the first layer of a DVD+R DL (multiple of 16). A DVD-RW is written with direct drive commands unless --windows-writer.");
+        stdout.WriteLine("  burn-data --drive <id> --input <folder> [--label <vol>] [--speed <X|max>] [--udf] [--udf-rev <1.02|1.50|2.00|2.01|2.50|2.60>] [--joliet] [--boot-bios <img>] [--boot-uefi <img>] [--no-verify | --strict-verify] [--no-close] [--append] [--no-burnfree] [--overwrite] [--post-action none|eject|sound|eject-sound|shutdown] [--fixed-time <unix|iso8601>] [--sha256sums] [--blake3sums] [--windows-writer | --native [--test-write | --test-first] [--layer-break <sectors>] [--log-dir <folder>]] [--json]");
+        stdout.WriteLine("      Compiles a folder and burns it to optical media (--append merges and adds a session on an appendable disc). A DVD-RW is written with direct drive commands unless --windows-writer.");
         stdout.WriteLine("  burn-audio (--drive <id> | --plan-only) (--tracks <files|.cue|.m3u|.pls> | --tracks-file <file.json>) [--title <album>] [--artist <name>] [--songwriter <name>] [--upc <13digits>] [--speed <X|max>] [--dao] [--pregap <frames>] [--normalize] [--rms-level] [--loudness track|album|off] [--crossfade <sec>] [--no-cd-text] [--no-burnfree] [--post-action none|eject|sound|eject-sound|shutdown] [--allow-damaged] [--native [--test-write | --test-first] [--recovery-session] [--write-offset <samples|auto>] [--log-dir <folder>]] [--json]");
         stdout.WriteLine("      Burns Red Book Audio CD from WAV, FLAC, MP3, AAC/M4A, WMA, .cue, .m3u/.pls, or a JSON --tracks-file (--recovery-session adds session-2 PAR2 recovery; --plan-only previews without burning).");
         stdout.WriteLine("  burn-dvd --drive <id> --video-ts <folder|movie> [--label <vol>] [--menu-title <title>] [--menu on|off | --no-menu] [--menu-autoplay <never|sec>] [--after-title next|menu] [--standard ntsc|pal] [--aspect 16:9|4:3] [--chapters <none|sec>] [--subtitles-default on|off] [--subtitle-size small|medium|large] [--video-bitrate <fit|kbps>] [--fit-to-disc] [--title-names <a;b;...>] [--dual-layer] [--generate-subtitles [--subtitle-language <code>]] [--speed <X|max>] [--no-verify] [--no-burnfree] [--overwrite] [--post-action none|eject|sound|eject-sound|shutdown] [--native [--test-write | --test-first] [--log-dir <folder>]] [--json]");

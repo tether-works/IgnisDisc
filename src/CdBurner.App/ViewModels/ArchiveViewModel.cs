@@ -1,4 +1,4 @@
-﻿using CdBurner.App.Resources;
+using CdBurner.App.Resources;
 using System.Collections.ObjectModel;
 using System.IO;
 using System.Net.Http;
@@ -293,7 +293,22 @@ public class ArchiveViewModel : ObservableObject
     public bool UseDirectDriveCommands
     {
         get => _useDirectDriveCommands;
-        set => SetProperty(ref _useDirectDriveCommands, value);
+        set
+        {
+            _directDefault.UserChose();
+            SetProperty(ref _useDirectDriveCommands, value);
+        }
+    }
+
+    private readonly AutomaticChoice _directDefault = new();
+
+    /// <summary>On by itself for a DVD-RW while the setting allows it, until the user sets the box (as on the Data Disc screen).</summary>
+    public void ApplyDirectDefaultForDisc(MediaStatusDto? status, bool enabled)
+    {
+        if (_directDefault.Decide(_useDirectDriveCommands, enabled && DirectWritingDefault.Prefers(status)) is bool value)
+        {
+            SetProperty(ref _useDirectDriveCommands, value, nameof(UseDirectDriveCommands));
+        }
     }
 
     /// <summary>Folder for the command logs of direct burns; null for the default under %LOCALAPPDATA%.</summary>
@@ -809,7 +824,8 @@ public class ArchiveViewModel : ObservableObject
         }
 
         // A used DVD+RW / DVD-RAM would be wiped by the burn: ask first.
-        if (!CdBurner.App.Views.BurnTargetDialog.ConfirmReplaceExistingData(SelectedRecorder, out bool replaceAllowed))
+        if (!CdBurner.App.Views.BurnTargetDialog.ConfirmReplaceExistingData(SelectedRecorder, out bool replaceAllowed,
+                UseDirectDriveCommands ? new CdBurner.Hardware.NativeWriting.NativeDataBurnEngine(_burnEngine) : null))
         {
             StatusMessage = $"Disc {row.DiscNumber} not burned: the disc in the drive still has files you chose to keep.";
             row.Status = "Cancelled";

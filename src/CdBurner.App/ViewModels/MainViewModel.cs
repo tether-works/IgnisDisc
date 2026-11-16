@@ -608,6 +608,8 @@ public class MainViewModel : ObservableObject, IDisposable
             _dvdVideo.EjectAfterBurn = _settings.EjectAfterBurnByDefault;
             _dvdVideo.RefreshFfmpegStatus();
         }
+
+        ApplyDirectWritingDefaults(); // the DVD-RW setting may just have changed
     }
 
     private void InitializeWorkspaces()
@@ -863,7 +865,23 @@ public class MainViewModel : ObservableObject, IDisposable
             CurrentCapacity = CompilationCapacityCalculator.AssessCapacity(0, DiscMediaType.CdR);
         }
 
+        ApplyDirectWritingDefaults();
         RefreshCommandStates();
+    }
+
+    /// <summary>
+    /// Ticks "Direct drive commands" on the data, image, archive and DVD-Video screens while the disc in the drive is a
+    /// DVD-RW (<see cref="CdBurner.Core.Burning.DirectWritingDefault"/>) and the setting allows it, and unticks a box it
+    /// ticked itself when another disc goes in. A box the user set stays as they set it.
+    /// </summary>
+    private void ApplyDirectWritingDefaults()
+    {
+        bool enabled = _settings?.DirectWritingForDvdRw ?? true;
+        var status = CurrentMediaStatus;
+        _dataBurn?.ApplyDirectDefaultForDisc(status, enabled);
+        _imageStudio?.ApplyDirectDefaultForDisc(status, enabled);
+        _archive?.ApplyDirectDefaultForDisc(status, enabled);
+        _dvdVideo?.ApplyDirectDefaultForDisc(status, enabled);
     }
 
     private void UpdateCapacityForActiveWorkspace()

@@ -167,7 +167,10 @@ public sealed partial class NativeTaoDataWriter
             {
                 // Measured on the GP60NB50 (Ritek DVD-RW): after a quick erase (BLANK minimal) feature 0021h is listed
                 // but not current; a full erase makes it current again.
-                string hint = profile == ProfileDvdMinusRwSequential && !request.AppendsSession ? " " + QuickErasedDvdRwHint : "";
+                bool quickErasedDvdRw = profile == ProfileDvdMinusRwSequential && !request.AppendsSession;
+                string hint = quickErasedDvdRw ? " " + QuickErasedDvdRwHint : "";
+                // Nothing was sent that changes the disc: the Windows writer can still burn it (in overwrite mode).
+                state.UnsupportedDisc = quickErasedDvdRw;
                 throw Stop((request.AppendsSession
                     ? "The drive does not offer incremental writing for this disc, which adding a session needs."
                     : "The drive does not offer incremental writing for this disc, which leaving the disc open needs.") + hint);

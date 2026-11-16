@@ -6,6 +6,7 @@ using CdBurner.Cli;
 using CdBurner.Core;
 using CdBurner.Core.Abstractions;
 using CdBurner.Core.Audio;
+using CdBurner.Core.Burning;
 using CdBurner.Core.DvdVideo;
 using CdBurner.Core.Primitives;
 using CdBurner.Hardware.Devices;
@@ -609,6 +610,92 @@ public sealed class CliIntegrationTests : IDisposable
         Assert.NotEqual(0, code);
         Assert.Contains(expected, err.ToString());
         Assert.True(medium.IsBlank);
+    }
+
+    [Fact]
+    public async Task BurnData_OnADvdRw_UsesDirectDriveCommandsByDefault_AndAddsTheNextSession()
+    {
+        // Without --native a DVD-RW still gets the direct writer (Windows' writer would format it for overwriting).
+        string first = CreateSampleDataFolder("DvdRwDefaultOne");
+        string second = Path.Combine(_tempDir, "DvdRwDefaultTwo");
+        Directory.CreateDirectory(second);
+        File.WriteAllBytes(Path.Combine(second, "ADDED.BIN"), new byte[30_000]);
+        using var medium = VirtualDiscMedium.CreateBlankDvdRw47();
+        _recorder.InsertMedia(medium);
+        string logs = Path.Combine(_tempDir, "dvdrw-default-logs");
+
+        var (out1, err1) = CreateStringWriters();
+        int code1 = await CliCommandRunner.RunAsync(
+            new[] { "burn-data", "--drive", "VDRV-01", "--input", first, "--no-close", "--log-dir", logs },
+            out1, err1, _deviceService, _burnEngine);
+        Assert.True(code1 == 0, err1.ToString() + out1);
+        Assert.Contains(DirectWritingDefault.Note, out1.ToString());
+        Assert.DoesNotContain(DataBurnService.NotLeftOpenMessage, out1.ToString());
+        Assert.False(medium.InRestrictedOverwriteMode);
+        Assert.False(medium.IsFinalized);
+
+        var (out2, err2) = CreateStringWriters();
+        int code2 = await CliCommandRunner.RunAsync(
+            new[] { "burn-data", "--drive", "VDRV-01", "--input", second, "--log-dir", logs, "--json" },
+            out2, err2, _deviceService, _burnEngine);
+        Assert.True(code2 == 0, err2.ToString() + out2);
+        using var doc = ParseJsonOutput(out2);
+        Assert.Equal("direct", doc.RootElement.GetProperty("directWrite").GetProperty("writer").GetString());
+        Assert.Equal(2, medium.Sessions.Count);
+        Assert.True(medium.IsFinalized);
+        using var reader = CdBurner.Core.Iso.IsoImageReader.FromStream(medium.CreateReadStream(), sessionStartLba: medium.Sessions[1].StartLba);
+        Assert.NotNull(reader.FindFile("README.TXT")); // the first session's files carried over
+        Assert.NotNull(reader.FindFile("ADDED.BIN"));
+    }
+
+    [Fact]
+    public async Task BurnData_OnADvdRw_WindowsWriterFlag_KeepsWindowsWriter_AndConflictsWithNative()
+    {
+        string folder = CreateSampleDataFolder("DvdRwWindowsWriter");
+        using var medium = VirtualDiscMedium.CreateBlankDvdRw47();
+        _recorder.InsertMedia(medium);
+
+        var (stdout, stderr) = CreateStringWriters();
+        int code = await CliCommandRunner.RunAsync(
+            new[] { "burn-data", "--drive", "VDRV-01", "--input", folder, "--windows-writer", "--json" },
+            stdout, stderr, _deviceService, _burnEngine);
+        Assert.True(code == 0, stderr.ToString() + stdout);
+        using (var doc = ParseJsonOutput(stdout))
+        {
+            Assert.False(doc.RootElement.TryGetProperty("directWrite", out _));
+        }
+        Assert.True(medium.InRestrictedOverwriteMode); // as Windows' writer leaves a DVD-RW
+
+        var (_, err2) = CreateStringWriters();
+        int refused = await CliCommandRunner.RunAsync(
+            new[] { "burn-iso", "--drive", "VDRV-01", "--iso", "missing.iso", "--native", "--windows-writer" },
+            new StringWriter(), err2, _deviceService, _burnEngine);
+        Assert.NotEqual(0, refused);
+        var (_, err3) = CreateStringWriters();
+        string iso = Path.Combine(_tempDir, "conflict.iso");
+        Assert.Equal(0, await CliCommandRunner.RunAsync(new[] { "build-iso", "--input", folder, "--output", iso },
+            new StringWriter(), new StringWriter(), _deviceService, _burnEngine));
+        refused = await CliCommandRunner.RunAsync(
+            new[] { "burn-iso", "--drive", "VDRV-01", "--iso", iso, "--native", "--windows-writer" },
+            new StringWriter(), err3, _deviceService, _burnEngine);
+        Assert.NotEqual(0, refused);
+        Assert.Contains("--native and --windows-writer cannot be used together", err3.ToString());
+    }
+
+    [Fact]
+    public async Task BurnData_OnACdRw_KeepsTheWindowsWriterByDefault()
+    {
+        string folder = CreateSampleDataFolder("CdRwDefault");
+        using var medium = VirtualDiscMedium.CreateBlankCdRw700();
+        _recorder.InsertMedia(medium);
+
+        var (stdout, stderr) = CreateStringWriters();
+        int code = await CliCommandRunner.RunAsync(
+            new[] { "burn-data", "--drive", "VDRV-01", "--input", folder, "--json" },
+            stdout, stderr, _deviceService, _burnEngine);
+        Assert.True(code == 0, stderr.ToString() + stdout);
+        using var doc = ParseJsonOutput(stdout);
+        Assert.False(doc.RootElement.TryGetProperty("directWrite", out _));
     }
 
     [Fact]

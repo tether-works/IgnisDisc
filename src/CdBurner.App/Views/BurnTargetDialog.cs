@@ -16,6 +16,7 @@ namespace CdBurner.App.Views;
 public sealed class BurnTargetDialog : Window
 {
     private readonly IDiscDeviceService _deviceService;
+    private readonly IBurnEngineBackend? _writingEngine;
     private readonly ComboBox _driveCombo;
     private readonly TextBlock _driveBadgeText;
     private readonly Border _driveBadgeBorder;
@@ -30,9 +31,11 @@ public sealed class BurnTargetDialog : Window
         IDiscDeviceService deviceService,
         IEnumerable<IDiscRecorderBackend> recorders,
         IDiscRecorderBackend? currentSelection,
-        string burnOperationTitle)
+        string burnOperationTitle,
+        IBurnEngineBackend? writingEngine = null)
     {
         _deviceService = deviceService;
+        _writingEngine = writingEngine;
 
         Title = $"Confirm Target Drive — {burnOperationTitle}";
         Width = 540;
@@ -307,7 +310,7 @@ public sealed class BurnTargetDialog : Window
         MediaStatusDto status;
         try
         {
-            status = rec.QueryMediaStatus();
+            status = DescribeForWriting(rec, _writingEngine);
         }
         catch
         {
@@ -412,7 +415,8 @@ public sealed class BurnTargetDialog : Window
         IDiscDeviceService deviceService,
         IEnumerable<IDiscRecorderBackend> availableRecorders,
         IDiscRecorderBackend? currentSelection,
-        string burnOperationTitle)
+        string burnOperationTitle,
+        IBurnEngineBackend? writingEngine = null)
     {
         var list = availableRecorders?.ToList() ?? deviceService.GetRecorders().ToList();
         if (list.Count == 0)
@@ -420,7 +424,7 @@ public sealed class BurnTargetDialog : Window
             list = deviceService.GetRecorders().ToList();
         }
 
-        var dlg = new BurnTargetDialog(deviceService, list, currentSelection, burnOperationTitle);
+        var dlg = new BurnTargetDialog(deviceService, list, currentSelection, burnOperationTitle, writingEngine);
         if (Application.Current?.MainWindow is { IsVisible: true } mainWin)
         {
             dlg.Owner = mainWin;
@@ -434,13 +438,13 @@ public sealed class BurnTargetDialog : Window
     /// For screens that burn without showing this dialog: if the disc in <paramref name="recorder"/> is a used
     /// rewritable disc whose files a burn would replace, asks the user first. Returns false only when the user declined.
     /// </summary>
-    public static bool ConfirmReplaceExistingData(IDiscRecorderBackend recorder, out bool replaceAllowed)
+    public static bool ConfirmReplaceExistingData(IDiscRecorderBackend recorder, out bool replaceAllowed, IBurnEngineBackend? writingEngine = null)
     {
         replaceAllowed = false;
         MediaStatusDto status;
         try
         {
-            status = recorder.QueryMediaStatus();
+            status = DescribeForWriting(recorder, writingEngine);
         }
         catch
         {
@@ -463,6 +467,13 @@ public sealed class BurnTargetDialog : Window
         replaceAllowed = answer == MessageBoxResult.OK;
         return replaceAllowed;
     }
+
+    /// <summary>
+    /// The disc as the writer that will burn it sees it: with direct drive commands an open DVD-RW is one to add a session
+    /// to, although Windows calls it overwrite-only (<see cref="MediaStatusForWriting"/>).
+    /// </summary>
+    private static MediaStatusDto DescribeForWriting(IDiscRecorderBackend recorder, IBurnEngineBackend? writingEngine) =>
+        writingEngine != null ? MediaStatusForWriting.Describe(writingEngine, recorder) : recorder.QueryMediaStatus();
 
     private sealed class DriveComboItem
     {

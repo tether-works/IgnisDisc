@@ -23,6 +23,7 @@ public static partial class CliCommandRunner
         "strictVerify",
         "ejectAfterBurnByDefault",
         "enableBurnFreeByDefault",
+        "directWritingForDvdRw",
         "tempStagingDirectory",
         "themeMode",
         "ffmpegExecutablePath",
@@ -70,6 +71,7 @@ public static partial class CliCommandRunner
         "strictVerify" => settings.StrictVerify,
         "ejectAfterBurnByDefault" => settings.EjectAfterBurnByDefault,
         "enableBurnFreeByDefault" => settings.EnableBurnFreeByDefault,
+        "directWritingForDvdRw" => settings.DirectWritingForDvdRw,
         "tempStagingDirectory" => settings.TempStagingDirectory,
         "themeMode" => settings.ThemeMode.ToString(),
         "ffmpegExecutablePath" => settings.FfmpegExecutablePath,
@@ -101,6 +103,9 @@ public static partial class CliCommandRunner
                 break;
             case "enableBurnFreeByDefault":
                 settings.EnableBurnFreeByDefault = ParseSettingBool(canonicalKey, rawValue);
+                break;
+            case "directWritingForDvdRw":
+                settings.DirectWritingForDvdRw = ParseSettingBool(canonicalKey, rawValue);
                 break;
             case "tempStagingDirectory":
                 if (string.IsNullOrWhiteSpace(rawValue))

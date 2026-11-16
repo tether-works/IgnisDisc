@@ -200,6 +200,7 @@ public sealed class NativeDvdDataWriterTests : IDisposable
         Assert.False(result.Success);
         Assert.True(result.StoppedBeforeWriting);
         Assert.Contains("erase --full", result.Message);
+        Assert.True(result.UnsupportedDisc); // so the engine hands the burn to the Windows writer, with this reason
         Assert.Equal(0, drive.WriteCommandCount);
     }
 

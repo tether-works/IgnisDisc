@@ -1,4 +1,4 @@
-﻿using CdBurner.App.Resources;
+using CdBurner.App.Resources;
 using System.Collections.ObjectModel;
 using System.IO;
 using System.Windows.Input;
@@ -705,11 +705,13 @@ public class DvdVideoViewModel : ObservableObject
     private bool _useDirectDriveCommands;
     private bool _directChosenByUser;
     private bool _directTurnedOnForDualLayer;
+    private bool _discPrefersDirect;
 
     /// <summary>
-    /// Default for direct drive commands, decided by the disc the movies need, until the user sets it: on for a
-    /// dual-layer disc (only the direct writer puts the layer break on a cell boundary, where players expect it),
-    /// back off for a single-layer one (the Windows writer is the better-proven choice there).
+    /// Default for direct drive commands until the user sets it: on for a dual-layer disc (only the direct writer puts
+    /// the layer break on a cell boundary, where players expect it) and while a DVD-RW is in the drive
+    /// (<see cref="ApplyDirectDefaultForDisc"/>); back off otherwise (the Windows writer is the better-proven choice
+    /// for the rest).
     /// </summary>
     private void ApplyDirectDefaultForLayers()
     {
@@ -717,16 +719,27 @@ public class DvdVideoViewModel : ObservableObject
         {
             return;
         }
-        if (IsDualLayerRequired && !_useDirectDriveCommands)
+        bool wanted = IsDualLayerRequired || _discPrefersDirect;
+        if (wanted && !_useDirectDriveCommands)
         {
-            _directTurnedOnForDualLayer = true;
+            _directTurnedOnForDualLayer = true; // turned on automatically, so it may also turn itself off
             SetProperty(ref _useDirectDriveCommands, true, nameof(UseDirectDriveCommands));
         }
-        else if (!IsDualLayerRequired && _directTurnedOnForDualLayer)
+        else if (!wanted && _directTurnedOnForDualLayer)
         {
             _directTurnedOnForDualLayer = false;
             SetProperty(ref _useDirectDriveCommands, false, nameof(UseDirectDriveCommands));
         }
+    }
+
+    /// <summary>
+    /// Direct drive commands by themselves while a DVD-RW is in the drive and <paramref name="enabled"/> (the setting)
+    /// allows it (<see cref="DirectWritingDefault.Prefers"/>), until the user sets the box.
+    /// </summary>
+    public void ApplyDirectDefaultForDisc(MediaStatusDto? status, bool enabled)
+    {
+        _discPrefersDirect = enabled && DirectWritingDefault.Prefers(status);
+        ApplyDirectDefaultForLayers();
     }
 
     /// <summary>Folder for the command logs of direct burns; null for the default under %LOCALAPPDATA%.</summary>
@@ -1989,7 +2002,8 @@ public class DvdVideoViewModel : ObservableObject
                 _deviceService,
                 AvailableRecorders,
                 SelectedRecorder,
-                $"Burn DVD-Video Disc ({VolumeLabel})");
+                $"Burn DVD-Video Disc ({VolumeLabel})",
+                UseDirectDriveCommands ? new CdBurner.Hardware.NativeWriting.NativeDataBurnEngine(_burnEngine) : null);
 
             if (confirmed == null)
             {

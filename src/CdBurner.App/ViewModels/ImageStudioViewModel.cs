@@ -1,4 +1,4 @@
-﻿using CdBurner.App.Resources;
+using CdBurner.App.Resources;
 using System.Collections.ObjectModel;
 using System.IO;
 using System.Security.Cryptography;
@@ -235,10 +235,24 @@ public class ImageStudioViewModel : ObservableObject
     public bool UseDirectDriveCommands
     {
         get => _useDirectDriveCommands;
-        set => SetProperty(ref _useDirectDriveCommands, value);
+        set
+        {
+            _directDefault.UserChose();
+            SetProperty(ref _useDirectDriveCommands, value);
+        }
     }
 
     private bool _useDirectDriveCommands;
+    private readonly AutomaticChoice _directDefault = new();
+
+    /// <summary>On by itself for a DVD-RW while the setting allows it, until the user sets the box (as on the Data Disc screen).</summary>
+    public void ApplyDirectDefaultForDisc(MediaStatusDto? status, bool enabled)
+    {
+        if (_directDefault.Decide(_useDirectDriveCommands, enabled && DirectWritingDefault.Prefers(status)) is bool value)
+        {
+            SetProperty(ref _useDirectDriveCommands, value, nameof(UseDirectDriveCommands));
+        }
+    }
 
     /// <summary>Folder for the command logs of direct burns; null for the default under %LOCALAPPDATA%.</summary>
     public string? DirectBurnLogDirectory { get; set; }
@@ -1268,7 +1282,8 @@ public class ImageStudioViewModel : ObservableObject
                 _deviceService,
                 AvailableRecorders,
                 SelectedRecorder,
-                $"Burn Disc Image ({Path.GetFileName(SourceImagePath)})");
+                $"Burn Disc Image ({Path.GetFileName(SourceImagePath)})",
+                UseDirectDriveCommands ? new CdBurner.Hardware.NativeWriting.NativeDataBurnEngine(_burnEngine) : null);
 
             if (confirmed == null)
             {

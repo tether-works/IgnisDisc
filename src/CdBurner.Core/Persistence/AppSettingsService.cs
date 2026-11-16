@@ -53,6 +53,12 @@ public class AppSettings
     public bool EnableBurnFreeByDefault { get; set; } = true;
 
     /// <summary>
+    /// Whether the burn screens turn on direct drive commands by themselves when a DVD-RW is in the drive
+    /// (<see cref="CdBurner.Core.Burning.DirectWritingDefault"/>). On by default; the user's own tick on a screen wins.
+    /// </summary>
+    public bool DirectWritingForDvdRw { get; set; } = true;
+
+    /// <summary>
     /// Temporary directory path used for ISO staging, audio decoding, and DVD transcode scratch files.
     /// </summary>
     public string TempStagingDirectory { get; set; } = Path.Combine(Path.GetTempPath(), "IgnisDisc", "Staging");
@@ -149,6 +155,7 @@ public class AppSettings
             EjectAfterBurnByDefault = EjectAfterBurnByDefault,
             NotifyWhenBurnFinishes = NotifyWhenBurnFinishes,
             EnableBurnFreeByDefault = EnableBurnFreeByDefault,
+            DirectWritingForDvdRw = DirectWritingForDvdRw,
             TempStagingDirectory = TempStagingDirectory,
             ThemeMode = ThemeMode,
             FfmpegExecutablePath = FfmpegExecutablePath,

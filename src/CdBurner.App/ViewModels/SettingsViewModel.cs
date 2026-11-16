@@ -52,7 +52,7 @@ public class SettingsViewModel : ObservableObject
         nameof(EjectAfterBurnByDefault), nameof(NotifyWhenBurnFinishes), nameof(EnableBurnFreeByDefault),
         nameof(TempStagingDirectory), nameof(ThemeMode), nameof(FfmpegExecutablePath), nameof(EnableVirtualDrive),
         nameof(LogRingBufferCapacity), nameof(LookupMusicBrainzByDefault), nameof(VerifyAccurateRipByDefault),
-        nameof(CheckForUpdatesOnStartup)
+        nameof(CheckForUpdatesOnStartup), nameof(DirectWritingForDvdRw)
     ];
 
     /// <summary>
@@ -142,6 +142,18 @@ public class SettingsViewModel : ObservableObject
         get => _notifyWhenBurnFinishes;
         set => SetProperty(ref _notifyWhenBurnFinishes, value);
     }
+
+    /// <summary>
+    /// Burn screens turn on direct drive commands by themselves while a DVD-RW is in the drive: Windows' writer formats
+    /// a DVD-RW for overwriting and cannot add sessions to it. A screen's own tick wins.
+    /// </summary>
+    public bool DirectWritingForDvdRw
+    {
+        get => _directWritingForDvdRw;
+        set => SetProperty(ref _directWritingForDvdRw, value);
+    }
+
+    private bool _directWritingForDvdRw = true;
 
     /// <summary>
     /// Whether to enable buffer underrun protection (BURN-Proof / Burn-Free) by default.
@@ -450,6 +462,7 @@ public class SettingsViewModel : ObservableObject
         VerifyAccurateRipByDefault = settings.VerifyAccurateRipByDefault;
         CheckForUpdatesOnStartup = settings.CheckForUpdatesOnStartup;
         NotifyWhenBurnFinishes = settings.NotifyWhenBurnFinishes;
+        DirectWritingForDvdRw = settings.DirectWritingForDvdRw;
     }
 
     /// <summary>
@@ -466,6 +479,7 @@ public class SettingsViewModel : ObservableObject
         settings.StrictVerify = StrictVerify;
         settings.EjectAfterBurnByDefault = EjectAfterBurnByDefault;
         settings.EnableBurnFreeByDefault = EnableBurnFreeByDefault;
+        settings.DirectWritingForDvdRw = DirectWritingForDvdRw;
         settings.TempStagingDirectory = TempStagingDirectory;
         settings.ThemeMode = ThemeMode;
         settings.FfmpegExecutablePath = FfmpegExecutablePath;

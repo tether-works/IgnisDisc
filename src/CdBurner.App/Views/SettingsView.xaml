@@ -113,6 +113,13 @@
                               IsChecked="{Binding StrictVerify}"
                               Margin="0,0,0,8" />
 
+                    <!-- Direct drive commands for DVD-RW -->
+                    <CheckBox Content="Use direct drive commands for DVD-RW (keeps it open for more sessions)"
+                              AutomationProperties.Name="Use direct drive commands for DVD-RW"
+                              ToolTip="On: the burn screens tick Direct drive commands by themselves while a DVD-RW is in the drive. Windows' own writer formats every DVD-RW for overwriting and cannot add a session to it. Your own tick on a screen always wins."
+                              IsChecked="{Binding DirectWritingForDvdRw}"
+                              Margin="0,0,0,8" />
+
                     <!-- Eject After Burn -->
                     <CheckBox Content="Eject optical drive tray when burn completes"
                               AutomationProperties.Name="Eject optical drive tray when burn completes"

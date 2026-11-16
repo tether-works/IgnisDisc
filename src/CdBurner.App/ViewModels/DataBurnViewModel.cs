@@ -1,4 +1,4 @@
-﻿using CdBurner.App.Resources;
+using CdBurner.App.Resources;
 using System.Collections.ObjectModel;
 using System.IO;
 using System.Windows.Input;
@@ -109,17 +109,36 @@ public class DataBurnViewModel : ObservableObject
     }
 
     /// <summary>
-    /// Burn with IgnisDisc's own drive commands instead of the Windows writer. Off by default, chosen per burn. Covers
+    /// Burn with IgnisDisc's own drive commands instead of the Windows writer. Off by default, chosen per burn, and on by
+    /// itself while a DVD-RW is in the drive (<see cref="ApplyDirectDefaultForDisc"/>). Covers
     /// blank CD-R, CD-RW, DVD-R, DVD-RW, DVD+R (single and dual layer), DVD+RW, DVD-RAM, and single-layer BD-R and BD-RE so far; other discs are burned by the Windows writer as before. The speed comes from the
     /// drive's own list for the disc, and the disc is always read back afterwards.
     /// </summary>
     public bool UseDirectDriveCommands
     {
         get => _useDirectDriveCommands;
-        set => SetProperty(ref _useDirectDriveCommands, value);
+        set
+        {
+            _directDefault.UserChose();
+            SetProperty(ref _useDirectDriveCommands, value);
+        }
     }
 
     private bool _useDirectDriveCommands;
+    private readonly CdBurner.App.Mvvm.AutomaticChoice _directDefault = new();
+
+    /// <summary>
+    /// Turns direct drive commands on while the disc in the drive is one they suit better (a DVD-RW,
+    /// <see cref="DirectWritingDefault.Prefers"/>) and <paramref name="enabled"/> (the setting) allows it, and back off
+    /// for another disc, until the user sets the box.
+    /// </summary>
+    public void ApplyDirectDefaultForDisc(MediaStatusDto? status, bool enabled)
+    {
+        if (_directDefault.Decide(_useDirectDriveCommands, enabled && DirectWritingDefault.Prefers(status)) is bool value)
+        {
+            SetProperty(ref _useDirectDriveCommands, value, nameof(UseDirectDriveCommands));
+        }
+    }
 
     /// <summary>Folder for the command logs of direct burns; null for the default under %LOCALAPPDATA%.</summary>
     public string? DirectBurnLogDirectory { get; set; }
@@ -783,7 +802,8 @@ public class DataBurnViewModel : ObservableObject
                 _deviceService,
                 AvailableRecorders,
                 SelectedRecorder,
-                $"Burn Data Disc ({VolumeLabel})");
+                $"Burn Data Disc ({VolumeLabel})",
+                UseDirectDriveCommands ? new CdBurner.Hardware.NativeWriting.NativeDataBurnEngine(_burnEngine) : null);
 
             if (confirmed == null)
             {
