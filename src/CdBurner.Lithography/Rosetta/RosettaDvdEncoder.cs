@@ -1,4 +1,5 @@
 using System.Text.Json;
+using CdBurner.Lithography.Calibration;
 using CdBurner.Lithography.Dvd.Encoding;
 using CdBurner.Lithography.Dvd.Solver;
 using CdBurner.Lithography.Geometry;
@@ -21,7 +22,44 @@ public sealed record RosettaDvdEncodeOptions(
     double PitchLinear = 0.0,
     double PitchQuadratic = 0.0,
     double PitchCubic = 0.0,
-    uint? UsableSectors = null);
+    uint? UsableSectors = null)
+{
+    /// <summary>
+    /// Encode options that use a fitted DVD calibration: its radii, sector count, channel bit length and pitch
+    /// terms. Marks land at their intended angle on the disc only when these describe the real track; the
+    /// rim header's angle ticks depend on it.
+    /// </summary>
+    public static RosettaDvdEncodeOptions FromCalibration(
+        CalibrationParameters parameters,
+        double startAngleDegrees = 0.0)
+    {
+        ArgumentNullException.ThrowIfNull(parameters);
+        parameters.Validate();
+        if (parameters.Kind != CalibrationDiscKind.Dvd)
+        {
+            throw new ArgumentException("A DVD calibration is required.", nameof(parameters));
+        }
+        if (parameters.Sectors > uint.MaxValue)
+        {
+            throw new ArgumentException("The DVD sector count is too large.", nameof(parameters));
+        }
+
+        // The encoder writes whole 16-sector ECC blocks.
+        uint totalSectors = (uint)parameters.Sectors;
+        uint outputSectors = checked((uint)parameters.OutputSectors);
+        outputSectors -= outputSectors % DvdEccBlockEncoder.SectorCount;
+        return new RosettaDvdEncodeOptions(
+            TotalSectors: totalSectors,
+            InnerRadiusMm: parameters.InnerRadiusMm,
+            OuterRadiusMm: parameters.OuterRadiusMm,
+            ChannelBitLengthNm: parameters.LinearDensity,
+            StartAngleDegrees: startAngleDegrees,
+            PitchLinear: parameters.PitchLinear,
+            PitchQuadratic: parameters.PitchQuadratic,
+            PitchCubic: parameters.PitchCubic,
+            UsableSectors: outputSectors == totalSectors ? null : outputSectors);
+    }
+}
 
 /// <summary>
 /// Encodes Rosetta optical text pages onto DVD-R payload sectors using strict binary dispersion strokes,
@@ -68,7 +106,7 @@ public static class RosettaDvdEncoder
             throw new ArgumentException("RosettaBook must contain at least one band.", nameof(book));
         }
 
-        if (book.Bands.Count == 1)
+        if (book.Bands.Count == 1 && book.RimHeader is null)
         {
             RosettaBand single = book.Bands[0];
             return CreateReadSideGrayscaleSampler(single.Layout, single.PixelSource, startAngleDegrees);
@@ -81,11 +119,17 @@ public static class RosettaDvdEncoder
 
         double startAngleRadians = startAngleDegrees * (Math.PI / 180.0);
         IReadOnlyList<RosettaBand> bands = book.Bands;
+        RosettaRimHeader? rimHeader = book.RimHeader;
+        double rimInnerMeters = rimHeader is null ? double.PositiveInfinity : rimHeader.InnerRadiusMm * 1.0e-3;
 
         return (xMm, yDownMm) =>
         {
             double rMeters = Math.Sqrt((xMm * xMm) + (yDownMm * yDownMm)) * 1.0e-3;
             double cwAngle = PolarPageLayout.WrapAngle(Math.Atan2(yDownMm, xMm) - startAngleRadians);
+            if (rMeters >= rimInnerMeters)
+            {
+                return rimHeader!.IsInk(rMeters * 1.0e3, cwAngle) ? InkLuminance : PaperLuminance;
+            }
             for (int i = 0; i < bands.Count; i++)
             {
                 RosettaBand band = bands[i];
@@ -97,6 +141,28 @@ public static class RosettaDvdEncoder
                 }
             }
             return PaperLuminance;
+        };
+    }
+
+    /// <summary>
+    /// Sampler for the rim header alone: ink where <see cref="RosettaRimHeader.IsInk"/> says so, blank elsewhere.
+    /// Coordinates are millimetres from the disc centre seen from the read side, x right and y down.
+    /// </summary>
+    public static Func<double, double, byte> CreateReadSideGrayscaleSampler(
+        RosettaRimHeader rimHeader,
+        double startAngleDegrees = 0.0)
+    {
+        ArgumentNullException.ThrowIfNull(rimHeader);
+        if (!double.IsFinite(startAngleDegrees))
+        {
+            throw new ArgumentOutOfRangeException(nameof(startAngleDegrees), startAngleDegrees, "StartAngleDegrees must be finite.");
+        }
+
+        double startAngleRadians = startAngleDegrees * (Math.PI / 180.0);
+        return (xMm, yDownMm) =>
+        {
+            double rMm = Math.Sqrt((xMm * xMm) + (yDownMm * yDownMm));
+            return rimHeader.IsInk(rMm, Math.Atan2(yDownMm, xMm) - startAngleRadians) ? InkLuminance : PaperLuminance;
         };
     }
 

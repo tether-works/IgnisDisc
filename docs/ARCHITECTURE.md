@@ -310,6 +310,16 @@ one assembly with a clear provenance boundary. Nothing in it touches a drive.
   with zero-allocation glyph and `3×3` `+` crosshair rendering; `RosettaDvdEncoder` driving `FastDispersionImageWriter`
   with strict binary strokes and zero dithering; `RosettaLadderDisc` generating the 3-zone 24-rung DVD-R resolution-ladder
   image and JSON manifest; and `RosettaLadderReadback` performing localized ECMA-267 sector readback verification).
+  `RosettaRimHeader` is the naked-eye header in the outer 3.80 mm ("Band 0"): from the rim inward a 0.88 mm ring of
+  angle ticks every 5° (radial edges, 0.30 mm wide at the rim; 30° ticks longest, other 10° ticks medium, the 0° tick
+  0.90 mm wide), a 0.20 mm gap, and a 2.72 mm strip with the title, date and SHA-256 prefix in Spleen capitals
+  2.04 mm tall, then two captions and two 36×16-pixel diagrams (lamp beside the lens for CD and DVD; glass plate at
+  45° with the lamp at the side for BD-R). Angles are clockwise seen from the read side, like the pages. No stroke or
+  gap inside a mark is under 150 µm. `RosettaArchiveOptions.IncludeRimHeader` (off by default) puts it on a book
+  and ends the pages 0.20 mm below the band; `RosettaDvdEncodeOptions.FromCalibration` takes radii, sector count,
+  channel bit length and pitch terms from a saved DVD calibration, which the ticks need to land on their angles.
+  Drawn through the DVD encoder only; so far checked in simulation (encoder, then `IsoReadbackRenderer`), not on a
+  burned disc.
 - Burning: `CdBurner.Core.Images.PictureTrackCue` adds the picture WAV as the last audio track of an audio or
   mixed-mode CUE sheet, which then goes through the direct Session-at-Once writer (`burn-audio --tracks <cue> --dao
   --native`) and `verify --cue` like any other CUE. Core does not reference this project.

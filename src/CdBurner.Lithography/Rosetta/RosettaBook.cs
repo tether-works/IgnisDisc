@@ -16,7 +16,8 @@ public sealed record RosettaArchiveOptions(
     RosettaPagePreset? FrontMatterPreset = null,
     double InnerRadiusMm = 38.0,
     double OuterRadiusMm = 58.0,
-    bool HasInnerFileVault = false);
+    bool HasInnerFileVault = false,
+    bool IncludeRimHeader = false);
 
 public readonly record struct RosettaDocumentRange(
     int DocumentIndex,
@@ -60,11 +61,13 @@ public sealed class RosettaBook
         long totalPhysicalTiles,
         IReadOnlyList<RosettaDocumentRange> documentRanges,
         IReadOnlyList<RosettaBand> bands,
+        RosettaRimHeader? rimHeader,
         string[] sources,
         string[] titles,
         LineSlice[] lines,
         PageEntry[] pages)
     {
+        RimHeader = rimHeader;
         ArchiveTitle = archiveTitle;
         ArchiveDate = archiveDate;
         TextSha256Hex = textSha256Hex;
@@ -86,6 +89,12 @@ public sealed class RosettaBook
     public long TotalPhysicalTiles { get; }
     public IReadOnlyList<RosettaDocumentRange> DocumentRanges { get; }
     public IReadOnlyList<RosettaBand> Bands { get; }
+
+    /// <summary>
+    /// The naked-eye header in the outer <see cref="RosettaRimHeader.BandHeightMm"/> of the disc, or null when
+    /// <see cref="RosettaArchiveOptions.IncludeRimHeader"/> was off. The pages end below it.
+    /// </summary>
+    public RosettaRimHeader? RimHeader { get; }
     public PolarPageLayout PrimaryLayout => Bands[0].Layout;
     public IPagePixelSource PrimaryPixelSource => Bands[0].PixelSource;
 
@@ -254,8 +263,24 @@ public sealed class RosettaBook
         }
 
         // 5. Build PolarPageLayout bands and check physical capacity.
+        // The rim header takes the outermost band; the pages end one gutter below it.
+        RosettaRimHeader? rimHeader = null;
+        double pagesOuterRadiusMm = options.OuterRadiusMm;
+        if (options.IncludeRimHeader)
+        {
+            rimHeader = new RosettaRimHeader(
+                new RosettaRimHeaderOptions(options.ArchiveTitle, options.ArchiveDate, sha256Prefix, options.OuterRadiusMm),
+                spleen);
+            pagesOuterRadiusMm = rimHeader.InnerRadiusMm - RosettaRimHeader.PageGutterMm;
+            if (pagesOuterRadiusMm <= options.InnerRadiusMm)
+            {
+                throw new ArgumentOutOfRangeException(nameof(options), options.OuterRadiusMm,
+                    "The rim header leaves no room for pages between InnerRadiusMm and OuterRadiusMm.");
+            }
+        }
+
         double innerMeters = options.InnerRadiusMm * 1.0e-3;
-        double outerMeters = options.OuterRadiusMm * 1.0e-3;
+        double outerMeters = pagesOuterRadiusMm * 1.0e-3;
 
         RosettaBand[] bands;
         long totalPhysicalTiles;
@@ -339,6 +364,7 @@ public sealed class RosettaBook
             totalPhysicalTiles,
             docRanges,
             bands,
+            rimHeader,
             sources,
             titles,
             allLines,
