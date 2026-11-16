@@ -184,10 +184,9 @@ public static class CueSheetParser
                 case "FILE":
                     {
                         // EAC "gaps appended to previous track" layout: TRACK n+1 opens (with only INDEX 00) inside
-                        // FILE n and its INDEX 01 follows the next FILE line. Carry that still-open track into the new
-                        // FILE so INDEX 01 is not dropped. Its INDEX 00 offsets refer to the previous file, whose tail
-                        // (the gap audio) stays with the previous track, so they are discarded here.
-                        var carried = TakeTrackAwaitingIndex01(ref currentTrack);
+                        // FILE n (or a dedicated pre-gap FILE) and its INDEX 01 follows the next FILE line. Carry that
+                        // still-open track into the new FILE and preserve the cross-FILE INDEX 00 via SplitIndex00.
+                        var carried = TakeTrackAwaitingIndex01(ref currentTrack, ref currentFile);
                         FinishCurrentFile();
                         var (fileName, fileType) = ParseFileTokens(tokens);
                         currentFile = new CueFileEntryBuilder(fileName, fileType);
@@ -367,10 +366,9 @@ public static class CueSheetParser
                 case "FILE":
                     {
                         // EAC "gaps appended to previous track" layout: TRACK n+1 opens (with only INDEX 00) inside
-                        // FILE n and its INDEX 01 follows the next FILE line. Carry that still-open track into the new
-                        // FILE so INDEX 01 is not dropped. Its INDEX 00 offsets refer to the previous file, whose tail
-                        // (the gap audio) stays with the previous track, so they are discarded here.
-                        var carried = TakeTrackAwaitingIndex01(ref currentTrack);
+                        // FILE n (or a dedicated pre-gap FILE) and its INDEX 01 follows the next FILE line. Carry that
+                        // still-open track into the new FILE and preserve the cross-FILE INDEX 00 via SplitIndex00.
+                        var carried = TakeTrackAwaitingIndex01(ref currentTrack, ref currentFile);
                         FinishCurrentFile();
                         var (fileName, fileType) = ParseFileTokens(tokens);
                         currentFile = new CueFileEntryBuilder(fileName, fileType);
@@ -534,16 +532,33 @@ public static class CueSheetParser
         return tokens;
     }
 
-    private static CueTrackBuilder? TakeTrackAwaitingIndex01(ref CueTrackBuilder? currentTrack)
+    private static CueTrackBuilder? TakeTrackAwaitingIndex01(
+        ref CueTrackBuilder? currentTrack,
+        ref CueFileEntryBuilder? currentFile)
     {
         if (currentTrack == null || currentTrack.Indices.Any(i => i.IndexNumber >= 1))
         {
             return null;
         }
 
+        CueIndex? idx00 = currentTrack.Indices.FirstOrDefault(i => i.IndexNumber == 0);
         var carried = currentTrack;
         currentTrack = null;
         carried.Indices.Clear();
+
+        if (currentFile != null && currentFile.Tracks.Count == 0)
+        {
+            carried.SplitIndex00 = new CueSplitIndex00(
+                idx00?.Position ?? new MsfAddress(0, 0, 0),
+                currentFile.FileName,
+                currentFile.FileType);
+            currentFile = null;
+        }
+        else if (idx00 != null)
+        {
+            carried.SplitIndex00 = new CueSplitIndex00(idx00.Position);
+        }
+
         return carried;
     }
 
@@ -568,6 +583,7 @@ public static class CueSheetParser
         public MsfAddress? PostGap { get; set; }
         public List<string> Flags { get; } = new();
         public List<CueIndex> Indices { get; } = new();
+        public CueSplitIndex00? SplitIndex00 { get; set; }
 
         public CueTrack Build() => new(
             TrackNumber,
@@ -579,6 +595,7 @@ public static class CueSheetParser
             PreGap,
             PostGap,
             Flags,
-            Indices);
+            Indices,
+            SplitIndex00);
     }
 }

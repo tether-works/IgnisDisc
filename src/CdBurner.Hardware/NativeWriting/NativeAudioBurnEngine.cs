@@ -219,7 +219,12 @@ public sealed class NativeAudioBurnEngine : IBurnEngineBackend, IAudioDiscVerifi
         {
             if (recorder is VirtualDiscRecorder virtualRecorder)
             {
-                if (virtualRecorder.CurrentMedium is not { } medium || !WrittenBy.TryGetValue(medium, out var drive))
+                if (virtualRecorder.CurrentMedium is not { } medium || medium.IsBlank)
+                {
+                    return BurnOperationResult.Failed("This simulated disc was not written with direct drive commands, so it cannot be checked this way.");
+                }
+                var drive = medium.RecordedMmcDrive ?? (WrittenBy.TryGetValue(medium, out var mapped) ? mapped : null);
+                if (drive == null)
                 {
                     return BurnOperationResult.Failed("This simulated disc was not written with direct drive commands, so it cannot be checked this way.");
                 }
@@ -559,29 +564,52 @@ public sealed class NativeAudioBurnEngine : IBurnEngineBackend, IAudioDiscVerifi
             medium.WriteSector(lba, program.Slice((firstSector + lba) * OpticalConstants.RawSectorSize, OpticalConstants.RawSectorSize), OpticalConstants.RawSectorSize);
         }
 
+        var index00ByTrack = new Dictionary<int, int>();
+        if (drive.RecordedCueSheet is { Length: >= 8 } cueBytes)
+        {
+            for (int i = 0; i + 8 <= cueBytes.Length; i += 8)
+            {
+                if ((cueBytes[i] & 0x0F) == 0x01 && cueBytes[i + 2] == 0x00 && cueBytes[i + 1] is >= 1 and <= 99)
+                {
+                    index00ByTrack[cueBytes[i + 1]] = new Msf(cueBytes[i + 5], cueBytes[i + 6], cueBytes[i + 7]).ToLba();
+                }
+            }
+        }
+
         var session = new VirtualSession { SessionNumber = medium.Sessions.Count + 1, StartLba = 0, SectorCount = sectors };
         var recorded = drive.RecordedTracks;
         for (int i = 0; i < recorded.Count; i++)
         {
             int end = i + 1 < recorded.Count ? recorded[i + 1].Index01Lba : drive.RecordedLeadOutLba;
             var source = i < tracks.Count ? tracks[i] : null;
+            byte tno = recorded[i].TrackNumber;
+            int idx01 = recorded[i].Index01Lba;
+            int? idx00 = index00ByTrack.TryGetValue(tno, out int rawIdx00) && rawIdx00 < idx01 && (tno >= 2 || idx01 > 0)
+                ? rawIdx00
+                : null;
+            bool isAudio = (recorded[i].CueControl & 0x40) == 0;
             session.Tracks.Add(new VirtualTrack
             {
-                TrackNumber = recorded[i].TrackNumber,
-                StartLba = recorded[i].Index01Lba,
-                SectorCount = end - recorded[i].Index01Lba,
-                IsAudio = (recorded[i].CueControl & 0x40) == 0,
+                TrackNumber = tno,
+                StartLba = idx01,
+                SectorCount = end - idx01,
+                IsAudio = isAudio,
                 PreGapFrames = source?.PreGapFrames ?? 0,
                 Title = source?.Title,
                 Performer = source?.Performer,
                 Songwriter = source?.Songwriter,
                 Composer = source?.Composer,
-                Isrc = source?.Isrc
+                Isrc = drive.LosesCatalogAndIsrc ? null : source?.Isrc,
+                PreEmphasis = isAudio && !drive.DropsControlBits && (recorded[i].CueControl & 0x10) != 0,
+                CopyPermitted = isAudio && !drive.DropsControlBits && (recorded[i].CueControl & 0x20) != 0,
+                Index00Lba = idx00
             });
         }
 
         medium.Sessions.Add(session);
         medium.CdTextBytes = request.CdTextPacks?.ToArray();
+        medium.MediaCatalogNumber = drive.LosesCatalogAndIsrc ? null : SaoAudioLayout.NormalizeMcn(request.MediaCatalogNumber);
+        medium.RecordedMmcDrive = drive;
         medium.IsBlank = false;
         medium.UsedSectors = Math.Max(medium.UsedSectors, sectors);
         medium.IsFinalized = drive.DiscStatus != 1;

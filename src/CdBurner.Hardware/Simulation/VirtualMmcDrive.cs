@@ -1,4 +1,5 @@
 using System.Buffers.Binary;
+using CdBurner.Core.Abstractions;
 using CdBurner.Hardware.NativeWriting;
 using CdBurner.Hardware.Scsi;
 
@@ -240,6 +241,20 @@ public sealed class VirtualMmcDrive : IScsiTransport
 
     /// <summary>The drive refuses READ SUB-CHANNEL (5/20/00), so the codes cannot be read back at all.</summary>
     public bool RejectsReadSubChannel { get; set; }
+
+    /// <summary>READ CD asking for sub-channel data is refused with 5/24/00, forcing fallback to READ SUB-CHANNEL.</summary>
+    public bool RejectsReadCdSubChannel { get; set; }
+
+    /// <summary>READ CD Formatted Q encodes track, index, and MSF fields in BCD instead of binary.</summary>
+    public bool ReturnsBcdInReadCdSubChannel { get; set; }
+
+    /// <summary>LBAs where Q sub-channel reports ADR != 1 instead of position frames.</summary>
+    public HashSet<int> NonPositionSubChannelLbas { get; } = new();
+
+    /// <summary>READ CD commands that requested sub-channel data and succeeded.</summary>
+    public int SubChannelReadCdCommands { get; private set; }
+
+    private int _lastReadAudioLba;
 
     // ---- Track-at-Once data writing ----
 
@@ -1119,12 +1134,27 @@ public sealed class VirtualMmcDrive : IScsiTransport
     {
         int lba = BinaryPrimitives.ReadInt32BigEndian(cdb.Slice(2, 4));
         int count = (cdb[6] << 16) | (cdb[7] << 8) | cdb[8];
+        bool withMain = (cdb[9] & 0xF8) != 0;
         bool withC2 = (cdb[9] & 0x06) == 0x02; // byte 9 bits 2-1 = 01b: 294-byte C2 error pointer block per sector
-        int stride = withC2 ? 2352 + 294 : 2352;
+        byte subChannel = (byte)(cdb[10] & 0x07);
         if (withC2 && RejectsC2Pointers)
         {
             return Sense(0x05, 0x24, 0x00);
         }
+        if (subChannel != 0 && (RejectsReadCdSubChannel || subChannel != MmcCommandBuilder.ReadCdSubChannelFormattedQ))
+        {
+            return Sense(0x05, 0x24, 0x00);
+        }
+
+        int mainBytes = withMain ? 2352 : 0;
+        int c2Bytes = withC2 ? 294 : 0;
+        int qBytes = subChannel == MmcCommandBuilder.ReadCdSubChannelFormattedQ ? 16 : 0;
+        int stride = mainBytes + c2Bytes + qBytes;
+        if (stride == 0)
+        {
+            return Sense(0x05, 0x24, 0x00);
+        }
+
         int sectorType = (cdb[1] >> 2) & 0x07; // 0 any, 1 CD-DA, 2 Mode 1
         if (Recorded && lba >= 0 && count > 0 && lba < _recordedDataEndLba)
         {
@@ -1146,46 +1176,63 @@ public sealed class VirtualMmcDrive : IScsiTransport
         {
             C2ReadCommands++;
         }
-
-        // The program area was captured from LBA -150. Sample i read back is sample i - offset as written.
-        ReadOnlySpan<byte> program = WriteOffsetSamples == 0
-            ? ProgramAreaWritten.GetBuffer().AsSpan(0, (int)ProgramAreaWritten.Length)
-            : OnDiscCached();
-        int n = count * 2352;
-        long source = (long)(lba + 150) * 2352 - (long)ReadOffsetSamples * 4;
-        Span<byte> audio = new byte[n];
-        long from = Math.Max(source, 0);
-        long to = Math.Min(source + n, program.Length);
-        if (to > from)
+        if (qBytes == 16)
         {
-            program.Slice((int)from, (int)(to - from)).CopyTo(audio.Slice((int)(from - source)));
+            SubChannelReadCdCommands++;
         }
+        _lastReadAudioLba = lba + count - 1;
 
-        if (ReadBackDifferenceAtLba is int changed && changed >= lba && changed < lba + count)
+        Span<byte> audio = Span<byte>.Empty;
+        if (withMain)
         {
-            audio[(changed - lba) * 2352 + 100] ^= 0x01; // written wrong: same every time, no C2 error
+            // The program area was captured from LBA -150. Sample i read back is sample i - offset as written.
+            ReadOnlySpan<byte> program = WriteOffsetSamples == 0
+                ? ProgramAreaWritten.GetBuffer().AsSpan(0, (int)ProgramAreaWritten.Length)
+                : OnDiscCached();
+            int n = count * 2352;
+            long source = (long)(lba + 150) * 2352 - (long)ReadOffsetSamples * 4;
+            audio = new byte[n];
+            long from = Math.Max(source, 0);
+            long to = Math.Min(source + n, program.Length);
+            if (to > from)
+            {
+                program.Slice((int)from, (int)(to - from)).CopyTo(audio.Slice((int)(from - source)));
+            }
+
+            if (ReadBackDifferenceAtLba is int changed && changed >= lba && changed < lba + count)
+            {
+                audio[(changed - lba) * 2352 + 100] ^= 0x01; // written wrong: same every time, no C2 error
+            }
         }
 
         Span<byte> destination = data.Slice(0, count * stride);
         destination.Clear();
         for (int i = 0; i < count; i++)
         {
-            bool misread = false;
-            if (MarginalLbas.Contains(lba + i))
+            if (withMain)
             {
-                int reads = _marginalReads.GetValueOrDefault(lba + i) + 1;
-                _marginalReads[lba + i] = reads;
-                if (reads <= MarginalBadReads)
+                bool misread = false;
+                if (MarginalLbas.Contains(lba + i))
                 {
-                    audio[i * 2352 + 200] ^= 0x10; // interpolated, still reported GOOD
-                    misread = true;
+                    int reads = _marginalReads.GetValueOrDefault(lba + i) + 1;
+                    _marginalReads[lba + i] = reads;
+                    if (reads <= MarginalBadReads)
+                    {
+                        audio[i * 2352 + 200] ^= 0x10; // interpolated, still reported GOOD
+                        misread = true;
+                    }
+                }
+
+                audio.Slice(i * 2352, 2352).CopyTo(destination.Slice(i * stride));
+                if (withC2 && misread)
+                {
+                    destination[i * stride + mainBytes + 200 / 8] = 0x80; // the byte the drive could not correct
                 }
             }
 
-            audio.Slice(i * 2352, 2352).CopyTo(destination.Slice(i * stride));
-            if (withC2 && misread)
+            if (qBytes == 16)
             {
-                destination[i * stride + 2352 + 200 / 8] = 0x80; // the byte the drive could not correct
+                WriteFormattedQ(lba + i, destination.Slice(i * stride + mainBytes + c2Bytes, 16));
             }
         }
         return Good((uint)(count * stride));
@@ -1367,9 +1414,177 @@ public sealed class VirtualMmcDrive : IScsiTransport
         return packs.ToArray();
     }
 
+    private readonly record struct ResolvedSubChannelPos(
+        byte Ctl,
+        byte TrackNumber,
+        byte IndexNumber,
+        int Index01Lba,
+        Msf Rel,
+        Msf Abs,
+        bool HasCatalog,
+        bool TrackHasIsrc,
+        bool NearBoundary);
+
+    private static Msf MsfFromFrames(int frames)
+    {
+        int clamped = Math.Max(0, frames);
+        return new Msf(
+            (byte)(clamped / (60 * Msf.FramesPerSecond)),
+            (byte)((clamped / Msf.FramesPerSecond) % 60),
+            (byte)(clamped % Msf.FramesPerSecond));
+    }
+
+    private ResolvedSubChannelPos ResolveSubChannelPosition(int lba)
+    {
+        var entries = new List<(byte TrackNumber, byte IndexNumber, byte Ctl, int EntryLba)>();
+        var index01ByTrack = new Dictionary<byte, int>();
+        var boundaryLbas = new List<int>();
+        var isrcTracks = new HashSet<byte>();
+        bool hasCatalog = false;
+
+        if (RecordedCueSheet is { Length: >= 8 } sheet)
+        {
+            for (int i = 0; i + 8 <= sheet.Length; i += 8)
+            {
+                byte adr = (byte)(sheet[i] & 0x0F);
+                if (adr == 0x02)
+                {
+                    hasCatalog = true;
+                    continue;
+                }
+                if (adr == 0x03)
+                {
+                    if (sheet[i + 1] is >= 1 and <= 99)
+                    {
+                        isrcTracks.Add(sheet[i + 1]);
+                    }
+                    continue;
+                }
+                if (adr != 0x01)
+                {
+                    continue;
+                }
+
+                byte tno = sheet[i + 1];
+                byte idx = sheet[i + 2];
+                if (tno is >= 1 and <= 99 && idx is 0 or 1)
+                {
+                    byte ctl = (byte)(DropsControlBits ? (sheet[i] & 0x40) : (sheet[i] & 0xF0));
+                    int entryLba = new Msf(sheet[i + 5], sheet[i + 6], sheet[i + 7]).ToLba();
+                    entries.Add((tno, idx, ctl, entryLba));
+                    boundaryLbas.Add(entryLba);
+                    if (idx == 1)
+                    {
+                        index01ByTrack[tno] = entryLba;
+                    }
+                }
+            }
+        }
+        else
+        {
+            foreach (var trk in _recordedTracks)
+            {
+                byte ctl = (byte)(DropsControlBits ? (trk.CueControl & 0x40) : (trk.CueControl & 0xF0));
+                if (trk.TrackNumber == 1 && trk.Index01Lba > SaoAudioLayout.FirstWritableLba)
+                {
+                    entries.Add((1, 0, ctl, SaoAudioLayout.FirstWritableLba));
+                    boundaryLbas.Add(SaoAudioLayout.FirstWritableLba);
+                }
+                entries.Add((trk.TrackNumber, 1, ctl, trk.Index01Lba));
+                boundaryLbas.Add(trk.Index01Lba);
+                index01ByTrack[trk.TrackNumber] = trk.Index01Lba;
+            }
+        }
+
+        (byte tno, byte idx, byte ctl, int entryLba) selected = entries.Count > 0
+            ? entries[0]
+            : (_recordedTracks.Count > 0
+                ? (_recordedTracks[0].TrackNumber, (byte)0, (byte)(DropsControlBits ? (_recordedTracks[0].CueControl & 0x40) : (_recordedTracks[0].CueControl & 0xF0)), SaoAudioLayout.FirstWritableLba)
+                : ((byte)1, (byte)1, (byte)0, 0));
+
+        for (int i = 0; i < entries.Count; i++)
+        {
+            if (entries[i].EntryLba <= lba)
+            {
+                selected = entries[i];
+            }
+            else
+            {
+                break;
+            }
+        }
+
+        int index01Lba = index01ByTrack.TryGetValue(selected.tno, out int idx01)
+            ? idx01
+            : (_recordedTracks.Count > 0 ? _recordedTracks[0].Index01Lba : 0);
+        int relFrames = selected.idx == 0 ? Math.Max(0, index01Lba - lba) : Math.Max(0, lba - index01Lba);
+        bool nearBoundary = false;
+        for (int i = 0; i < boundaryLbas.Count; i++)
+        {
+            if (Math.Abs(lba - boundaryLbas[i]) < 4)
+            {
+                nearBoundary = true;
+                break;
+            }
+        }
+
+        return new ResolvedSubChannelPos(
+            selected.ctl,
+            selected.tno,
+            selected.idx,
+            index01Lba,
+            MsfFromFrames(relFrames),
+            Msf.FromLba(lba),
+            hasCatalog,
+            isrcTracks.Contains(selected.tno),
+            nearBoundary);
+    }
+
+    private void WriteFormattedQ(int lba, Span<byte> q16)
+    {
+        q16.Clear();
+        var pos = ResolveSubChannelPosition(lba);
+
+        if (NonPositionSubChannelLbas.Contains(lba))
+        {
+            q16[0] = (byte)(pos.Ctl | ((lba & 1) == 1 ? 0x03 : 0x02));
+            return;
+        }
+
+        if (!LosesCatalogAndIsrc && !pos.NearBoundary)
+        {
+            if (pos.HasCatalog && lba % 100 == 50)
+            {
+                q16[0] = (byte)(pos.Ctl | 0x02);
+                return;
+            }
+
+            if (pos.TrackHasIsrc && lba % 100 == 75)
+            {
+                q16[0] = (byte)(pos.Ctl | 0x03);
+                return;
+            }
+        }
+
+        byte Encode(byte v) => ReturnsBcdInReadCdSubChannel && v < 100
+            ? (byte)(((v / 10) << 4) | (v % 10))
+            : v;
+
+        q16[0] = (byte)(pos.Ctl | 0x01);
+        q16[1] = Encode(pos.TrackNumber);
+        q16[2] = Encode(pos.IndexNumber);
+        q16[3] = Encode(pos.Rel.Minute);
+        q16[4] = Encode(pos.Rel.Second);
+        q16[5] = Encode(pos.Rel.Frame);
+        q16[7] = Encode(pos.Abs.Minute);
+        q16[8] = Encode(pos.Abs.Second);
+        q16[9] = Encode(pos.Abs.Frame);
+        q16[15] = pos.IndexNumber == 0 ? (byte)0x80 : (byte)0x00;
+    }
+
     /// <summary>
-    /// READ SUB-CHANNEL formats 2 (catalog number) and 3 (ISRC): answered from the cue sheet of the recorded disc,
-    /// the way a drive answers from the Q sub-channel it wrote.
+    /// READ SUB-CHANNEL formats 1 (current position), 2 (catalog number), and 3 (ISRC): answered from the cue sheet
+    /// of the recorded disc, the way a drive answers from the Q sub-channel it wrote.
     /// </summary>
     private ScsiExecutionResult ReadSubChannel(ReadOnlySpan<byte> cdb, Span<byte> data)
     {
@@ -1377,13 +1592,46 @@ public sealed class VirtualMmcDrive : IScsiTransport
         {
             return Sense(0x05, 0x20, 0x00);
         }
-        if (!Recorded || RecordedCueSheet is not { } sheet)
+        if (!Recorded)
         {
             return Sense(0x05, 0x64, 0x00); // illegal mode for this track: nothing recorded
         }
 
         byte format = cdb[3];
         byte track = cdb[6];
+        if (format == MmcCommandBuilder.SubChannelFormatCurrentPosition)
+        {
+            var pos = ResolveSubChannelPosition(_lastReadAudioLba);
+            bool msf = (cdb[1] & 0x02) != 0;
+            byte[] posResp = new byte[16];
+            posResp[1] = 0x15;
+            posResp[3] = 12;
+            posResp[4] = MmcCommandBuilder.SubChannelFormatCurrentPosition;
+            posResp[5] = (byte)(0x10 | ((pos.Ctl >> 4) & 0x0F));
+            posResp[6] = pos.TrackNumber;
+            posResp[7] = pos.IndexNumber;
+            if (msf)
+            {
+                posResp[9] = pos.Abs.Minute;
+                posResp[10] = pos.Abs.Second;
+                posResp[11] = pos.Abs.Frame;
+                posResp[13] = pos.Rel.Minute;
+                posResp[14] = pos.Rel.Second;
+                posResp[15] = pos.Rel.Frame;
+            }
+            else
+            {
+                BinaryPrimitives.WriteInt32BigEndian(posResp.AsSpan(8, 4), _lastReadAudioLba);
+                BinaryPrimitives.WriteInt32BigEndian(posResp.AsSpan(12, 4), _lastReadAudioLba - pos.Index01Lba);
+            }
+            return CopyOut(posResp, data);
+        }
+
+        if (RecordedCueSheet is not { } sheet)
+        {
+            return Sense(0x05, 0x64, 0x00); // illegal mode for this track: nothing recorded
+        }
+
         if (format is not (0x02 or 0x03))
         {
             return Sense(0x05, 0x24, 0x00);

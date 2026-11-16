@@ -22,6 +22,15 @@ public enum CueTrackDataType
 public record CueIndex(int IndexNumber, MsfAddress Position);
 
 /// <summary>
+/// Cross-FILE INDEX 00 placement for EAC multi-file CUE sheets where a track's pre-gap sits at the tail of the
+/// previous track's file (<see cref="DedicatedFileName"/> is null) or in its own dedicated track-0 file.
+/// </summary>
+public sealed record CueSplitIndex00(
+    MsfAddress Position,
+    string? DedicatedFileName = null,
+    string? DedicatedFileType = null);
+
+/// <summary>
 /// Represents a TRACK within a CUE sheet file.
 /// </summary>
 public record CueTrack(
@@ -34,7 +43,8 @@ public record CueTrack(
     MsfAddress? PreGap = null,
     MsfAddress? PostGap = null,
     IReadOnlyList<string>? Flags = null,
-    IReadOnlyList<CueIndex>? Indices = null)
+    IReadOnlyList<CueIndex>? Indices = null,
+    CueSplitIndex00? SplitIndex00 = null)
 {
     public IReadOnlyList<string> Flags { get; init; } = Flags ?? Array.Empty<string>();
     public IReadOnlyList<CueIndex> Indices { get; init; } = Indices ?? Array.Empty<CueIndex>();
@@ -57,7 +67,8 @@ public record CueTrack(
             && Nullable.Equals(PreGap, other.PreGap)
             && Nullable.Equals(PostGap, other.PostGap)
             && Flags.SequenceEqual(other.Flags)
-            && Indices.SequenceEqual(other.Indices);
+            && Indices.SequenceEqual(other.Indices)
+            && Equals(SplitIndex00, other.SplitIndex00);
     }
 
     public override int GetHashCode()
@@ -73,6 +84,7 @@ public record CueTrack(
         hash.Add(PostGap);
         foreach (var flag in Flags) hash.Add(flag);
         foreach (var index in Indices) hash.Add(index);
+        hash.Add(SplitIndex00);
         return hash.ToHashCode();
     }
 }

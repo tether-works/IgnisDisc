@@ -96,54 +96,97 @@ public static class CueSheetWriter
         }
 
         // Files
-        foreach (var file in cueSheet.Files)
+        for (int fileIdx = 0; fileIdx < cueSheet.Files.Count; fileIdx++)
         {
-            writer.WriteLine($"FILE \"{EscapeString(file.FileName)}\" {file.FileType.ToUpperInvariant()}");
-
-            foreach (var track in file.Tracks)
+            var file = cueSheet.Files[fileIdx];
+            if (file.Tracks.Count > 0 && file.Tracks[0].SplitIndex00 is { DedicatedFileName: not null } dedicated)
             {
-                writer.WriteLine($"  TRACK {track.TrackNumber:D2} {FormatDataType(track.DataType)}");
-
-                if (!string.IsNullOrEmpty(track.Title))
+                writer.WriteLine($"FILE \"{EscapeString(dedicated.DedicatedFileName)}\" {(dedicated.DedicatedFileType ?? file.FileType).ToUpperInvariant()}");
+                WriteTrackPreamble(writer, file.Tracks[0]);
+                writer.WriteLine($"    INDEX 00 {dedicated.Position}");
+                writer.WriteLine($"FILE \"{EscapeString(file.FileName)}\" {file.FileType.ToUpperInvariant()}");
+                WriteTrackIndicesAndPostGap(writer, file.Tracks[0]);
+                for (int t = 1; t < file.Tracks.Count; t++)
                 {
-                    writer.WriteLine($"    TITLE \"{EscapeString(track.Title)}\"");
-                }
-
-                if (!string.IsNullOrEmpty(track.Performer))
-                {
-                    writer.WriteLine($"    PERFORMER \"{EscapeString(track.Performer)}\"");
-                }
-
-                if (!string.IsNullOrEmpty(track.Songwriter))
-                {
-                    writer.WriteLine($"    SONGWRITER \"{EscapeString(track.Songwriter)}\"");
-                }
-
-                if (!string.IsNullOrEmpty(track.Isrc))
-                {
-                    writer.WriteLine($"    ISRC {track.Isrc}");
-                }
-
-                if (track.Flags.Count > 0)
-                {
-                    writer.WriteLine($"    FLAGS {string.Join(" ", track.Flags)}");
-                }
-
-                if (track.PreGap.HasValue)
-                {
-                    writer.WriteLine($"    PREGAP {track.PreGap.Value}");
-                }
-
-                foreach (var index in track.Indices)
-                {
-                    writer.WriteLine($"    INDEX {index.IndexNumber:D2} {index.Position}");
-                }
-
-                if (track.PostGap.HasValue)
-                {
-                    writer.WriteLine($"    POSTGAP {track.PostGap.Value}");
+                    WriteTrackPreamble(writer, file.Tracks[t]);
+                    WriteTrackIndicesAndPostGap(writer, file.Tracks[t]);
                 }
             }
+            else if (fileIdx > 0 && file.Tracks.Count > 0 && file.Tracks[0].SplitIndex00 is { DedicatedFileName: null })
+            {
+                writer.WriteLine($"FILE \"{EscapeString(file.FileName)}\" {file.FileType.ToUpperInvariant()}");
+                WriteTrackIndicesAndPostGap(writer, file.Tracks[0]);
+                for (int t = 1; t < file.Tracks.Count; t++)
+                {
+                    WriteTrackPreamble(writer, file.Tracks[t]);
+                    WriteTrackIndicesAndPostGap(writer, file.Tracks[t]);
+                }
+            }
+            else
+            {
+                writer.WriteLine($"FILE \"{EscapeString(file.FileName)}\" {file.FileType.ToUpperInvariant()}");
+                foreach (var track in file.Tracks)
+                {
+                    WriteTrackPreamble(writer, track);
+                    WriteTrackIndicesAndPostGap(writer, track);
+                }
+            }
+
+            if (fileIdx + 1 < cueSheet.Files.Count
+                && cueSheet.Files[fileIdx + 1].Tracks is { Count: > 0 } nextTracks
+                && nextTracks[0].SplitIndex00 is { DedicatedFileName: null } splitNext)
+            {
+                WriteTrackPreamble(writer, nextTracks[0]);
+                writer.WriteLine($"    INDEX 00 {splitNext.Position}");
+            }
+        }
+    }
+
+    private static void WriteTrackPreamble(TextWriter writer, CueTrack track)
+    {
+        writer.WriteLine($"  TRACK {track.TrackNumber:D2} {FormatDataType(track.DataType)}");
+
+        if (!string.IsNullOrEmpty(track.Title))
+        {
+            writer.WriteLine($"    TITLE \"{EscapeString(track.Title)}\"");
+        }
+
+        if (!string.IsNullOrEmpty(track.Performer))
+        {
+            writer.WriteLine($"    PERFORMER \"{EscapeString(track.Performer)}\"");
+        }
+
+        if (!string.IsNullOrEmpty(track.Songwriter))
+        {
+            writer.WriteLine($"    SONGWRITER \"{EscapeString(track.Songwriter)}\"");
+        }
+
+        if (!string.IsNullOrEmpty(track.Isrc))
+        {
+            writer.WriteLine($"    ISRC {track.Isrc}");
+        }
+
+        if (track.Flags.Count > 0)
+        {
+            writer.WriteLine($"    FLAGS {string.Join(" ", track.Flags)}");
+        }
+
+        if (track.PreGap.HasValue)
+        {
+            writer.WriteLine($"    PREGAP {track.PreGap.Value}");
+        }
+    }
+
+    private static void WriteTrackIndicesAndPostGap(TextWriter writer, CueTrack track)
+    {
+        foreach (var index in track.Indices)
+        {
+            writer.WriteLine($"    INDEX {index.IndexNumber:D2} {index.Position}");
+        }
+
+        if (track.PostGap.HasValue)
+        {
+            writer.WriteLine($"    POSTGAP {track.PostGap.Value}");
         }
     }
 
@@ -154,95 +197,9 @@ public static class CueSheetWriter
     {
         ArgumentNullException.ThrowIfNull(cueSheet);
         ArgumentNullException.ThrowIfNull(writer);
-
-        foreach (var kvp in cueSheet.Remarks)
-        {
-            cancellationToken.ThrowIfCancellationRequested();
-            if (string.IsNullOrEmpty(kvp.Value))
-            {
-                await writer.WriteLineAsync($"REM {kvp.Key}");
-            }
-            else if (kvp.Value.Contains(' ') || kvp.Value.Contains('\t') || kvp.Value.Contains('"') || kvp.Value.Contains('\r') || kvp.Value.Contains('\n'))
-            {
-                await writer.WriteLineAsync($"REM {kvp.Key} \"{EscapeString(kvp.Value)}\"");
-            }
-            else
-            {
-                await writer.WriteLineAsync($"REM {kvp.Key} {kvp.Value}");
-            }
-        }
-
-        if (!string.IsNullOrEmpty(cueSheet.Catalog))
-        {
-            await writer.WriteLineAsync($"CATALOG {cueSheet.Catalog}");
-        }
-
-        if (!string.IsNullOrEmpty(cueSheet.Title))
-        {
-            await writer.WriteLineAsync($"TITLE \"{EscapeString(cueSheet.Title)}\"");
-        }
-
-        if (!string.IsNullOrEmpty(cueSheet.Performer))
-        {
-            await writer.WriteLineAsync($"PERFORMER \"{EscapeString(cueSheet.Performer)}\"");
-        }
-
-        if (!string.IsNullOrEmpty(cueSheet.Songwriter))
-        {
-            await writer.WriteLineAsync($"SONGWRITER \"{EscapeString(cueSheet.Songwriter)}\"");
-        }
-
-        foreach (var file in cueSheet.Files)
-        {
-            cancellationToken.ThrowIfCancellationRequested();
-            await writer.WriteLineAsync($"FILE \"{EscapeString(file.FileName)}\" {file.FileType.ToUpperInvariant()}");
-
-            foreach (var track in file.Tracks)
-            {
-                cancellationToken.ThrowIfCancellationRequested();
-                await writer.WriteLineAsync($"  TRACK {track.TrackNumber:D2} {FormatDataType(track.DataType)}");
-
-                if (!string.IsNullOrEmpty(track.Title))
-                {
-                    await writer.WriteLineAsync($"    TITLE \"{EscapeString(track.Title)}\"");
-                }
-
-                if (!string.IsNullOrEmpty(track.Performer))
-                {
-                    await writer.WriteLineAsync($"    PERFORMER \"{EscapeString(track.Performer)}\"");
-                }
-
-                if (!string.IsNullOrEmpty(track.Songwriter))
-                {
-                    await writer.WriteLineAsync($"    SONGWRITER \"{EscapeString(track.Songwriter)}\"");
-                }
-
-                if (!string.IsNullOrEmpty(track.Isrc))
-                {
-                    await writer.WriteLineAsync($"    ISRC {track.Isrc}");
-                }
-
-                if (track.Flags.Count > 0)
-                {
-                    await writer.WriteLineAsync($"    FLAGS {string.Join(" ", track.Flags)}");
-                }
-
-                if (track.PreGap.HasValue)
-                {
-                    await writer.WriteLineAsync($"    PREGAP {track.PreGap.Value}");
-                }
-
-                foreach (var index in track.Indices)
-                {
-                    await writer.WriteLineAsync($"    INDEX {index.IndexNumber:D2} {index.Position}");
-                }
-
-                if (track.PostGap.HasValue)
-                {
-                    await writer.WriteLineAsync($"    POSTGAP {track.PostGap.Value}");
-                }
-            }
-        }
+        cancellationToken.ThrowIfCancellationRequested();
+        string formatted = WriteToString(cueSheet);
+        await writer.WriteAsync(formatted.AsMemory(), cancellationToken).ConfigureAwait(false);
     }
 
     /// <summary>

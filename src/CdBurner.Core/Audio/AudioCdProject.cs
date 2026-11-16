@@ -776,10 +776,42 @@ public class AudioCdCompilation
                 string performer = !string.IsNullOrWhiteSpace(trk.Performer)
                     ? trk.Performer
                     : (!string.IsNullOrWhiteSpace(meta?.Artist) ? meta.Artist : AlbumPerformer);
-                int preGap = trk.PreGap?.ToFrameCount() ?? (trackNum == 1 ? DefaultPreGapFrames : 0);
+                int preGap = trackNum == 1 && !afterData
+                    ? (trk.PreGap is { } t1PreGap ? OpticalConstants.CdLeadInFrames + t1PreGap.ToFrameCount() : DefaultPreGapFrames)
+                    : (trk.PreGap?.ToFrameCount() ?? 0);
                 if (afterData)
                 {
                     preGap = Math.Max(preGap, Math.Max(MixedModeAudioPreGapFrames, Math.Max(rawGap, audioAfterData)));
+                }
+
+                int index00Lead = 0;
+                int hiddenFrames = 0;
+                Func<Stream>? hiddenFactory = null;
+                if (trackNum == 1 && trk.SplitIndex00 is { DedicatedFileName: not null } htoa)
+                {
+                    string htoaPath = Path.IsPathRooted(htoa.DedicatedFileName)
+                        ? htoa.DedicatedFileName
+                        : Path.Combine(cueDirectory, htoa.DedicatedFileName);
+                    if (File.Exists(htoaPath))
+                    {
+                        string htoaType = htoa.DedicatedFileType ?? "WAVE";
+                        bool rawHtoa = RawCdAudioFile.IsRawType(htoaType);
+                        int htoaTotal = ProbeAudioFrames(htoaPath, htoaType, audioDecoder);
+                        int htoaStart = htoa.Position.ToFrameCount();
+                        hiddenFrames = Math.Max(0, htoaTotal - htoaStart);
+                        if (hiddenFrames > 0)
+                        {
+                            hiddenFactory = rawHtoa
+                                ? RawCdAudioFile.CreateSliceFactory(htoaPath, htoaStart, hiddenFrames, string.Equals(htoaType, "MOTOROLA", StringComparison.OrdinalIgnoreCase))
+                                : new SingleFileAlbumSource(htoaPath, audioDecoder).CreateSliceFactory(htoaStart, hiddenFrames);
+                        }
+                    }
+                }
+                else if (_tracks.Count > 0 && !_tracks[^1].IsDataTrack && trk.SplitIndex00 is { DedicatedFileName: null } prevSplit)
+                {
+                    int prevFrames = _tracks[^1].DurationFrames;
+                    int idx00Frame = prevSplit.Position.ToFrameCount();
+                    index00Lead = prevFrames > idx00Frame ? prevFrames - idx00Frame : 0;
                 }
 
                 AddTrack(new AudioCdTrackItem(
@@ -796,6 +828,9 @@ public class AudioCdCompilation
                     DurationFrames = rawFile ? rawFrames : totalFileFrames,
                     RawFileType = rawFile ? file.FileType.ToUpperInvariant() : null,
                     SourceStartFrame = rawFile ? (afterData ? GetIndex01Frames(trk) ?? 0 : 0) : null,
+                    Index00LeadFrames = index00Lead,
+                    HiddenAudioFrames = hiddenFrames,
+                    HiddenAudioPcmStreamFactory = hiddenFactory,
                     PreEmphasis = trk.Flags.Contains("PRE"),
                     CopyPermitted = trk.Flags.Contains("DCP")
                 });
@@ -832,8 +867,11 @@ public class AudioCdCompilation
 
                     string title = !string.IsNullOrWhiteSpace(trk.Title) ? trk.Title : $"Track {trackNum:D2}";
                     string performer = !string.IsNullOrWhiteSpace(trk.Performer) ? trk.Performer : AlbumPerformer;
-                    int preGap = trk.PreGap?.ToFrameCount() ?? (trackNum == 1 ? DefaultPreGapFrames : 0);
-                    if (k == 0 && _tracks.Count > 0 && _tracks[^1].IsDataTrack)
+                    bool trackAfterData = k == 0 && _tracks.Count > 0 && _tracks[^1].IsDataTrack;
+                    int preGap = trackNum == 1 && !trackAfterData
+                        ? (trk.PreGap is { } t1PreGap ? OpticalConstants.CdLeadInFrames + t1PreGap.ToFrameCount() : DefaultPreGapFrames)
+                        : (trk.PreGap?.ToFrameCount() ?? 0);
+                    if (trackAfterData)
                     {
                         // After a data track: a generated pre-gap of at least two seconds, covering the cue's INDEX 00.
                         int gap = GetIndex00Frames(trk) is int i00 && i00 < startFrame ? startFrame - i00 : 0;
@@ -882,6 +920,48 @@ public class AudioCdCompilation
         }
 
         return added;
+    }
+
+    private static int ProbeAudioFrames(string path, string fileType, IAudioDecoder? decoder)
+    {
+        if (!File.Exists(path))
+        {
+            return 0;
+        }
+
+        if (RawCdAudioFile.IsRawType(fileType))
+        {
+            return RawCdAudioFile.FrameCount(path);
+        }
+
+        AudioFormatMetadata? meta = null;
+        try
+        {
+            if (decoder != null)
+            {
+                meta = decoder.ProbeAudioFile(path);
+            }
+            else if (FlacFileCodec.IsFlacFile(path))
+            {
+                meta = FlacFileCodec.ProbeAudioFile(path);
+            }
+            else if (string.Equals(Path.GetExtension(path), ".wav", StringComparison.OrdinalIgnoreCase))
+            {
+                meta = WavFileCodec.ProbeAudioFile(path);
+            }
+        }
+        catch
+        {
+        }
+
+        if (meta == null)
+        {
+            return 0;
+        }
+
+        return meta.TotalRedBookBytes > 0
+            ? OpticalConstants.BytesToSectors(meta.TotalRedBookBytes, OpticalConstants.RawSectorSize)
+            : (int)Math.Round(meta.Duration.TotalSeconds * OpticalConstants.AudioFramesPerSecond);
     }
 
     /// <summary>Pre-gap of the first audio track after a data track: two seconds (Yellow Book).</summary>

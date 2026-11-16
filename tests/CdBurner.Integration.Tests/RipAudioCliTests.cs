@@ -8,6 +8,7 @@ using CdBurner.Core.DvdVideo;
 using CdBurner.Core.Primitives;
 using CdBurner.Hardware.Audio;
 using CdBurner.Hardware.Devices;
+using CdBurner.Hardware.NativeWriting;
 using CdBurner.Hardware.Simulation;
 using Xunit;
 
@@ -475,6 +476,138 @@ public sealed class RipAudioCliTests : IAsyncLifetime, IDisposable
         var argsEmpty = FlacEncoder.BuildArguments(@"C:\test\in.wav", @"C:\test\out.flac", tagsEmpty);
         Assert.DoesNotContain(argsEmpty, a => a.StartsWith("ISRC=", StringComparison.OrdinalIgnoreCase));
         Assert.DoesNotContain(argsEmpty, a => a.StartsWith("DATE=", StringComparison.OrdinalIgnoreCase));
+    }
+
+    [Fact]
+    public async Task RipAudio_BurnNativeCueWithoutDao_VerifyCue_RoundTripsProgramAreaAndCueSheetIdentically()
+    {
+        byte[] Pcm(int seed, int frames)
+        {
+            byte[] buf = new byte[frames * OpticalConstants.RawSectorSize];
+            new Random(seed).NextBytes(buf);
+            if (buf.Length > 0 && buf.AsSpan().IndexOfAnyExcept((byte)0) < 0)
+            {
+                buf[0] = 0x5A;
+            }
+            return buf;
+        }
+
+        byte[] htoa = Pcm(700, 750);
+        byte[] t1Main = Pcm(701, 2100);
+        byte[] t2Gap = Pcm(702, 150);
+        byte[] t2Main = Pcm(703, 300);
+        byte[] t3Main = Pcm(704, 300);
+
+        byte[] cdText = CdTextPackBuilder.BuildPacks(new CdTextAlbumMetadata(
+            "RoundTrip Album",
+            "RoundTrip Artist",
+            Tracks: new[]
+            {
+                new CdTextTrackMetadata(1, "Track One", "RoundTrip Artist"),
+                new CdTextTrackMetadata(2, "Track Two", "RoundTrip Artist", Isrc: "USAA12600021"),
+                new CdTextTrackMetadata(3, "Track Three", "RoundTrip Artist", Isrc: "USAA12600022")
+            }));
+
+        var srcRecorder = new VirtualDiscRecorder("VDRV-SRC", "IGNIS", "VIRTUAL SRC", @"S:\");
+        var srcMedium = VirtualDiscMedium.CreateBlankCdR700();
+        srcRecorder.InsertMedia(srcMedium);
+
+        var dstRecorder = new VirtualDiscRecorder("VDRV-DST", "IGNIS", "VIRTUAL DST", @"D:\");
+        var dstMedium = VirtualDiscMedium.CreateBlankCdR700();
+        dstRecorder.InsertMedia(dstMedium);
+
+        var multiDeviceService = new TestDeviceService(srcRecorder, dstRecorder);
+        var srcEngine = new NativeAudioBurnEngine(Path.Combine(_tempDir, "src-logs"));
+
+        var srcBurn = await srcEngine.BurnAudioTracksAsync(
+            srcRecorder,
+            new List<AudioTrackSource>
+            {
+                new()
+                {
+                    TrackNumber = 1,
+                    Title = "Track One",
+                    Performer = "RoundTrip Artist",
+                    PreGapFrames = 150,
+                    PreGapAudioFrames = 750,
+                    PreGapPcmStreamFactory = () => new MemoryStream(htoa),
+                    TotalPcmBytes = t1Main.Length,
+                    PcmStreamFactory = () => new MemoryStream(t1Main)
+                },
+                new()
+                {
+                    TrackNumber = 2,
+                    Title = "Track Two",
+                    Performer = "RoundTrip Artist",
+                    Isrc = "USAA12600021",
+                    PreGapFrames = 0,
+                    PreGapAudioFrames = 150,
+                    PreGapPcmStreamFactory = () => new MemoryStream(t2Gap),
+                    PreEmphasis = true,
+                    CopyPermitted = true,
+                    TotalPcmBytes = t2Main.Length,
+                    PcmStreamFactory = () => new MemoryStream(t2Main)
+                },
+                new()
+                {
+                    TrackNumber = 3,
+                    Title = "Track Three",
+                    Performer = "RoundTrip Artist",
+                    Isrc = "USAA12600022",
+                    PreGapFrames = 0,
+                    TotalPcmBytes = t3Main.Length,
+                    PcmStreamFactory = () => new MemoryStream(t3Main)
+                }
+            },
+            new AudioBurnOptions
+            {
+                UseDiscAtOnce = true,
+                WriteCdText = true,
+                CdTextBytes = cdText,
+                MediaCatalogNumber = "0012345678905"
+            },
+            null,
+            CancellationToken.None);
+        Assert.True(srcBurn.Success, srcBurn.ErrorMessage);
+
+        string ripOut = Path.Combine(_tempDir, "cli-roundtrip-rip");
+        var (ripStdout, ripStderr) = CreateStringWriters();
+        int ripExit = await CliCommandRunner.RunAsync(
+            new[] { "rip-audio", "--drive", "VDRV-SRC", "--output", ripOut, "--no-replaygain", "--json" },
+            ripStdout,
+            ripStderr,
+            multiDeviceService,
+            new VirtualBurnEngine(srcRecorder));
+        Assert.Equal(0, ripExit);
+
+        string cuePath = Path.Combine(ripOut, "album.cue");
+        Assert.True(File.Exists(cuePath));
+
+        // Burn ripped .cue with --native (without --dao) onto fresh blank virtual medium.
+        var (burnStdout, burnStderr) = CreateStringWriters();
+        int burnExit = await CliCommandRunner.RunAsync(
+            new[] { "burn-audio", "--drive", "VDRV-DST", "--tracks", cuePath, "--native", "--json" },
+            burnStdout,
+            burnStderr,
+            multiDeviceService,
+            new VirtualBurnEngine(dstRecorder));
+        Assert.Equal(0, burnExit);
+
+        var (verifyStdout, verifyStderr) = CreateStringWriters();
+        int verifyExit = await CliCommandRunner.RunAsync(
+            new[] { "verify", "--drive", "VDRV-DST", "--cue", cuePath, "--json" },
+            verifyStdout,
+            verifyStderr,
+            multiDeviceService,
+            new VirtualBurnEngine(dstRecorder));
+        Assert.Equal(0, verifyExit);
+
+        Assert.NotNull(srcMedium.RecordedMmcDrive);
+        Assert.NotNull(dstMedium.RecordedMmcDrive);
+        Assert.Equal(srcMedium.RecordedMmcDrive!.RecordedCueSheet, dstMedium.RecordedMmcDrive!.RecordedCueSheet);
+        Assert.Equal(
+            srcMedium.RecordedMmcDrive!.ProgramAreaWritten.ToArray(),
+            dstMedium.RecordedMmcDrive!.ProgramAreaWritten.ToArray());
     }
 
     private sealed class TestDeviceService : IDiscDeviceService

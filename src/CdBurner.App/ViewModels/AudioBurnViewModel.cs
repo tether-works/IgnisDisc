@@ -2338,7 +2338,11 @@ public class AudioBurnViewModel : ObservableObject, IDisposable
     private static AudioCdRipResult AudioRipResultWithFiles(AudioCdRipResult rip, IReadOnlyList<string> files) =>
         AudioCdRipResult.Succeeded(
             files, rip.TotalSectorsRead, rip.TotalTime, rip.CueSheetPath, rip.CdText, rip.TrackInfos,
-            rip.BadSectorLbas, rip.SecureModeUsed, rip.ReplayGainAlbumGain, rip.ReplayGainAlbumPeak);
+            rip.BadSectorLbas, rip.SecureModeUsed, rip.ReplayGainAlbumGain, rip.ReplayGainAlbumPeak,
+            rip.RecoveryRepair,
+            hiddenTrackOneAudioPath: rip.HiddenTrackOneAudioPath != null && files.Count > 0
+                ? Path.ChangeExtension(rip.HiddenTrackOneAudioPath, Path.GetExtension(files[0]))
+                : null);
 
     /// <summary>
     /// Extracts Red Book audio tracks from the inserted CD into uncompressed WAV files and companion CUE sheet.

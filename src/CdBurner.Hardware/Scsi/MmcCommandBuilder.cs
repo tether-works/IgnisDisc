@@ -13,6 +13,7 @@ public static class MmcCommandBuilder
     public const byte OpCodeStartStopUnit        = 0x1B;
     public const byte OpCodeWrite10              = 0x2A;
     public const byte OpCodeSynchronizeCache10   = 0x35;
+    public const byte OpCodeReadSubChannel       = 0x42;
     public const byte OpCodeReadTocPmaAtip       = 0x43;
     public const byte OpCodeGetConfiguration     = 0x46;
     public const byte OpCodeReadDiscInformation  = 0x51;
@@ -44,6 +45,12 @@ public static class MmcCommandBuilder
     public const byte TocFormatPma               = 0x03;
     public const byte TocFormatAtip              = 0x04;
     public const byte TocFormatCdText            = 0x05;
+
+    // READ SUB-CHANNEL Formats & READ CD Sub-Channel Selection
+    public const byte SubChannelFormatCurrentPosition    = 0x01;
+    public const byte SubChannelFormatMediaCatalogNumber = 0x02;
+    public const byte SubChannelFormatTrackIsrc          = 0x03;
+    public const byte ReadCdSubChannelFormattedQ         = 0x02;
 
     // Blanking Types
     public const byte BlankTypeFull              = 0x00;
@@ -272,6 +279,27 @@ public static class MmcCommandBuilder
         cdb[7] = (byte)(allocationLength >> 8);
         cdb[8] = (byte)(allocationLength & 0xFF);
         cdb[9] = 0x00; // Control
+        return cdb;
+    }
+
+    /// <summary>
+    /// Builds a 10-byte MMC READ SUB-CHANNEL CDB (OpCode 0x42).
+    /// </summary>
+    public static byte[] BuildReadSubChannelCdb(
+        byte dataFormat,
+        byte trackNumber = 0,
+        ushort allocationLength = 24,
+        bool msf = true,
+        bool subQ = true)
+    {
+        byte[] cdb = new byte[10];
+        cdb[0] = OpCodeReadSubChannel;
+        cdb[1] = (byte)(msf ? 0x02 : 0x00);
+        cdb[2] = (byte)(subQ ? 0x40 : 0x00);
+        cdb[3] = dataFormat;
+        cdb[6] = trackNumber;
+        cdb[7] = (byte)(allocationLength >> 8);
+        cdb[8] = (byte)(allocationLength & 0xFF);
         return cdb;
     }
 

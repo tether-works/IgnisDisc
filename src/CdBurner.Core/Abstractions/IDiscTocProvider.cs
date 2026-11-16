@@ -7,7 +7,15 @@ namespace CdBurner.Core.Abstractions;
 /// <param name="StartLba">Logical block address where the track's INDEX 01 begins.</param>
 /// <param name="SectorCount">Number of sectors in the track (up to the next track or lead-out).</param>
 /// <param name="IsAudio">True for CD-DA audio tracks; false for data tracks.</param>
-public record DiscTocTrack(int TrackNumber, int StartLba, int SectorCount, bool IsAudio);
+/// <param name="PreEmphasis">True if the track's control nibble has pre-emphasis (bit 0) set.</param>
+/// <param name="CopyPermitted">True if the track's control nibble has digital copy permitted (bit 1) set.</param>
+public record DiscTocTrack(
+    int TrackNumber,
+    int StartLba,
+    int SectorCount,
+    bool IsAudio,
+    bool PreEmphasis = false,
+    bool CopyPermitted = false);
 
 /// <summary>
 /// Optional capability for recorders that can read the physical disc Table of Contents

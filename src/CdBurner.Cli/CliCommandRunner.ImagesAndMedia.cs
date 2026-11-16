@@ -725,6 +725,7 @@ public static partial class CliCommandRunner
 
                 if (string.Equals(Path.GetExtension(trackPath), ".cue", StringComparison.OrdinalIgnoreCase))
                 {
+                    compilation.RecordingMode = AudioRecordingMode.DiscAtOnceGapless;
                     compilation.ImportCueSheet(trackPath, audioDecoder);
                     if (!noCdText) compilation.IncludeCdText = true;
                     continue;

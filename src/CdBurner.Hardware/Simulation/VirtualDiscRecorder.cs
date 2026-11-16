@@ -1,6 +1,7 @@
 ﻿using CdBurner.Core.Abstractions;
 using CdBurner.Core.Primitives;
 using CdBurner.Core.Utilities;
+using CdBurner.Hardware.Scsi;
 
 namespace CdBurner.Hardware.Simulation;
 
@@ -8,7 +9,7 @@ namespace CdBurner.Hardware.Simulation;
 /// Virtual optical drive recorder implementation of <see cref="IDiscRecorderBackend"/>
 /// simulating an Ignis virtual DVD/CD-RW optical drive.
 /// </summary>
-public class VirtualDiscRecorder : IDiscRecorderBackend, IDriveMediaReportProvider
+public class VirtualDiscRecorder : IDiscRecorderBackend, IAudioSubChannelProvider, IDriveMediaReportProvider
 {
     private readonly object _lock = new();
 
@@ -344,8 +345,117 @@ public class VirtualDiscRecorder : IDiscRecorderBackend, IDriveMediaReportProvid
         }
     }
 
+    /// <inheritdoc/>
+    public IAudioSubChannelSession? TryOpenSubChannelSession()
+    {
+        lock (_lock)
+        {
+            if (TrayOpen || CurrentMedium is not { IsBlank: false } medium)
+            {
+                return null;
+            }
+
+            if (medium.RecordedMmcDrive is { Recorded: true } mmcDrive)
+            {
+                return new MmcScsiSubChannelSession(mmcDrive, ownsTransport: false);
+            }
+
+            return new VirtualMediumSubChannelSession(medium);
+        }
+    }
+
     public override string ToString()
     {
         return $"{VolumePath} {ProductId} (Virtual Simulator)".Trim();
+    }
+
+    private sealed class VirtualMediumSubChannelSession(VirtualDiscMedium medium) : IAudioSubChannelSession
+    {
+        private readonly IReadOnlyList<VirtualTrack> _tracks = medium.Sessions
+            .SelectMany(s => s.Tracks)
+            .OrderBy(t => t.StartLba)
+            .ToList();
+
+        public bool TryReadQSubChannel(int lba, out QSubChannelFrame frame)
+        {
+            frame = default;
+            if (lba < 0 || _tracks.Count == 0)
+            {
+                return false;
+            }
+
+            int discEnd = _tracks[^1].StartLba + _tracks[^1].SectorCount;
+            if (lba >= discEnd)
+            {
+                return false;
+            }
+
+            VirtualTrack? chosen = null;
+            int index = 1;
+            for (int i = 0; i < _tracks.Count; i++)
+            {
+                var trk = _tracks[i];
+                if (trk.Index00Lba is int idx00 && lba >= idx00 && lba < trk.StartLba)
+                {
+                    chosen = trk;
+                    index = 0;
+                    break;
+                }
+            }
+
+            if (chosen == null)
+            {
+                if (_tracks[0].TrackNumber == 1 && lba < _tracks[0].StartLba)
+                {
+                    chosen = _tracks[0];
+                    index = 0;
+                }
+                else
+                {
+                    for (int i = _tracks.Count - 1; i >= 0; i--)
+                    {
+                        if (_tracks[i].StartLba <= lba)
+                        {
+                            chosen = _tracks[i];
+                            index = 1;
+                            break;
+                        }
+                    }
+                }
+            }
+
+            if (chosen == null)
+            {
+                return false;
+            }
+
+            byte ctl = (byte)((chosen.PreEmphasis ? 0x01 : 0) |
+                              (chosen.CopyPermitted ? 0x02 : 0) |
+                              (!chosen.IsAudio ? 0x04 : 0));
+            int relFrames = index == 0 ? Math.Max(0, chosen.StartLba - lba) : Math.Max(0, lba - chosen.StartLba);
+            var rel = MsfAddress.FromFrameCount(relFrames);
+            var abs = MsfAddress.FromLba(lba);
+            frame = new QSubChannelFrame(
+                1,
+                ctl,
+                chosen.TrackNumber,
+                index,
+                rel.Minutes,
+                rel.Seconds,
+                rel.Frames,
+                abs.Minutes,
+                abs.Seconds,
+                abs.Frames);
+            return true;
+        }
+
+        public string? ReadMediaCatalogNumber() => medium.MediaCatalogNumber;
+
+        public string? ReadTrackIsrc(int trackNumber) =>
+            _tracks.FirstOrDefault(t => t.TrackNumber == trackNumber)?.Isrc;
+
+        public void Dispose()
+        {
+        }
     }
 }

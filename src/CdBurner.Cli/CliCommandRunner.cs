@@ -1168,7 +1168,7 @@ public static partial class CliCommandRunner
             new AudioBurnOptions
             {
                 Speed = speedDesc,
-                UseDiscAtOnce = dao,
+                UseDiscAtOnce = dao || compilation.RecordingMode == AudioRecordingMode.DiscAtOnceGapless,
                 WriteCdText = compilation.IncludeCdText,
                 PerformNormalization = compilation.NormalizeAllTracks,
                 PreGapFrames = compilation.DefaultPreGapFrames,
@@ -2720,6 +2720,7 @@ public static partial class CliCommandRunner
         {
             UseDiscAtOnce = true,
             WriteCdText = compilation.IncludeCdText,
+            MediaCatalogNumber = compilation.UpcEan,
             KeepIndexMarks = true,
             WriteOffsetSamples = ParseWriteOffset(cmd.GetOption("write-offset"), native: true)
         }).ConfigureAwait(false);

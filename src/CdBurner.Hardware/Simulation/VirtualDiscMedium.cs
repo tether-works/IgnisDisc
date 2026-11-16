@@ -31,6 +31,9 @@ public class VirtualTrack
     public string? Songwriter { get; set; }
     public string? Composer { get; set; }
     public string? Isrc { get; set; }
+    public bool PreEmphasis { get; set; }
+    public bool CopyPermitted { get; set; }
+    public int? Index00Lba { get; set; }
 }
 
 /// <summary>
@@ -106,6 +109,12 @@ public class VirtualDiscMedium : IDisposable, IBookTypeTarget
     /// Raw Lead-In CD-Text pack bytes (Red Book Annex J) if recorded on this disc.
     /// </summary>
     public byte[]? CdTextBytes { get; set; }
+
+    /// <summary>13-digit Media Catalog Number (MCN) recorded in Q sub-channel ADR=2, if any.</summary>
+    public string? MediaCatalogNumber { get; set; }
+
+    /// <summary>SCSI-level drive instance that recorded this virtual disc (if burned natively).</summary>
+    public VirtualMmcDrive? RecordedMmcDrive { get; set; }
 
     /// <summary>
     /// Recorded sessions present on this media.
@@ -547,6 +556,8 @@ public class VirtualDiscMedium : IDisposable, IBookTypeTarget
             _memorySectors.Clear();
             Sessions.Clear();
             CdTextBytes = null;
+            MediaCatalogNumber = null;
+            RecordedMmcDrive = null;
             UsedSectors = 0;
             _nextWritableLba = -1;
             IsBlank = true;

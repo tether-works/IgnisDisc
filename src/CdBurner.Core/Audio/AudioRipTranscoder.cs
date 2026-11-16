@@ -94,8 +94,8 @@ public sealed class AudioRipTranscoder
         int bitrate = settings.BitrateKbps > 0 ? settings.BitrateKbps : AudioRipFormats.DefaultBitrateKbps(format);
         string extension = AudioRipFormats.Extension(format);
         var warnings = new List<string>();
-        var outputs = new List<string>(rip.TrackInfos.Count);
-        int trackTotal = rip.RippedFilePaths.Count;
+        var outputs = new List<string>(rip.TrackInfos.Count + (rip.HiddenTrackOneAudioPath != null ? 1 : 0));
+        int trackTotal = rip.TrackInfos.Count;
         string albumTitle = !string.IsNullOrWhiteSpace(rip.CdText?.AlbumTitle) ? rip.CdText.AlbumTitle : "Unknown Album";
         string albumPerformer = !string.IsNullOrWhiteSpace(rip.CdText?.AlbumPerformer) ? rip.CdText.AlbumPerformer : "Unknown Artist";
 
@@ -112,6 +112,33 @@ public sealed class AudioRipTranscoder
                 warnings.Add($"Cover art is not embedded in {AudioRipFormats.DisplayName(format)} files (supported in FLAC and MP3).");
             }
 
+            if (rip.HiddenTrackOneAudioPath is { } htoaWav && File.Exists(htoaWav))
+            {
+                string htoaOut = Path.ChangeExtension(htoaWav, extension);
+                var htoaTags = new AudioTrackTags(
+                    Title: "Hidden Track One Audio",
+                    Artist: albumPerformer,
+                    Album: albumTitle,
+                    TrackNumber: 0,
+                    TrackTotal: trackTotal,
+                    Isrc: null,
+                    Date: null,
+                    ReplayGainTrackGain: null,
+                    ReplayGainTrackPeak: null,
+                    ReplayGainAlbumGain: rip.ReplayGainAlbumGain.HasValue ? ReplayGainCalculator.FormatGainDb(rip.ReplayGainAlbumGain.Value) : null,
+                    ReplayGainAlbumPeak: rip.ReplayGainAlbumPeak.HasValue ? ReplayGainCalculator.FormatPeak(rip.ReplayGainAlbumPeak.Value) : null,
+                    CoverArtBytes: coverArtBytes,
+                    CoverArtMimeType: coverArtMimeType);
+
+                string? htoaWarning = await EncodeFileAsync(
+                    format, settings, htoaWav, htoaOut, htoaTags, bitrate, coverArtBytes, coverTempPath, cancellationToken).ConfigureAwait(false);
+                if (htoaWarning != null)
+                {
+                    warnings.Add($"Track 00: {htoaWarning}");
+                }
+                outputs.Add(htoaOut);
+            }
+
             foreach (var info in rip.TrackInfos)
             {
                 cancellationToken.ThrowIfCancellationRequested();
@@ -120,28 +147,11 @@ public sealed class AudioRipTranscoder
                 string outPath = Path.ChangeExtension(wavPath, extension);
                 var tags = BuildTags(info, rip, albumTitle, albumPerformer, trackTotal, coverArtBytes, coverArtMimeType);
 
-                switch (format)
+                string? tagWarning = await EncodeFileAsync(
+                    format, settings, wavPath, outPath, tags, bitrate, coverArtBytes, coverTempPath, cancellationToken).ConfigureAwait(false);
+                if (tagWarning != null)
                 {
-                    case AudioRipFormat.Flac:
-                        await FlacEncoder.EncodeAsync(settings.FfmpegPath!, wavPath, outPath, tags, cancellationToken).ConfigureAwait(false);
-                        if (coverArtBytes is { Length: > 0 })
-                        {
-                            FlacEncoder.EmbedCoverArtAndReplayGain(outPath, tags);
-                        }
-                        break;
-
-                    case AudioRipFormat.Mp3:
-                    case AudioRipFormat.Opus:
-                        await FfmpegAudioEncoder.EncodeAsync(format, settings.FfmpegPath!, wavPath, outPath, tags, bitrate, coverTempPath, cancellationToken).ConfigureAwait(false);
-                        break;
-
-                    case AudioRipFormat.Aac:
-                        string? tagWarning = await _aacEncoder!.EncodeAsync(wavPath, outPath, tags, bitrate, cancellationToken).ConfigureAwait(false);
-                        if (tagWarning != null)
-                        {
-                            warnings.Add($"Track {info.TrackNumber:D2}: {tagWarning}");
-                        }
-                        break;
+                    warnings.Add($"Track {info.TrackNumber:D2}: {tagWarning}");
                 }
 
                 outputs.Add(outPath);
@@ -162,24 +172,67 @@ public sealed class AudioRipTranscoder
 
         if (!settings.KeepWav)
         {
+            if (rip.HiddenTrackOneAudioPath is { } htoaWav && File.Exists(htoaWav))
+            {
+                TryDeleteSourceWav(htoaWav, warnings);
+            }
             foreach (var info in rip.TrackInfos)
             {
-                try
-                {
-                    File.Delete(info.FilePath);
-                }
-                catch (IOException ex)
-                {
-                    warnings.Add($"Could not delete '{Path.GetFileName(info.FilePath)}': {ex.Message}");
-                }
-                catch (UnauthorizedAccessException ex)
-                {
-                    warnings.Add($"Could not delete '{Path.GetFileName(info.FilePath)}': {ex.Message}");
-                }
+                TryDeleteSourceWav(info.FilePath, warnings);
             }
         }
 
         return new AudioRipTranscodeResult(outputs, warnings);
+    }
+
+    private async Task<string?> EncodeFileAsync(
+        AudioRipFormat format,
+        AudioRipTranscodeSettings settings,
+        string wavPath,
+        string outPath,
+        AudioTrackTags tags,
+        int bitrate,
+        byte[]? coverArtBytes,
+        string? coverTempPath,
+        CancellationToken cancellationToken)
+    {
+        switch (format)
+        {
+            case AudioRipFormat.Flac:
+                await FlacEncoder.EncodeAsync(settings.FfmpegPath!, wavPath, outPath, tags, cancellationToken).ConfigureAwait(false);
+                if (coverArtBytes is { Length: > 0 })
+                {
+                    FlacEncoder.EmbedCoverArtAndReplayGain(outPath, tags);
+                }
+                return null;
+
+            case AudioRipFormat.Mp3:
+            case AudioRipFormat.Opus:
+                await FfmpegAudioEncoder.EncodeAsync(format, settings.FfmpegPath!, wavPath, outPath, tags, bitrate, coverTempPath, cancellationToken).ConfigureAwait(false);
+                return null;
+
+            case AudioRipFormat.Aac:
+                return await _aacEncoder!.EncodeAsync(wavPath, outPath, tags, bitrate, cancellationToken).ConfigureAwait(false);
+
+            default:
+                return null;
+        }
+    }
+
+    private static void TryDeleteSourceWav(string wavPath, List<string> warnings)
+    {
+        try
+        {
+            File.Delete(wavPath);
+        }
+        catch (IOException ex)
+        {
+            warnings.Add($"Could not delete '{Path.GetFileName(wavPath)}': {ex.Message}");
+        }
+        catch (UnauthorizedAccessException ex)
+        {
+            warnings.Add($"Could not delete '{Path.GetFileName(wavPath)}': {ex.Message}");
+        }
     }
 
     private static AudioTrackTags BuildTags(

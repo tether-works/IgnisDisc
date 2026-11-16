@@ -326,6 +326,7 @@ public static partial class PhysicalSectorReader
                 }
 
                 var rawEntries = new List<(int Number, int Lba, bool IsData)>();
+                var trackControls = new Dictionary<int, byte>();
                 for (int i = 0; i <= last - first + 1; i++) // includes lead-out (track 0xAA)
                 {
                     int off = 4 + i * 8;
@@ -333,6 +334,10 @@ public static partial class PhysicalSectorReader
                     int number = toc[off + 2];
                     int lba = (toc[off + 5] * 60 + toc[off + 6]) * 75 + toc[off + 7] - 150; // MSF address
                     rawEntries.Add((number, lba, (control & 0x04) != 0));
+                    if (number is >= 1 and <= 99)
+                    {
+                        trackControls[number] = control;
+                    }
                 }
 
                 var entries = RepairTrackStarts(rawEntries, number => ReadTrackInformation(volumePath, number));
@@ -367,7 +372,10 @@ public static partial class PhysicalSectorReader
 
                     if (count > 0)
                     {
-                        tracks.Add(new DiscTocTrack(cur.Number, cur.Lba, count, !cur.IsData));
+                        byte control = trackControls.GetValueOrDefault(cur.Number);
+                        bool preEmphasis = !cur.IsData && (control & 0x01) != 0;
+                        bool copyPermitted = !cur.IsData && (control & 0x02) != 0;
+                        tracks.Add(new DiscTocTrack(cur.Number, cur.Lba, count, !cur.IsData, preEmphasis, copyPermitted));
                     }
                 }
 
@@ -635,7 +643,7 @@ public static partial class PhysicalSectorReader
         }
 
         var sessionLeadOuts = new Dictionary<int, int>();
-        var rawTracks = new List<(int Number, int Session, int StartLba, bool IsData)>();
+        var rawTracks = new List<(int Number, int Session, int StartLba, bool IsData, bool PreEmphasis, bool CopyPermitted)>();
 
         for (int off = 4; off + 11 <= endOffset; off += 11)
         {
@@ -655,7 +663,8 @@ public static partial class PhysicalSectorReader
             }
             else if (point is >= 1 and <= 99)
             {
-                rawTracks.Add((point, session, pLba, (control & 0x04) != 0));
+                bool isData = (control & 0x04) != 0;
+                rawTracks.Add((point, session, pLba, isData, !isData && (control & 0x01) != 0, !isData && (control & 0x02) != 0));
             }
         }
 
@@ -695,11 +704,56 @@ public static partial class PhysicalSectorReader
             int count = endLba - cur.StartLba;
             if (count > 0)
             {
-                result.Add(new DiscTocTrack(cur.Number, cur.StartLba, count, !cur.IsData));
+                result.Add(new DiscTocTrack(cur.Number, cur.StartLba, count, !cur.IsData, cur.PreEmphasis, cur.CopyPermitted));
             }
         }
 
         return result;
+    }
+
+    /// <summary>
+    /// Opens an <see cref="IAudioSubChannelSession"/> on a physical optical drive via SCSI pass-through,
+    /// returning null when the drive cannot be opened or is not ready.
+    /// </summary>
+    public static IAudioSubChannelSession? TryOpenSubChannelSession(string? volumePath)
+    {
+        if (!OperatingSystem.IsWindows() || string.IsNullOrWhiteSpace(volumePath))
+        {
+            return null;
+        }
+
+        SafeFileHandle? rw = null;
+        Win32ScsiTransport? transport = null;
+        try
+        {
+            rw = OpenDevice(volumePath, FileAccess.ReadWrite, out _);
+            if (rw == null)
+            {
+                return null;
+            }
+
+            transport = new Win32ScsiTransport(rw, ownsHandle: false);
+            byte[] turCdb = MmcCommandBuilder.BuildTestUnitReadyCdb();
+            var tur = transport.ExecuteCommand(turCdb, Span<byte>.Empty, ScsiPassThroughNative.SCSI_IOCTL_DATA_UNSPECIFIED, CommandTimeout);
+            if (!tur.IsSuccess && tur.SenseInfo is { SenseKey: 0x06 })
+            {
+                tur = transport.ExecuteCommand(turCdb, Span<byte>.Empty, ScsiPassThroughNative.SCSI_IOCTL_DATA_UNSPECIFIED, CommandTimeout);
+            }
+            if (!tur.IsSuccess)
+            {
+                transport.Dispose();
+                rw.Dispose();
+                return null;
+            }
+
+            return new MmcScsiSubChannelSession(transport, ownsTransport: true, rw);
+        }
+        catch
+        {
+            transport?.Dispose();
+            rw?.Dispose();
+            return null;
+        }
     }
 
     // READ CD byte 9: bit 4 = user data (all 2352 bytes for CD-DA), bits 2..1 = 01b -> 294-byte C2 error pointer block.

@@ -9,7 +9,7 @@ namespace CdBurner.Hardware.Devices;
 /// <summary>
 /// Physical optical disc recorder backend wrapping Windows IMAPIv2 <see cref="IDiscRecorder2"/> COM interface.
 /// </summary>
-public class ImapiDiscRecorder : IDiscRecorderBackend, IDiscTocProvider, IMediaManufacturerIdProvider, IDriveMediaReportProvider
+public class ImapiDiscRecorder : IDiscRecorderBackend, IDiscTocProvider, IAudioSubChannelProvider, IMediaManufacturerIdProvider, IDriveMediaReportProvider
 {
     private IDiscRecorder2? _recorder;
     private readonly string _uniqueId;
@@ -1031,6 +1031,10 @@ public class ImapiDiscRecorder : IDiscRecorderBackend, IDiscTocProvider, IMediaM
             return Array.Empty<DiscTocTrack>();
         }
     }
+
+    /// <inheritdoc/>
+    public IAudioSubChannelSession? TryOpenSubChannelSession() =>
+        PhysicalSectorReader.TryOpenSubChannelSession(VolumePath);
 
     /// <inheritdoc/>
     public byte[]? ReadCdTextPacks()

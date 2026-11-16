@@ -1,5 +1,6 @@
 using System.Buffers.Binary;
 using System.Text;
+using CdBurner.Core.Abstractions;
 using CdBurner.Core.Primitives;
 
 namespace CdBurner.Hardware.Scsi;
@@ -155,5 +156,188 @@ public static class MmcResponseParser
         var tracks = ParseToc(buffer, isMsf);
 
         return new TocResponse(firstTrack, lastTrack, tracks);
+    }
+
+    /// <summary>
+    /// Parses the 16-byte Formatted Q sub-channel block returned by READ CD (sub-channel selection 0x02).
+    /// </summary>
+    public static bool TryParseReadCdFormattedQ(ReadOnlySpan<byte> q16, bool bcdFields, out QSubChannelFrame frame)
+    {
+        frame = default;
+        if (q16.Length < 10)
+        {
+            return false;
+        }
+
+        byte control = (byte)((q16[0] >> 4) & 0x0F);
+        byte adr = (byte)(q16[0] & 0x0F);
+        if (adr != 1)
+        {
+            frame = new QSubChannelFrame(adr, control, 0, 0, 0, 0, 0, 0, 0, 0);
+            return true;
+        }
+
+        if (!TryDecodeField(q16[1], bcdFields, out int track) ||
+            !TryDecodeField(q16[2], bcdFields, out int index) ||
+            !TryDecodeField(q16[3], bcdFields, out int relM) ||
+            !TryDecodeField(q16[4], bcdFields, out int relS) ||
+            !TryDecodeField(q16[5], bcdFields, out int relF) ||
+            !TryDecodeField(q16[7], bcdFields, out int absM) ||
+            !TryDecodeField(q16[8], bcdFields, out int absS) ||
+            !TryDecodeField(q16[9], bcdFields, out int absF))
+        {
+            return false;
+        }
+
+        frame = new QSubChannelFrame(adr, control, track, index, relM, relS, relF, absM, absS, absF);
+        return true;
+    }
+
+    /// <summary>
+    /// Parses a READ SUB-CHANNEL (0x42) Format 0x01 (Current Position) response buffer.
+    /// </summary>
+    public static bool TryParseSubChannelPosition(ReadOnlySpan<byte> response, bool msf, out QSubChannelFrame frame)
+    {
+        frame = default;
+        if (response.Length < 16 || response[4] != MmcCommandBuilder.SubChannelFormatCurrentPosition)
+        {
+            return false;
+        }
+
+        byte adr = (byte)((response[5] >> 4) & 0x0F);
+        byte control = (byte)(response[5] & 0x0F);
+        int track = response[6];
+        int index = response[7];
+
+        if (msf)
+        {
+            frame = new QSubChannelFrame(
+                adr,
+                control,
+                track,
+                index,
+                response[13],
+                response[14],
+                response[15],
+                response[9],
+                response[10],
+                response[11]);
+            return true;
+        }
+
+        int absLba = BinaryPrimitives.ReadInt32BigEndian(response.Slice(8, 4));
+        int relLba = BinaryPrimitives.ReadInt32BigEndian(response.Slice(12, 4));
+        if (absLba < -OpticalConstants.CdLeadInFrames)
+        {
+            return false;
+        }
+
+        MsfAddress abs = MsfAddress.FromLba(absLba);
+        MsfAddress rel = MsfAddress.FromFrameCount(Math.Abs(relLba));
+        frame = new QSubChannelFrame(
+            adr,
+            control,
+            track,
+            index,
+            rel.Minutes,
+            rel.Seconds,
+            rel.Frames,
+            abs.Minutes,
+            abs.Seconds,
+            abs.Frames);
+        return true;
+    }
+
+    /// <summary>
+    /// Parses a READ SUB-CHANNEL (0x42) Format 0x02 (Media Catalog Number) response buffer.
+    /// </summary>
+    public static bool TryParseSubChannelMediaCatalogNumber(ReadOnlySpan<byte> response, out string mcn)
+    {
+        mcn = string.Empty;
+        if (response.Length < 22 ||
+            response[4] != MmcCommandBuilder.SubChannelFormatMediaCatalogNumber ||
+            (response[8] & 0x80) == 0)
+        {
+            return false;
+        }
+
+        Span<char> chars = stackalloc char[13];
+        bool anyNonZero = false;
+        for (int i = 0; i < 13; i++)
+        {
+            byte b = response[9 + i];
+            if (b is < (byte)'0' or > (byte)'9')
+            {
+                return false;
+            }
+            if (b != (byte)'0')
+            {
+                anyNonZero = true;
+            }
+            chars[i] = (char)b;
+        }
+
+        if (!anyNonZero)
+        {
+            return false;
+        }
+
+        mcn = new string(chars);
+        return true;
+    }
+
+    /// <summary>
+    /// Parses a READ SUB-CHANNEL (0x42) Format 0x03 (Track ISRC) response buffer.
+    /// </summary>
+    public static bool TryParseSubChannelIsrc(ReadOnlySpan<byte> response, out string isrc)
+    {
+        isrc = string.Empty;
+        if (response.Length < 21 ||
+            response[4] != MmcCommandBuilder.SubChannelFormatTrackIsrc ||
+            (response[8] & 0x80) == 0)
+        {
+            return false;
+        }
+
+        Span<char> chars = stackalloc char[12];
+        for (int i = 0; i < 12; i++)
+        {
+            byte b = response[9 + i];
+            char ch = char.ToUpperInvariant((char)b);
+            bool valid = i switch
+            {
+                < 2 => ch is >= 'A' and <= 'Z',
+                < 5 => ch is (>= 'A' and <= 'Z') or (>= '0' and <= '9'),
+                _ => ch is >= '0' and <= '9'
+            };
+            if (!valid)
+            {
+                return false;
+            }
+            chars[i] = ch;
+        }
+
+        isrc = new string(chars);
+        return true;
+    }
+
+    private static bool TryDecodeField(byte raw, bool bcd, out int value)
+    {
+        if (!bcd)
+        {
+            value = raw;
+            return true;
+        }
+
+        int hi = (raw >> 4) & 0x0F;
+        int lo = raw & 0x0F;
+        if (hi > 9 || lo > 9)
+        {
+            value = 0;
+            return false;
+        }
+
+        value = (hi * 10) + lo;
+        return true;
     }
 }
