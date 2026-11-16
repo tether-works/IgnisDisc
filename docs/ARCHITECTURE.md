@@ -315,9 +315,21 @@ one assembly with a clear provenance boundary. Nothing in it touches a drive.
   appended session at the end of the disc (ISO 9660 + Joliet only, as for every appended session; the volume space
   size then counts from LBA 0 as usual for a multisession disc, but no descriptor, directory or file extent lies
   below the session start). The picture comes in through a block callback, so any encoder can fill it.
-- Upstream issues kept as-is in the port until the goldens are reproduced (to be fixed separately): the
-  interleaved track starts with 1,332 placeholder bytes and the delay line drops the last 1,332 logical bytes of a
-  drawn stretch (upstream's `docs/PHYSICAL_MODEL_AUDIT.md`); the picture sits about 111 frames late against CIRC reference timing.
+- Upstream's own audit (`docs/PHYSICAL_MODEL_AUDIT.md` at the pinned commit), fixed after the goldens were
+  reproduced:
+  - The `cd-80` preset (and the starting user preset) used 359,849 sectors over 24.5-56.8 mm at 1,200 mm/s, a
+    1.43 µm track pitch. It is now ECMA-130's nominal geometry: 1,200 mm/s and 1.5 µm (11.3, 11.4), the user data
+    zone from 49.6 mm diameter at absolute time 00:00:00 to 116 mm (8.6), which holds 359,675 sectors after the
+    2-second pre-gap (LBA 0 at 24.825 mm, end at 58.0 mm). Measured presets keep their measured values.
+  - The CD-DA interleaver started from an empty delay line, so a track began with 1,332 zero placeholder bytes.
+    `CddaInterleaver.Prime` now fills the line with a 2,592-byte lead-in (the first palette byte), and `Flush`
+    requires the stream to end with a lead-out of the same length, so every byte of the drawn stretch is sent and
+    no output byte is a placeholder. The golden tests set exactly those 1,332 positions (found with ECMA-130 figure
+    C.4) back to zero and still match upstream's hashes.
+  - Still open: the compensated picture comes out 111 F1-frames (about 18 mm of track at 1.2 m/s) after its
+    geometric position against the CIRC reference timing, not yet measured on a burned disc. Until a burn measures
+    it, the offset stays as it is and `Geometry/CdCircEdgeZones` names the two edge zones (the first 111 frames on
+    the disc, the last 111 frames of logical positions) that picture edges and page layouts stay out of.
 
 ### Porting rules for upstream code (M5)
 

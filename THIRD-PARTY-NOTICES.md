@@ -55,7 +55,7 @@ Ported files (each keeps its upstream copyright lines and names its source file 
 | `Cd/CdToneMapping.cs`, `Cd/CdWaveFile.cs`, `Cd/CdAudioByteOrder.cs`, `Cd/CdBlockPipeline.cs`, `Cd/CdPreviewMask.cs` | `src/DiscImageStudio.Cd/`, same names |
 | `Cd/CdMode1Drawing.cs` | `src/DiscImageStudio.Cd/CdDataImageGenerator.cs` (drawing part only) |
 | `Core/ToneProfile.cs` | `src/DiscImageStudio.Core/ToneProfile.cs` |
-| `Presets/DiscPresetJsonStore.cs`, `Presets/built-in-disc-presets.json` | `src/DiscImageStudio.Core/DiscPresetJsonStore.cs`, `src/DiscImageStudio.Core/Presets/built-in-disc-presets.json` |
+| `Presets/DiscPresetJsonStore.cs`, `Presets/built-in-disc-presets.json` | `src/DiscImageStudio.Core/DiscPresetJsonStore.cs`, `src/DiscImageStudio.Core/Presets/built-in-disc-presets.json` (the `cd-80` entry's sectors, radii and description changed to ECMA-130 nominal geometry; JSON holds no comment, so the change is recorded here) |
 | `Core/BinaryGrayscale.cs`, `Core/DvdTrackGeometry.cs`, `Core/DvdReadCompatibilityModes.cs`, `Core/DiagnosticMessage.cs` | `src/DiscImageStudio.Core/`, same names |
 | `Calibration/*.cs` (27 files: target patterns, coarse, boundary and fine fitters, photo rectifier, angle-mark and clock readers, calibration record JSON) | `src/DiscImageStudio.Core/Calibration/`, same names |
 | `Calibration/Patterns/target_slim.gray.gz` | `src/DiscImageStudio.Core/Calibration/Patterns/target_slim.gray.gz` (unchanged; SHA-256 of the 5,760,000 grey samples `3d351bdfb817b943c1d1b4aedc97fc4f0a111e7e1537748f70cb5b180ba96852`, checked when it is loaded) |

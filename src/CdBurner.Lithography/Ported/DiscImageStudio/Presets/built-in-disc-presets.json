@@ -5,11 +5,11 @@
     {
       "id": "cd-80",
       "displayName": "标准 80min CD",
-      "description": "ECMA-130／ISO/IEC 10149 标准速度 1200 mm/s；120 mm 盘、约 80 分钟，359,849 扇区（24.5–56.8 mm）。",
-      "sectors": 359849,
-      "usableSectors": 359847,
-      "innerRadiusMm": 24.5,
-      "outerRadiusMm": 56.8,
+      "description": "ECMA-130 名义几何：扫描速度 1200 mm/s、螺距 1.5 µm；120 mm 盘、约 80 分钟，359,675 扇区。用户数据区从直径 49.6 mm（绝对时间 00:00:00，含 2 秒前间隙）到 116 mm；LBA 0 位于 24.825 mm，终点 58.0 mm。",
+      "sectors": 359675,
+      "usableSectors": 359673,
+      "innerRadiusMm": 24.825,
+      "outerRadiusMm": 58.0,
       "linearVelocityMmPerSecond": 1200,
       "displayNameResourceKey": "DiscPreset_Cd80_DisplayName",
       "descriptionResourceKey": "DiscPreset_Cd80_Description"

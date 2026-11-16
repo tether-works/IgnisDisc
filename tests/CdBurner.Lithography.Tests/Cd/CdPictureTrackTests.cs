@@ -47,7 +47,7 @@ public sealed class CdPictureTrackTests : IDisposable
 
         (string wavSha, long wavBytes) = Golden("cd-picture.wav");
         Assert.Equal(wavBytes, new FileInfo(wav).Length);
-        Assert.Equal(wavSha, Sha256Hex(File.ReadAllBytes(wav)));
+        Assert.Equal(wavSha, Sha256Hex(AsUpstreamWrote(File.ReadAllBytes(wav), WavHeaderBytes)));
         (string cueSha, long cueBytes) = Golden("cd-picture.cue");
         Assert.Equal(Path.ChangeExtension(wav, ".cue"), summary.CueSheetPath);
         Assert.Equal(cueBytes, new FileInfo(summary.CueSheetPath!).Length);
@@ -83,7 +83,23 @@ public sealed class CdPictureTrackTests : IDisposable
         CdTrackGenerator.GenerateToStream(picture, output, GoldenGeometry, interleave: true,
             audioByteOrder: CdAudioByteOrder.LittleEndian, useSimdSampling: simd, useParallelSampling: parallel);
 
-        Assert.Equal(Golden("cd-picture.wav").Sha256, Sha256Hex(output.ToArray()));
+        Assert.Equal(Golden("cd-picture.wav").Sha256, Sha256Hex(AsUpstreamWrote(output.ToArray(), WavHeaderBytes)));
+    }
+
+    private const int WavHeaderBytes = 44;
+
+    /// <summary>
+    /// The one deliberate difference from upstream's bytes: upstream's interleaver started from an empty delay line
+    /// and wrote 1,332 zero placeholders (its docs/PHYSICAL_MODEL_AUDIT.md, finding four); the port primes the line
+    /// with the first palette byte. Those positions, found with the ECMA-130 figure C.4 data path, must hold palette
+    /// bytes now; set back to zero, the track must hash to upstream's golden.
+    /// </summary>
+    internal static byte[] AsUpstreamWrote(byte[] track, int dataOffset)
+    {
+        byte[] upstream = CircEncoderReference.AsUpstreamWrote(track, dataOffset, littleEndian: true, out List<byte> replaced);
+        Assert.Equal(1_332, replaced.Count);
+        Assert.All(replaced, value => Assert.Contains(value, CdToneMapping.Palette(2).ToArray()));
+        return upstream;
     }
 
     private static byte[] CanonicalPcmHeader(long dataBytes)

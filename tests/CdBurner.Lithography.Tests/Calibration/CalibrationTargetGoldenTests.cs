@@ -56,7 +56,9 @@ public sealed class CalibrationTargetGoldenTests
         CdTrackGenerator.GeneratePatternToStream(target, output, interleave: true,
             audioByteOrder: CdAudioByteOrder.LittleEndian);
 
-        AssertGolden("cd-calibration.raw", output);
+        // Upstream's 1,332 zero placeholders are palette bytes now; see CdPictureTrackTests.AsUpstreamWrote.
+        using MemoryStream upstream = new(Tests.Cd.CdPictureTrackTests.AsUpstreamWrote(output.ToArray(), 0));
+        AssertGolden("cd-calibration.raw", upstream);
     }
 
     [Fact]

@@ -2,7 +2,7 @@
 // Copyright (c) 2026 Disc Image Studio contributors
 // Ported to IgnisDisc from DiscImageStudio src/DiscImageStudio.Core/DiscPresetJsonStore.cs at commit 619ec7505ac8955f35fe2f353ebda74b6ea90dda:
 // https://github.com/JiaFeiMiao-K-Cat/DiscImageStudio/blob/619ec7505ac8955f35fe2f353ebda74b6ea90dda/src/DiscImageStudio.Core/DiscPresetJsonStore.cs
-// IgnisDisc change: namespace CdBurner.Lithography.Presets, English diagnostic messages, %APPDATA%\IgnisDisc default path, Stream overload, and pitch validation via DiscPresetGeometry. See THIRD-PARTY-NOTICES.md.
+// IgnisDisc change: namespace CdBurner.Lithography.Presets, English diagnostic messages, %APPDATA%\IgnisDisc default path, Stream overload, pitch validation via DiscPresetGeometry, and the CD 80-minute geometry of the starting user preset (same as the built-in cd-80, inside ECMA-130). See THIRD-PARTY-NOTICES.md.
 
 using System.Text.Encodings.Web;
 using System.Text.Json;
@@ -136,9 +136,9 @@ public static class DiscPresetJsonStore
                     "user-custom-cd",
                     "Custom CD",
                     "User preset; edit or duplicate to add custom CD parameters.",
-                    359_849,
-                    24.5,
-                    56.8,
+                    359_675,
+                    24.825,
+                    58.0,
                     1_200),
             ],
             [

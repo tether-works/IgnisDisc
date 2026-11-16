@@ -4,7 +4,8 @@
 // https://github.com/JiaFeiMiao-K-Cat/DiscImageStudio/blob/619ec7505ac8955f35fe2f353ebda74b6ea90dda/src/DiscImageStudio.Cd/CdTrackGenerator.cs
 // IgnisDisc changes: namespace; no JSON sidecar next to the track (upstream CdTrackMetadata); GenerateToStream also takes an in-memory BGRA raster; the read-back preview also renders
 // from a seekable stream (sectors read from a disc) and returns the pixels (RenderTrack); PNG output goes through
-// Imaging/PngRaster.cs. Generation and read-back arithmetic are unchanged. See THIRD-PARTY-NOTICES.md.
+// Imaging/PngRaster.cs; the CD-DA interleaver starts primed with the first palette byte instead of zero placeholders.
+// Sampling, timing and read-back arithmetic are unchanged. See THIRD-PARTY-NOTICES.md.
 
 using System.Diagnostics;
 using CdBurner.Lithography.Calibration;
@@ -337,7 +338,10 @@ public static class CdTrackGenerator
             return GenerateParallelSamplesToStream(sampleGray, summarySource, output, parameters, interleave,
                 progress, cancellationToken, outputDescription, audioByteOrder, tone, sampleFour);
         long totalBytes = parameters.TotalBytes;
-        CddaInterleaver? cddaInterleaver = interleave ? new CddaInterleaver(audioByteOrder) : null;
+        CddaInterleaver? cddaInterleaver = interleave
+            ? CreatePrimedInterleaver(audioByteOrder, tone, totalBytes,
+                sampleFour is null ? sampleGray(0) : (byte)sampleFour(0))
+            : null;
         byte[]? plainSector = interleave ? null : new byte[CdDiscParameters.BytesPerSector];
         Stopwatch stopwatch = Stopwatch.StartNew();
         long progressInterval = Math.Max(CdDiscParameters.BytesPerSector, totalBytes / 200);
@@ -402,13 +406,40 @@ public static class CdTrackGenerator
             stopwatch.Elapsed);
     }
 
+    /// <summary>
+    /// The interleaver's delay line starts filled with the palette byte of the first logical byte instead of
+    /// zeros, so the track starts with no non-palette placeholder bytes (upstream's
+    /// docs/PHYSICAL_MODEL_AUDIT.md, finding four). The last <see cref="CddaInterleaver.ContextBytes"/> logical
+    /// bytes of the track are its lead-out: with the 111-frame CIRC timing they fall after the end of the track,
+    /// so a picture must stay out of that edge zone (and out of the first 111 frames) until a burned disc has
+    /// measured the timing.
+    /// </summary>
+    private static CddaInterleaver CreatePrimedInterleaver(CdAudioByteOrder audioByteOrder, ToneProfile tone,
+        long totalBytes, byte firstGray)
+    {
+        if (totalBytes < CddaInterleaver.ContextBytes)
+        {
+            throw new ArgumentOutOfRangeException(nameof(totalBytes), totalBytes,
+                $"An interleaved CD track needs at least {CddaInterleaver.ContextBytes} bytes (two sectors) to drain the delay line.");
+        }
+
+        CddaInterleaver interleaver = new(audioByteOrder);
+        byte[] leadIn = new byte[CddaInterleaver.ContextBytes];
+        Array.Fill(leadIn, CdToneMapping.Map(firstGray, tone, 0));
+        interleaver.Prime(leadIn);
+        return interleaver;
+    }
+
     private static CdGenerationSummary GenerateParallelSamplesToStream(Func<long, byte> sampleGray,
         string summarySource, Stream output, CdDiscParameters parameters, bool interleave,
         Action<CdProgress>? progress, CancellationToken cancellationToken, string outputDescription,
         CdAudioByteOrder audioByteOrder, ToneProfile tone, Func<long, uint>? sampleFour)
     {
         long totalBytes = parameters.TotalBytes;
-        CddaInterleaver? cddaInterleaver = interleave ? new CddaInterleaver(audioByteOrder) : null;
+        CddaInterleaver? cddaInterleaver = interleave
+            ? CreatePrimedInterleaver(audioByteOrder, tone, totalBytes,
+                sampleFour is null ? sampleGray(0) : (byte)sampleFour(0))
+            : null;
         byte[]? plainSector = interleave ? null : new byte[CdDiscParameters.BytesPerSector];
         int plainPosition = 0;
         Stopwatch stopwatch = Stopwatch.StartNew();
