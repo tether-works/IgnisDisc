@@ -400,6 +400,12 @@ public class VirtualDiscMedium : IDisposable, IBookTypeTarget
                     // A 2,048-byte read of a recorded Mode 1 sector (a mixed-mode CD's data track) gives its user data.
                     stored.AsSpan(16, OpticalConstants.DataSectorSize).CopyTo(destination);
                 }
+                else if (stored != null && sz == OpticalConstants.DataSectorSize && stored.Length == OpticalConstants.RawSectorSize &&
+                         IsMode2Form1Sector(stored))
+                {
+                    // A 2,048-byte read of a recorded Mode 2 XA Form 1 sector gives its user data at offset 24.
+                    stored.AsSpan(24, OpticalConstants.DataSectorSize).CopyTo(destination);
+                }
                 else if (stored != null)
                 {
                     int copyLen = Math.Min(sz, stored.Length);
@@ -422,6 +428,9 @@ public class VirtualDiscMedium : IDisposable, IBookTypeTarget
     /// </summary>
     private static bool IsMode1Sector(ReadOnlySpan<byte> raw) =>
         raw[0] == 0 && raw[11] == 0 && raw.Slice(1, 10).IndexOfAnyExcept((byte)0xFF) < 0 && raw[15] == 1;
+
+    private static bool IsMode2Form1Sector(ReadOnlySpan<byte> raw) =>
+        raw[0] == 0 && raw[11] == 0 && raw.Slice(1, 10).IndexOfAnyExcept((byte)0xFF) < 0 && raw[15] == 2 && (raw[18] & 0x20) == 0;
 
     public byte[] ReadSector(int lba, int? sectorSize = null)
     {

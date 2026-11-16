@@ -1,3 +1,4 @@
+using System.Buffers.Binary;
 using CdBurner.Core.Images;
 using CdBurner.Core.Verification;
 using CdBurner.Hardware.NativeWriting;
@@ -133,5 +134,121 @@ public class MixedModeCdTests
         Assert.Equal(DiscHealthVerdict.ReadsCleanly, report.Verdict);
         Assert.False(report.Tracks[0].IsAudio);
         Assert.True(report.Tracks[1].IsAudio);
+    }
+
+    private static byte[] BuildInterleavedMode2Xa2336(int sectors)
+    {
+        var rng = new Random(42);
+        var buf = new byte[sectors * 2336];
+        for (int i = 0; i < sectors; i++)
+        {
+            var slot = buf.AsSpan(i * 2336, 2336);
+            bool form2 = i % 3 == 1;
+            byte file = (byte)(1 + (i % 4));
+            byte channel = (byte)(i % 7);
+            byte submode = form2 ? (byte)0x64 : (byte)(i == sectors - 1 ? 0x89 : 0x08);
+            byte coding = form2 ? (byte)0x05 : (byte)0x00;
+            slot[0] = slot[4] = file;
+            slot[1] = slot[5] = channel;
+            slot[2] = slot[6] = submode;
+            slot[3] = slot[7] = coding;
+            rng.NextBytes(slot.Slice(8, form2 ? 2324 : 2048));
+        }
+        return buf;
+    }
+
+    [Fact]
+    public void Mode2XaMixedDisc_WritesForm1AndForm2WithSubheaders_FullToc_TrackInfo_AndHealthScan()
+    {
+        byte[] xaImage = BuildInterleavedMode2Xa2336(DataSectors);
+        var drive = new VirtualMmcDrive { ReadOffsetSamples = 24 };
+        var request = new NativeSaoWriteRequest(
+            new[]
+            {
+                new SaoTrack(1, DataSectors, 150, DataMode: SaoDataMode.Mode2Xa),
+                new SaoTrack(2, AudioSectors, 150)
+            },
+            i => new MemoryStream(i == 0 ? xaImage : Pcm(i)),
+            null, null, TestWrite: false);
+
+        var result = Run(drive, request);
+
+        Assert.True(result.Success, result.Message);
+        Assert.True(result.Verification!.Passed, result.Verification.Message);
+        Assert.Equal(150 + DataSectors + 150, result.DataSectorsWritten);
+        Assert.Equal(24, result.Verification.OffsetSamples);
+
+        byte[] program = drive.ProgramAreaWritten.ToArray();
+        // Pre-gap (LBA -150..-1) and post-gap (LBA 400..549) carry canonical XA Form 1 Data empty sub-header 00 00 08 00.
+        Assert.Equal(new byte[] { 0x00, 0x00, 0x08, 0x00, 0x00, 0x00, 0x08, 0x00 }, program.AsSpan(16, 8).ToArray());
+        Assert.Equal(new byte[] { 0x00, 0x00, 0x08, 0x00, 0x00, 0x00, 0x08, 0x00 }, program.AsSpan((150 + DataSectors) * 2352 + 16, 8).ToArray());
+
+        // Full TOC Point 0xA0 PSEC == 0x20 (CD-ROM XA).
+        byte[] fullToc = new byte[512];
+        var tocRes = drive.ExecuteCommand(MmcCommandBuilder.BuildReadTocPmaAtipCdb(0x02, 0, (ushort)fullToc.Length), fullToc, 2, TimeSpan.FromSeconds(5));
+        Assert.True(tocRes.IsSuccess);
+        int tocLen = BinaryPrimitives.ReadUInt16BigEndian(fullToc) + 2;
+        byte[]? pointA0 = Enumerable.Range(0, (tocLen - 4) / 11)
+            .Select(i => fullToc.AsSpan(4 + i * 11, 11).ToArray())
+            .FirstOrDefault(e => e[3] == 0xA0);
+        Assert.NotNull(pointA0);
+        Assert.Equal(0x20, pointA0![9]);
+
+        // READ TRACK INFORMATION track 1 Data Mode == 0x02 (Mode 2 XA).
+        byte[] trackInfo = new byte[36];
+        byte[] rtiCdb = [MmcCommandBuilder.OpCodeReadTrackInformation, 0x01, 0, 0, 0, 1, 0, 0, 36, 0];
+        var rtiRes = drive.ExecuteCommand(rtiCdb, trackInfo, 2, TimeSpan.FromSeconds(5));
+        Assert.True(rtiRes.IsSuccess);
+        Assert.Equal(0x02, trackInfo[6] & 0x0F);
+
+        // DiscHealthScanner reads Mode 2 XA + audio cleanly.
+        var report = new DiscHealthScanner(drive).Scan();
+        Assert.Equal(DiscHealthVerdict.ReadsCleanly, report.Verdict);
+        Assert.False(report.Tracks[0].IsAudio);
+        Assert.True(report.Tracks[1].IsAudio);
+    }
+
+    [Fact]
+    public void Mode2XaMixedDisc_FallsBackToCdDaLeadIn_WhenDriveRejectsXaLeadInDataForm()
+    {
+        byte[] xaImage = BuildInterleavedMode2Xa2336(DataSectors);
+        var drive = new VirtualMmcDrive { RejectsXaLeadInDataForm = true };
+        var request = new NativeSaoWriteRequest(
+            new[]
+            {
+                new SaoTrack(1, DataSectors, 150, DataMode: SaoDataMode.Mode2Xa),
+                new SaoTrack(2, AudioSectors, 150)
+            },
+            i => new MemoryStream(i == 0 ? xaImage : Pcm(i)),
+            null, null, TestWrite: false);
+
+        var result = Run(drive, request);
+
+        Assert.True(result.Success, result.Message);
+        Assert.Equal(CueSheetVariant.CdDaLeadInForXa, result.CueSheetVariantAccepted);
+        Assert.Equal(0x01, drive.RecordedCueSheet![3]);
+    }
+
+    [Fact]
+    public void Mode2XaVerifier_CatchesSubheaderDifferenceAtExactLba()
+    {
+        byte[] written = BuildInterleavedMode2Xa2336(DataSectors);
+        byte[] tampered = (byte[])written.Clone();
+        int badSector = 17;
+        tampered[badSector * 2336 + 1] ^= 0x04; // channel byte differs on read-back
+        int opens = 0;
+        var request = new NativeSaoWriteRequest(
+            new[]
+            {
+                new SaoTrack(1, DataSectors, 150, DataMode: SaoDataMode.Mode2Xa),
+                new SaoTrack(2, AudioSectors, 150)
+            },
+            i => new MemoryStream(i == 0 ? (opens++ == 0 ? written : tampered) : Pcm(i)),
+            null, null, TestWrite: false);
+
+        var result = Run(new VirtualMmcDrive(), request);
+
+        Assert.False(result.Success);
+        Assert.Contains($"1 of {DataSectors + 150} data track sectors read back differently, the first at LBA {badSector}.", result.Message);
     }
 }

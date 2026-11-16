@@ -10,7 +10,11 @@ namespace CdBurner.Core.Images;
 public static class RawSectorCodec
 {
     public const int UserDataSectorSize = 2048;
+    public const int Mode2XaSectorSize = 2336;
     public const int RawSectorSize = 2352;
+
+    public static ReadOnlySpan<byte> Mode2XaEmptyForm1Subheader =>
+        [0x00, 0x00, 0x08, 0x00, 0x00, 0x00, 0x08, 0x00];
 
     private static readonly byte[] SyncPattern =
     [
@@ -158,6 +162,80 @@ public static class RawSectorCodec
             rawSector2352.Slice(2248, 104));
 
         savedHeader.CopyTo(rawSector2352.Slice(12, 4));
+    }
+
+    /// <summary>
+    /// Allocating convenience overload for Mode 2 XA Form 1 sector conversion.
+    /// </summary>
+    public static byte[] Convert2048To2352Mode2Xa(
+        ReadOnlySpan<byte> userData2048,
+        int lba,
+        byte fileNumber = 0,
+        byte channelNumber = 0,
+        byte submode = 0x08,
+        byte codingInfo = 0)
+    {
+        var raw = new byte[RawSectorSize];
+        Convert2048To2352Mode2Xa(userData2048, lba, raw, fileNumber, channelNumber, submode, codingInfo);
+        return raw;
+    }
+
+    /// <summary>
+    /// Frames a 2,336-byte Mode 2 XA host sector (8-byte sub-header + 2,328 payload bytes) into a 2,352-byte raw CD sector,
+    /// computing Form 1 EDC + RSPC P/Q ECC or Form 2 EDC according to the sub-header Form bit.
+    /// </summary>
+    public static void Convert2336To2352Mode2Xa(
+        ReadOnlySpan<byte> sector2336,
+        int lba,
+        Span<byte> rawSector2352)
+    {
+        if (sector2336.Length < Mode2XaSectorSize)
+        {
+            throw new ArgumentException($"Mode 2 XA buffer must contain at least {Mode2XaSectorSize} bytes.", nameof(sector2336));
+        }
+        if (rawSector2352.Length < RawSectorSize)
+        {
+            throw new ArgumentException($"Raw sector buffer must contain at least {RawSectorSize} bytes.", nameof(rawSector2352));
+        }
+
+        SyncPattern.CopyTo(rawSector2352.Slice(0, 12));
+        MsfAddress msf = MsfAddress.FromLba(lba);
+        rawSector2352[12] = ToBcd(msf.Minutes);
+        rawSector2352[13] = ToBcd(msf.Seconds);
+        rawSector2352[14] = ToBcd(msf.Frames);
+        rawSector2352[15] = 0x02;
+
+        bool form2 = (sector2336[2] & 0x20) != 0;
+        if (form2)
+        {
+            // Form 2: 8-byte sub-header + 2,324 bytes user data (2,332 bytes) + 4-byte EDC; last 4 host bytes ignored.
+            sector2336.Slice(0, 2332).CopyTo(rawSector2352.Slice(16, 2332));
+            uint form2Edc = ComputeEdc(rawSector2352.Slice(16, 2332));
+            BinaryPrimitives.WriteUInt32LittleEndian(rawSector2352.Slice(2348, 4), form2Edc);
+            return;
+        }
+
+        // Form 1: 8-byte sub-header + 2,048 bytes user data (2,056 bytes) + 4-byte EDC + 276-byte P/Q ECC; last 280 host bytes ignored.
+        sector2336.Slice(0, 2056).CopyTo(rawSector2352.Slice(16, 2056));
+        uint edc = ComputeEdc(rawSector2352.Slice(16, 2056));
+        BinaryPrimitives.WriteUInt32LittleEndian(rawSector2352.Slice(2072, 4), edc);
+
+        Span<byte> savedHeader = stackalloc byte[4];
+        rawSector2352.Slice(12, 4).CopyTo(savedHeader);
+        rawSector2352.Slice(12, 4).Clear();
+        ComputeEccBlock(rawSector2352.Slice(12, 2064), 86, 24, 2, 86, rawSector2352.Slice(2076, 172));
+        ComputeEccBlock(rawSector2352.Slice(12, 2236), 52, 43, 86, 88, rawSector2352.Slice(2248, 104));
+        savedHeader.CopyTo(rawSector2352.Slice(12, 4));
+    }
+
+    /// <summary>
+    /// Allocating convenience overload for Mode 2 XA 2,336-to-2,352 sector framing.
+    /// </summary>
+    public static byte[] Convert2336To2352Mode2Xa(ReadOnlySpan<byte> sector2336, int lba)
+    {
+        var raw = new byte[RawSectorSize];
+        Convert2336To2352Mode2Xa(sector2336, lba, raw);
+        return raw;
     }
 
     /// <summary>

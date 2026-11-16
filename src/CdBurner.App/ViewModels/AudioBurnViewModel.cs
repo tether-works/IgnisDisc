@@ -1126,7 +1126,7 @@ public class AudioBurnViewModel : ObservableObject, IDisposable
                         if (cueTrk.DataTrack is { } dataImage)
                         {
                             trkSize = dataImage.UserDataBytes;
-                            trkFormat = "Data (Mode 1)";
+                            trkFormat = dataImage.Mode == 2 ? "Data (Mode 2 XA)" : "Data (Mode 1)";
                         }
                         else if (File.Exists(cueTrk.SourceFilePath))
                         {

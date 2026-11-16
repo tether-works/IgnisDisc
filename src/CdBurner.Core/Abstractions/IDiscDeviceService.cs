@@ -505,9 +505,12 @@ public class AudioTrackSource
     public bool CopyPermitted { get; init; }
 
     /// <summary>
-    /// A CD-ROM Mode 1 data track (track 1 of a mixed-mode CD): the streams give 2,048 bytes of user data per sector
-    /// and <see cref="TotalPcmBytes"/> counts those bytes. Only an engine with
-    /// <see cref="IBurnEngineBackend.WritesMixedModeCds"/> writes one.
+    /// A CD-ROM data track (track 1 of a mixed-mode CD): for Mode 1 (<see cref="DataTrackMode"/> == 1), the streams
+    /// give 2,048 bytes per sector; for Mode 2 XA (<see cref="DataTrackMode"/> == 2), 2,336 bytes per sector.
+    /// Only an engine with <see cref="IBurnEngineBackend.WritesMixedModeCds"/> writes one.
     /// </summary>
     public bool IsDataTrack { get; init; }
+
+    /// <summary>CD-ROM data mode for <see cref="IsDataTrack"/>: 1 (Mode 1) or 2 (Mode 2 XA).</summary>
+    public int DataTrackMode { get; init; } = 1;
 }

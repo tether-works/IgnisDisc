@@ -86,6 +86,8 @@ public sealed class NativeSaoAudioWriter
     public const ushort AudioSectorsPerWrite = 27;     // 63,504 bytes, under the common 64 KiB transfer limit
     public const ushort DataSectorsPerWrite = 32;      // 65,536 bytes of Mode 1 user data: exactly the 64 KiB limit
     public const int DataSectorSize = 2048;
+    public const ushort Mode2XaSectorsPerWrite = 28;   // 65,408 bytes of Mode 2 XA payload: under the 64 KiB limit
+    public const int Mode2XaSectorSize = 2336;
     public const ushort LeadInSectorsPerWrite = 640;   // 61,440 bytes
     public const ushort ProfileCdR = 0x0009;
     public const ushort ProfileCdRw = 0x000A;
@@ -214,7 +216,8 @@ public sealed class NativeSaoAudioWriter
         // 3. Write parameters, then read them back.
         var current = ReadWriteParameters() ?? throw Stop("The drive did not return its write parameters (mode page 0x05).");
         bool useBufe = mastering.BufferUnderrunFree && !request.DisableBufferUnderrunFree;
-        var wanted = current.ForSessionAtOnce(request.TestWrite, useBufe, cdText, request.LeaveSessionOpen);
+        byte sessionFormat = layout.HasMode2XaTrack ? WriteParametersPage.SessionFormatCdRomXa : WriteParametersPage.SessionFormatCdDaOrCdRom;
+        var wanted = current.ForSessionAtOnce(request.TestWrite, useBufe, cdText, request.LeaveSessionOpen, sessionFormat);
         if (!SelectWriteParameters(wanted))
         {
             if (!cdText || !SelectWriteParameters(wanted = wanted.WithRawDataBlockType()))
@@ -239,6 +242,10 @@ public sealed class NativeSaoAudioWriter
             throw Stop(request.LeaveSessionOpen
                 ? $"The drive did not keep the setting that leaves the disc open for another session (multi-session field {confirmed.MultiSession})."
                 : $"The drive did not keep the setting that closes the disc (multi-session field {confirmed.MultiSession}).");
+        }
+        if (confirmed.SessionFormat != sessionFormat)
+        {
+            throw Stop($"The drive did not keep the requested session format (0x{confirmed.SessionFormat:X2}, expected 0x{sessionFormat:X2}).");
         }
         _note($"Write parameters confirmed: SAO, test write {confirmed.TestWrite}, BUFE {confirmed.BufferUnderrunFree}, data block type {confirmed.DataBlockType}, "
             + (request.LeaveSessionOpen ? "disc left open for another session." : "disc closed afterwards."));
@@ -445,14 +452,17 @@ public sealed class NativeSaoAudioWriter
     }
 
     /// <summary>
-    /// A mixed-mode CD's data track: its pre-gap from LBA -150, the image, and the post-gap, all as 2,048-byte Mode 1
-    /// sectors (data form 10h: the drive adds sync, header, EDC and ECC). No WRITE reaches past the track, because the
-    /// audio after it is sent in 2,352-byte sectors and one WRITE has one block size.
+    /// A mixed-mode CD's data track: its pre-gap from LBA -150, the image, and the post-gap, written either as 2,048-byte
+    /// Mode 1 sectors (data form 10h) or 2,336-byte Mode 2 XA sectors (data form 20h: 8-byte XA sub-header + 2,328 payload).
+    /// No WRITE reaches past the track, because the audio after it is sent in 2,352-byte sectors and one WRITE has one block size.
     /// </summary>
     private void WriteDataTrack(NativeSaoWriteRequest request, SaoTrackPlacement track, RunState state, ProgressReporter reporter, int doneBefore, CancellationToken ct)
     {
+        bool mode2Xa = track.DataMode == SaoDataMode.Mode2Xa;
+        int sectorSize = mode2Xa ? Mode2XaSectorSize : DataSectorSize;
+        int perWrite = mode2Xa ? Mode2XaSectorsPerWrite : DataSectorsPerWrite;
         int dataSectors = track.SectorCount - track.PostGapSectors;
-        byte[] buffer = new byte[DataSectorsPerWrite * DataSectorSize];
+        byte[] buffer = new byte[perWrite * sectorSize];
         Stream image;
         try
         {
@@ -470,29 +480,38 @@ public sealed class NativeSaoAudioWriter
             while (lba < track.EndLba)
             {
                 Check(ct, state);
-                int count = Math.Min(DataSectorsPerWrite, track.EndLba - lba);
-                var chunk = buffer.AsSpan(0, count * DataSectorSize);
+                int count = Math.Min(perWrite, track.EndLba - lba);
+                var chunk = buffer.AsSpan(0, count * sectorSize);
                 chunk.Clear();
                 for (int i = 0; i < count; i++)
                 {
                     int sector = lba + i;
+                    Span<byte> slot = chunk.Slice(i * sectorSize, sectorSize);
                     bool holdsImage = sector >= track.Index01Lba && sector < track.Index01Lba + dataSectors;
                     if (!holdsImage || imageEnded)
                     {
-                        continue; // pre-gap, post-gap, or padding after a short image: zeros
+                        if (mode2Xa)
+                        {
+                            CdBurner.Core.Images.RawSectorCodec.Mode2XaEmptyForm1Subheader.CopyTo(slot);
+                        }
+                        continue; // pre-gap, post-gap, or padding after a short image
                     }
                     int got;
                     try
                     {
-                        got = ReadFully(image, chunk.Slice(i * DataSectorSize, DataSectorSize));
+                        got = ReadFully(image, slot);
                     }
                     catch (Exception ex) when (ex is IOException or UnauthorizedAccessException)
                     {
                         throw Stop($"Could not read the data track: {ex.Message}");
                     }
-                    if (got < DataSectorSize)
+                    if (got < sectorSize)
                     {
                         imageEnded = true;
+                        if (mode2Xa && got == 0)
+                        {
+                            CdBurner.Core.Images.RawSectorCodec.Mode2XaEmptyForm1Subheader.CopyTo(slot);
+                        }
                         _note($"The data track's image ended at sector {sector - track.Index01Lba}; the rest of the track is zeros.");
                     }
                 }
@@ -546,11 +565,20 @@ public sealed class NativeSaoAudioWriter
     {
         bool hasIsrc = layout.Tracks.Any(t => t.Isrc != null);
         var tried = new HashSet<string>();
-        foreach (var variant in new[] { CueSheetVariant.Standard, CueSheetVariant.IsrcWithoutControl, CueSheetVariant.CdTextLeadInWithoutTime,
-                                        CueSheetVariant.IsrcWithoutControl | CueSheetVariant.CdTextLeadInWithoutTime })
+        CueSheetVariant[] candidates =
+        [
+            CueSheetVariant.Standard,
+            CueSheetVariant.CdDaLeadInForXa,
+            CueSheetVariant.IsrcWithoutControl,
+            CueSheetVariant.IsrcWithoutControl | CueSheetVariant.CdDaLeadInForXa,
+            CueSheetVariant.CdTextLeadInWithoutTime,
+            CueSheetVariant.IsrcWithoutControl | CueSheetVariant.CdTextLeadInWithoutTime
+        ];
+        foreach (var variant in candidates)
         {
             if ((variant & CueSheetVariant.IsrcWithoutControl) != 0 && !hasIsrc) continue;
             if ((variant & CueSheetVariant.CdTextLeadInWithoutTime) != 0 && leadInTime == null) continue;
+            if ((variant & CueSheetVariant.CdDaLeadInForXa) != 0 && (!layout.HasMode2XaTrack || leadInTime != null)) continue;
 
             byte[] sheet = SaoCueSheetBuilder.Build(layout, mcn, leadInTime, variant);
             if (!tried.Add(Convert.ToHexString(sheet))) continue;
@@ -643,7 +671,7 @@ public sealed class NativeSaoAudioWriter
     private bool AudioReadableAtLbaZero(out ScsiExecutionResult result)
     {
         byte[] sector = new byte[2352];
-        result = _transport.ExecuteCommand(MmcCommandBuilder.BuildReadCdCdb(0, 1, expectedSectorType: 1, mainChannelSelectionBits: 0x10),
+        result = _transport.ExecuteCommand(MmcCommandBuilder.BuildReadCdCdb(0, 1, expectedSectorType: 0, mainChannelSelectionBits: 0xF8),
             sector, ScsiPassThroughNative.SCSI_IOCTL_DATA_IN, ShortTimeout);
         return result.IsSuccess && result.DataTransferLength > 0;
     }

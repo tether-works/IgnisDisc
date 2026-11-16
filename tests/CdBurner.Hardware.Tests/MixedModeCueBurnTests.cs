@@ -294,13 +294,185 @@ public sealed class MixedModeCueBurnTests : IDisposable
         Assert.Contains("Only track 1 of a mixed-mode CD can be a data track", result.ErrorMessage);
     }
 
-    [Fact]
-    public void Mode2DataTrack_IsLeftOut_AsBefore()
+    private static byte[] DataTrackMode2XaRaw()
     {
-        var compilation = new AudioCdCompilation();
+        var rng = new Random(91);
+        var raw = new byte[(DataSectors + 150) * Raw];
+        var xa2336 = new byte[2336];
+        for (int lba = 0; lba < DataSectors + 150; lba++)
+        {
+            Array.Clear(xa2336);
+            if (lba < DataSectors)
+            {
+                bool form2 = lba % 4 == 2;
+                bool lastData = lba == DataSectors - 1;
+                byte file = (byte)(1 + (lba % 3));
+                byte channel = (byte)(lba % 5);
+                // Last data sector carries EOR|Data|EOF (0x89) with zero user data to prove post-gap stripping preserves it.
+                byte submode = lastData ? (byte)0x89 : form2 ? (byte)0x64 : (byte)0x08;
+                byte coding = form2 ? (byte)0x03 : (byte)0x00;
+                xa2336[0] = xa2336[4] = file;
+                xa2336[1] = xa2336[5] = channel;
+                xa2336[2] = xa2336[6] = submode;
+                xa2336[3] = xa2336[7] = coding;
+                if (!lastData)
+                {
+                    rng.NextBytes(xa2336.AsSpan(8, form2 ? 2324 : 2048));
+                }
+            }
+            else
+            {
+                RawSectorCodec.Mode2XaEmptyForm1Subheader.CopyTo(xa2336);
+            }
+            RawSectorCodec.Convert2336To2352Mode2Xa(xa2336, lba, raw.AsSpan(lba * Raw, Raw));
+        }
+        return raw;
+    }
 
-        Assert.Equal(2, compilation.ImportCueSheet(SingleFileCue("MODE2/2352")));
-        Assert.False(compilation.HasDataTrack);
+    private static byte[] WholeMode2XaDisc() =>
+        [.. DataTrackMode2XaRaw(), .. new byte[GapFrames * Raw], .. Noise(2, Audio2Frames), .. Noise(3, Audio3Frames)];
+
+    private async Task<(BurnOperationResult Result, NativeAudioBurnEngine Engine, VirtualMmcDrive Drive, VirtualDiscRecorder Recorder)> BurnNativeWithRecorder(string cue)
+    {
+        var compilation = new AudioCdCompilation { RecordingMode = AudioRecordingMode.DiscAtOnceGapless };
+        compilation.ImportCueSheet(cue);
+        var recorder = new VirtualDiscRecorder();
+        recorder.InsertMedia(VirtualDiscMedium.CreateBlankCdRw700());
+        VirtualMmcDrive? drive = null;
+        var engine = new NativeAudioBurnEngine(_dir) { Wait = _ => { }, ConfigureVirtualDrive = d => drive = d };
+        var result = await new AudioCdBurnService(engine).BurnAsync(recorder, compilation, new AudioBurnOptions { UseDiscAtOnce = true });
+        return (result, engine, drive!, recorder);
+    }
+
+    [Fact]
+    public async Task Mode2_2352SingleFileMixedCue_RoundTripsByteForByte()
+    {
+        byte[] sourceBin = WholeMode2XaDisc();
+        File.WriteAllBytes(Path.Combine(_dir, "xa_mixed.bin"), sourceBin);
+        string cue = Path.Combine(_dir, "xa_mixed.cue");
+        File.WriteAllText(cue, string.Join("\n",
+            "TITLE \"XA Mixed Disc\"",
+            "FILE \"xa_mixed.bin\" BINARY",
+            "  TRACK 01 MODE2/2352",
+            "    INDEX 01 00:00:00",
+            "  TRACK 02 AUDIO",
+            "    INDEX 00 00:07:25",
+            "    INDEX 01 00:09:25",
+            "  TRACK 03 AUDIO",
+            "    INDEX 01 00:13:25",
+            ""));
+
+        var (result, engine, drive, recorder) = await BurnNativeWithRecorder(cue);
+
+        Assert.True(result.Success, result.ErrorMessage);
+        Assert.True(engine.LastResult!.Verification!.Passed, engine.LastResult.Verification.Message);
+        Assert.Equal(new[] { 0, Track2Lba, Track3Lba }, drive.RecordedTracks.Select(t => t.Index01Lba));
+        Assert.Equal(sourceBin, drive.ProgramAreaWritten.ToArray().AsSpan(150 * Raw).ToArray());
+
+        string rippedBin = Path.Combine(_dir, "ripped.bin");
+        string rippedCue = Path.Combine(_dir, "ripped.cue");
+        var rip = await new DiscRipperService().RipToBinCueAsync(recorder, new VirtualBurnEngine(recorder), rippedBin, rippedCue);
+
+        Assert.True(rip.Success, rip.ErrorMessage);
+        Assert.Contains("TRACK 01 MODE2/2352", File.ReadAllText(rippedCue));
+        Assert.Equal(sourceBin, File.ReadAllBytes(rippedBin));
+    }
+
+    [Fact]
+    public async Task Mode2_2336SplitFileMixedCue_WritesSubheadersAndAudioByteForByte()
+    {
+        byte[] rawT1 = DataTrackMode2XaRaw();
+        var xaFile = new byte[DataSectors * 2336];
+        for (int i = 0; i < DataSectors; i++)
+        {
+            rawT1.AsSpan(i * Raw + 16, 2336).CopyTo(xaFile.AsSpan(i * 2336, 2336));
+        }
+        File.WriteAllBytes(Path.Combine(_dir, "t1.xa"), xaFile);
+        File.WriteAllBytes(Path.Combine(_dir, "t2.bin"), [.. new byte[GapFrames * Raw], .. Noise(2, Audio2Frames)]);
+        File.WriteAllBytes(Path.Combine(_dir, "t3.bin"), Noise(3, Audio3Frames));
+        string cue = Path.Combine(_dir, "xa_split.cue");
+        File.WriteAllText(cue, string.Join("\n",
+            "FILE \"t1.xa\" BINARY",
+            "  TRACK 01 MODE2/2336",
+            "    INDEX 01 00:00:00",
+            "FILE \"t2.bin\" BINARY",
+            "  TRACK 02 AUDIO",
+            "    INDEX 00 00:00:00",
+            "    INDEX 01 00:02:00",
+            "FILE \"t3.bin\" BINARY",
+            "  TRACK 03 AUDIO",
+            "    INDEX 01 00:00:00",
+            ""));
+
+        var (result, _, drive, _) = await BurnNativeWithRecorder(cue);
+
+        Assert.True(result.Success, result.ErrorMessage);
+        byte[] written = drive.ProgramAreaWritten.ToArray().AsSpan(150 * Raw).ToArray();
+        Assert.Equal(WholeMode2XaDisc(), written);
+    }
+
+    [Fact]
+    public async Task Mode2CueWithoutIndex00_PreservesTrackLayoutAndBytes()
+    {
+        byte[] sourceBin = WholeMode2XaDisc();
+        File.WriteAllBytes(Path.Combine(_dir, "xa_nogap.bin"), sourceBin);
+        string cue = Path.Combine(_dir, "xa_nogap.cue");
+        File.WriteAllLines(cue, new[]
+        {
+            "FILE \"xa_nogap.bin\" BINARY",
+            "  TRACK 01 MODE2/2352",
+            "    INDEX 01 00:00:00",
+            "  TRACK 02 AUDIO",
+            "    INDEX 01 00:09:25",
+            "  TRACK 03 AUDIO",
+            "    INDEX 01 00:13:25"
+        });
+        var compilation = new AudioCdCompilation();
+        compilation.ImportCueSheet(cue);
+        Assert.Equal(DataSectors, compilation.Tracks[0].DataTrack!.SectorCount);
+        Assert.Equal(GapFrames, compilation.Tracks[1].PreGapFrames);
+
+        var (result, _, drive, _) = await BurnNativeWithRecorder(cue);
+
+        Assert.True(result.Success, result.ErrorMessage);
+        Assert.Equal(new[] { 0, Track2Lba, Track3Lba }, drive.RecordedTracks.Select(t => t.Index01Lba));
+        Assert.Equal(sourceBin, drive.ProgramAreaWritten.ToArray().AsSpan(150 * Raw).ToArray());
+    }
+
+    [Fact]
+    public void ACueThatCallsMode1SectorsMode2_IsCaught()
+    {
+        File.WriteAllBytes(Path.Combine(_dir, "m1.bin"), [.. DataTrackRaw(mode: 1), .. Noise(2, Audio2Frames)]);
+        string cue = Path.Combine(_dir, "m1.cue");
+        File.WriteAllText(cue, "FILE \"m1.bin\" BINARY\n  TRACK 01 MODE2/2352\n    INDEX 01 00:00:00\n  TRACK 02 AUDIO\n    INDEX 01 00:07:25\n");
+
+        var ex = Assert.Throws<InvalidDataException>(() => new AudioCdCompilation().ImportCueSheet(cue));
+        Assert.Contains("Mode 1 sectors, not Mode 2", ex.Message);
+    }
+
+    [Fact]
+    public void ProjectFile_RoundTripsMode2XaMixedCompilation()
+    {
+        byte[] sourceBin = WholeMode2XaDisc();
+        File.WriteAllBytes(Path.Combine(_dir, "xa_proj.bin"), sourceBin);
+        string cue2352 = Path.Combine(_dir, "xa_proj.cue");
+        File.WriteAllText(cue2352, "FILE \"xa_proj.bin\" BINARY\n  TRACK 01 MODE2/2352\n    INDEX 01 00:00:00\n  TRACK 02 AUDIO\n    INDEX 00 00:07:25\n    INDEX 01 00:09:25\n");
+        var comp2352 = new AudioCdCompilation();
+        comp2352.ImportCueSheet(cue2352);
+        var reloaded2352 = ProjectSerializer.ToAudioCdCompilation(ProjectSerializer.FromAudioCdCompilation(comp2352));
+        Assert.Equal(2, reloaded2352.Tracks[0].DataTrack!.Mode);
+        Assert.Equal(2352, reloaded2352.Tracks[0].DataTrack!.SectorSize);
+
+        var xa2336 = new byte[DataSectors * 2336];
+        File.WriteAllBytes(Path.Combine(_dir, "xa2336.bin"), xa2336);
+        File.WriteAllBytes(Path.Combine(_dir, "a2.bin"), Noise(2, Audio2Frames));
+        string cue2336 = Path.Combine(_dir, "xa2336.cue");
+        File.WriteAllText(cue2336, "FILE \"xa2336.bin\" BINARY\n  TRACK 01 MODE2/2336\n    INDEX 01 00:00:00\nFILE \"a2.bin\" BINARY\n  TRACK 02 AUDIO\n    INDEX 01 00:00:00\n");
+        var comp2336 = new AudioCdCompilation();
+        comp2336.ImportCueSheet(cue2336);
+        var reloaded2336 = ProjectSerializer.ToAudioCdCompilation(ProjectSerializer.FromAudioCdCompilation(comp2336));
+        Assert.Equal(2, reloaded2336.Tracks[0].DataTrack!.Mode);
+        Assert.Equal(2336, reloaded2336.Tracks[0].DataTrack!.SectorSize);
     }
 
     [Fact]

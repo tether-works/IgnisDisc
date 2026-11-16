@@ -441,10 +441,11 @@ public class AudioCdBurnService
                         Title = trackItem.Title,
                         Performer = !string.IsNullOrEmpty(trackItem.Performer) ? trackItem.Performer : compilation.AlbumPerformer,
                         PreGapFrames = trackItem.PreGapFrames,
-                        TotalPcmBytes = data.UserDataBytes,
+                        TotalPcmBytes = data.WriterPayloadBytes,
                         Duration = TimeSpan.FromSeconds((double)data.SectorCount / OpticalConstants.AudioFramesPerSecond),
-                        PcmStreamFactory = data.OpenUserData,
-                        IsDataTrack = true
+                        PcmStreamFactory = data.OpenWriterData,
+                        IsDataTrack = true,
+                        DataTrackMode = data.Mode
                     });
                     continue;
                 }

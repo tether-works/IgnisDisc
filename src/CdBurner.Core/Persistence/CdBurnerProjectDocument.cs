@@ -373,8 +373,11 @@ public class SerializedAudioTrack
     /// <summary>Sectors of the data track. Only used with <see cref="DataTrackOffsetBytes"/>.</summary>
     public int? DataTrackSectorCount { get; set; }
 
-    /// <summary>2,048 or 2,352 bytes a sector in the file. Only used with <see cref="DataTrackOffsetBytes"/>.</summary>
+    /// <summary>2,048, 2,336, or 2,352 bytes a sector in the file. Only used with <see cref="DataTrackOffsetBytes"/>.</summary>
     public int? DataTrackSectorSize { get; set; }
+
+    /// <summary>CD-ROM data mode (1 or 2). Only used with <see cref="DataTrackOffsetBytes"/>.</summary>
+    public int? DataTrackMode { get; set; }
 }
 
 /// <summary>

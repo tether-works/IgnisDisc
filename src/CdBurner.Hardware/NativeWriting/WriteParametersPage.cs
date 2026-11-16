@@ -12,6 +12,8 @@ public sealed class WriteParametersPage
     public const byte WriteTypeSessionAtOnce = 0x02;
     public const byte DataBlockTypeRaw = 0x00;          // 2,352 bytes
     public const byte DataBlockTypeRawWithRawPw = 0x03; // 2,448 bytes; MMC-3 asks for it when a CD-Text lead-in is written
+    public const byte SessionFormatCdDaOrCdRom = 0x00;
+    public const byte SessionFormatCdRomXa = 0x20;
 
     private const int ModeHeaderLength = 8;
 
@@ -25,6 +27,7 @@ public sealed class WriteParametersPage
     public bool BufferUnderrunFree => (_page[2] & 0x40) != 0;
     public byte MultiSession => (byte)(_page[3] >> 6);
     public byte DataBlockType => (byte)(_page[4] & 0x0F);
+    public byte SessionFormat => _page[8];
 
     /// <summary>Multi-session field (byte 3 bits 7-6) 00b: no next session, the disc is closed.</summary>
     public const byte MultiSessionClosed = 0x00;
@@ -71,7 +74,7 @@ public sealed class WriteParametersPage
     /// session of a CD-Extra disc). Everything else the drive reported (link size, packet size, MCN/ISRC fields, …)
     /// is kept as it was.
     /// </summary>
-    public WriteParametersPage ForSessionAtOnce(bool testWrite, bool bufferUnderrunFree, bool cdTextLeadIn, bool leaveOpen = false)
+    public WriteParametersPage ForSessionAtOnce(bool testWrite, bool bufferUnderrunFree, bool cdTextLeadIn, bool leaveOpen = false, byte sessionFormat = SessionFormatCdDaOrCdRom)
     {
         byte[] p = (byte[])_page.Clone();
         p[0] &= 0x3F;                                   // clear PS (and the reserved bit) for MODE SELECT
@@ -80,7 +83,7 @@ public sealed class WriteParametersPage
         if (bufferUnderrunFree) p[2] |= 0x40;
         p[3] = (byte)((p[3] & 0x3F) | ((leaveOpen ? MultiSessionNextAllowed : MultiSessionClosed) << 6));
         p[4] = (byte)((p[4] & 0xF0) | (cdTextLeadIn ? DataBlockTypeRawWithRawPw : DataBlockTypeRaw));
-        p[8] = 0x00;                                    // session format: CD-DA / CD-ROM
+        p[8] = sessionFormat;                           // session format: 0x00 CD-DA / CD-ROM, 0x20 CD-ROM XA
         return new WriteParametersPage(p);
     }
 

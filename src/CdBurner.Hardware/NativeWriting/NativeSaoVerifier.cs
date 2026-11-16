@@ -346,6 +346,11 @@ public sealed class NativeSaoVerifier
     /// </summary>
     private string? CheckDataTrack(SaoTrackPlacement track, Func<int, Stream> openTrackAudio, CancellationToken ct)
     {
+        if (track.DataMode == SaoDataMode.Mode2Xa)
+        {
+            return CheckMode2XaDataTrack(track, openTrackAudio, ct);
+        }
+
         const int dataSize = 2048;
         const int perRead = 32; // 64 KiB
         int dataSectors = track.SectorCount - track.PostGapSectors;
@@ -395,6 +400,89 @@ public sealed class NativeSaoVerifier
             return $"{different:N0} of {track.SectorCount:N0} data track sectors read back differently, the first at LBA {firstDifferent}.";
         }
         _note($"Data track matches: {dataSectors:N0} sectors and a {track.PostGapSectors}-sector post-gap.");
+        return null;
+    }
+
+    private string? CheckMode2XaDataTrack(SaoTrackPlacement track, Func<int, Stream> openTrackAudio, CancellationToken ct)
+    {
+        const int rawSize = CdBurner.Core.Images.RawSectorCodec.RawSectorSize;
+        const int xaSize = NativeSaoAudioWriter.Mode2XaSectorSize;
+        const int perRead = 27; // 63,504 bytes <= 64 KiB
+        int dataSectors = track.SectorCount - track.PostGapSectors;
+        byte[] read = new byte[perRead * rawSize];
+        byte[] expected = new byte[xaSize];
+        int different = 0;
+        int firstDifferent = -1;
+        bool imageEnded = false;
+
+        using var image = openTrackAudio(0);
+        for (int lba = track.Index01Lba; lba < track.EndLba; lba += perRead)
+        {
+            ct.ThrowIfCancellationRequested();
+            int count = Math.Min(perRead, track.EndLba - lba);
+            var r = _transport.ExecuteCommand(
+                MmcCommandBuilder.BuildReadCdCdb(lba, count, expectedSectorType: 0, mainChannelSelectionBits: 0xF8),
+                read.AsSpan(0, count * rawSize), ScsiPassThroughNative.SCSI_IOCTL_DATA_IN, Timeout);
+            if (!r.IsSuccess || r.DataTransferLength < (uint)(count * rawSize))
+            {
+                return $"The data track could not be read back at LBA {lba}: {Describe(r)}";
+            }
+
+            for (int i = 0; i < count; i++)
+            {
+                int index = lba + i - track.Index01Lba;
+                Array.Clear(expected);
+                if (index < dataSectors && !imageEnded)
+                {
+                    int got = 0;
+                    while (got < xaSize)
+                    {
+                        int n = image.Read(expected, got, xaSize - got);
+                        if (n <= 0) { imageEnded = true; break; }
+                        got += n;
+                    }
+                    if (imageEnded && got == 0)
+                    {
+                        CdBurner.Core.Images.RawSectorCodec.Mode2XaEmptyForm1Subheader.CopyTo(expected);
+                    }
+                }
+                else
+                {
+                    CdBurner.Core.Images.RawSectorCodec.Mode2XaEmptyForm1Subheader.CopyTo(expected);
+                }
+
+                ReadOnlySpan<byte> raw = read.AsSpan(i * rawSize, rawSize);
+                bool ok = CdBurner.Core.Images.RawSectorCodec.VerifySync(raw) && raw[15] == 0x02;
+                if (ok)
+                {
+                    bool form2 = (expected[2] & 0x20) != 0;
+                    if (!form2)
+                    {
+                        ok = raw.Slice(16, 2056).SequenceEqual(expected.AsSpan(0, 2056)) &&
+                             CdBurner.Core.Images.RawSectorCodec.ComputeEdc(raw.Slice(16, 2056)) ==
+                             BinaryPrimitives.ReadUInt32LittleEndian(raw.Slice(2072, 4));
+                    }
+                    else
+                    {
+                        uint actualEdc = BinaryPrimitives.ReadUInt32LittleEndian(raw.Slice(2348, 4));
+                        ok = raw.Slice(16, 2332).SequenceEqual(expected.AsSpan(0, 2332)) &&
+                             (actualEdc == CdBurner.Core.Images.RawSectorCodec.ComputeEdc(raw.Slice(16, 2332)) || actualEdc == 0u);
+                    }
+                }
+
+                if (!ok)
+                {
+                    different++;
+                    if (firstDifferent < 0) firstDifferent = lba + i;
+                }
+            }
+        }
+
+        if (different > 0)
+        {
+            return $"{different:N0} of {track.SectorCount:N0} data track sectors read back differently, the first at LBA {firstDifferent}.";
+        }
+        _note($"Data track matches: {dataSectors:N0} Mode 2 XA sectors and a {track.PostGapSectors}-sector post-gap.");
         return null;
     }
 

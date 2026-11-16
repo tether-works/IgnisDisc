@@ -694,12 +694,17 @@ public class AudioCdCompilation
                 : Path.Combine(cueDirectory, file.FileName);
             bool rawFile = RawCdAudioFile.IsRawType(file.FileType);
 
-            // A mixed-mode CD's Mode 1 data track: only as the cue sheet's first track, in raw BINARY data, and before
-            // audio. Other data tracks (Mode 2, or a data track that is not first) are left out, as before.
+            // A mixed-mode CD's data track: only as the cue sheet's first track, in raw BINARY/MOTOROLA data, and before
+            // audio. Data tracks that are not first are left out.
+            bool supportedDataTrack = file.Tracks.Count > 0 && file.Tracks[0].DataType is
+                CueTrackDataType.Mode1_2048 or CueTrackDataType.Mode1_2352 or
+                CueTrackDataType.Mode2_2336 or CueTrackDataType.Mode2_2352;
+            bool raw2352DataTrack = file.Tracks.Count > 0 && file.Tracks[0].DataType is
+                CueTrackDataType.Mode1_2352 or CueTrackDataType.Mode2_2352;
             if (_tracks.Count == 0 && cueHasAudio && rawFile && file.Tracks.Count > 0 &&
                 ReferenceEquals(file.Tracks[0], cueSheet.Tracks[0]) &&
-                file.Tracks[0].DataType is CueTrackDataType.Mode1_2048 or CueTrackDataType.Mode1_2352 &&
-                (file.Tracks.Count == 1 || file.Tracks[0].DataType == CueTrackDataType.Mode1_2352) &&
+                supportedDataTrack &&
+                (file.Tracks.Count == 1 || raw2352DataTrack) &&
                 File.Exists(audioFilePath))
             {
                 AddTrack(ImportDataTrack(file, audioFilePath, out audioAfterData));
@@ -984,7 +989,14 @@ public class AudioCdCompilation
     {
         audioAfterData = 0;
         var trk = file.Tracks[0];
-        int sectorSize = trk.DataType == CueTrackDataType.Mode1_2048 ? DataTrackImage.UserDataSize : OpticalConstants.RawSectorSize;
+        (int mode, int sectorSize) = trk.DataType switch
+        {
+            CueTrackDataType.Mode1_2048 => (1, DataTrackImage.UserDataSize),
+            CueTrackDataType.Mode1_2352 => (1, OpticalConstants.RawSectorSize),
+            CueTrackDataType.Mode2_2336 => (2, DataTrackImage.Mode2XaPayloadSize),
+            CueTrackDataType.Mode2_2352 => (2, OpticalConstants.RawSectorSize),
+            _ => throw new NotSupportedException($"Unsupported data track type: {trk.DataType}")
+        };
         long start = (long)(GetIndex01Frames(trk) ?? 0) * sectorSize;
         long end = new FileInfo(filePath).Length;
         if (file.Tracks.Count > 1)
@@ -993,7 +1005,7 @@ public class AudioCdCompilation
             end = (long)(GetIndex00Frames(next) ?? GetIndex01Frames(next) ?? 0) * OpticalConstants.RawSectorSize;
         }
         int sectors = (int)Math.Max(0, (end - start) / sectorSize);
-        var image = DataTrackImage.Open(filePath, start, sectors, sectorSize);
+        var image = DataTrackImage.Open(filePath, start, sectors, sectorSize, mode);
         if (file.Tracks.Count > 1 && GetIndex00Frames(file.Tracks[1]) is null)
         {
             // No INDEX 00 for track 2: the range ends with track 2's audio pre-gap, which is not data. It goes back to the

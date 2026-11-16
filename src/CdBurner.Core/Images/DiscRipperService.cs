@@ -374,13 +374,14 @@ public class DiscRipperService
             foreach (var t in toc.Where(t => t.StartLba >= startLba).OrderBy(t => t.TrackNumber))
             {
                 var text = cdText?.Tracks?.FirstOrDefault(x => x.TrackNumber == t.TrackNumber);
+                int relLba = t.StartLba - startLba;
                 cueTracks.Add(new CueTrack(
                     TrackNumber: t.TrackNumber,
-                    DataType: t.IsAudio ? CueTrackDataType.Audio : CueTrackDataType.Mode1_2352,
+                    DataType: t.IsAudio ? CueTrackDataType.Audio : DetectRawTrackDataType(outputBinPath, relLba, isRaw: true),
                     Title: string.IsNullOrEmpty(text?.Title) ? null : text.Title,
                     Performer: string.IsNullOrEmpty(text?.Performer) ? null : text.Performer,
                     Isrc: string.IsNullOrEmpty(text?.Isrc) ? null : text.Isrc,
-                    Indices: new[] { new CueIndex(1, MsfAddress.FromFrameCount(t.StartLba - startLba)) }));
+                    Indices: new[] { new CueIndex(1, MsfAddress.FromFrameCount(relLba)) }));
             }
         }
         else
@@ -416,7 +417,7 @@ public class DiscRipperService
                                 int relLba = Math.Max(0, trkStartLba - startLba);
                                 var dt = isAudio
                                     ? CueTrackDataType.Audio
-                                    : (isRaw ? CueTrackDataType.Mode1_2352 : CueTrackDataType.Mode1_2048);
+                                    : DetectRawTrackDataType(outputBinPath, relLba, isRaw);
 
                                 cueTracks.Add(new CueTrack(
                                     TrackNumber: trackNum,
@@ -448,6 +449,30 @@ public class DiscRipperService
 
         var fileEntry = new CueFileEntry(binFileName, "BINARY", cueTracks);
         return new CueSheet(Title: albumTitle, Performer: albumPerformer, Files: new[] { fileEntry });
+    }
+
+    private static CueTrackDataType DetectRawTrackDataType(string outputBinPath, int relativeStartFrame, bool isRaw)
+    {
+        if (!isRaw)
+        {
+            return CueTrackDataType.Mode1_2048;
+        }
+        if (relativeStartFrame >= 0 && File.Exists(outputBinPath))
+        {
+            long offset = (long)relativeStartFrame * OpticalConstants.RawSectorSize;
+            using var fs = new FileStream(outputBinPath, FileMode.Open, FileAccess.Read, FileShare.ReadWrite);
+            if (fs.Length >= offset + 16)
+            {
+                fs.Position = offset;
+                Span<byte> header = stackalloc byte[16];
+                fs.ReadExactly(header);
+                if (RawSectorCodec.VerifySync(header) && header[15] == 2)
+                {
+                    return CueTrackDataType.Mode2_2352;
+                }
+            }
+        }
+        return CueTrackDataType.Mode1_2352;
     }
 
     private static int InspectVirtualMediumUsedSectors(IDiscRecorderBackend recorder)

@@ -274,4 +274,46 @@ public class NativeSaoEncodingTests
         Assert.Equal(new byte[] { 0x5D, 0, 0, 0, 0, 0, 0, 0, 0x30, 0 }, NativeWriteCommands.BuildSendCueSheet(48));
         Assert.Equal(new byte[] { 0x5C, 0, 0, 0, 0, 0, 0, 0, 12, 0 }, NativeWriteCommands.BuildReadBufferCapacity());
     }
+
+    [Fact]
+    public void CueSheet_Mode2XaMixedDisc_MatchesMmcDataFormAndSessionFormat()
+    {
+        // INCITS 360 / MMC-3 section 5.34.2.4 (Tables 320, 323, 324):
+        // Track 1 Mode 2 XA (300 sectors + 150 pre-gap + 150 Yellow Book post-gap -> Track 2 INDEX 00 at LBA 450 = 00:08:00),
+        // Track 2 Audio (300 sectors + 150 pre-gap -> INDEX 01 at LBA 600 = 00:10:00, Lead-Out at LBA 900 = 00:14:00).
+        var layout = SaoAudioLayout.Create(new[]
+        {
+            new SaoTrack(1, 300, 150, DataMode: SaoDataMode.Mode2Xa),
+            new SaoTrack(2, 300, 150)
+        });
+
+        byte[] sheet = SaoCueSheetBuilder.Build(layout, mcn: null, cdTextLeadInStart: null);
+        byte[] expected =
+        {
+            0x41, 0x00, 0x00, 0x24, 0x00, 0x00, 0x00, 0x00, // Lead-In: CD-ROM XA drive-generated (0x24)
+            0x41, 0x01, 0x00, 0x20, 0x00, 0x00, 0x00, 0x00, // Track 1 INDEX 00 at 00:00:00 (LBA -150), Data Form 0x20
+            0x41, 0x01, 0x01, 0x20, 0x00, 0x00, 0x02, 0x00, // Track 1 INDEX 01 at 00:02:00 (LBA 0), Data Form 0x20
+            0x01, 0x02, 0x00, 0x00, 0x00, 0x00, 0x08, 0x00, // Track 2 INDEX 00 at 00:08:00 (LBA 450), CD-DA
+            0x01, 0x02, 0x01, 0x00, 0x00, 0x00, 0x0A, 0x00, // Track 2 INDEX 01 at 00:10:00 (LBA 600), CD-DA
+            0x01, 0xAA, 0x01, 0x01, 0x00, 0x00, 0x0E, 0x00  // Lead-Out at 00:14:00 (LBA 900), CD-DA generated
+        };
+        Assert.Equal(expected, sheet);
+
+        byte[] withCdText = SaoCueSheetBuilder.Build(layout, mcn: null, cdTextLeadInStart: new Msf(97, 34, 23));
+        Assert.Equal(new byte[] { 0x41, 0x00, 0x00, 0x41, 0x00, 97, 34, 23 }, withCdText.AsSpan(0, 8).ToArray());
+
+        byte[] cddaLeadIn = SaoCueSheetBuilder.Build(layout, mcn: null, cdTextLeadInStart: null, CueSheetVariant.CdDaLeadInForXa);
+        Assert.Equal(new byte[] { 0x41, 0x00, 0x00, 0x01, 0x00, 0x00, 0x00, 0x00 }, cddaLeadIn.AsSpan(0, 8).ToArray());
+
+        byte[] page = new byte[0x34];
+        page[0] = 0x85;
+        page[1] = 0x32;
+        byte[] modeSense = new byte[8 + page.Length];
+        BinaryPrimitives.WriteUInt16BigEndian(modeSense, (ushort)(modeSense.Length - 2));
+        page.CopyTo(modeSense, 8);
+        var current = WriteParametersPage.FromModeSense10(modeSense)!;
+        var xaPage = current.ForSessionAtOnce(testWrite: false, bufferUnderrunFree: true, cdTextLeadIn: false, sessionFormat: 0x20);
+        Assert.Equal(0x20, xaPage.SessionFormat);
+        Assert.Equal(0x20, xaPage.ToModeSelect10ParameterList()[8 + 8]);
+    }
 }

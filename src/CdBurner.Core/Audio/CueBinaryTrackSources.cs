@@ -3,32 +3,49 @@ using CdBurner.Core.Primitives;
 namespace CdBurner.Core.Audio;
 
 /// <summary>
-/// A CD-ROM Mode 1 data track from a CUE sheet's BINARY file: track 1 of a mixed-mode CD (data, then audio).
-/// The file holds either 2,048-byte sectors (<c>MODE1/2048</c>) or whole 2,352-byte sectors (<c>MODE1/2352</c>); either
-/// way the writer is given the 2,048 bytes of user data per sector, and the drive adds sync, header and error correction.
+/// A CD-ROM Mode 1 or Mode 2 XA data track from a CUE sheet's BINARY file: track 1 of a mixed-mode CD (data, then audio).
+/// Mode 1 files hold 2,048-byte or 2,352-byte sectors (sending 2,048 bytes per sector to the writer); Mode 2 XA files
+/// hold 2,336-byte or 2,352-byte sectors (sending 2,336 bytes per sector: 8-byte XA sub-header + 2,328 payload bytes).
 /// </summary>
 /// <param name="FilePath">The BINARY file.</param>
 /// <param name="OffsetBytes">Where the track's INDEX 01 starts in the file.</param>
 /// <param name="SectorCount">Sectors of the track kept from the file.</param>
-/// <param name="SectorSize">2,048 or 2,352 bytes a sector in the file.</param>
-public sealed record DataTrackImage(string FilePath, long OffsetBytes, int SectorCount, int SectorSize)
+/// <param name="SectorSize">2,048, 2,336, or 2,352 bytes a sector in the file.</param>
+/// <param name="Mode">CD-ROM sector mode: 1 (Mode 1) or 2 (Mode 2 XA).</param>
+public sealed record DataTrackImage(string FilePath, long OffsetBytes, int SectorCount, int SectorSize, int Mode = 1)
 {
     public const int UserDataSize = 2048;
-    private const int RawUserDataOffset = 16; // sync (12) + header (4)
+    public const int Mode2XaPayloadSize = 2336;
+    private const int RawHeaderSize = 16; // sync (12) + header (4)
+    private const int Mode2SubheaderSize = 8;
 
-    /// <summary>Bytes of user data the writer sends.</summary>
+    /// <summary>Bytes of user data (2,048 per sector).</summary>
     public long UserDataBytes => (long)SectorCount * UserDataSize;
+
+    /// <summary>Bytes per sector sent to the MMC writer (2,048 for Mode 1, 2,336 for Mode 2 XA).</summary>
+    public int WriterSectorSize => Mode == 2 ? Mode2XaPayloadSize : UserDataSize;
+
+    /// <summary>Total bytes sent to the MMC writer.</summary>
+    public long WriterPayloadBytes => (long)SectorCount * WriterSectorSize;
 
     /// <summary>
     /// Describes the data track at <paramref name="offsetBytes"/> in <paramref name="filePath"/>, checking that the file
-    /// is long enough and, for raw sectors, that the first one is a Mode 1 sector.
+    /// is long enough and, for raw sectors, that the first one matches <paramref name="mode"/>.
     /// </summary>
-    public static DataTrackImage Open(string filePath, long offsetBytes, int sectorCount, int sectorSize)
+    public static DataTrackImage Open(string filePath, long offsetBytes, int sectorCount, int sectorSize, int mode = 1)
     {
         ArgumentException.ThrowIfNullOrWhiteSpace(filePath);
-        if (sectorSize is not (UserDataSize or OpticalConstants.RawSectorSize))
+        if (mode is not (1 or 2))
+        {
+            throw new ArgumentOutOfRangeException(nameof(mode), "Data track mode must be 1 (Mode 1) or 2 (Mode 2 XA).");
+        }
+        if (mode == 1 && sectorSize is not (UserDataSize or OpticalConstants.RawSectorSize))
         {
             throw new ArgumentOutOfRangeException(nameof(sectorSize), "A Mode 1 data track has 2,048- or 2,352-byte sectors.");
+        }
+        if (mode == 2 && sectorSize is not (Mode2XaPayloadSize or OpticalConstants.RawSectorSize))
+        {
+            throw new ArgumentOutOfRangeException(nameof(sectorSize), "A Mode 2 XA data track has 2,336- or 2,352-byte sectors.");
         }
         if (sectorCount <= 0)
         {
@@ -44,7 +61,7 @@ public sealed record DataTrackImage(string FilePath, long OffsetBytes, int Secto
 
         if (sectorSize == OpticalConstants.RawSectorSize)
         {
-            byte[] first = new byte[16];
+            byte[] first = new byte[RawHeaderSize];
             using var fs = new FileStream(filePath, FileMode.Open, FileAccess.Read, FileShare.Read);
             fs.Position = offsetBytes;
             fs.ReadExactly(first);
@@ -52,22 +69,22 @@ public sealed record DataTrackImage(string FilePath, long OffsetBytes, int Secto
             if (!sync)
             {
                 throw new InvalidDataException(
-                    $"The data track in '{Path.GetFileName(filePath)}' does not start with a CD-ROM sector: the cue sheet's MODE1/2352 does not match the file.");
+                    $"The data track in '{Path.GetFileName(filePath)}' does not start with a CD-ROM sector: the cue sheet's MODE{mode}/2352 does not match the file.");
             }
-            if (first[15] != 1)
+            if (first[15] != mode)
             {
                 throw new InvalidDataException(
-                    $"The data track in '{Path.GetFileName(filePath)}' holds Mode {first[15]} sectors, not Mode 1. Only Mode 1 data tracks can be written.");
+                    $"The data track in '{Path.GetFileName(filePath)}' holds Mode {first[15]} sectors, not Mode {mode}.");
             }
         }
 
-        return new DataTrackImage(filePath, offsetBytes, sectorCount, sectorSize);
+        return new DataTrackImage(filePath, offsetBytes, sectorCount, sectorSize, mode);
     }
 
     /// <summary>
-    /// How many sectors at the end of the range are not Mode 1 sectors (no sync pattern and Mode 1 header), up to
-    /// <paramref name="max"/>. In a cue sheet without INDEX 00 the range of track 1 runs to track 2's INDEX 01, so it ends
-    /// with track 2's audio pre-gap. Only for raw 2,352-byte sectors; 0 otherwise.
+    /// How many sectors at the end of the range do not match <see cref="Mode"/> (no sync pattern and matching mode header),
+    /// up to <paramref name="max"/>. In a cue sheet without INDEX 00 the range of track 1 runs to track 2's INDEX 01, so
+    /// it ends with track 2's audio pre-gap. Only for raw 2,352-byte sectors; 0 otherwise.
     /// </summary>
     public int CountTrailingNonDataSectors(int max)
     {
@@ -75,15 +92,15 @@ public sealed record DataTrackImage(string FilePath, long OffsetBytes, int Secto
         {
             return 0;
         }
-        byte[] header = new byte[16];
+        byte[] header = new byte[RawHeaderSize];
         using var fs = new FileStream(FilePath, FileMode.Open, FileAccess.Read, FileShare.Read);
         int count = 0;
         while (count < max && count < SectorCount - 1)
         {
             fs.Position = OffsetBytes + (long)(SectorCount - 1 - count) * SectorSize;
             fs.ReadExactly(header);
-            bool mode1 = header[0] == 0 && header[11] == 0 && header.AsSpan(1, 10).IndexOfAnyExcept((byte)0xFF) < 0 && header[15] == 1;
-            if (mode1)
+            bool matchesMode = header[0] == 0 && header[11] == 0 && header.AsSpan(1, 10).IndexOfAnyExcept((byte)0xFF) < 0 && header[15] == Mode;
+            if (matchesMode)
             {
                 break;
             }
@@ -93,11 +110,35 @@ public sealed record DataTrackImage(string FilePath, long OffsetBytes, int Secto
     }
 
     /// <summary>Opens the track's user data: <see cref="UserDataSize"/> bytes per sector, in order.</summary>
-    public Stream OpenUserData() => new UserDataStream(this);
+    public Stream OpenUserData()
+    {
+        int sliceOffset = (Mode, SectorSize) switch
+        {
+            (1, UserDataSize) => 0,
+            (1, _) => RawHeaderSize,
+            (2, Mode2XaPayloadSize) => Mode2SubheaderSize,
+            _ => RawHeaderSize + Mode2SubheaderSize,
+        };
+        return new SectorSliceStream(this, sliceOffset, UserDataSize);
+    }
 
     /// <summary>
-    /// How many sectors at the end of the track hold only zeros in their user data, up to <paramref name="max"/>. A rip
-    /// of a mixed-mode CD keeps the data track's two-second post-gap at its end; the writer adds that gap itself.
+    /// Opens the track's writer payload: 2,048 bytes per sector for Mode 1, or 2,336 bytes per sector (8-byte XA
+    /// sub-header + 2,328 payload bytes) for Mode 2 XA.
+    /// </summary>
+    public Stream OpenWriterData()
+    {
+        if (Mode == 1)
+        {
+            return OpenUserData();
+        }
+        int sliceOffset = SectorSize == Mode2XaPayloadSize ? 0 : RawHeaderSize;
+        return new SectorSliceStream(this, sliceOffset, Mode2XaPayloadSize);
+    }
+
+    /// <summary>
+    /// How many sectors at the end of the track hold only empty gap content, up to <paramref name="max"/>. A rip of a
+    /// mixed-mode CD keeps the data track's two-second post-gap at its end; the writer adds that gap itself.
     /// </summary>
     public int CountTrailingZeroSectors(int max)
     {
@@ -108,29 +149,46 @@ public sealed record DataTrackImage(string FilePath, long OffsetBytes, int Secto
         {
             fs.Position = OffsetBytes + (long)(SectorCount - 1 - zeros) * SectorSize;
             fs.ReadExactly(sector);
-            int start = SectorSize == UserDataSize ? 0 : RawUserDataOffset;
-            if (sector.AsSpan(start, UserDataSize).IndexOfAnyExcept((byte)0) >= 0)
+            if (Mode == 1)
             {
-                break;
+                int start = SectorSize == UserDataSize ? 0 : RawHeaderSize;
+                if (sector.AsSpan(start, UserDataSize).IndexOfAnyExcept((byte)0) >= 0)
+                {
+                    break;
+                }
+            }
+            else
+            {
+                int subStart = SectorSize == Mode2XaPayloadSize ? 0 : RawHeaderSize;
+                if (!sector.AsSpan(subStart, Mode2SubheaderSize).SequenceEqual(Images.RawSectorCodec.Mode2XaEmptyForm1Subheader) ||
+                    sector.AsSpan(subStart + Mode2SubheaderSize, UserDataSize).IndexOfAnyExcept((byte)0) >= 0)
+                {
+                    break;
+                }
             }
             zeros++;
         }
         return zeros;
     }
 
-    /// <summary>Reads the user data of each sector in turn (forward only).</summary>
-    private sealed class UserDataStream : Stream
+    /// <summary>Reads a fixed byte slice from each sector in turn (forward only).</summary>
+    private sealed class SectorSliceStream : Stream
     {
         private readonly DataTrackImage _image;
+        private readonly int _sliceOffset;
+        private readonly int _sliceSize;
         private readonly FileStream _file;
         private readonly byte[] _sector;
         private int _sectorIndex;
-        private int _posInSector = UserDataSize; // nothing buffered yet
+        private int _posInSector;
         private long _delivered;
 
-        public UserDataStream(DataTrackImage image)
+        public SectorSliceStream(DataTrackImage image, int sliceOffset, int sliceSize)
         {
             _image = image;
+            _sliceOffset = sliceOffset;
+            _sliceSize = sliceSize;
+            _posInSector = sliceSize; // nothing buffered yet
             _file = new FileStream(image.FilePath, FileMode.Open, FileAccess.Read, FileShare.Read, 1 << 16);
             _file.Position = image.OffsetBytes;
             _sector = new byte[image.SectorSize];
@@ -143,7 +201,7 @@ public sealed record DataTrackImage(string FilePath, long OffsetBytes, int Secto
             int total = 0;
             while (total < buffer.Length)
             {
-                if (_posInSector == UserDataSize)
+                if (_posInSector == _sliceSize)
                 {
                     if (_sectorIndex == _image.SectorCount)
                     {
@@ -153,9 +211,8 @@ public sealed record DataTrackImage(string FilePath, long OffsetBytes, int Secto
                     _sectorIndex++;
                     _posInSector = 0;
                 }
-                int start = _image.SectorSize == UserDataSize ? 0 : RawUserDataOffset;
-                int n = Math.Min(buffer.Length - total, UserDataSize - _posInSector);
-                _sector.AsSpan(start + _posInSector, n).CopyTo(buffer.Slice(total));
+                int n = Math.Min(buffer.Length - total, _sliceSize - _posInSector);
+                _sector.AsSpan(_sliceOffset + _posInSector, n).CopyTo(buffer.Slice(total));
                 _posInSector += n;
                 total += n;
             }
@@ -166,7 +223,7 @@ public sealed record DataTrackImage(string FilePath, long OffsetBytes, int Secto
         public override bool CanRead => true;
         public override bool CanSeek => false;
         public override bool CanWrite => false;
-        public override long Length => _image.UserDataBytes;
+        public override long Length => (long)_image.SectorCount * _sliceSize;
         public override long Position
         {
             get => _delivered;

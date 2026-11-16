@@ -1,5 +1,13 @@
 namespace CdBurner.Hardware.NativeWriting;
 
+/// <summary>Data mode of an SAO track.</summary>
+public enum SaoDataMode : byte
+{
+    None = 0,
+    Mode1 = 1,
+    Mode2Xa = 2
+}
+
 /// <summary>One audio track to be written Session-at-Once.</summary>
 /// <param name="TrackNumber">1–99.</param>
 /// <param name="SectorCount">Length of the track's audio in 2,352-byte sectors (from INDEX 01 to the next track).</param>
@@ -11,8 +19,8 @@ namespace CdBurner.Hardware.NativeWriting;
 /// hidden audio that a player reaches by rewinding from the start of the disc.</param>
 /// <param name="PreEmphasis">Sets the pre-emphasis flag in the track's control bits.</param>
 /// <param name="CopyPermitted">Sets the digital-copy-permitted flag in the track's control bits.</param>
-/// <param name="IsData">A CD-ROM Mode 1 data track: <paramref name="SectorCount"/> 2,048-byte sectors, which the drive
-/// frames with sync, header and error correction itself. Only track 1 may be one (a mixed-mode CD: data, then audio).</param>
+/// <param name="IsData">A CD-ROM data track (Mode 1 unless <paramref name="DataMode"/> overrides it). Only track 1 may be one (a mixed-mode CD: data, then audio).</param>
+/// <param name="DataMode">Explicit data mode (<see cref="SaoDataMode.Mode1"/> or <see cref="SaoDataMode.Mode2Xa"/>); defaults to <see cref="SaoDataMode.None"/> (audio, or Mode 1 when <paramref name="IsData"/> is true).</param>
 public sealed record SaoTrack(
     int TrackNumber,
     int SectorCount,
@@ -21,7 +29,11 @@ public sealed record SaoTrack(
     int PreGapAudioSectors = 0,
     bool PreEmphasis = false,
     bool CopyPermitted = false,
-    bool IsData = false);
+    bool IsData = false,
+    SaoDataMode DataMode = SaoDataMode.None)
+{
+    public SaoDataMode EffectiveDataMode => DataMode != SaoDataMode.None ? DataMode : (IsData ? SaoDataMode.Mode1 : SaoDataMode.None);
+}
 
 /// <summary>Where each track lands on the disc.</summary>
 public sealed record SaoTrackPlacement(int TrackNumber, int PreGapLba, int Index01Lba, int EndLba, string? Isrc)
@@ -35,8 +47,11 @@ public sealed record SaoTrackPlacement(int TrackNumber, int PreGapLba, int Index
     public bool PreEmphasis { get; init; }
     public bool CopyPermitted { get; init; }
 
-    /// <summary>A Mode 1 data track (written in 2,048-byte sectors, data form 10h).</summary>
+    /// <summary>A data track (Mode 1 in 2,048-byte sectors, or Mode 2 XA in 2,336-byte sectors).</summary>
     public bool IsData { get; init; }
+
+    /// <summary>Data mode of the track (<see cref="SaoDataMode.None"/> for audio).</summary>
+    public SaoDataMode DataMode { get; init; }
 
     /// <summary>
     /// Sectors of zeros at the end of a data track that is followed by audio: the Yellow Book's post-gap of at least two
@@ -49,7 +64,7 @@ public sealed record SaoTrackPlacement(int TrackNumber, int PreGapLba, int Index
     /// 0x20 digital copy permitted, 0x40 data track. The same bits appear in the low nibble of the TOC's ADR/CONTROL
     /// byte (<see cref="TocControl"/>).
     /// </summary>
-    public byte CueControl => (byte)(IsData ? 0x40 : (PreEmphasis ? 0x10 : 0) | (CopyPermitted ? 0x20 : 0));
+    public byte CueControl => (byte)(IsData || DataMode != SaoDataMode.None ? 0x40 : (PreEmphasis ? 0x10 : 0) | (CopyPermitted ? 0x20 : 0));
 
     public byte TocControl => (byte)(CueControl >> 4);
 }
@@ -66,8 +81,11 @@ public sealed class SaoAudioLayout
     public int LeadOutLba { get; }
     public int TotalSectors => LeadOutLba - FirstWritableLba;
 
-    /// <summary>Track 1 is a Mode 1 data track (a mixed-mode CD).</summary>
+    /// <summary>Track 1 is a data track (Mode 1 or Mode 2 XA mixed-mode CD).</summary>
     public bool HasDataTrack => Tracks[0].IsData;
+
+    /// <summary>Track 1 is a Mode 2 / CD-ROM XA data track.</summary>
+    public bool HasMode2XaTrack => Tracks[0].DataMode == SaoDataMode.Mode2Xa;
 
     /// <summary>Where the audio starts: the first audio track's pre-gap (-150 on an all-audio disc).</summary>
     public int AudioStartLba => Tracks.FirstOrDefault(t => !t.IsData)?.PreGapLba ?? LeadOutLba;
@@ -94,6 +112,12 @@ public sealed class SaoAudioLayout
         for (int i = 0; i < tracks.Count; i++)
         {
             var t = tracks[i];
+            if (!Enum.IsDefined(t.DataMode))
+            {
+                throw new ArgumentException($"Track {t.TrackNumber} has an unknown data mode.", nameof(tracks));
+            }
+            SaoDataMode mode = t.EffectiveDataMode;
+            bool isData = mode != SaoDataMode.None;
             if (t.TrackNumber != i + 1)
             {
                 throw new ArgumentException($"Track numbers must run 1, 2, 3, …; found {t.TrackNumber} at position {i + 1}.", nameof(tracks));
@@ -102,7 +126,7 @@ public sealed class SaoAudioLayout
             {
                 throw new ArgumentException($"Track {t.TrackNumber} is shorter than the 4-second Red Book minimum.", nameof(tracks));
             }
-            if (t.IsData && (i != 0 || t.PreGapAudioSectors != 0 || t.PreEmphasis || t.Isrc != null))
+            if (isData && (i != 0 || t.PreGapAudioSectors != 0 || t.PreEmphasis || t.Isrc != null))
             {
                 throw new ArgumentException(i != 0
                     ? $"Track {t.TrackNumber} is a data track; only track 1 can be (a mixed-mode CD has its data first)."
@@ -127,14 +151,15 @@ public sealed class SaoAudioLayout
 
             int index01 = lba + preGap;
             // A data track followed by audio ends with a post-gap of two seconds in data mode (Yellow Book; libburn's cookbook).
-            int postGap = t.IsData && i + 1 < tracks.Count ? 2 * Msf.FramesPerSecond : 0;
+            int postGap = isData && i + 1 < tracks.Count ? 2 * Msf.FramesPerSecond : 0;
             int end = index01 + t.SectorCount + postGap;
             placements.Add(new SaoTrackPlacement(t.TrackNumber, lba, index01, end, NormalizeIsrc(t.Isrc))
             {
                 PreGapAudioSectors = t.PreGapAudioSectors,
                 PreEmphasis = t.PreEmphasis,
                 CopyPermitted = t.CopyPermitted,
-                IsData = t.IsData,
+                IsData = isData,
+                DataMode = mode,
                 PostGapSectors = postGap
             });
             lba = end;
@@ -218,7 +243,10 @@ public enum CueSheetVariant
     IsrcWithoutControl = 1,
 
     /// <summary>The CD-Text lead-in entry gives 00:00:00 instead of the disc's lead-in start time.</summary>
-    CdTextLeadInWithoutTime = 2
+    CdTextLeadInWithoutTime = 2,
+
+    /// <summary>Use CD-DA generated lead-in data form (0x01) instead of CD-ROM XA (0x24) on drives that reject 0x24.</summary>
+    CdDaLeadInForXa = 4
 }
 
 /// <summary>
@@ -241,6 +269,15 @@ public static class SaoCueSheetBuilder
     /// </summary>
     public const byte DataFormMode1 = 0x10;
 
+    /// <summary>
+    /// Data form for a CD-ROM XA Mode 2 track: 2,336 bytes per sector from the host (8-byte sub-header + 2,328 payload);
+    /// the drive adds sync, header and Form 1/Form 2 EDC/ECC (MMC-3 Table 320 / MMC-5 6.33.3.4).
+    /// </summary>
+    public const byte DataFormMode2Xa = 0x20;
+
+    /// <summary>Data form for a CD-ROM XA lead-in or lead-out generated by the drive, 0 host bytes (MMC-3 Tables 323 &amp; 324).</summary>
+    public const byte DataFormMode2XaLeadIn = 0x24;
+
     /// <summary>Data form for a CD-Text lead-in: main data generated by the drive, R-W sub-channel from the host.</summary>
     public const byte DataFormLeadInWithRw = 0x41;
 
@@ -257,8 +294,8 @@ public static class SaoCueSheetBuilder
         // Lead-in and catalog number entries carry the first track's data bit, the lead-out the last track's (libburn's
         // cookbook); audio control bits stay plain two-channel there. Each track's own entries carry that track's
         // pre-emphasis and copy-permitted bits, as cdrdao's generic MMC driver sends them, or the data bit.
-        byte ctl = (byte)(layout.Tracks[0].IsData ? 0x40 : 0x00);
-        byte leadOutCtl = (byte)(layout.Tracks[^1].IsData ? 0x40 : 0x00);
+        byte ctl = (byte)(layout.Tracks[0].IsData || layout.Tracks[0].DataMode != SaoDataMode.None ? 0x40 : 0x00);
+        byte leadOutCtl = (byte)(layout.Tracks[^1].IsData || layout.Tracks[^1].DataMode != SaoDataMode.None ? 0x40 : 0x00);
 
         string? catalog = SaoAudioLayout.NormalizeMcn(mcn);
         if (catalog != null)
@@ -272,8 +309,12 @@ public static class SaoCueSheetBuilder
         Msf leadInTime = cdTextLeadInStart.HasValue && (variant & CueSheetVariant.CdTextLeadInWithoutTime) == 0
             ? cdTextLeadInStart.Value
             : default;
-        entries.Add(Entry((byte)(ctl | 0x01), 0x00, 0x00,
-            cdTextLeadInStart.HasValue ? DataFormLeadInWithRw : DataFormGenerated, 0x00, leadInTime));
+        byte leadInForm = cdTextLeadInStart.HasValue
+            ? DataFormLeadInWithRw
+            : layout.HasMode2XaTrack && (variant & CueSheetVariant.CdDaLeadInForXa) == 0
+                ? DataFormMode2XaLeadIn
+                : DataFormGenerated;
+        entries.Add(Entry((byte)(ctl | 0x01), 0x00, 0x00, leadInForm, 0x00, leadInTime));
 
         for (int i = 0; i < layout.Tracks.Count; i++)
         {
@@ -288,7 +329,12 @@ public static class SaoCueSheetBuilder
                 entries.Add(Entry(isrcCtlAdr, tno, (byte)isrc[6], (byte)isrc[7], (byte)isrc[8], (byte)isrc[9], (byte)isrc[10], (byte)isrc[11]));
             }
 
-            byte form = t.IsData ? DataFormMode1 : DataFormAudio;
+            byte form = t.DataMode switch
+            {
+                SaoDataMode.Mode2Xa => DataFormMode2Xa,
+                SaoDataMode.Mode1 => DataFormMode1,
+                _ => t.IsData ? DataFormMode1 : DataFormAudio
+            };
             if (i == 0 || t.PreGapSectors > 0)
             {
                 entries.Add(Entry((byte)(trackCtl | 0x01), tno, 0x00, form, 0x00, Msf.FromLba(t.PreGapLba)));
@@ -297,7 +343,8 @@ public static class SaoCueSheetBuilder
             entries.Add(Entry((byte)(trackCtl | 0x01), tno, 0x01, form, 0x00, Msf.FromLba(t.Index01Lba)));
         }
 
-        entries.Add(Entry((byte)(leadOutCtl | 0x01), LeadOutTrackNumber, 0x01, DataFormGenerated, 0x00, Msf.FromLba(layout.LeadOutLba)));
+        byte leadOutForm = layout.Tracks[^1].DataMode == SaoDataMode.Mode2Xa ? DataFormMode2XaLeadIn : DataFormGenerated;
+        entries.Add(Entry((byte)(leadOutCtl | 0x01), LeadOutTrackNumber, 0x01, leadOutForm, 0x00, Msf.FromLba(layout.LeadOutLba)));
 
         byte[] sheet = new byte[entries.Count * EntrySize];
         for (int i = 0; i < entries.Count; i++)

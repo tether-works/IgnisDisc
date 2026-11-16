@@ -294,12 +294,15 @@ public sealed class NativeAudioBurnEngine : IBurnEngineBackend, IAudioDiscVerifi
             var t = tracks[i];
             if (t.IsDataTrack)
             {
-                if (t.TotalPcmBytes % NativeSaoAudioWriter.DataSectorSize != 0)
+                bool mode2Xa = t.DataTrackMode == 2;
+                int sectorBytes = mode2Xa ? NativeSaoAudioWriter.Mode2XaSectorSize : NativeSaoAudioWriter.DataSectorSize;
+                SaoDataMode dataMode = mode2Xa ? SaoDataMode.Mode2Xa : SaoDataMode.Mode1;
+                if (t.TotalPcmBytes % sectorBytes != 0)
                 {
-                    problem = $"Track {i + 1}'s data is not a whole number of 2,048-byte sectors.";
+                    problem = $"Track {i + 1}'s data is not a whole number of {sectorBytes:N0}-byte sectors.";
                     return null;
                 }
-                saoTracks.Add(new SaoTrack(i + 1, (int)(t.TotalPcmBytes / NativeSaoAudioWriter.DataSectorSize), OpticalConstants.CdLeadInFrames, IsData: true));
+                saoTracks.Add(new SaoTrack(i + 1, (int)(t.TotalPcmBytes / sectorBytes), OpticalConstants.CdLeadInFrames, IsData: true, DataMode: dataMode));
                 continue;
             }
             int sectors = (int)((t.TotalPcmBytes + OpticalConstants.RawSectorSize - 1) / OpticalConstants.RawSectorSize);

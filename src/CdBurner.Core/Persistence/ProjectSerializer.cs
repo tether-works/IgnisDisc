@@ -576,7 +576,8 @@ public static class ProjectSerializer
                 RawFileType = track.RawFileType,
                 DataTrackOffsetBytes = track.DataTrack?.OffsetBytes,
                 DataTrackSectorCount = track.DataTrack?.SectorCount,
-                DataTrackSectorSize = track.DataTrack?.SectorSize
+                DataTrackSectorSize = track.DataTrack?.SectorSize,
+                DataTrackMode = track.DataTrack?.Mode
             });
         }
 
@@ -639,7 +640,8 @@ public static class ProjectSerializer
                     track.DataTrackSectorSize is int dataSectorSize && !string.IsNullOrWhiteSpace(track.SourceFilePath))
                 {
                     // Not re-checked against the file here: the burn opens it and reports a missing or changed file.
-                    dataTrack = new DataTrackImage(track.SourceFilePath, dataOffset, dataSectors, dataSectorSize);
+                    int dataMode = track.DataTrackMode ?? (dataSectorSize == DataTrackImage.Mode2XaPayloadSize ? 2 : 1);
+                    dataTrack = new DataTrackImage(track.SourceFilePath, dataOffset, dataSectors, dataSectorSize, dataMode);
                 }
                 else if (track.RawFileType is { } rawType && RawCdAudioFile.IsRawType(rawType) && !string.IsNullOrWhiteSpace(track.SourceFilePath))
                 {
