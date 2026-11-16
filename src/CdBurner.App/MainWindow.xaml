@@ -373,6 +373,18 @@
                         </StackPanel>
                     </RadioButton>
 
+                    <!-- Disc picture calibration -->
+                    <RadioButton Style="{StaticResource NavigationRailButtonStyle}"
+                                 AutomationProperties.Name="Calibration workspace"
+                                 IsChecked="{Binding SelectedNavigationTab, Converter={StaticResource NavigationTabToBooleanConverter}, ConverterParameter=DiscCalibration}"
+                                 Command="{Binding NavigateCommand}"
+                                 CommandParameter="{x:Static vm:NavigationTab.DiscCalibration}">
+                        <StackPanel Orientation="Horizontal">
+                            <TextBlock Text="🎯" FontSize="14" Margin="0,0,10,0" />
+                            <TextBlock Text="Calibration" />
+                        </StackPanel>
+                    </RadioButton>
+
                     <!-- Tab 7: Settings -->
                     <RadioButton Style="{StaticResource NavigationRailButtonStyle}"
                                  AutomationProperties.Name="Settings workspace"

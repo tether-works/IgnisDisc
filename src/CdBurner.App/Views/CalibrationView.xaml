@@ -1,0 +1,132 @@
+<UserControl x:Class="CdBurner.App.Views.CalibrationView"
+             xmlns="http://schemas.microsoft.com/winfx/2006/xaml/presentation"
+             xmlns:x="http://schemas.microsoft.com/winfx/2006/xaml"
+             xmlns:d="http://schemas.microsoft.com/expression/blend/2008"
+             xmlns:mc="http://schemas.openxmlformats.org/markup-compatibility/2006"
+             xmlns:vm="clr-namespace:CdBurner.App.ViewModels"
+             xmlns:converters="clr-namespace:CdBurner.App.Converters"
+             mc:Ignorable="d"
+             d:DataContext="{d:DesignInstance Type=vm:CalibrationViewModel}"
+             Background="{DynamicResource SurfaceBackgroundBrush}"
+             Foreground="{DynamicResource TextPrimaryBrush}">
+
+    <UserControl.Resources>
+        <converters:PngBytesToImageSourceConverter x:Key="PngToImage" />
+        <converters:BooleanToVisibilityConverter x:Key="BoolToVis" />
+
+        <!-- Dot colours are fixed (not themed) so they stay visible on any photo. -->
+        <DataTemplate x:Key="MarkerTemplate" DataType="{x:Type vm:CalibrationMarker}">
+            <Ellipse x:Name="Dot" Width="{Binding Size}" Height="{Binding Size}" Fill="#FFFF9E22" />
+            <DataTemplate.Triggers>
+                <DataTrigger Binding="{Binding Kind}" Value="CenterHole">
+                    <Setter TargetName="Dot" Property="Fill" Value="#FF22C8FF" />
+                </DataTrigger>
+                <DataTrigger Binding="{Binding Kind}" Value="Measure">
+                    <Setter TargetName="Dot" Property="Fill" Value="#FF38C172" />
+                </DataTrigger>
+                <DataTrigger Binding="{Binding Kind}" Value="Outline">
+                    <Setter TargetName="Dot" Property="Fill" Value="#FFF04E23" />
+                </DataTrigger>
+            </DataTemplate.Triggers>
+        </DataTemplate>
+    </UserControl.Resources>
+
+    <Grid Margin="16">
+        <Grid.ColumnDefinitions>
+            <ColumnDefinition Width="340" />
+            <ColumnDefinition Width="*" />
+        </Grid.ColumnDefinitions>
+
+        <!-- Controls -->
+        <ScrollViewer Grid.Column="0" VerticalScrollBarVisibility="Auto" HorizontalScrollBarVisibility="Disabled" Margin="0,0,12,0">
+            <StackPanel>
+                <TextBlock Text="1. Target record" FontWeight="SemiBold" Margin="0,0,0,4" />
+                <Button Content="Open record..." Command="{Binding OpenRecordCommand}" HorizontalAlignment="Left"
+                        AutomationProperties.Name="Open calibration record" />
+                <TextBlock Text="{Binding TargetSummary}" TextWrapping="Wrap" Margin="0,4,0,12"
+                           Foreground="{DynamicResource TextSecondaryBrush}" />
+
+                <TextBlock Text="2. Photo and rectification" FontWeight="SemiBold" Margin="0,0,0,4" />
+                <Button Content="Open photo..." Command="{Binding OpenPhotoCommand}" HorizontalAlignment="Left"
+                        AutomationProperties.Name="Open photo of the burned disc" />
+                <StackPanel Margin="0,6,0,0">
+                    <RadioButton Content="Click outer rim (orange)" GroupName="CalibrationClick"
+                                 IsChecked="{Binding IsOuterRimMode}" AutomationProperties.Name="Click outer rim" />
+                    <RadioButton Content="Click centre hole edge (blue)" GroupName="CalibrationClick"
+                                 IsChecked="{Binding IsCenterHoleMode}" AutomationProperties.Name="Click centre hole edge" />
+                    <RadioButton Content="Click measurement points (green)" GroupName="CalibrationClick"
+                                 IsChecked="{Binding IsMeasureMode}" AutomationProperties.Name="Click measurement points" />
+                </StackPanel>
+                <StackPanel Orientation="Horizontal" Margin="0,6,0,0">
+                    <Button Content="Rectify" Command="{Binding RectifyCommand}" Margin="0,0,6,0"
+                            AutomationProperties.Name="Rectify photo" />
+                    <Button Content="Undo" Command="{Binding UndoCommand}" Margin="0,0,6,0"
+                            AutomationProperties.Name="Undo last point" />
+                    <Button Content="New segment" Command="{Binding NewSegmentCommand}"
+                            AutomationProperties.Name="Start new boundary segment" />
+                </StackPanel>
+                <TextBlock Text="{Binding PointCountsText}" TextWrapping="Wrap" Margin="0,6,0,0" />
+                <TextBlock Text="{Binding RectifyMessage}" TextWrapping="Wrap" Margin="0,4,0,0"
+                           Foreground="{DynamicResource TextSecondaryBrush}" />
+
+                <TextBlock Text="3. Measure" FontWeight="SemiBold" Margin="0,12,0,4" />
+                <TextBlock Text="{Binding StageInstructions}" TextWrapping="Wrap"
+                           Foreground="{DynamicResource TextSecondaryBrush}" />
+
+                <TextBlock Text="4. Fit and save" FontWeight="SemiBold" Margin="0,12,0,4" />
+                <StackPanel Orientation="Horizontal">
+                    <Button Content="Fit" Command="{Binding FitCommand}" Margin="0,0,6,0"
+                            AutomationProperties.Name="Fit calibration" />
+                    <Button Content="Save record..." Command="{Binding SaveRecordCommand}"
+                            AutomationProperties.Name="Save calibration record" />
+                </StackPanel>
+                <TextBlock Text="{Binding FitSummary}" TextWrapping="Wrap" Margin="0,6,0,0" />
+                <ListBox ItemsSource="{Binding Candidates}" SelectedItem="{Binding SelectedCandidate}"
+                         MaxHeight="140" Margin="0,6,0,0" AutomationProperties.Name="Fit candidates" />
+                <TextBlock Text="Drive model" Margin="0,8,0,2" />
+                <TextBox Text="{Binding DriveModel, UpdateSourceTrigger=PropertyChanged}"
+                         AutomationProperties.Name="Drive model" />
+                <TextBlock Text="Media ID (ATIP / ADIP / disc ID)" Margin="0,6,0,2" />
+                <TextBox Text="{Binding MediaId, UpdateSourceTrigger=PropertyChanged}"
+                         AutomationProperties.Name="Media ID" />
+                <Button Content="Save calibration" Command="{Binding SaveToStoreCommand}" HorizontalAlignment="Left"
+                        Margin="0,8,0,0" AutomationProperties.Name="Save calibration for drive and media" />
+
+                <TextBlock Text="{Binding StatusMessage}" TextWrapping="Wrap" Margin="0,12,0,0" FontWeight="SemiBold" />
+            </StackPanel>
+        </ScrollViewer>
+
+        <!-- Photo: the surface is sized in photo pixels, so a click position is a pixel position. -->
+        <Border Grid.Column="1" BorderThickness="1" BorderBrush="{DynamicResource CardBorderBrush}"
+                Background="{DynamicResource CardBackgroundBrush}">
+            <Grid>
+                <TextBlock Text="Open a photo of the burned disc." HorizontalAlignment="Center" VerticalAlignment="Center"
+                           Foreground="{DynamicResource TextMutedBrush}" />
+                <Viewbox Stretch="Uniform" StretchDirection="Both"
+                         Visibility="{Binding HasPhoto, Converter={StaticResource BoolToVis}}">
+                    <Grid x:Name="PhotoSurface"
+                          Width="{Binding PhotoPixelWidth}" Height="{Binding PhotoPixelHeight}"
+                          Background="Black" Cursor="Cross"
+                          MouseLeftButtonDown="PhotoSurface_MouseLeftButtonDown"
+                          AutomationProperties.Name="Disc photo">
+                        <Image Source="{Binding PhotoPng, Converter={StaticResource PngToImage}}" Stretch="Fill" />
+                        <ItemsControl ItemsSource="{Binding Markers}" ItemTemplate="{StaticResource MarkerTemplate}"
+                                      IsHitTestVisible="False">
+                            <ItemsControl.ItemsPanel>
+                                <ItemsPanelTemplate>
+                                    <Canvas />
+                                </ItemsPanelTemplate>
+                            </ItemsControl.ItemsPanel>
+                            <ItemsControl.ItemContainerStyle>
+                                <Style TargetType="ContentPresenter">
+                                    <Setter Property="Canvas.Left" Value="{Binding Left}" />
+                                    <Setter Property="Canvas.Top" Value="{Binding Top}" />
+                                </Style>
+                            </ItemsControl.ItemContainerStyle>
+                        </ItemsControl>
+                    </Grid>
+                </Viewbox>
+            </Grid>
+        </Border>
+    </Grid>
+</UserControl>

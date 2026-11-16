@@ -145,12 +145,9 @@ public static partial class CliCommandRunner
 
         // A fit the fitter itself flags is applied only when the person names the candidate, as upstream's
         // "confirm the outline, then apply" step does. A clean fit applies its first candidate.
-        int? chosenIndex = requestedCandidate is int n ? n - 1
-            : fit.Result.Succeeded && candidates.Count > 0 ? 0
-            : null;
+        int? chosenIndex = requestedCandidate is int n ? n - 1 : CalibrationRecordFitter.DefaultCandidateIndex(fit);
         CalibrationFitCandidate? chosen = chosenIndex is int index ? candidates[index] : null;
-        string stageName = CalibrationTargetFile.StageOf(session.Target)?.ToString().ToLowerInvariant()
-            ?? session.Target.Artwork.ToString();
+        string stageName = CalibrationRecordFitter.StageName(session.Target);
 
         string? storePath = null;
         if (save && chosen is not null)

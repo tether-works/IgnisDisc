@@ -78,6 +78,24 @@ public static class CalibrationRecordFitter
         return new CalibrationRecordFit(CalibrationMeasurementKind.CenterlineTrace, tracePoints, result, range, expanded);
     }
 
+    /// <summary>
+    /// The candidate applied when nobody names one: the first candidate of a fit the fitter did not flag, else none.
+    /// A flagged fit is applied only when the person picks a candidate, as upstream's "confirm the outline, then
+    /// apply" step does. The command line and the calibration screen both use this rule.
+    /// </summary>
+    public static int? DefaultCandidateIndex(CalibrationRecordFit fit)
+    {
+        ArgumentNullException.ThrowIfNull(fit);
+        return fit.Result.Succeeded && fit.Result.Candidates.Count > 0 ? 0 : null;
+    }
+
+    /// <summary>Stage name saved in the calibration store: coarse, boundary or fine (else the artwork name).</summary>
+    public static string StageName(CalibrationTarget target)
+    {
+        ArgumentNullException.ThrowIfNull(target);
+        return CalibrationTargetFile.StageOf(target)?.ToString().ToLowerInvariant() ?? target.Artwork.ToString();
+    }
+
     private static CalibrationFitOptions OptionsFor(CalibrationSession session, bool fitPitch)
     {
         CalibrationFitOptions saved = session.FitOptions ?? new CalibrationFitOptions(

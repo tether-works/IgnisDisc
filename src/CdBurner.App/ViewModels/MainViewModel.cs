@@ -29,6 +29,7 @@ public class MainViewModel : ObservableObject, IDisposable
     private readonly ArchiveViewModel _archive;
     private readonly DriveUtilitiesViewModel _driveUtilities;
     private readonly VirtualDriveViewModel _virtualDrive;
+    private readonly CalibrationViewModel _calibration = new();
     private readonly SettingsViewModel _settings;
 
     private IDiscRecorderBackend? _selectedRecorder;
@@ -79,6 +80,11 @@ public class MainViewModel : ObservableObject, IDisposable
     /// Gets the Virtual Drive Simulator manager workspace view model.
     /// </summary>
     public VirtualDriveViewModel VirtualDrive => _virtualDrive;
+
+    /// <summary>
+    /// Gets the disc picture calibration workspace view model.
+    /// </summary>
+    public CalibrationViewModel Calibration => _calibration;
 
     /// <summary>
     /// Gets the Application Settings configuration workspace view model.
@@ -662,6 +668,13 @@ public class MainViewModel : ObservableObject, IDisposable
             "Configure and inspect software-defined optical disc simulators and virtual media files.",
             "💾",
             _virtualDrive);
+
+        _workspaces[NavigationTab.DiscCalibration] = new WorkspaceViewModel(
+            NavigationTab.DiscCalibration,
+            "Disc Picture Calibration",
+            "Fit the track geometry of a drive and blank disc from a photo of a burned calibration target.",
+            "🎯",
+            _calibration);
 
         _workspaces[NavigationTab.Settings] = new WorkspaceViewModel(
             NavigationTab.Settings,

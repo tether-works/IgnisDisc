@@ -290,9 +290,15 @@ one assembly with a clear provenance boundary. Nothing in it touches a drive.
   media ID (ATIP/ADIP manufacturer code) in `%APPDATA%\IgnisDisc\disc-calibrations.json`, written through a
   temporary file, one entry per drive, media ID and disc type. Command line: `disc-art calibrate target`,
   `disc-art calibrate fit --points <record>` and `disc-art calibrate list`. A fit the fitter flags is listed with
-  its candidates but applied and saved only when `--candidate <n>` names one. Not done here: reading the angle
-  marks of a coarse target and rectifying a photo need the photo's pixels (the calibration screen), so a coarse
-  record gives the wide-band radii only. No calibration target has been burned from IgnisDisc yet.
+  its candidates but applied and saved only when `--candidate <n>` names one. The app's Calibration screen
+  (`CalibrationViewModel`, `CalibrationView`) opens a record and a photo, takes at least five clicks on the outer
+  rim and five on the centre-hole edge, rectifies with `CalibrationPhotoRectifier`, takes the stage's clicks (one
+  per band edge along a ray, boundary points in segments, or points along one cross arm) with undo, fits with
+  `CalibrationRecordFitter` and applies a candidate by the same rule as the command line
+  (`CalibrationRecordFitter.DefaultCandidateIndex`); a flagged fit is saved only after a candidate is picked in the
+  list. It saves the record (which `disc-art calibrate fit` reads) and the store entry. Not done: reading the angle
+  marks of a coarse target from the photo's pixels, so a coarse record gives the wide-band radii only. No
+  calibration target has been burned from IgnisDisc yet.
 - `Imaging/PngRaster.cs` + `Imaging/WicPngDecoder.cs`: IgnisDisc's PNG framing/CRC-32 validator and Windows Imaging
   Component (`windowscodecs.dll`) decoder producing straight `32bppBGRA` `BgraRaster` buffers (plus 8-bit RGBA PNG writer)
   for picture input and read-back previews without a WPF dependency.

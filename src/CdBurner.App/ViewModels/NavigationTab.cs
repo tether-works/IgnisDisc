@@ -43,5 +43,10 @@ public enum NavigationTab
     /// <summary>
     /// Global application preferences, default burning speeds, and logging configuration.
     /// </summary>
-    Settings
+    Settings,
+
+    /// <summary>
+    /// Disc picture calibration from a photo of a burned calibration target.
+    /// </summary>
+    DiscCalibration
 }

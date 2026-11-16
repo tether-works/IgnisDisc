@@ -356,3 +356,34 @@ public class SectorHealthStatusToBrushConverter : IValueConverter
 }
 
 
+
+/// <summary>
+/// Converts PNG bytes to a frozen <see cref="System.Windows.Media.Imaging.BitmapImage"/> (null or unreadable bytes give null).
+/// </summary>
+public class PngBytesToImageSourceConverter : IValueConverter
+{
+    public object? Convert(object? value, Type targetType, object? parameter, CultureInfo culture)
+    {
+        if (value is not byte[] { Length: > 0 } bytes) return null;
+        try
+        {
+            var image = new System.Windows.Media.Imaging.BitmapImage();
+            image.BeginInit();
+            image.CacheOption = System.Windows.Media.Imaging.BitmapCacheOption.OnLoad;
+            image.StreamSource = new System.IO.MemoryStream(bytes, writable: false);
+            image.EndInit();
+            image.Freeze();
+            return image;
+        }
+        catch (Exception ex) when (ex is NotSupportedException or System.IO.IOException or ArgumentException
+            or InvalidOperationException or System.Runtime.InteropServices.COMException)
+        {
+            return null;
+        }
+    }
+
+    public object ConvertBack(object? value, Type targetType, object? parameter, CultureInfo culture)
+    {
+        throw new NotSupportedException();
+    }
+}
