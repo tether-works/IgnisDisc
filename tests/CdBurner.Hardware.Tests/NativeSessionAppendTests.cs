@@ -108,7 +108,8 @@ public sealed class NativeSessionAppendTests : IDisposable
     private static async Task<DataBurnResult> BurnSessionAsync(VirtualDiscRecorder recorder, IBurnEngineBackend engine,
         Dictionary<string, byte[]> files, bool closeDisc)
     {
-        var status = recorder.QueryMediaStatus();
+        // As the command line: the disc as the writing engine sees it (Windows calls an open DVD-RW overwrite-only).
+        var status = MediaStatusForWriting.Describe(engine, recorder);
         var root = !status.IsBlank && status.IsAppendable
             ? await MultiSessionManager.ImportFromRecorderAsync(recorder, engine)
             : CompilationDirectory.CreateRoot();
@@ -129,7 +130,9 @@ public sealed class NativeSessionAppendTests : IDisposable
         { DiscMediaType.CdR, 2 },
         { DiscMediaType.CdR, 3 },
         { DiscMediaType.DvdMinusR, 2 },
-        { DiscMediaType.DvdMinusR, 3 }
+        { DiscMediaType.DvdMinusR, 3 },
+        { DiscMediaType.DvdMinusRw, 2 },
+        { DiscMediaType.DvdMinusRw, 3 }
     };
 
     [Theory]
@@ -137,7 +140,12 @@ public sealed class NativeSessionAppendTests : IDisposable
     public async Task SessionsAdded_StartAtTheDrivesNextAddress_AndEveryFileReadsBackThroughTheLastSession(DiscMediaType type, int sessions)
     {
         var (engine, drives) = Engine();
-        using var medium = type == DiscMediaType.CdR ? VirtualDiscMedium.CreateBlankCdR700() : VirtualDiscMedium.CreateBlankDvdR47();
+        using var medium = type switch
+        {
+            DiscMediaType.CdR => VirtualDiscMedium.CreateBlankCdR700(),
+            DiscMediaType.DvdMinusRw => VirtualDiscMedium.CreateBlankDvdRw47(),
+            _ => VirtualDiscMedium.CreateBlankDvdR47()
+        };
         var recorder = Recorder(medium);
         var allFiles = new Dictionary<string, byte[]>();
         var starts = new List<int>();
@@ -145,7 +153,7 @@ public sealed class NativeSessionAppendTests : IDisposable
 
         for (int n = 1; n <= sessions; n++)
         {
-            int expectedStart = n == 1 ? 0 : recorder.QueryMediaStatus().NextWritableLba;
+            int expectedStart = n == 1 ? 0 : MediaStatusForWriting.Describe(engine, recorder).NextWritableLba;
             var files = SessionFiles(n);
             bool last = n == sessions;
             var result = await BurnSessionAsync(recorder, engine, files, closeDisc: last);
@@ -184,7 +192,7 @@ public sealed class NativeSessionAppendTests : IDisposable
                 ? end + CdRunOutSectors + (n == 2 ? CdGapAfterFirstSession : CdGapAfterLaterSessions)
                 : n == 2 ? Math.Max(end, DvdFirstSessionMinimumEnd) + DvdGapAfterFirstSession : end + DvdGapAfterLaterSessions;
             Assert.Equal(expected, starts[n - 1]);
-            if (type == DiscMediaType.DvdMinusR)
+            if (type is DiscMediaType.DvdMinusR or DiscMediaType.DvdMinusRw)
             {
                 Assert.Equal(0, starts[n - 1] % 16); // a DVD session starts on an ECC block
             }
@@ -219,8 +227,13 @@ public sealed class NativeSessionAppendTests : IDisposable
             }
         }
 
-        // One drive per burn, and each later one was asked for the invisible track before anything was written.
-        Assert.Equal(sessions, drives.Count);
+        // One drive per burn received writes. On a DVD-RW the engine also asked the drive how the disc stands before each
+        // later session (Windows calls it overwrite-only); those looks wrote nothing.
+        Assert.Equal(sessions, drives.Count(d => d.WriteCommandCount > 0));
+        if (type != DiscMediaType.DvdMinusRw)
+        {
+            Assert.Equal(sessions, drives.Count); // Windows' status is right for these: no extra look at the drive
+        }
     }
 
     [Fact]

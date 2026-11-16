@@ -47,7 +47,7 @@ public static class MultiSessionManager
         ArgumentNullException.ThrowIfNull(recorder);
         ArgumentNullException.ThrowIfNull(engine);
 
-        var status = recorder.QueryMediaStatus();
+        var status = MediaStatusForWriting.Describe(engine, recorder);
         if (!status.MediaPresent || status.IsBlank)
         {
             throw new InvalidOperationException("No recorded media present in the recorder to import from.");

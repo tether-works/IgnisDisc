@@ -59,7 +59,7 @@ public class VirtualBurnEngine : IBurnEngineBackend, ISecureAudioReader
             return BurnOperationResult.Failed("No media present in recorder.");
         }
 
-        bool overwriteOnly = medium.IsOverwriteOnly;
+        bool overwriteOnly = medium.IsOverwritable;
         if (medium.IsFinalized && !(overwriteOnly && options.OverwriteExistingData))
         {
             return BurnOperationResult.Failed("Mounted virtual medium is finalized and cannot be written.");
@@ -115,8 +115,11 @@ public class VirtualBurnEngine : IBurnEngineBackend, ISecureAudioReader
 
         // Windows' writer quick-formats a blank DVD-RW into restricted overwrite mode before writing, whether or not
         // the disc is to be closed (GP60NB50, Ritek DVD-RW, 2026-11-15): sessions can then never be added.
-        if (FormatsBlankDvdMinusRwForOverwrite && !options.Simulate && medium.MediaType == DiscMediaType.DvdMinusRw && medium.IsBlank)
+        if (FormatsBlankDvdMinusRwForOverwrite && !options.Simulate && medium.MediaType == DiscMediaType.DvdMinusRw
+            && (medium.IsBlank || (medium.IsOpenSequentialDvdRw && options.OverwriteExistingData)))
         {
+            // An open sequential DVD-RW is one Windows reports as overwrite-only; written over, it is assumed to be
+            // formatted the same way (not measured: the burn service refuses that disc without leave to replace).
             medium.InRestrictedOverwriteMode = true;
             overwriteOnly = true;
         }

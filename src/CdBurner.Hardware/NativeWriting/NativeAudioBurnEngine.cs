@@ -98,7 +98,9 @@ public sealed class NativeAudioBurnEngine : IBurnEngineBackend, IAudioDiscVerifi
                 DiscMediaType.CdR => NativeSaoAudioWriter.ProfileCdR,
                 DiscMediaType.CdRw => NativeSaoAudioWriter.ProfileCdRw,
                 DiscMediaType.DvdMinusR => NativeTaoDataWriter.ProfileDvdMinusR,
-                DiscMediaType.DvdMinusRw => NativeTaoDataWriter.ProfileDvdMinusRwSequential,
+                DiscMediaType.DvdMinusRw => medium.InRestrictedOverwriteMode
+                    ? NativeTaoDataWriter.ProfileDvdMinusRwRestricted
+                    : NativeTaoDataWriter.ProfileDvdMinusRwSequential,
                 DiscMediaType.DvdPlusR => NativeTaoDataWriter.ProfileDvdPlusR,
                 DiscMediaType.DvdMinusRDualLayer => NativeTaoDataWriter.ProfileDvdMinusRDualLayer,
                 DiscMediaType.DvdPlusRDualLayer => NativeTaoDataWriter.ProfileDvdPlusRDualLayer,
@@ -110,7 +112,7 @@ public sealed class NativeAudioBurnEngine : IBurnEngineBackend, IAudioDiscVerifi
             };
             drive.DiscStatus = medium.IsBlank ? 0 : medium.IsFinalized ? 2 : 1;
             bool sequential = medium.MediaType is DiscMediaType.CdR or DiscMediaType.CdRw or DiscMediaType.DvdMinusR
-                or DiscMediaType.DvdMinusRw or DiscMediaType.DvdPlusR;
+                or DiscMediaType.DvdPlusR || (medium.MediaType == DiscMediaType.DvdMinusRw && !medium.InRestrictedOverwriteMode);
             if (sequential && !medium.IsBlank && !medium.Raw2352Mode && medium.Sessions.Count > 0
                 && medium.Sessions.All(s => s.SectorCount > 0 && s.Tracks.All(t => !t.IsAudio)))
             {

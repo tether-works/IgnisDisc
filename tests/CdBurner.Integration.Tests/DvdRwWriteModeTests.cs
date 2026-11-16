@@ -4,6 +4,7 @@ using CdBurner.Core.Burning;
 using CdBurner.Core.Compilation;
 using CdBurner.Core.Iso;
 using CdBurner.Core.Primitives;
+using CdBurner.Hardware.NativeWriting;
 using CdBurner.Hardware.Simulation;
 using Xunit;
 
@@ -82,20 +83,47 @@ public sealed class DvdRwWriteModeTests
     }
 
     [Fact]
-    public async Task SequentialDvdRw_LeftOpen_StaysAppendable_WithNoWarning()
+    public async Task DvdRw_LeftOpenByDirectDriveCommands_IsOpenToThatWriter_AndOverwriteOnlyToWindows()
     {
-        // A writer that keeps the DVD-RW sequential (direct drive commands after a full erase).
-        byte[] iso = await BuildIsoAsync();
-        using var recorder = new VirtualDiscRecorder("RW-04", @"W:\");
-        recorder.InsertMedia(VirtualDiscMedium.CreateBlankDvdRw47());
-        var engine = new VirtualBurnEngine { FormatsBlankDvdMinusRwForOverwrite = false };
+        string logs = Path.Combine(Path.GetTempPath(), "IgnisDisc_DvdRw_" + Guid.NewGuid().ToString("N"));
+        try
+        {
+            using var recorder = new VirtualDiscRecorder("RW-04", @"W:\");
+            recorder.InsertMedia(VirtualDiscMedium.CreateBlankDvdRw47());
+            var direct = new NativeDataBurnEngine(logDirectory: logs);
 
-        var result = await new DataBurnService(engine).BurnStreamAsync(recorder, new MemoryStream(iso), new DataBurnOptions { CloseDisc = false });
+            var root = CompilationDirectory.CreateRoot();
+            root.AddFile("FIRST.DAT", new byte[50_000]);
+            var first = await new DataBurnService(direct).BurnCompilationAsync(recorder, root,
+                new DataBurnOptions { CloseDisc = false }, new IsoBuildOptions(VolumeLabel: "DVDRW", IncludeUdf: false));
 
-        Assert.True(result.Success, result.ErrorMessage);
-        Assert.Null(result.Warning);
-        var status = recorder.QueryMediaStatus();
-        Assert.False(status.IsOverwriteOnly);
-        Assert.True(status.IsAppendable);
+            Assert.True(first.Success, first.ErrorMessage);
+            Assert.Null(direct.LastFallbackReason);
+            Assert.Null(first.Warning); // left open as asked: no "formatted for overwriting" note
+
+            // Windows' view, as measured on the real drive: overwrite-only, nothing to append to.
+            var windows = recorder.QueryMediaStatus();
+            Assert.True(windows.IsOverwriteOnly);
+            Assert.False(windows.IsAppendable);
+            Assert.Equal(0, windows.NextWritableLba);
+
+            // The direct writer asks the drive: sequential, open, with the next session's address.
+            var forDirect = MediaStatusForWriting.Describe(direct, recorder);
+            Assert.False(forDirect.IsOverwriteOnly);
+            Assert.True(forDirect.IsAppendable);
+            Assert.Equal(recorder.CurrentMedium!.NextWritableLba, forDirect.NextWritableLba);
+            Assert.True(forDirect.NextWritableLba > 0);
+
+            // Through the Windows writer the same burn would write the disc over, so without leave it is refused.
+            byte[] iso = await BuildIsoAsync();
+            var viaWindows = await new DataBurnService(new VirtualBurnEngine()).BurnStreamAsync(recorder, new MemoryStream(iso));
+            Assert.False(viaWindows.Success);
+            Assert.Equal(DataBurnService.ReplaceExistingDataMessage, viaWindows.ErrorMessage);
+            Assert.Single(recorder.CurrentMedium.Sessions);
+        }
+        finally
+        {
+            try { Directory.Delete(logs, recursive: true); } catch { }
+        }
     }
 }

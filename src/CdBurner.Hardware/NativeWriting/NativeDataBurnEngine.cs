@@ -14,7 +14,7 @@ namespace CdBurner.Hardware.NativeWriting;
 /// writer (<see cref="LastFallbackReason"/> says so). Reading (the read-back check), erasing and audio go to the Windows
 /// engine. Every direct run saves a full SCSI command log.
 /// </summary>
-public sealed class NativeDataBurnEngine : IBurnEngineBackend
+public sealed class NativeDataBurnEngine : IBurnEngineBackend, IWriterMediaStatus
 {
     private readonly IBurnEngineBackend _fallback;
     private readonly string _logDirectory;
@@ -64,8 +64,8 @@ public sealed class NativeDataBurnEngine : IBurnEngineBackend
         // A disc that already holds a session is never erased here: DataBurnService built the image to follow that
         // session (its file system points past it), so it is written as a new session at the disc's next writable
         // address, which the writer checks against the drive's own before anything is written.
-        var status = recorder.QueryMediaStatus();
-        bool appending = !status.IsBlank && !status.IsOverwriteOnly && status.IsAppendable && status.NextWritableLba > 0;
+        var status = DescribeForWriting(recorder, recorder.QueryMediaStatus());
+        bool appending =!status.IsBlank && !status.IsOverwriteOnly && status.IsAppendable && status.NextWritableLba > 0;
         string? reason = !imageStream.CanSeek
             ? "the image is not a seekable file"
             : status.MediaType is DiscMediaType.BdRDualLayer or DiscMediaType.BdReDualLayer or DiscMediaType.BdxlRTripleLayer
@@ -118,6 +118,54 @@ public sealed class NativeDataBurnEngine : IBurnEngineBackend
             message += $" Command log: {LastLogPath}";
         }
         return result.Cancelled ? BurnOperationResult.CancelledResult(message) : BurnOperationResult.Failed(message);
+    }
+
+    /// <summary>
+    /// Windows calls a used DVD-RW overwrite-only even when it is a sequential disc left open for another session, which
+    /// this writer can add. For that one case the drive is asked directly (read-only commands, no exclusive access);
+    /// every other disc, and any failure to ask, keeps Windows' answer, under which nothing is appended.
+    /// </summary>
+    public MediaStatusDto DescribeForWriting(IDiscRecorderBackend recorder, MediaStatusDto windowsStatus)
+    {
+        ArgumentNullException.ThrowIfNull(recorder);
+        ArgumentNullException.ThrowIfNull(windowsStatus);
+        if (windowsStatus.MediaType != DiscMediaType.DvdMinusRw || !windowsStatus.MediaPresent || windowsStatus.IsBlank
+            || !windowsStatus.IsOverwriteOnly)
+        {
+            return windowsStatus;
+        }
+
+        IScsiTransport? device = null;
+        try
+        {
+            if (recorder is VirtualDiscRecorder virtualRecorder)
+            {
+                var drive = NativeAudioBurnEngine.CreateVirtualDrive(virtualRecorder);
+                ConfigureVirtualDrive?.Invoke(drive);
+                device = drive;
+            }
+            else if (OperatingSystem.IsWindows())
+            {
+                device = Win32ScsiTransport.Open(NativeAudioBurnEngine.DevicePathFor(recorder));
+            }
+            else
+            {
+                return windowsStatus;
+            }
+
+            var open = new NativeTaoDataWriter(device).ReadOpenSequentialDvdRw();
+            return open is { } target
+                ? windowsStatus.AsOpenForAnotherSession(target.NextWritableLba, (int)Math.Min(int.MaxValue, target.FreeBlocks), target.SessionsOnDisc)
+                : windowsStatus;
+        }
+        catch (Exception ex) when (ex is System.ComponentModel.Win32Exception or IOException or UnauthorizedAccessException)
+        {
+            return windowsStatus;
+        }
+        finally
+        {
+            (device as IDisposable)?.Dispose();
+        }
     }
 
     private NativeDataWriteResult Run(IDiscRecorderBackend recorder, NativeDataWriteRequest request, IProgress<BurnProgressSnapshot>? progress, CancellationToken ct)
@@ -232,7 +280,7 @@ public sealed class NativeDataBurnEngine : IBurnEngineBackend
     private static void CommitToVirtualMedium(VirtualDiscMedium medium, VirtualMmcDrive drive, byte[] firstSessionImage)
     {
         medium.Raw2352Mode = false;
-        bool overwriteOnly = medium.MediaType is DiscMediaType.DvdPlusRw or DiscMediaType.DvdRam or DiscMediaType.BdRe;
+        bool overwriteOnly = medium.IsOverwritable;
         int start = 0;
         byte[] data = firstSessionImage;
         if (overwriteOnly)

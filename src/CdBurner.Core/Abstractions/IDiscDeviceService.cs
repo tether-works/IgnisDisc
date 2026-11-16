@@ -210,6 +210,31 @@ public class MediaStatusDto
     public bool IsMDisc => MDiscIdentifier.IsMDisc(MediaManufacturerId);
     public int LastRecordedLba { get; init; }
     public int NextWritableLba { get; init; } = -1;
+
+    /// <summary>
+    /// The same disc, open for another session at <paramref name="nextWritableLba"/>: for a writer that read the drive
+    /// itself and found the disc open where Windows' status says otherwise (see <see cref="IWriterMediaStatus"/>).
+    /// </summary>
+    public MediaStatusDto AsOpenForAnotherSession(int nextWritableLba, int freeSectors, int sessionCount) => new()
+    {
+        MediaType = MediaType,
+        MediaPresent = MediaPresent,
+        IsBlank = false,
+        IsRewritable = IsRewritable,
+        IsAppendable = true,
+        IsOverwriteOnly = false,
+        IsLoading = false,
+        TotalSectors = TotalSectors,
+        FreeSectors = freeSectors,
+        UsedSectors = UsedSectors,
+        TotalCapacityBytes = TotalCapacityBytes,
+        FreeCapacityBytes = (long)freeSectors * OpticalConstants.DataSectorSize,
+        SessionCount = sessionCount,
+        MediaManufacturerId = MediaManufacturerId,
+        LastRecordedLba = LastRecordedLba,
+        NextWritableLba = nextWritableLba,
+        BookType = BookType
+    };
     public DvdBookType? BookType { get; init; }
 }
 

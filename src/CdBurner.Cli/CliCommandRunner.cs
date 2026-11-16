@@ -833,7 +833,8 @@ public static partial class CliCommandRunner
         }
 
         var recorder = FindRecorder(deviceService, driveId);
-        var mediaStatus = recorder.QueryMediaStatus();
+        // As the writer that will burn sees the disc: direct writing finds an open DVD-RW that Windows calls overwrite-only.
+        var mediaStatus = MediaStatusForWriting.Describe(nativeEngine ?? burnEngine, recorder);
         if (explicitAppend)
         {
             if (!mediaStatus.MediaPresent)
@@ -859,7 +860,7 @@ public static partial class CliCommandRunner
         {
             try
             {
-                root = await MultiSessionManager.ImportFromRecorderAsync(recorder, burnEngine).ConfigureAwait(false);
+                root = await MultiSessionManager.ImportFromRecorderAsync(recorder, nativeEngine ?? burnEngine).ConfigureAwait(false);
             }
             catch (Exception ex) when (ex is not OperationCanceledException && !explicitAppend)
             {

@@ -293,7 +293,8 @@ public class VirtualDiscRecorder : IDiscRecorderBackend, IAudioSubChannelProvide
                 SessionCount = m.Sessions.Count,
                 MediaManufacturerId = "VIRTUAL-OPTICAL-01",
                 LastRecordedLba = m.LastRecordedLba,
-                NextWritableLba = m.NextWritableLba,
+                // As ImapiDiscRecorder: an overwrite-only disc is written from sector 0.
+                NextWritableLba = m.IsOverwriteOnly && !m.IsBlank ? 0 : m.NextWritableLba,
                 BookType = m.BookType
             };
         }

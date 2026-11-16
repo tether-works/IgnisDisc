@@ -87,8 +87,18 @@ public class VirtualDiscMedium : IDisposable, IBookTypeTarget
     public bool InRestrictedOverwriteMode { get; set; }
 
     /// <summary>Media written over from sector 0 instead of appended to: DVD+RW, DVD-RAM, BD-RE, restricted-overwrite DVD-RW.</summary>
-    public bool IsOverwriteOnly => MediaType is DiscMediaType.DvdPlusRw or DiscMediaType.DvdRam or DiscMediaType.BdRe
+    public bool IsOverwritable => MediaType is DiscMediaType.DvdPlusRw or DiscMediaType.DvdRam or DiscMediaType.BdRe
         || (MediaType == DiscMediaType.DvdMinusRw && InRestrictedOverwriteMode);
+
+    /// <summary>A sequential DVD-RW holding data and still open for another session.</summary>
+    public bool IsOpenSequentialDvdRw => MediaType == DiscMediaType.DvdMinusRw && !InRestrictedOverwriteMode && !IsBlank && !IsFinalized;
+
+    /// <summary>
+    /// What Windows' media status reports: the overwritable media, and also an open sequential DVD-RW, which Windows
+    /// calls overwrite-only with no next writable address although the drive reports it open (GP60NB50, Ritek DVD-RW,
+    /// 2026-11-15). A closed sequential DVD-RW reads as finalized.
+    /// </summary>
+    public bool IsOverwriteOnly => IsOverwritable || IsOpenSequentialDvdRw;
 
     /// <summary>
     /// Indicates whether the disc has been closed/finalized, prohibiting further multi-session appending.

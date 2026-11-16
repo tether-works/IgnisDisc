@@ -82,6 +82,9 @@ public class DataBurnService
             return DataBurnResult.Failed(MediaStatusWait.StillLoadingMessage);
         }
 
+        // The engine that writes may read the disc itself (a DVD-RW Windows calls overwrite-only can be open).
+        mediaStatus = MediaStatusForWriting.Describe(_burnEngine, recorder, mediaStatus);
+
         if (!mediaStatus.IsBlank && !mediaStatus.IsAppendable && !mediaStatus.IsRewritable)
         {
             return DataBurnResult.Failed("Mounted media is not writable (disc is finalized or not appendable).");
@@ -288,6 +291,9 @@ public class DataBurnService
             return DataBurnResult.Failed(MediaStatusWait.StillLoadingMessage);
         }
 
+        // The engine that writes may read the disc itself (a DVD-RW Windows calls overwrite-only can be open).
+        mediaStatus = MediaStatusForWriting.Describe(_burnEngine, recorder, mediaStatus);
+
         if (!mediaStatus.IsBlank && !mediaStatus.IsAppendable && !mediaStatus.IsRewritable)
         {
             return DataBurnResult.Failed("Mounted media is not writable (disc is finalized or not appendable).");
@@ -323,7 +329,7 @@ public class DataBurnService
         bool ejectRequested = burnOptions.EjectWhenDone || burnOptions.EjectAfterBurn;
         bool verifyRequested = burnOptions.VerifyAfterBurn;
         long initialStreamPosition = imageStream.CanSeek ? imageStream.Position : 0;
-        var preBurnStatus = recorder.QueryMediaStatus();
+        var preBurnStatus = MediaStatusForWriting.Describe(_burnEngine, recorder);
         if (preBurnStatus.HasDataThatBurningReplaces && !burnOptions.OverwriteExistingData)
         {
             return DataBurnResult.Failed(ReplaceExistingDataMessage);
@@ -375,7 +381,7 @@ public class DataBurnService
         // restricted overwrite mode before writing (measured on a real drive), so it never holds a second session.
         string? leftOpenNote = null;
         if (!burnOptions.CloseDisc && !burnOptions.Simulate && !preBurnStatus.IsOverwriteOnly
-            && recorder.QueryMediaStatus().IsOverwriteOnly)
+            && MediaStatusForWriting.Describe(_burnEngine, recorder).IsOverwriteOnly)
         {
             leftOpenNote = NotLeftOpenMessage;
         }

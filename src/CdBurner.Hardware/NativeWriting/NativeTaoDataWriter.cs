@@ -729,6 +729,36 @@ public sealed partial class NativeTaoDataWriter
     /// <summary>True when the drive reports a blank disc. Sends no write command.</summary>
     public bool DiscReadsBlank() => ReadDiscInformation() is { Status: 0 };
 
+    /// <summary>Where the next session of an open sequential DVD-RW goes, as the drive reports it.</summary>
+    public readonly record struct OpenDiscTarget(int NextWritableLba, long FreeBlocks, int SessionsOnDisc);
+
+    /// <summary>
+    /// The drive's own answer for a DVD-RW that may be open for another session: the current profile is sequential
+    /// (0014h), the disc is open (status 1) with an empty last session, and the empty track there has a valid next
+    /// writable address. Null for anything else, including a disc in restricted overwrite mode. Read-only: GET
+    /// CONFIGURATION, READ DISC INFORMATION, READ TRACK INFORMATION. Needed because Windows' media status calls such a
+    /// disc overwrite-only, with no next writable address (GP60NB50, Ritek DVD-RW, 2026-11-15).
+    /// </summary>
+    public OpenDiscTarget? ReadOpenSequentialDvdRw()
+    {
+        try
+        {
+            if (ReadTrackAtOnceFeature().Profile != ProfileDvdMinusRwSequential
+                || ReadDiscInformation() is not { Status: 1, LastSessionState: 0 }
+                || ReadInvisibleTrackInformation() is not { NextWritableAddressValid: true, Blank: true } track
+                || track.NextWritableAddress <= 0)
+            {
+                return null;
+            }
+            int session = track.SessionNumber > 0 ? track.SessionNumber : track.TrackNumber;
+            return new OpenDiscTarget(track.NextWritableAddress, track.FreeBlocks, Math.Max(1, session - 1));
+        }
+        catch (WriteStop)
+        {
+            return null; // the drive did not answer GET CONFIGURATION
+        }
+    }
+
     /// <summary>
     /// True when the disc is ready for the write <paramref name="request"/> describes: blank, or for a new session open
     /// with its next writable address where the image starts. Sends no write command.
