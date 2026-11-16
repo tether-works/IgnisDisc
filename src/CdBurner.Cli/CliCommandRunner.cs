@@ -52,7 +52,7 @@ public static partial class CliCommandRunner
         "lookup", "keep-wav", "continue-on-error", "verify-accuraterip", "verify-ctdb", "secure", "plan-only",
         "overwrite", "strict-verify", "no-verify", "no-secure", "allow-damaged", "no-fill", "keep-folders",
         "generate-subtitles", "no-menu", "dual-layer", "fit-to-disc", "no-ffmpeg", "no-cd-text", "normalize", "peak-normalize", "rms-level",
-        "no-burnfree", "append", "delete-backups", "confirm-shutdown", "windows-writer"
+        "no-burnfree", "append", "delete-backups", "confirm-shutdown", "windows-writer", "no-interleave"
     };
 
     private static void WriteJsonResult(TextWriter stdout, object payload)
@@ -231,6 +231,7 @@ public static partial class CliCommandRunner
             "book-type" or "booktype" => HandleBookTypeCommand(cmd, stdout, stderr, deviceService),
             "repair-par2" or "repairpar2" => await HandleRepairPar2Async(cmd, stdout, stderr).ConfigureAwait(false),
             "rosetta" or "rosetta-ladder" or "rosettaladder" => HandleRosettaCommand(cmd, stdout, stderr),
+            "disc-art" or "discart" => HandleDiscArtCommand(cmd, stdout, stderr),
             _ => throw new CommandLineException($"Unknown command '{cmd.Subcommand}'. Use --help for usage information.")
         };
     }
@@ -3378,6 +3379,10 @@ public static partial class CliCommandRunner
         stdout.WriteLine("      Verifies and repairs a folder in place from its PAR2 recovery set (keeps backup files unless --delete-backups).");
         stdout.WriteLine("  rosetta ladder --media dvd --output <file.iso> [--json-output <file.json>] [--disc-preset <id>] [--start-angle <deg>] [--plan-only] [--json]");
         stdout.WriteLine("      Generates a DVD-R optical resolution-ladder image (250x375 down to 13x17 um across inner, middle, and outer radii) plus a JSON manifest of rung positions.");
+        stdout.WriteLine("  disc-art calibrate target --media cd|dvd|bd --stage coarse|boundary|fine --output <file> [--disc-preset <id>] [--drive-model <text> --media-id <text>] [--overwrite] [--json]");
+        stdout.WriteLine("      Writes a calibration target to burn (CD: .wav/.raw, DVD/BD: .iso) and its calibration record.");
+        stdout.WriteLine("  disc-art calibrate fit --points <record.calibration.json> [--candidate <n>] [--drive-model <text> --media-id <text>] [--json]");
+        stdout.WriteLine("      Fits the points measured on a photo of the burned target and can save the result per drive model and media ID.");
         stdout.WriteLine();
         stdout.WriteLine("General Options:");
         stdout.WriteLine("  --help, -h       Show help information.");
@@ -3517,6 +3522,41 @@ public static partial class CliCommandRunner
             stdout.WriteLine("      Reads or updates DVD+R / DVD+RW / DVD+R DL book-type bitsetting.");
             stdout.WriteLine("  repair-par2 --path <folder> [--par2 <path>] [--delete-backups] [--json]");
             stdout.WriteLine("      Verifies and repairs a folder from its PAR2 recovery set (retains backup files unless --delete-backups).");
+            return;
+        }
+        if (string.Equals(subcommand, "disc-art", StringComparison.OrdinalIgnoreCase) ||
+            string.Equals(subcommand, "discart", StringComparison.OrdinalIgnoreCase))
+        {
+            stdout.WriteLine(LegalBanner.VersionNotice);
+            stdout.WriteLine();
+            stdout.WriteLine("  disc-art calibrate target --media cd|dvd|bd --stage coarse|boundary|fine --output <file> [options] [--json]");
+            stdout.WriteLine("      Writes a calibration target to burn and, next to it, its calibration record (<name>.calibration.json).");
+            stdout.WriteLine("      The stages are burned in this order: coarse (three wide bands), boundary (wavy light/dark edge), fine (cross).");
+            stdout.WriteLine("      --media cd|dvd|bd          Disc type. CD output is .wav (with a CUE sheet) or .raw; DVD and BD output is .iso.");
+            stdout.WriteLine("      --stage <name>             coarse, boundary or fine.");
+            stdout.WriteLine("      --output, --out <path>     Target file. A full-size DVD or BD target is as large as the disc.");
+            stdout.WriteLine("      --disc-preset <id>         Start values (default cd-80, dvd-5-120mm, bd-r-sl-25gb).");
+            stdout.WriteLine("      --disc-presets-file <p>    Optional user presets JSON file to merge.");
+            stdout.WriteLine("      --drive-model <text> --media-id <text>");
+            stdout.WriteLine("                                 Start from the calibration saved for this drive and blank disc, if there is one.");
+            stdout.WriteLine("      --inner-radius-mm, --outer-radius-mm, --sectors, --pitch-linear, --pitch-quadratic, --pitch-cubic <n>");
+            stdout.WriteLine("                                 Replace single start values.");
+            stdout.WriteLine("      --no-interleave            CD only: write the track without the CD-DA delay interleave.");
+            stdout.WriteLine("      --store <file>             Calibration store to read (default %APPDATA%\\IgnisDisc\\disc-calibrations.json).");
+            stdout.WriteLine("      --overwrite                Replace existing output files.");
+            stdout.WriteLine();
+            stdout.WriteLine("  disc-art calibrate fit --points <record.calibration.json> [--candidate <n>] [--drive-model <text> --media-id <text>] [--store <file>] [--json]");
+            stdout.WriteLine("      Fits the measurement points in a calibration record: band edges (coarse), boundary points (boundary) or");
+            stdout.WriteLine("      points along one arm of the cross (fine). Points are millimetres from the disc centre on the rectified photo.");
+            stdout.WriteLine("      The angle marks of a coarse target are not read; a coarse record gives the wide-band radii.");
+            stdout.WriteLine("      --points <path>            Calibration record with the measured points in its photo section.");
+            stdout.WriteLine("      --candidate <n>            Apply candidate n. Needed when the fitter flags the fit; a clean fit applies candidate 1.");
+            stdout.WriteLine("      --drive-model <text> --media-id <text>");
+            stdout.WriteLine("                                 Save the applied result for this drive model and media ID (ATIP/ADIP manufacturer code).");
+            stdout.WriteLine("      --store <file>             Calibration store to write (default %APPDATA%\\IgnisDisc\\disc-calibrations.json).");
+            stdout.WriteLine();
+            stdout.WriteLine("  disc-art calibrate list [--store <file>] [--json]");
+            stdout.WriteLine("      Lists the saved calibrations.");
             return;
         }
         if (string.Equals(subcommand, "rosetta", StringComparison.OrdinalIgnoreCase) ||

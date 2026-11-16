@@ -2,10 +2,11 @@
 // Copyright (c) 2026 Disc Image Studio contributors
 // Ported to IgnisDisc from DiscImageStudio src/DvdImageSolver/Solver/FastDispersionImageWriter.cs at commit 619ec7505ac8955f35fe2f353ebda74b6ea90dda:
 // https://github.com/JiaFeiMiao-K-Cat/DiscImageStudio/blob/619ec7505ac8955f35fe2f353ebda74b6ea90dda/src/DvdImageSolver/Solver/FastDispersionImageWriter.cs
-// IgnisDisc change: namespace; calibration reference targets and the legacy bridge-9b-v1 rule are not ported. See THIRD-PARTY-NOTICES.md.
+// IgnisDisc change: namespace; the legacy bridge-9b-v1 rule is not ported. See THIRD-PARTY-NOTICES.md.
 
 using System.Diagnostics;
 using System.Runtime.Intrinsics;
+using CdBurner.Lithography.Calibration;
 using CdBurner.Lithography.Dvd.Encoding;
 
 namespace CdBurner.Lithography.Dvd.Solver;
@@ -141,6 +142,22 @@ public static class FastDispersionImageWriter
         ValidateStream(output, options);
         RasterImage image = RasterImage.Load(imagePath);
         PayloadImageSampler sampler = new(image, options.ImageMapping);
+        return WriteSampledStream(sampler, output, options, progress, cancellationToken);
+    }
+
+    /// <summary>Uses the frozen reference image with its original bilinear sampling
+    /// and drawing-annulus clipping, including targets loaded from older sessions.</summary>
+    public static FastDvdStreamSummary WriteCalibrationReferenceStream(
+        CalibrationTarget target, Stream output, MultiBlockSolveOptions options,
+        Action<FastDvdStreamProgress>? progress = null, CancellationToken cancellationToken = default)
+    {
+        ArgumentNullException.ThrowIfNull(target);
+        ArgumentNullException.ThrowIfNull(options);
+        if (!target.UsesReferencePattern || target.Parameters.Kind != CalibrationDiscKind.Dvd
+            || target.Parameters.Sectors != options.ImageMapping.TotalSectors)
+            throw new ArgumentException("The reference target and output must describe the same DVD sector capacity.", nameof(target));
+        ValidateStream(output, options);
+        PayloadImageSampler sampler = new(target, options.ImageMapping, options.UseSampleReuse);
         return WriteSampledStream(sampler, output, options, progress, cancellationToken);
     }
 
@@ -538,6 +555,7 @@ public static class FastDispersionImageWriter
     private sealed class PayloadImageSampler
     {
         private readonly RasterImage? _image;
+        private readonly CalibrationReferenceImageSampler? _referenceImage;
         private readonly Func<double, double, byte>? _sampleGray;
         private readonly Func<DvdCodewordSample, byte>? _sampleCodeword;
         private readonly Func<DvdCodewordSample, byte>? _sampleScrambledCodeword;
@@ -559,12 +577,21 @@ public static class FastDispersionImageWriter
             && !_spiral.IsConstantPitch;
 
         internal bool SupportsSampleReuse => _supportsReuseGeometry
-            && _image is not null;
+            && (_referenceImage is not null || _image is not null);
 
         internal PayloadImageSampler(RasterImage image, ImageMappingOptions options)
             : this(options)
         {
             _image = image;
+        }
+
+        internal PayloadImageSampler(CalibrationTarget target, ImageMappingOptions options, bool useSampleReuse)
+            : this(options)
+        {
+            // Disabling reuse preserves the original procedural oracle as well
+            // as its exact scalar-trig/coordinate and callback arithmetic.
+            if (useSampleReuse) _referenceImage = new(target);
+            else _sampleGray = target.Sample;
         }
 
         internal PayloadImageSampler(Func<double, double, byte> sampleGray, ImageMappingOptions options)
@@ -616,8 +643,11 @@ public static class FastDispersionImageWriter
             bool stable;
             PixelSample sample;
             SampleRectangle region;
-            stable = _image!.TryGetStableRegion(x, y, _options.SamplingOuterRadiusMm,
-                preserveDiscreteGrayscale: true, out sample, out region);
+            if (_referenceImage is not null)
+                stable = _referenceImage.TryGetStableRegion(x, y, out sample, out region);
+            else
+                stable = _image!.TryGetStableRegion(x, y, _options.SamplingOuterRadiusMm,
+                    preserveDiscreteGrayscale: true, out sample, out region);
             reusableUntil = globalChannelBit;
             if (!stable)
                 return SampleRasterPoint(x, y);
@@ -649,8 +679,9 @@ public static class FastDispersionImageWriter
         internal PayloadTarget MapSample(PixelSample sample, long toneIndex)
             => new(ScrambledForLuminance(sample.Luminance, toneIndex), sample.Alpha);
 
-        private PixelSample SampleRasterPoint(double x, double y)
-            => _image!.SampleDisc(x, y, _options.SamplingOuterRadiusMm, preserveDiscreteGrayscale: true);
+        private PixelSample SampleRasterPoint(double x, double y) => _referenceImage is not null
+            ? _referenceImage.SampleDisc(x, y)
+            : _image!.SampleDisc(x, y, _options.SamplingOuterRadiusMm, preserveDiscreteGrayscale: true);
 
         internal PayloadTarget SampleGlobalChannelBit(ulong globalChannelBit, long toneIndex)
         {

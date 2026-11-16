@@ -2,12 +2,12 @@
 // Copyright (c) 2026 Disc Image Studio contributors
 // Ported to IgnisDisc from DiscImageStudio src/DiscImageStudio.Cd/CdTrackGenerator.cs at commit 619ec7505ac8955f35fe2f353ebda74b6ea90dda:
 // https://github.com/JiaFeiMiao-K-Cat/DiscImageStudio/blob/619ec7505ac8955f35fe2f353ebda74b6ea90dda/src/DiscImageStudio.Cd/CdTrackGenerator.cs
-// IgnisDisc changes: namespace; no JSON sidecar next to the track (upstream CdTrackMetadata); the calibration-target
-// overloads are left out; GenerateToStream also takes an in-memory BGRA raster; the read-back preview also renders
+// IgnisDisc changes: namespace; no JSON sidecar next to the track (upstream CdTrackMetadata); GenerateToStream also takes an in-memory BGRA raster; the read-back preview also renders
 // from a seekable stream (sectors read from a disc) and returns the pixels (RenderTrack); PNG output goes through
 // Imaging/PngRaster.cs. Generation and read-back arithmetic are unchanged. See THIRD-PARTY-NOTICES.md.
 
 using System.Diagnostics;
+using CdBurner.Lithography.Calibration;
 using CdBurner.Lithography.Imaging;
 
 namespace CdBurner.Lithography.Cd;
@@ -164,6 +164,120 @@ public static class CdTrackGenerator
             (tone ?? ToneProfile.LegacyBinary).Normalized(),
             useSimdSampling && sampler.SupportsSimd ? sampler.SampleFour : null,
             useParallelSampling);
+    }
+
+    /// <summary>
+    /// Generates a calibration track directly from an analytic grayscale pattern.
+    /// Coordinates are millimetres from the disc centre, with x right and y down.
+    /// </summary>
+    public static CdGenerationSummary GeneratePattern(
+        Func<double, double, byte> sampleGray,
+        string outputPath,
+        CdDiscParameters parameters,
+        bool interleave,
+        Action<CdProgress>? progress = null,
+        CancellationToken cancellationToken = default,
+        bool useSimdSampling = true)
+    {
+        ArgumentNullException.ThrowIfNull(sampleGray);
+        return WritePatternFile(outputPath, parameters, cancellationToken,
+            (file, path, order) => GeneratePatternToStream(sampleGray, file, parameters, interleave,
+                progress, cancellationToken, path, order, useSimdSampling));
+    }
+
+    public static CdGenerationSummary GeneratePattern(CalibrationTarget target, string outputPath, bool interleave,
+        Action<CdProgress>? progress = null, CancellationToken cancellationToken = default,
+        bool useParallelSampling = true)
+    {
+        var parameters = CdDiscParameters.FromCalibration(target);
+        return WritePatternFile(outputPath, parameters, cancellationToken,
+            (file, path, order) => GeneratePatternToStream(target, file, interleave, progress, cancellationToken, path, order,
+                useParallelSampling));
+    }
+
+    private static CdGenerationSummary WritePatternFile(string outputPath, CdDiscParameters parameters,
+        CancellationToken cancellationToken, Func<Stream, string, CdAudioByteOrder, CdGenerationSummary> write)
+    {
+        parameters.Validate();
+        string outputFullPath = Path.GetFullPath(outputPath);
+        string extension = Path.GetExtension(outputFullPath);
+        bool wave = extension.Equals(".wav", StringComparison.OrdinalIgnoreCase);
+        if (!wave && !extension.Equals(".raw", StringComparison.OrdinalIgnoreCase))
+        {
+            throw new ArgumentException("CD output must be .wav (PCM audio + CUE) or .raw (big-endian cdrecord audio).", nameof(outputPath));
+        }
+
+        if (wave)
+        {
+            CdWaveFile.ValidateLength(parameters.TotalBytes);
+        }
+
+        cancellationToken.ThrowIfCancellationRequested();
+        EnsureParentDirectory(outputFullPath);
+        using FileStream file = new(
+            outputFullPath,
+            FileMode.Create,
+            FileAccess.Write,
+            FileShare.None,
+            bufferSize: 1024 * 1024,
+            FileOptions.SequentialScan);
+        if (wave)
+        {
+            CdWaveFile.WriteHeader(file, parameters.TotalBytes);
+        }
+
+        CdGenerationSummary summary = write(file, outputFullPath,
+            wave ? CdAudioByteOrder.LittleEndian : CdAudioByteOrder.BigEndian);
+        return wave ? summary with { CueSheetPath = CdWaveFile.WriteCue(outputFullPath) } : summary;
+    }
+
+    /// <summary>Fixed-address calibration marks use the logical CD-DA byte before interleaving or endian conversion.</summary>
+    public static CdGenerationSummary GeneratePatternToStream(CalibrationTarget target, Stream output, bool interleave,
+        Action<CdProgress>? progress = null, CancellationToken cancellationToken = default,
+        string outputDescription = "direct-burn-stream", CdAudioByteOrder audioByteOrder = CdAudioByteOrder.BigEndian,
+        bool useParallelSampling = true, long? usableSectors = null)
+    {
+        var parameters = CdDiscParameters.FromCalibration(target);
+        if (usableSectors.HasValue) parameters = parameters with { UsableSectors = usableSectors };
+        ArgumentNullException.ThrowIfNull(output);
+        if (!output.CanWrite)
+            throw new ArgumentException("CD output stream must be writable.", nameof(output));
+        CdAudioSamples.Validate(audioByteOrder);
+        parameters.Validate();
+        cancellationToken.ThrowIfCancellationRequested();
+        if (!target.HasClockRuler && !target.HasWideAddressBands)
+        {
+            // Explicit targets own frozen built-in artwork. Arbitrary Func
+            // overloads retain their original sequential callback semantics.
+            CdImageSampler sampler = target.UsesReferencePattern
+                ? new(target, parameters) : new(target.Sample, parameters);
+            return GenerateSamplesToStream(sampler.Sample, "calibration", output, parameters, interleave, progress,
+                cancellationToken, outputDescription, audioByteOrder, ToneProfile.LegacyBinary,
+                sampler.SupportsSimd ? sampler.SampleFour : null, useParallelSampling);
+        }
+        Func<long, byte> sample = target.HasWideAddressBands ? WideBandSampler(target, parameters.GeometryBytes)
+            : new CdClockRulerSampler(parameters.GeometryBytes).SampleGray;
+        return GenerateSamplesToStream(sample, "calibration", output, parameters, interleave, progress,
+            cancellationToken, outputDescription, audioByteOrder, ToneProfile.LegacyBinary);
+    }
+
+    private static Func<long, byte> WideBandSampler(CalibrationTarget target, long totalBytes)
+    {
+        var ranges = target.WideAddressBands.Select(band => band.ByteRange(totalBytes)).ToArray();
+        var changes = target.HasAngleSweep ? new CalibrationAngleSweepSampler(target).Switches
+            .Select(s => (Position: (long)Math.Ceiling(s.Progress * totalBytes), s.Luminance)).ToArray() : [];
+        // One cursor per job. GenerateSamplesToStream visits every logical byte in order.
+        int next = 0;
+        int nextChange = 0;
+        byte? marker = null;
+        return position =>
+        {
+            while (nextChange < changes.Length && position >= changes[nextChange].Position)
+                marker = changes[nextChange++].Luminance;
+            if (marker.HasValue) return marker.Value;
+            while (next < ranges.Length && position >= ranges[next].EndExclusive) next++;
+            return next < ranges.Length && position >= ranges[next].Start ? (byte)0 : (byte)255;
+        };
     }
 
     /// <summary>

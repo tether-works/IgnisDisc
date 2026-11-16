@@ -3,16 +3,25 @@
 // Ported to IgnisDisc from DiscImageStudio src/DiscImageStudio.Cd/RasterImage.cs at commit 619ec7505ac8955f35fe2f353ebda74b6ea90dda:
 // https://github.com/JiaFeiMiao-K-Cat/DiscImageStudio/blob/619ec7505ac8955f35fe2f353ebda74b6ea90dda/src/DiscImageStudio.Cd/RasterImage.cs
 // IgnisDisc changes: namespace; pictures are decoded by IgnisDisc's own PNG reader (Imaging/PngRaster.cs) instead of
-// upstream's ImageIO project, and can also be passed in as a BGRA raster; the calibration reference artwork is left
-// out. See THIRD-PARTY-NOTICES.md.
+// upstream's ImageIO project, and can also be passed in as a BGRA raster. See THIRD-PARTY-NOTICES.md.
 
+using CdBurner.Lithography.Calibration;
 using CdBurner.Lithography.Imaging;
 
 namespace CdBurner.Lithography.Cd;
 
 internal sealed class RasterImage
 {
+    private static readonly Lazy<RasterImage> Reference = new(() =>
+        new RasterImage(CalibrationReferencePattern.ReadGrayPixels(), CalibrationReferencePattern.PixelSize));
+
     private readonly byte[] _gray;
+
+    private RasterImage(byte[] gray, int size)
+    {
+        Width = Height = size;
+        _gray = gray;
+    }
 
     private RasterImage(int width, int height, byte[] bgra)
     {
@@ -33,6 +42,8 @@ internal sealed class RasterImage
     internal int Width { get; }
 
     internal int Height { get; }
+
+    internal static RasterImage LoadCalibrationReference() => Reference.Value;
 
     internal static RasterImage Load(string path) => FromRaster(PngRaster.Load(path));
 

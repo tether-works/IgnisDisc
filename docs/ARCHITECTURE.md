@@ -236,7 +236,9 @@ one assembly with a clear provenance boundary. Nothing in it touches a drive.
   `.cue`, or big-endian `.raw`) through the `0x0D`/`0xAA` palette (`CdToneMapping`, `ToneProfile` dither) and the
   CIRC delay interleaver (`CddaInterleaver`, from CDImage); `RenderTrack`/`PreviewTrack` read a track back into the
   picture (from a file or from sectors read off a disc). `CdMode1Drawing` makes 2,048-byte Mode 1 sectors whose bytes
-  after the drive's ECMA-130 scrambler are palette bytes, and reads them back. Constant track pitch only for now.
+  after the drive's ECMA-130 scrambler are palette bytes, and reads them back. `CdDiscParameters` carries upstream's
+  three cubic pitch coefficients (zero coefficients keep the constant-pitch formula and its bytes), and
+  `GeneratePattern` writes a calibration target as a track.
 - `Ported/DiscImageStudio/Dvd/` (namespaces `CdBurner.Lithography.Dvd`, `.Dvd.Encoding`, `.Dvd.Solver`; ported from
   DiscImageStudio's `DvdImageSolver` and `DiscImageStudio.Dvd`): the DVD picture solver. A picture pixel becomes a
   scrambled byte `0xA5` (dark: many short pits) or `0x92` (light: few long pits); the sector stores that byte XOR the
@@ -251,8 +253,8 @@ one assembly with a clear provenance boundary. Nothing in it touches a drive.
   - `Solver/DvdReadCompatibilityGuard.cs` is **not** ported: the `periodic-9b-16-v1` rule (at sector offsets 0, 16,
     ..., 2032 a picture-owned byte whose scrambled value is not `A5` or `9B` becomes `9B`) is written for IgnisDisc
     from that description. The older `bridge-9b-v1` rule is left out.
-  - Left out of the DVD port: upstream's command line (`Program.cs`, `CliArguments`), its module catalog, its
-    calibration targets and reference sampler, and writing a picture into an image that already holds files
+  - Left out of the DVD port: upstream's command line (`Program.cs`, `CliArguments`), its module catalog, and
+    writing a picture into an image that already holds files
     (upstream's own file system writer). General image-to-DVD picture commands are not wired yet, while
     `rosetta ladder --media dvd` writes the DVD-R optical resolution-ladder `.iso` and JSON manifest burned via `burn-iso --native`.
 - `Ported/DiscImageStudio/BluRay/` (namespaces `CdBurner.Lithography.BluRay` and `.BluRay.Encoding`; ported from
@@ -266,8 +268,31 @@ one assembly with a clear provenance boundary. Nothing in it touches a drive.
   applies: EDC, scrambler, LDC/BIS Reed-Solomon and interleave (`BluRayEccEncoder`, 76,880 bytes per cluster), 17PP
   modulation, frame sync, dc-control selection and a whole recording unit (`BluRayRecordingUnitEncoder`).
   - Left out of the Blu-ray port: upstream's command module (`BluRayDiscModule`), its file system writer (a picture
-    image that also holds files is refused), calibration targets, previews and the burning code. Image output only: no
-    command or screen uses it yet, and no disc has been written from it.
+    image that also holds files is refused), previews and the burning code. Image output only: apart from
+    calibration targets no command or screen uses it yet, and no disc has been written from it.
+- `Ported/DiscImageStudio/Calibration/` (namespace `CdBurner.Lithography.Calibration`; ported from
+  `DiscImageStudio.Core/Calibration`, no desktop code): the calibration engine. `CalibrationTarget` describes a
+  target (artwork, schema version, the frozen generation parameters) and samples its pattern; the three stages
+  are wide bands with angle marks (`AngleSweepBands`, coarse), a wavy light/dark boundary (`WavyBoundary`) and
+  the reference cross (`ReferenceCross`, fine; its pixels are the embedded `Patterns/target_slim.gray.gz`).
+  `CalibrationRingFitter` (band edges: both radii), `CalibrationBoundaryFitter` (boundary points: both radii,
+  pitch kept) and `CalibrationCrossFitter` (points along one arm: both radii and the three cubic pitch
+  coefficients) each return a `CalibrationFitResult` with ranked candidates and warnings.
+  `CalibrationPhotoRectifier` fits the perspective of a photo from points on the outer rim and the centre hole.
+  `CalibrationSessionJson` reads and writes upstream's `.calibration.json` record (target, fit options and, in
+  its `photo` section, measurement points in millimetres from the disc centre). Messages are upstream's own
+  English translations. The CD, DVD and Blu-ray generators take a `CalibrationTarget`; the three target goldens
+  (`cd-calibration.raw`, `dvd-calibration.iso`, `bd-calibration.iso`) are matched byte for byte.
+- `Calibration/` (IgnisDisc's own files, same namespace): `CalibrationTargetFile` creates a target for a stage and
+  writes the burnable file with its record (`.wav` + `.cue` or `.raw` for CD, `.iso` for DVD and BD; a failed or
+  cancelled write leaves no file); `CalibrationRecordFitter` picks the fitter for a record and, for the fine stage,
+  widens the radius range as upstream's app does; `CalibrationStore` keeps fitted parameters per drive model and
+  media ID (ATIP/ADIP manufacturer code) in `%APPDATA%\IgnisDisc\disc-calibrations.json`, written through a
+  temporary file, one entry per drive, media ID and disc type. Command line: `disc-art calibrate target`,
+  `disc-art calibrate fit --points <record>` and `disc-art calibrate list`. A fit the fitter flags is listed with
+  its candidates but applied and saved only when `--candidate <n>` names one. Not done here: reading the angle
+  marks of a coarse target and rectifying a photo need the photo's pixels (the calibration screen), so a coarse
+  record gives the wide-band radii only. No calibration target has been burned from IgnisDisc yet.
 - `Imaging/PngRaster.cs` + `Imaging/WicPngDecoder.cs`: IgnisDisc's PNG framing/CRC-32 validator and Windows Imaging
   Component (`windowscodecs.dll`) decoder producing straight `32bppBGRA` `BgraRaster` buffers (plus 8-bit RGBA PNG writer)
   for picture input and read-back previews without a WPF dependency.
@@ -302,7 +327,9 @@ one assembly with a clear provenance boundary. Nothing in it touches a drive.
    for fixed inputs as golden bytes in a test and commit that test. Later changes must keep the bytes identical.
    The upstream reference hashes live in `tests/CdBurner.Lithography.Tests/Fixtures/UpstreamGoldens/` (inputs,
    exact command lines, SHA-256 of each output: CD picture track, DVD picture ISO and ECC block, BD-R clusters and
-   ECC cluster, one calibration target per medium). `scripts/Make-LithographyGoldens.ps1` clones and builds upstream
+   ECC cluster, one calibration target per medium). Upstream's published calibration records
+   (`Fixtures/UpstreamCalibration/`, photographs removed) must refit to the numbers its tutorial prints.
+   `scripts/Make-LithographyGoldens.ps1` clones and builds upstream
    at the pinned commit in a scratch folder outside the repository and reproduces every hash; a port must match them.
 3. **Notices with the code.** The `THIRD-PARTY-NOTICES.md` entry (source URL, pinned SHA, license text, list of
    ported files) lands in the same commit as the first ported file, never before and never after. Each ported file

@@ -1,0 +1,191 @@
+{
+  "target": {
+    "schemaVersion": 13,
+    "artwork": "AngleSweepBands",
+    "id": "4f0228e60550444a8953fd2680b0d581",
+    "parameters": {
+      "kind": "Dvd",
+      "innerRadiusMm": 24.1,
+      "outerRadiusMm": 57.8,
+      "sectors": 2297888,
+      "linearDensity": 133.3,
+      "pitchLinear": -3.9256854319227684E-05,
+      "pitchQuadratic": 6.964795915429256E-05,
+      "pitchCubic": -4.670918950137523E-05,
+      "bluRayInvertMapping": false,
+      "drawingStartSector": 0,
+      "bluRayIsoTimestamp": null,
+      "drawingEndSectorExclusive": 0
+    },
+    "options": {
+      "largeCellMm": 8.346749226006192,
+      "mediumCellMm": 4.173374613003096,
+      "smallCellMm": 2.086687306501548,
+      "sectorGapMm": 1
+    },
+    "cells": []
+  },
+  "observations": [],
+  "fitOptions": {
+    "searchCenter": {
+      "kind": "Dvd",
+      "innerRadiusMm": 24.1,
+      "outerRadiusMm": 57.8,
+      "sectors": 2297888,
+      "linearDensity": 133.3,
+      "pitchLinear": -3.9256854319227684E-05,
+      "pitchQuadratic": 6.964795915429256E-05,
+      "pitchCubic": -4.670918950137523E-05,
+      "bluRayInvertMapping": false,
+      "drawingStartSector": 0,
+      "bluRayIsoTimestamp": null,
+      "drawingEndSectorExclusive": 0
+    },
+    "radiusRangeMm": 0.02,
+    "huberDeltaMm": 0.8,
+    "maxCandidates": 8,
+    "fitDvdPitch": true,
+    "pitchCoefficientRange": 0.05,
+    "adaptiveRobustScale": true,
+    "autoRange": true
+  },
+  "cdInterleave": true,
+  "photo": {
+    "imagePngBase64": "iVBORw0KGgoAAAANSUhEUgAAAAEAAAABCAAAAAA6fptVAAAACklEQVR42mP4DwABAQEAHLCMmQAAAABJRU5ErkJggg==",
+    "outerBoundary": [
+      {
+        "x": 607.4918007476188,
+        "y": 238.06970517631592
+      },
+      {
+        "x": 941.8304660680504,
+        "y": 349.61258392339755
+      },
+      {
+        "x": 1180.2476815608816,
+        "y": 801.4424304468264
+      },
+      {
+        "x": 957.2448541205615,
+        "y": 1279.5146973002568
+      },
+      {
+        "x": 596.1434801878838,
+        "y": 1405.664850295074
+      },
+      {
+        "x": 239.6964507957338,
+        "y": 1280.0052701341722
+      },
+      {
+        "x": 19.566289293026678,
+        "y": 804.4282235336626
+      },
+      {
+        "x": 251.0159142764033,
+        "y": 352.8359085048741
+      }
+    ],
+    "holeBoundary": [
+      {
+        "x": 612.1535469107552,
+        "y": 747.4647838130795
+      },
+      {
+        "x": 666.9524052114148,
+        "y": 760.666029873479
+      },
+      {
+        "x": 696.1000505841262,
+        "y": 823.3419462844755
+      },
+      {
+        "x": 669.0835289016472,
+        "y": 878.2925393183793
+      },
+      {
+        "x": 601.7643189208719,
+        "y": 891.2273949174997
+      },
+      {
+        "x": 558.4202504552117,
+        "y": 858.4464499530898
+      },
+      {
+        "x": 551.1166229073829,
+        "y": 803.6290521498254
+      },
+      {
+        "x": 572.4057496723622,
+        "y": 767.3257914054553
+      }
+    ],
+    "physicalOuterRadiusMm": 60,
+    "rectificationConfirmed": true,
+    "traces": [],
+    "isCoarseMode": true,
+    "ringObservations": [
+      {
+        "ringIndex": 0,
+        "radiusMm": 25.97143983981584,
+        "points": [
+          {
+            "x": 14.474586359393957,
+            "y": -21.563905886402395
+          }
+        ]
+      },
+      {
+        "ringIndex": 1,
+        "radiusMm": 37.66114630175224,
+        "points": [
+          {
+            "x": 20.994697842163813,
+            "y": -31.26634937561833
+          }
+        ]
+      },
+      {
+        "ringIndex": 2,
+        "radiusMm": 50.23137809535777,
+        "points": [
+          {
+            "x": 27.99620699509444,
+            "y": -41.70615948809736
+          }
+        ]
+      },
+      {
+        "ringIndex": 3,
+        "radiusMm": 32.28794761893306,
+        "points": [
+          {
+            "x": 17.997282369956366,
+            "y": -26.8068906950997
+          }
+        ]
+      },
+      {
+        "ringIndex": 4,
+        "radiusMm": 44.44322004418622,
+        "points": [
+          {
+            "x": 24.778038052397374,
+            "y": -36.89510317331967
+          }
+        ]
+      },
+      {
+        "ringIndex": 5,
+        "radiusMm": 56.626583345318096,
+        "points": [
+          {
+            "x": 31.569359271261153,
+            "y": -47.01005739803233
+          }
+        ]
+      }
+    ],
+    "bandRaySelection": 5
+  }
+}

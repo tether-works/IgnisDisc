@@ -19,6 +19,9 @@
 
   <ItemGroup>
     <None Include="Fixtures/UiStringsOriginal.tsv" CopyToOutputDirectory="PreserveNewest" />
+    <!-- The published calibration records live with the lithography tests; the command-line tests read the same files. -->
+    <None Include="..\CdBurner.Lithography.Tests\Fixtures\UpstreamCalibration\*.calibration.json"
+          Link="Fixtures\UpstreamCalibration\%(Filename)%(Extension)" CopyToOutputDirectory="PreserveNewest" />
   </ItemGroup>
 
   <ItemGroup>

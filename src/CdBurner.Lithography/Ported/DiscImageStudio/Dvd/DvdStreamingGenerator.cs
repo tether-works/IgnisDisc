@@ -2,9 +2,10 @@
 // Copyright (c) 2026 Disc Image Studio contributors
 // Ported to IgnisDisc from DiscImageStudio src/DiscImageStudio.Dvd/DvdStreamingGenerator.cs at commit 619ec7505ac8955f35fe2f353ebda74b6ea90dda:
 // https://github.com/JiaFeiMiao-K-Cat/DiscImageStudio/blob/619ec7505ac8955f35fe2f353ebda74b6ea90dda/src/DiscImageStudio.Dvd/DvdStreamingGenerator.cs
-// IgnisDisc change: namespace; calibration targets and the files-plus-picture (hybrid) stream are not ported. See THIRD-PARTY-NOTICES.md.
+// IgnisDisc change: namespace; the files-plus-picture (hybrid) stream is not ported. See THIRD-PARTY-NOTICES.md.
 
 using System.Diagnostics;
+using CdBurner.Lithography.Calibration;
 using CdBurner.Lithography.Dvd;
 using CdBurner.Lithography.Dvd.Encoding;
 using CdBurner.Lithography.Dvd.Solver;
@@ -180,6 +181,50 @@ public static class DvdStreamingGenerator
     {
         ArgumentNullException.ThrowIfNull(sampleGray);
         return GeneratePattern(sampleGray, null, output, options, progress, cancellationToken);
+    }
+
+    public static DvdStreamingSummary GeneratePattern(
+        CalibrationTarget target, Stream output, DvdStreamingOptions options,
+        Action<DvdStreamingProgress>? progress = null, CancellationToken cancellationToken = default)
+    {
+        ArgumentNullException.ThrowIfNull(target);
+        ArgumentNullException.ThrowIfNull(options);
+        if (target.Parameters.Kind != CalibrationDiscKind.Dvd || target.Parameters.Sectors != options.TotalSectors)
+            throw new ArgumentException("Calibration target and output must describe the same DVD sector capacity.", nameof(target));
+        // A calibration target describes the bytes that were generated/burned.
+        // Later changes to the project output checkbox must not change that target.
+        options = options with
+        {
+            ReadCompatibility = target.Parameters.DvdReadCompatibility,
+            ReadCompatibilityMode = target.EffectiveDvdReadCompatibilityMode,
+        };
+        if (target.UsesReferencePattern)
+        {
+            ArgumentNullException.ThrowIfNull(output);
+            options.Validate();
+            MultiBlockSolveOptions solveOptions = CreateSolveOptions(options, 0, options.OutputSectors);
+            FastDvdStreamSummary summary = FastDispersionImageWriter.WriteCalibrationReferenceStream(
+                target, output, solveOptions,
+                value => progress?.Invoke(new DvdStreamingProgress(value.BytesWritten, value.TotalBytes,
+                    value.CompletedBlocks, value.TotalBlocks, value.Elapsed)), cancellationToken);
+            return new DvdStreamingSummary("calibration", summary.SectorsWritten, summary.BytesWritten,
+                summary.ControlledWords, summary.Elapsed, summary.CompatibilityChanges);
+        }
+        if (!target.HasWideAddressBands)
+            return GeneratePattern(target.Sample, output, options, progress, cancellationToken);
+
+        var bands = target.WideBandSectorRanges;
+        var angleSweep = target.HasAngleSweep ? new CalibrationAngleSweepSampler(target) : null;
+        byte SectorLuminance(uint sector)
+        {
+            if (angleSweep is not null && angleSweep.TryGetLuminance((sector + 0.5) / options.TotalSectors, out var marker))
+                return marker;
+            for (int i = 0; i < bands.Count; i++)
+                if (sector >= bands[i].Start && sector < bands[i].EndExclusive)
+                    return 0;
+            return 255;
+        }
+        return GeneratePattern(target.Sample, SectorLuminance, output, options, progress, cancellationToken);
     }
 
     private static DvdStreamingSummary GeneratePattern(
