@@ -1162,6 +1162,8 @@ public static partial class CliCommandRunner
         bool testWrite = cmd.HasFlag("test-write");
         bool testFirst = cmd.HasFlag("test-first");
         bool recoverySession = cmd.HasFlag("recovery-session");
+        string? dataFolder = cmd.GetOption("data-folder");
+        string? dataLabel = cmd.GetOption("data-label");
         bool disableBufe = cmd.HasFlag("no-burnfree");
         var postAction = ParsePostBurnAction(cmd);
         string? speedStr = cmd.GetOption("speed");
@@ -1173,6 +1175,14 @@ public static partial class CliCommandRunner
         if (recoverySession && !native)
         {
             throw new CommandLineException("--recovery-session requires --native (direct drive commands); Windows IMAPIv2 cannot leave an SAO audio session open for a second data session.");
+        }
+        if (!string.IsNullOrWhiteSpace(dataFolder) && !native)
+        {
+            throw new CommandLineException("--data-folder requires --native (direct drive commands); Windows IMAPIv2 cannot leave an SAO audio session open for a second data session.");
+        }
+        if (!string.IsNullOrWhiteSpace(dataFolder) && recoverySession)
+        {
+            throw new CommandLineException("--data-folder cannot be combined with --recovery-session.");
         }
 
         using var mfDecoder = OperatingSystem.IsWindows() ? new MediaFoundationAudioDecoder() : null;
@@ -1222,6 +1232,8 @@ public static partial class CliCommandRunner
                 AllowDamagedAudio = cmd.HasFlag("allow-damaged"),
                 WriteOffsetSamples = ParseWriteOffset(cmd.GetOption("write-offset"), native),
                 IncludeRecoverySession = recoverySession,
+                DataSessionFolderPath = dataFolder,
+                DataSessionVolumeLabel = dataLabel,
                 DisableBufferUnderrunFree = disableBufe
             }).ConfigureAwait(false);
 
@@ -1239,6 +1251,11 @@ public static partial class CliCommandRunner
                 native,
                 recoverySession,
                 recoverySessionWritten = recoveryManifest != null,
+                dataSessionFolder = dataFolder,
+                dataSessionWritten = audioBurnService.LastDataSessionSectors > 0,
+                dataSessionStartLba = audioBurnService.LastDataSessionStartLba,
+                dataSessionSectors = audioBurnService.LastDataSessionSectors,
+                warning = result.WarningMessage,
                 recoverySessionDetails = recoveryManifest == null ? null : new
                 {
                     pcmBytes = recoveryManifest.TotalPcmBytes,
@@ -1325,6 +1342,14 @@ public static partial class CliCommandRunner
                     stdout.WriteLine($"  Recovery Session: session 2 written ({recoveryManifest.Par2RecoveryBlocks:N0} PAR2 blocks, {recoveryManifest.Par2BlockSizeBytes / 1024} KiB block size)");
                     stdout.WriteLine($"  Tolerance:      {recoveryManifest.ToleranceSummary}");
                     stderr.WriteLine($"Note: {AudioRecoverySessionService.CarHeadUnitWarning}");
+                }
+                if (audioBurnService.LastDataSessionSectors > 0)
+                {
+                    stdout.WriteLine($"  Data Session:   session 2 written at LBA {audioBurnService.LastDataSessionStartLba:N0} ({audioBurnService.LastDataSessionSectors:N0} sectors)");
+                    if (!string.IsNullOrWhiteSpace(result.WarningMessage))
+                    {
+                        stderr.WriteLine($"Note: {result.WarningMessage}");
+                    }
                 }
                 if (nativeEngine.LastLogPath != null)
                 {
@@ -1418,6 +1443,7 @@ public static partial class CliCommandRunner
         }
 
         var nativeEngine = native ? new NativeAudioBurnEngine(cmd.GetOption("log-dir")) : null;
+        var nativeDataEngine = native ? new NativeDataBurnEngine(burnEngine, cmd.GetOption("log-dir")) : null;
         using var decoder = OperatingSystem.IsWindows() ? new MediaFoundationAudioDecoder() : null;
         string? stagingFolder = null;
         if (keep != null)
@@ -1434,6 +1460,7 @@ public static partial class CliCommandRunner
             KeepStagedImage = keep != null,
             CustomStagingImagePath = stagingFolder != null ? Path.Combine(stagingFolder, isAudio ? "album.cue" : cmd.HasFlag("raw") ? "staged_disc.bin" : "staged_disc.iso") : null,
             MixedModeWriter = nativeEngine,
+            DataSessionWriter = nativeDataEngine,
             AllowSuspectAudio = cmd.HasFlag("allow-suspect"),
             OnPrepareTargetDiscAsync = PrepareTarget
         }).ConfigureAwait(false);
@@ -1450,6 +1477,8 @@ public static partial class CliCommandRunner
                 audioCd = result.WasAudioCd,
                 mixedMode = result.IsMixedMode,
                 copiedDataTrack = result.CopiedDataTrack,
+                enhancedCd = result.IsEnhancedCd,
+                copiedDataSession = result.CopiedDataSession,
                 sectorsPerDisc = result.SectorsPerDisc,
                 totalSectorsWritten = result.TotalSectorsWritten,
                 totalTimeSeconds = result.TotalTime.TotalSeconds,
@@ -1463,6 +1492,7 @@ public static partial class CliCommandRunner
         {
             stdout.WriteLine($"Copied: {result.CopiesCompleted} of {result.CopiesRequested} disc(s), {result.SectorsPerDisc:N0} sectors each, in {result.TotalTime.TotalSeconds:N0} s.");
             if (result.CopiedDataTrack) stdout.WriteLine("  The mixed-mode CD's data track was copied with the audio.");
+            if (result.CopiedDataSession) stdout.WriteLine("  The Enhanced CD's audio and data sessions were both copied.");
             if (nativeEngine?.LastResult?.Verification is { } v) stdout.WriteLine($"  {v.Message}");
             if (result.WarningMessage != null) stdout.WriteLine($"  Warning: {result.WarningMessage}");
         }
@@ -3279,8 +3309,8 @@ public static partial class CliCommandRunner
         stdout.WriteLine("      Burns an ISO image directly to the target optical drive. --layer-break: sectors on the first layer of a DVD+R DL (multiple of 16). A DVD-RW is written with direct drive commands unless --windows-writer.");
         stdout.WriteLine("  burn-data --drive <id> --input <folder> [--label <vol>] [--speed <X|max>] [--udf] [--udf-rev <1.02|1.50|2.00|2.01|2.50|2.60>] [--joliet] [--boot-bios <img>] [--boot-uefi <img>] [--no-verify | --strict-verify] [--no-close] [--append] [--no-burnfree] [--overwrite] [--post-action none|eject|sound|eject-sound|shutdown] [--fixed-time <unix|iso8601>] [--sha256sums] [--blake3sums] [--windows-writer | --native [--test-write | --test-first] [--layer-break <sectors>] [--log-dir <folder>]] [--json]");
         stdout.WriteLine("      Compiles a folder and burns it to optical media (--append merges and adds a session on an appendable disc). A DVD-RW is written with direct drive commands unless --windows-writer.");
-        stdout.WriteLine("  burn-audio (--drive <id> | --plan-only) (--tracks <files|.cue|.m3u|.pls> | --tracks-file <file.json>) [--title <album>] [--artist <name>] [--songwriter <name>] [--upc <13digits>] [--speed <X|max>] [--dao] [--pregap <frames>] [--normalize] [--rms-level] [--loudness track|album|off] [--crossfade <sec>] [--no-cd-text] [--no-burnfree] [--post-action none|eject|sound|eject-sound|shutdown] [--allow-damaged] [--native [--test-write | --test-first] [--recovery-session] [--write-offset <samples|auto>] [--log-dir <folder>]] [--json]");
-        stdout.WriteLine("      Burns Red Book Audio CD from WAV, FLAC, MP3, AAC/M4A, WMA, .cue, .m3u/.pls, or a JSON --tracks-file (--recovery-session adds session-2 PAR2 recovery; --plan-only previews without burning).");
+        stdout.WriteLine("  burn-audio (--drive <id> | --plan-only) (--tracks <files|.cue|.m3u|.pls> | --tracks-file <file.json>) [--title <album>] [--artist <name>] [--songwriter <name>] [--upc <13digits>] [--speed <X|max>] [--dao] [--pregap <frames>] [--normalize] [--rms-level] [--loudness track|album|off] [--crossfade <sec>] [--no-cd-text] [--no-burnfree] [--post-action none|eject|sound|eject-sound|shutdown] [--allow-damaged] [--native [--test-write | --test-first] [--recovery-session | --data-folder <dir> [--data-label <label>]] [--write-offset <samples|auto>] [--log-dir <folder>]] [--json]");
+        stdout.WriteLine("      Burns Red Book Audio CD from WAV, FLAC, MP3, AAC/M4A, WMA, .cue, .m3u/.pls, or a JSON --tracks-file (--recovery-session adds session-2 PAR2 recovery; --data-folder burns an Enhanced CD data session; --plan-only previews without burning).");
         stdout.WriteLine("  burn-dvd --drive <id> --video-ts <folder|movie> [--label <vol>] [--menu-title <title>] [--menu on|off | --no-menu] [--menu-autoplay <never|sec>] [--after-title next|menu] [--standard ntsc|pal] [--aspect 16:9|4:3] [--chapters <none|sec>] [--subtitles-default on|off] [--subtitle-size small|medium|large] [--video-bitrate <fit|kbps>] [--fit-to-disc] [--title-names <a;b;...>] [--dual-layer] [--generate-subtitles [--subtitle-language <code>]] [--speed <X|max>] [--no-verify] [--no-burnfree] [--overwrite] [--post-action none|eject|sound|eject-sound|shutdown] [--native [--test-write | --test-first] [--log-dir <folder>]] [--json]");
         stdout.WriteLine("      Validates, normalizes/authors, aligns, and burns a DVD-Video compliant disc from VIDEO_TS or movie files.");
         stdout.WriteLine("      --dual-layer authors movie files for a DVD-9 (longest title first). On a dual-layer disc, --native puts the layer break on a cell boundary.");
@@ -3296,7 +3326,7 @@ public static partial class CliCommandRunner
         stdout.WriteLine("      Rips Red Book Audio CD to WAV, FLAC, MP3, Opus or AAC (FLAC, MP3, Opus need the optional ffmpeg; AAC uses the Windows encoder) with CD-Text and optional MusicBrainz lookup. Exit code 2 when sectors may be wrong (still suspect or unreadable).");
         stdout.WriteLine("  copy-disc --source <id> [--target <id>] [--copies <n>] [--speed <X|max>] [--raw] [--native [--log-dir <folder>]] [--allow-suspect] [--keep-image <folder>] [--wait-minutes <n>] [--json]");
         stdout.WriteLine("      Copies a disc, with one drive or two. With one drive (or for each further copy) the tray opens and the copy waits for a blank disc.");
-        stdout.WriteLine("      Audio is read with error checks; a copy stops before writing if sectors still read wrong, unless --allow-suspect. --native copies a mixed-mode CD's data track too.");
+        stdout.WriteLine("      Audio is read with error checks; a copy stops before writing if sectors still read wrong, unless --allow-suspect. --native copies mixed-mode and Enhanced CDs (audio + data sessions) whole.");
         stdout.WriteLine("  check-disc --drive <id> [--compare <discNN.HEALTH.json>] [--json]");
         stdout.WriteLine("      Reads a CD once with C2 error pointers and says where it is weak (where a player may skip). Read-only.");
         stdout.WriteLine("      --compare sets the result against a health certificate and lists the minutes that changed.");

@@ -400,6 +400,25 @@ public sealed class VirtualMmcDrive : IScsiTransport
         DiscStatus = nextSessionAddress.HasValue ? 1 : 2;
     }
 
+    /// <summary>
+    /// Appends already-recorded 2,048-byte data sessions after an initial audio session loaded by <see cref="LoadOpenAudioSession"/>.
+    /// </summary>
+    public void LoadAppendedDataSessions(IReadOnlyList<(int StartLba, byte[] Data)> sessions, int? nextSessionAddress)
+    {
+        ArgumentNullException.ThrowIfNull(sessions);
+        foreach (var (start, data) in sessions.OrderBy(s => s.StartLba))
+        {
+            int sectors = data.Length / 2048;
+            StoreSessionData(start, data);
+            _dataSessions.Add(new DataSession(start, sectors, start + sectors));
+            _recordedTracks.Add(((byte)(_audioSessionTracks + _dataSessions.Count), start, 0x40));
+            RecordedLeadOutLba = start + sectors;
+        }
+        Recorded = _audioSessionTracks > 0 || _dataSessions.Count > 0;
+        NextSessionAddress = nextSessionAddress;
+        DiscStatus = nextSessionAddress.HasValue ? 1 : 2;
+    }
+
     /// <summary>The recorded user data of one session, as the drive would read it.</summary>
     public byte[] ReadSessionData(DataSession session)
     {

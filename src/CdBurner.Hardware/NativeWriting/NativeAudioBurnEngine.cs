@@ -126,15 +126,26 @@ public sealed class NativeAudioBurnEngine : IBurnEngineBackend, IAudioDiscVerifi
                 }).ToList();
                 drive.LoadDataSessions(sessions, medium.IsFinalized ? null : medium.NextWritableLba);
             }
-            else if (sequential && !medium.IsBlank && !medium.IsFinalized && medium.Sessions.Count == 1
-                && medium.Sessions[0].Tracks.Count > 0 && medium.Sessions[0].Tracks.Any(t => t.IsAudio))
+            else if (sequential && !medium.IsBlank && medium.Sessions.Count >= 1
+                && medium.Sessions[0].Tracks.Count > 0 && medium.Sessions[0].Tracks.Any(t => t.IsAudio)
+                && medium.Sessions.Skip(1).All(s => s.Tracks.All(t => !t.IsAudio)))
             {
                 var session = medium.Sessions[0];
                 var audioTracks = session.Tracks
                     .Select(t => ((byte)t.TrackNumber, t.StartLba, (byte)(t.IsAudio ? 0x00 : 0x40)))
                     .ToList();
                 int leadOutLba = session.StartLba + session.SectorCount;
-                drive.LoadOpenAudioSession(audioTracks, leadOutLba, medium.NextWritableLba);
+                drive.LoadOpenAudioSession(audioTracks, leadOutLba, medium.IsFinalized ? null : medium.NextWritableLba);
+                if (medium.Sessions.Count > 1)
+                {
+                    var appended = medium.Sessions.Skip(1).Select(s =>
+                    {
+                        byte[] data = new byte[s.SectorCount * OpticalConstants.DataSectorSize];
+                        medium.ReadSectors(s.StartLba, s.SectorCount, data, OpticalConstants.DataSectorSize);
+                        return (s.StartLba, data);
+                    }).ToList();
+                    drive.LoadAppendedDataSessions(appended, medium.IsFinalized ? null : medium.NextWritableLba);
+                }
             }
             if (medium.MediaType.IsCd())
             {

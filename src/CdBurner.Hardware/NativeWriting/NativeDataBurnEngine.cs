@@ -279,8 +279,8 @@ public sealed class NativeDataBurnEngine : IBurnEngineBackend, IWriterMediaStatu
     /// </summary>
     private static void CommitToVirtualMedium(VirtualDiscMedium medium, VirtualMmcDrive drive, byte[] firstSessionImage)
     {
-        medium.Raw2352Mode = false;
         bool overwriteOnly = medium.IsOverwritable;
+        medium.Raw2352Mode = !overwriteOnly && medium.Sessions.Any(s => s.Tracks.Any(t => t.IsAudio));
         int start = 0;
         byte[] data = firstSessionImage;
         if (overwriteOnly)

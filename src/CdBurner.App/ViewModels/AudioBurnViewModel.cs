@@ -83,6 +83,9 @@ public class AudioBurnViewModel : ObservableObject, IDisposable
     private bool _verifyCtdb;
     private bool _continueOnUnreadable;
     private bool _includeRecoverySession; // off by default: some car head units refuse Enhanced CDs
+    private string _dataSessionFolderPath = string.Empty;
+    private string _dataSessionVolumeLabel = "CD_EXTRA";
+    private string _dataSessionSummaryText = string.Empty;
     private bool _repairFromRecoverySession = true;
     private string _recoverySessionCapacityText = string.Empty;
     private AudioRecoveryEstimate? _recoveryEstimate;
@@ -323,6 +326,7 @@ public class AudioBurnViewModel : ObservableObject, IDisposable
             {
                 TestWriteFirst = false;
                 IncludeRecoverySession = false;
+                DataSessionFolderPath = string.Empty;
             }
         }
     }
@@ -362,13 +366,76 @@ public class AudioBurnViewModel : ObservableObject, IDisposable
         {
             if (SetProperty(ref _includeRecoverySession, value))
             {
-                if (value && !_useDirectDriveCommands)
+                if (value)
                 {
-                    UseDirectDriveCommands = true;
+                    if (!string.IsNullOrWhiteSpace(_dataSessionFolderPath))
+                    {
+                        _dataSessionFolderPath = string.Empty;
+                        OnPropertyChanged(nameof(DataSessionFolderPath));
+                        OnPropertyChanged(nameof(HasDataSessionFolder));
+                    }
+                    if (!_useDirectDriveCommands)
+                    {
+                        UseDirectDriveCommands = true;
+                    }
                 }
                 RecalculateTotals();
             }
         }
+    }
+
+    /// <summary>
+    /// Optional folder on disk written as a Mode 1 ISO 9660 + Joliet second session (Enhanced CD / CD-Extra)
+    /// after session 1 audio. Requires direct drive commands and cannot be combined with <see cref="IncludeRecoverySession"/>.
+    /// </summary>
+    public string DataSessionFolderPath
+    {
+        get => _dataSessionFolderPath;
+        set
+        {
+            string trimmed = value?.Trim() ?? string.Empty;
+            if (SetProperty(ref _dataSessionFolderPath, trimmed))
+            {
+                if (!string.IsNullOrWhiteSpace(trimmed))
+                {
+                    if (_includeRecoverySession)
+                    {
+                        _includeRecoverySession = false;
+                        OnPropertyChanged(nameof(IncludeRecoverySession));
+                    }
+                    if (!_useDirectDriveCommands)
+                    {
+                        UseDirectDriveCommands = true;
+                    }
+                }
+                OnPropertyChanged(nameof(HasDataSessionFolder));
+                RecalculateTotals();
+            }
+        }
+    }
+
+    /// <summary>Optional volume label for the session-2 data folder (defaults to <c>"CD_EXTRA"</c>).</summary>
+    public string DataSessionVolumeLabel
+    {
+        get => _dataSessionVolumeLabel;
+        set
+        {
+            string normalized = value ?? string.Empty;
+            if (SetProperty(ref _dataSessionVolumeLabel, normalized) && HasDataSessionFolder)
+            {
+                RecalculateTotals();
+            }
+        }
+    }
+
+    /// <summary>True when a session-2 data folder is selected for an Enhanced CD.</summary>
+    public bool HasDataSessionFolder => !string.IsNullOrWhiteSpace(_dataSessionFolderPath);
+
+    /// <summary>Plain-language capacity and file summary for the selected session-2 data folder.</summary>
+    public string DataSessionSummaryText
+    {
+        get => _dataSessionSummaryText;
+        private set => SetProperty(ref _dataSessionSummaryText, value);
     }
 
     /// <summary>
@@ -750,6 +817,12 @@ public class AudioBurnViewModel : ObservableObject, IDisposable
     /// </summary>
     public AsyncRelayCommand StartAudioBurnCommand { get; }
 
+    /// <summary>Opens a folder picker for the optional session-2 data folder (Enhanced CD / CD-Extra).</summary>
+    public RelayCommand BrowseDataSessionFolderCommand { get; }
+
+    /// <summary>Clears the selected session-2 data folder.</summary>
+    public RelayCommand ClearDataSessionFolderCommand { get; }
+
     /// <summary>
     /// Cancels any actively executing Audio CD burn operation.
     /// </summary>
@@ -861,6 +934,8 @@ public class AudioBurnViewModel : ObservableObject, IDisposable
         MoveTrackUpCommand = new RelayCommand(p => MoveTrackUp(p as AudioTrackRowViewModel), _ => CanMoveTrackUp(SelectedTrack));
         MoveTrackDownCommand = new RelayCommand(p => MoveTrackDown(p as AudioTrackRowViewModel), _ => CanMoveTrackDown(SelectedTrack));
         StartAudioBurnCommand = new AsyncRelayCommand(async p => await StartAudioBurnAsync(p as string), _ => !IsBusy && Tracks.Count > 0);
+        BrowseDataSessionFolderCommand = new RelayCommand(BrowseDataSessionFolder);
+        ClearDataSessionFolderCommand = new RelayCommand(_ => DataSessionFolderPath = string.Empty);
         CancelBurnCommand = new RelayCommand(_ => CancelActiveBurn(), _ => IsBusy);
         RipAudioCdCommand = new AsyncRelayCommand(async p => await RipAudioCdAsync(p as string), _ => !IsBusy);
         DetectReadOffsetCommand = new AsyncRelayCommand(DetectReadOffsetAsync, () => !IsBusy);
@@ -1500,13 +1575,60 @@ public class AudioBurnViewModel : ObservableObject, IDisposable
             maxFrames = mediaStatus.TotalSectors;
         }
 
-        DiscUsagePercent = maxFrames > 0 ? ((double)totalFrames / maxFrames * 100.0) : 0.0;
+        long effectiveFrames = totalFrames;
+        if (HasDataSessionFolder)
+        {
+            if (Directory.Exists(_dataSessionFolderPath))
+            {
+                try
+                {
+                    var plan = AudioCdBurnService.PlanDataSessionFolder(_dataSessionFolderPath, _dataSessionVolumeLabel, totalFrames);
+                    effectiveFrames = plan.TotalDiscSectorsRequired;
+                    string shortNote = plan.ShortenedNamesWarning != null ? $" {plan.ShortenedNamesWarning}" : string.Empty;
+                    string fitNote = maxFrames > 0 && plan.TotalDiscSectorsRequired > maxFrames
+                        ? $" Exceeds disc capacity ({maxFrames:N0} sectors)."
+                        : string.Empty;
+                    DataSessionSummaryText =
+                        $"Session 2 data folder: {plan.FileCount:N0} file(s), {plan.PaddedTrackSectors:N0} sectors + 11,400-sector session gap.{shortNote}{fitNote} {AudioRecoverySessionService.CarHeadUnitWarning}";
+                }
+                catch (Exception ex)
+                {
+                    DataSessionSummaryText = $"Session 2 data folder issue: {ex.Message}";
+                }
+            }
+            else
+            {
+                DataSessionSummaryText = $"Session 2 data folder not found: '{_dataSessionFolderPath}'.";
+            }
+        }
+        else
+        {
+            DataSessionSummaryText = string.Empty;
+        }
+
+        DiscUsagePercent = maxFrames > 0 ? ((double)effectiveFrames / maxFrames * 100.0) : 0.0;
         UpdateRecoveryEstimate(totalFrames, maxFrames);
 
         OnPropertyChanged(nameof(TotalDurationText));
         OnPropertyChanged(nameof(DiscUsageText));
         OnPropertyChanged(nameof(TotalTracksText));
         OnPropertyChanged(nameof(HasTracks));
+    }
+
+    private void BrowseDataSessionFolder()
+    {
+        var dlg = new OpenFolderDialog
+        {
+            Title = "Select Session 2 Data Folder for Enhanced CD (CD-Extra)",
+            InitialDirectory = Directory.Exists(DataSessionFolderPath)
+                ? DataSessionFolderPath
+                : Environment.GetFolderPath(Environment.SpecialFolder.MyDocuments)
+        };
+
+        if (dlg.ShowDialog() == true && !string.IsNullOrWhiteSpace(dlg.FolderName))
+        {
+            DataSessionFolderPath = dlg.FolderName;
+        }
     }
 
     private void UpdateRecoveryEstimate(long audioFrames, long capacityFrames)
@@ -1946,9 +2068,9 @@ public class AudioBurnViewModel : ObservableObject, IDisposable
 
             // Direct drive commands only for drives whose probe shows Session-at-Once. When they are on only as the
             // app's default, a drive without it burns with the Windows writer instead of refusing.
-            bool direct = UseDirectDriveCommands || IncludeRecoverySession;
+            bool direct = UseDirectDriveCommands || IncludeRecoverySession || HasDataSessionFolder;
             string? writerNote = null;
-            if (direct && _directIsAppDefault && !IncludeRecoverySession && !recorder.GetCapabilities().SupportsNativeSao)
+            if (direct && _directIsAppDefault && !IncludeRecoverySession && !HasDataSessionFolder && !recorder.GetCapabilities().SupportsNativeSao)
             {
                 direct = false;
                 writerNote = "This drive does not report Session-at-Once writing, so the Windows writer burned the disc (no CD-Text, track codes or exact gaps).";
@@ -1986,7 +2108,9 @@ public class AudioBurnViewModel : ObservableObject, IDisposable
                 Speed = SelectedWriteSpeed,
                 KeepIndexMarks = direct,
                 AllowDamagedAudio = allowDamagedAudio,
-                IncludeRecoverySession = IncludeRecoverySession
+                IncludeRecoverySession = IncludeRecoverySession,
+                DataSessionFolderPath = HasDataSessionFolder ? DataSessionFolderPath : null,
+                DataSessionVolumeLabel = DataSessionVolumeLabel
             };
 
             var burnService = directEngine != null ? new AudioCdBurnService(directEngine, _audioDecoder, directDataEngine) : _audioBurnService;
@@ -2020,9 +2144,11 @@ public class AudioBurnViewModel : ObservableObject, IDisposable
 
             if (burnResult.Success && direct)
             {
-                StatusMessage = burnService.LastRecoveryManifest is { } recManifest
-                    ? $"Audio CD + PAR2 recovery session burned ({burnResult.SectorsWritten:N0} frames, {recManifest.Par2RecoveryBlocks:N0} recovery blocks, {burnResult.TotalTime})."
-                    : $"Audio CD burned with direct drive commands and read back correctly ({burnResult.SectorsWritten:N0} frames, {burnResult.TotalTime}).";
+                StatusMessage = burnService.LastDataSessionSectors > 0
+                    ? $"Enhanced CD burned ({burnResult.SectorsWritten:N0} total sectors, session 2 data at LBA {burnService.LastDataSessionStartLba:N0}, {burnResult.TotalTime})."
+                    : burnService.LastRecoveryManifest is { } recManifest
+                        ? $"Audio CD + PAR2 recovery session burned ({burnResult.SectorsWritten:N0} frames, {recManifest.Par2RecoveryBlocks:N0} recovery blocks, {burnResult.TotalTime})."
+                        : $"Audio CD burned with direct drive commands and read back correctly ({burnResult.SectorsWritten:N0} frames, {burnResult.TotalTime}).";
                 BurnProgress = 100.0;
                 if (directEngine?.LastWriteOffsetPlan is { } offsetPlan)
                 {

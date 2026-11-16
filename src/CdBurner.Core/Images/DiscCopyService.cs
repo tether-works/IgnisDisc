@@ -1,10 +1,40 @@
+using System.Buffers.Binary;
 using System.Diagnostics;
+using System.Text;
 using CdBurner.Core.Abstractions;
+using CdBurner.Core.Archival;
 using CdBurner.Core.Audio;
 using CdBurner.Core.Burning;
+using CdBurner.Core.Compilation;
+using CdBurner.Core.Iso;
 using CdBurner.Core.Primitives;
 
 namespace CdBurner.Core.Images;
+
+/// <summary>
+/// Classification of the recorded disc in a source drive for 1-Click Disc Copy planning.
+/// </summary>
+public enum CopyDiscKind
+{
+    NoDisc,
+    BlankDisc,
+    DataDisc,
+    AudioCd,
+    MixedModeCd,
+    EnhancedCd
+}
+
+/// <summary>
+/// Plain-language summary of what 1-Click Disc Copy will read and write from a source drive.
+/// </summary>
+public sealed record DiscCopyPlanSummary(
+    CopyDiscKind Kind,
+    int AudioTrackCount,
+    int DataTrackCount,
+    int TotalSectors,
+    bool WillCopyAudio,
+    bool WillCopyData,
+    string SummaryText);
 
 /// <summary>
 /// Options for 1-click disc-to-disc copying and multi-copy batch mastering.
@@ -58,6 +88,12 @@ public sealed class DiscCopyOptions
     public IBurnEngineBackend? MixedModeWriter { get; set; }
 
     /// <summary>
+    /// Optional direct data-session writer (<c>NativeDataBurnEngine</c>) used together with <see cref="MixedModeWriter"/>
+    /// when copying an Enhanced CD (audio in session 1, data in session 2). Without it, only the audio session is copied.
+    /// </summary>
+    public IBurnEngineBackend? DataSessionWriter { get; set; }
+
+    /// <summary>
     /// Copy an audio CD even when some sectors still read with errors after the careful re-reads (the copy then has
     /// clicks or wrong samples there). Off by default: the copy stops before the target disc is touched.
     /// </summary>
@@ -86,6 +122,10 @@ public sealed record DiscCopyResult
 
     /// <summary>The data track of a mixed-mode CD was copied too (not only the audio).</summary>
     public bool CopiedDataTrack { get; init; }
+    public bool IsEnhancedCd { get; init; }
+
+    /// <summary>The second-session data volume of an Enhanced CD was read and rewritten at the target disc's NWA.</summary>
+    public bool CopiedDataSession { get; init; }
     public string? WarningMessage { get; init; }
     public string? StagedImagePath { get; init; }
     public TimeSpan TotalTime { get; init; }
@@ -183,14 +223,19 @@ public sealed class DiscCopyService
             var (isAudioDisc, isMixedMode) = Classify(sourceTracks);
 
             // Windows' burning service (IMAPIv2) cannot write a data track and audio tracks in one pass. The direct
-            // drive-command writer can, for a mixed-mode CD whose track 1 is the data track. Otherwise only the audio
-            // is copied, and the user is told so up front.
+            // drive-command writer can, for a mixed-mode CD (track 1 data, then audio) or an Enhanced CD (session 1
+            // audio, then session 2 data). Otherwise only the audio is copied, and the user is told so up front.
             bool dataFirst = isMixedMode && sourceTracks.Count > 1 && !sourceTracks[0].IsAudio && sourceTracks.Skip(1).All(t => t.IsAudio);
+            bool enhancedCd = isMixedMode && sourceTracks.Count > 1 && sourceTracks[0].IsAudio && !sourceTracks[^1].IsAudio
+                && sourceTracks.Take(sourceTracks.Count - 1).All(t => t.IsAudio);
             bool copyDataTrack = dataFirst && options.MixedModeWriter is { WritesMixedModeCds: true };
-            string? mixedModeWarning = !isMixedMode || copyDataTrack ? null
-                : !dataFirst
-                    ? "Enhanced CD (data after the audio) detected: only the audio tracks are copied. Copying its data track is not supported yet."
-                    : "Mixed-mode CD detected: only the audio tracks are copied. Turn on direct drive commands to copy the data track as well.";
+            bool copyDataSession = enhancedCd && options.MixedModeWriter is { WritesMixedModeCds: true } && options.DataSessionWriter != null;
+            string? mixedModeWarning = !isMixedMode || copyDataTrack || copyDataSession ? null
+                : enhancedCd
+                    ? "Enhanced CD (audio, then data in session 2) detected: only the audio session was copied. Turn on direct drive commands to copy the data session as well."
+                    : dataFirst
+                        ? "Mixed-mode CD detected: only the audio tracks are copied. Turn on direct drive commands to copy the data track as well."
+                        : "Multi-track mixed CD layout is not supported for data copying: only the audio tracks were copied.";
 
             if (mixedModeWarning != null)
             {
@@ -249,7 +294,9 @@ public sealed class DiscCopyService
                     RecordingMode = AudioRecordingMode.DiscAtOnceGapless,
                     IncludeCdText = true
                 };
-                var burnService = _audioBurnService;
+                var burnService = options.MixedModeWriter != null
+                    ? new AudioCdBurnService(options.MixedModeWriter, _audioDecoder)
+                    : _audioBurnService;
                 if (copyDataTrack)
                 {
                     // Track 1 runs to the next track's two-second pre-gap: the data, then its post-gap.
@@ -267,10 +314,32 @@ public sealed class DiscCopyService
                         : compilation.AlbumPerformer;
                     compilation.AddTrack(AudioCdCompilation.CreateDataTrack(
                         DataTrackImage.Open(dataPath, 0, dataSectors, DataTrackImage.UserDataSize), sourceText?.Title, dataPerformer));
-                    burnService = new AudioCdBurnService(options.MixedModeWriter!, _audioDecoder);
                 }
                 compilation.ImportCueSheet(stagedPath, _audioBurnService.AudioDecoder);
 
+                StagedEnhancedDataSession? stagedData = null;
+                if (copyDataSession)
+                {
+                    var dataTrack = sourceTracks[^1];
+                    string session2StageDir = Path.Combine(tempDir, "session2_stage");
+                    var (session, dataReadError) = await StageEnhancedCdDataSessionAsync(
+                        sourceRecorder,
+                        dataTrack,
+                        session2StageDir,
+                        progress,
+                        ct).ConfigureAwait(false);
+                    if (dataReadError != null || session == null)
+                    {
+                        return DiscCopyResult.Failed(
+                            $"The data session could not be read: {dataReadError ?? "unknown error"} Nothing was written to the disc.",
+                            copyCount,
+                            0,
+                            stagedPath);
+                    }
+                    stagedData = session;
+                }
+
+                int compilationTotalFrames = EstimateAudioSessionFrames(compilation);
                 int completed = 0;
                 int totalSectors = 0;
                 int sectorsPerDisc = audioRip.TotalSectorsRead;
@@ -288,6 +357,25 @@ public sealed class DiscCopyService
                         }
                     }
 
+                    if (copyDataSession && stagedData != null)
+                    {
+                        var targetStatus = targetRecorder.QueryMediaStatus();
+                        int predictedTargetNwa = compilationTotalFrames + (int)RecoverySessionBudget.FixedSessionSectors;
+                        int targetIsoSectors = IsoUdfImageBuilder.CalculateTotalSectors(
+                            stagedData.Root,
+                            stagedData.BuildOptions,
+                            predictedTargetNwa) - predictedTargetNwa;
+                        if (targetStatus.TotalSectors > 0 &&
+                            (long)predictedTargetNwa + Math.Max(300, targetIsoSectors) + 2 > targetStatus.TotalSectors)
+                        {
+                            return DiscCopyResult.Failed(
+                                "Target disc does not have enough capacity for both sessions of this Enhanced CD. Nothing was written to the disc.",
+                                copyCount,
+                                completed,
+                                stagedPath);
+                        }
+                    }
+
                     var burnRes = await burnService.BurnAsync(
                         targetRecorder,
                         compilation,
@@ -295,6 +383,9 @@ public sealed class DiscCopyService
                         {
                             UseDiscAtOnce = true,
                             WriteCdText = true,
+                            KeepIndexMarks = options.MixedModeWriter != null,
+                            LeaveSessionOpen = copyDataSession,
+                            EjectWhenDone = false,
                             Speed = options.WriteSpeed
                         },
                         progress,
@@ -309,9 +400,49 @@ public sealed class DiscCopyService
                             stagedPath);
                     }
 
+                    int discSectorsWritten = burnRes.SectorsWritten;
+                    if (copyDataSession && stagedData != null)
+                    {
+                        var postSession1 = targetRecorder.QueryMediaStatus();
+                        if (!postSession1.IsAppendable || postSession1.NextWritableLba <= 0)
+                        {
+                            return DiscCopyResult.Failed(
+                                $"Copy {copyIndex} of {copyCount} failed: Session 1 audio finished, but the drive did not leave the disc open for session 2.",
+                                copyCount,
+                                completed,
+                                stagedPath);
+                        }
+
+                        var dataRes = await new DataBurnService(options.DataSessionWriter!).BurnCompilationAsync(
+                            targetRecorder,
+                            stagedData.Root,
+                            new DataBurnOptions
+                            {
+                                VolumeLabel = stagedData.BuildOptions.VolumeLabel,
+                                Speed = options.WriteSpeed,
+                                CloseDisc = true,
+                                VerifyAfterBurn = options.VerifyEachCopy,
+                                EjectWhenDone = false
+                            },
+                            stagedData.BuildOptions,
+                            progress,
+                            ct).ConfigureAwait(false);
+
+                        if (!dataRes.Success)
+                        {
+                            return DiscCopyResult.Failed(
+                                $"Copy {copyIndex} of {copyCount} failed in session 2: {dataRes.ErrorMessage}",
+                                copyCount,
+                                completed,
+                                stagedPath);
+                        }
+
+                        discSectorsWritten += dataRes.SectorsWritten;
+                    }
+
                     completed++;
-                    totalSectors += burnRes.SectorsWritten;
-                    sectorsPerDisc = burnRes.SectorsWritten;
+                    totalSectors += discSectorsWritten;
+                    sectorsPerDisc = discSectorsWritten;
                 }
 
                 sw.Stop();
@@ -325,6 +456,8 @@ public sealed class DiscCopyService
                     WasAudioCd = true,
                     IsMixedMode = isMixedMode,
                     CopiedDataTrack = copyDataTrack,
+                    IsEnhancedCd = enhancedCd,
+                    CopiedDataSession = copyDataSession,
                     WarningMessage = string.Join(" ", new[] { mixedModeWarning, readWarning, suspect > 0 ? $"{suspect:N0} audio sector(s) were copied as read, with errors." : null }.Where(w => w != null)) is { Length: > 0 } w ? w : null,
                     StagedImagePath = options.KeepStagedImage ? stagedPath : null,
                     TotalTime = sw.Elapsed
@@ -484,6 +617,411 @@ public sealed class DiscCopyService
                     // Ignore temp cleanup errors
                 }
             }
+        }
+    }
+
+    /// <summary>
+    /// Inspects <paramref name="sourceRecorder"/> and returns a plain-language summary of what 1-Click Disc Copy
+    /// will read and write with the current <paramref name="directDriveCommandsEnabled"/> setting.
+    /// </summary>
+    public static DiscCopyPlanSummary DescribeCopyPlan(IDiscRecorderBackend? sourceRecorder, bool directDriveCommandsEnabled)
+    {
+        if (sourceRecorder == null)
+        {
+            return new DiscCopyPlanSummary(
+                CopyDiscKind.NoDisc, 0, 0, 0, false, false,
+                "Select a source optical drive to see what will be copied.");
+        }
+
+        var status = sourceRecorder.QueryMediaStatus();
+        if (!status.MediaPresent)
+        {
+            return new DiscCopyPlanSummary(
+                CopyDiscKind.NoDisc, 0, 0, 0, false, false,
+                "No disc in the source drive.");
+        }
+
+        if (status.IsBlank || status.UsedSectors <= 0)
+        {
+            return new DiscCopyPlanSummary(
+                CopyDiscKind.BlankDisc, 0, 0, 0, false, false,
+                "The disc in the source drive is blank — insert a recorded CD, DVD, or Blu-ray to copy.");
+        }
+
+        var tracks = ReadSourceTracks(sourceRecorder);
+        int audioCount = tracks.Count(t => t.IsAudio);
+        int dataCount = tracks.Count(t => !t.IsAudio);
+        int totalSectors = status.UsedSectors;
+
+        if (tracks.Count >= 2 && tracks[0].IsAudio && !tracks[^1].IsAudio && tracks.Take(tracks.Count - 1).All(t => t.IsAudio))
+        {
+            string summary = directDriveCommandsEnabled
+                ? $"Enhanced CD ({audioCount} audio track(s) in session 1 + data track in session 2): session 1 audio and CD-Text will be ripped securely with error checks, and session 2 data files will be read and rewritten at the new disc's next writable address."
+                : $"Enhanced CD ({audioCount} audio track(s) in session 1 + data track in session 2): only session 1 audio tracks will be copied. Session 2 data will be skipped — turn on Direct drive commands to copy both sessions.";
+            return new DiscCopyPlanSummary(
+                CopyDiscKind.EnhancedCd,
+                audioCount,
+                dataCount,
+                totalSectors,
+                WillCopyAudio: true,
+                WillCopyData: directDriveCommandsEnabled,
+                summary);
+        }
+
+        if (tracks.Count >= 2 && !tracks[0].IsAudio && tracks.Skip(1).All(t => t.IsAudio))
+        {
+            string summary = directDriveCommandsEnabled
+                ? $"Mixed-mode CD (data in track 1 + {audioCount} audio track(s)): track 1 data and all audio tracks with CD-Text will be copied together."
+                : $"Mixed-mode CD (data in track 1 + {audioCount} audio track(s)): only the audio tracks will be copied. Track 1 data will be skipped — turn on Direct drive commands to copy both.";
+            return new DiscCopyPlanSummary(
+                CopyDiscKind.MixedModeCd,
+                audioCount,
+                dataCount,
+                totalSectors,
+                WillCopyAudio: true,
+                WillCopyData: directDriveCommandsEnabled,
+                summary);
+        }
+
+        if (tracks.Count > 0 && tracks.All(t => t.IsAudio))
+        {
+            return new DiscCopyPlanSummary(
+                CopyDiscKind.AudioCd,
+                audioCount,
+                0,
+                totalSectors,
+                WillCopyAudio: true,
+                WillCopyData: false,
+                $"Audio CD ({audioCount} track(s)): all audio tracks, gaps, and CD-Text will be ripped securely with error checks and written to the target CD.");
+        }
+
+        if (audioCount > 0)
+        {
+            return new DiscCopyPlanSummary(
+                CopyDiscKind.MixedModeCd,
+                audioCount,
+                dataCount,
+                totalSectors,
+                WillCopyAudio: true,
+                WillCopyData: false,
+                $"Mixed CD ({audioCount} audio track(s), {dataCount} data track(s)): multi-track mixed layout is not supported for data copying, so only the audio tracks will be copied.");
+        }
+
+        return new DiscCopyPlanSummary(
+            CopyDiscKind.DataDisc,
+            0,
+            Math.Max(1, dataCount),
+            totalSectors,
+            WillCopyAudio: false,
+            WillCopyData: true,
+            $"Data {status.MediaType.GetDisplayName()} ({totalSectors:N0} sectors): all data sectors will be copied to the target disc.");
+    }
+
+    private static int EstimateAudioSessionFrames(AudioCdCompilation compilation)
+    {
+        int total = 0;
+        for (int i = 0; i < compilation.Tracks.Count; i++)
+        {
+            var t = compilation.Tracks[i];
+            int preGap = i > 0
+                ? Math.Max(0, t.PreGapFrames)
+                : Math.Max(0, t.PreGapFrames - OpticalConstants.CdLeadInFrames);
+            total += t.DurationFrames + preGap + (i == 0 ? t.HiddenAudioFrames : 0);
+        }
+        return total;
+    }
+
+    private sealed record StagedEnhancedDataSession(CompilationDirectory Root, IsoBuildOptions BuildOptions);
+
+    private async Task<(StagedEnhancedDataSession? Session, string? Error)> StageEnhancedCdDataSessionAsync(
+        IDiscRecorderBackend sourceRecorder,
+        DiscTocTrack dataTrack,
+        string stageDir,
+        IProgress<BurnProgressSnapshot>? progress,
+        CancellationToken ct)
+    {
+        const int pvdProbeSectors = 17;
+        if (dataTrack.SectorCount < pvdProbeSectors)
+        {
+            return (null, $"session 2 track {dataTrack.TrackNumber} is only {Math.Max(0, dataTrack.SectorCount)} sectors long.");
+        }
+
+        progress?.Report(new BurnProgressSnapshot
+        {
+            CurrentActionDescription = "Inspecting Enhanced CD session 2 volume...",
+            TotalLba = dataTrack.SectorCount,
+            BufferLevelPercent = 100.0
+        });
+
+        byte[] headBuffer = new byte[pvdProbeSectors * OpticalConstants.DataSectorSize];
+        int headReadCount = 0;
+        var headRead = await _burnEngine.ReadSectorsAsync(
+            sourceRecorder,
+            dataTrack.StartLba,
+            pvdProbeSectors,
+            raw2352Mode: false,
+            (_, sector) =>
+            {
+                if (sector.Length != OpticalConstants.DataSectorSize)
+                {
+                    throw new InvalidDataException($"the drive returned {sector.Length} bytes for a data sector.");
+                }
+                sector.Span.CopyTo(headBuffer.AsSpan(headReadCount * OpticalConstants.DataSectorSize, OpticalConstants.DataSectorSize));
+                headReadCount++;
+                return ValueTask.CompletedTask;
+            },
+            progress,
+            ct).ConfigureAwait(false);
+
+        if (!headRead.Success || headReadCount != pvdProbeSectors)
+        {
+            return (null, headRead.ErrorMessage ?? $"only {headReadCount} of {pvdProbeSectors} header sectors could be read.");
+        }
+
+        var pvd = headBuffer.AsSpan(16 * OpticalConstants.DataSectorSize, OpticalConstants.DataSectorSize);
+        if (pvd[0] != 0x01 || Encoding.ASCII.GetString(pvd.Slice(1, 5)) != "CD001")
+        {
+            return (null, $"missing ISO 9660 Primary Volume Descriptor at LBA {dataTrack.StartLba + 16}.");
+        }
+
+        int volSpace = BinaryPrimitives.ReadInt32LittleEndian(pvd.Slice(80, 4));
+        int isoSectors;
+        if (volSpace > dataTrack.StartLba + 16)
+        {
+            isoSectors = volSpace - dataTrack.StartLba;
+        }
+        else if (volSpace >= pvdProbeSectors && volSpace <= dataTrack.SectorCount)
+        {
+            isoSectors = volSpace;
+        }
+        else
+        {
+            isoSectors = -1;
+        }
+
+        if (isoSectors < pvdProbeSectors || isoSectors > dataTrack.SectorCount)
+        {
+            return (null, $"session 2 volume size ({volSpace}) is outside track {dataTrack.TrackNumber} ({dataTrack.SectorCount} sectors).");
+        }
+
+        Directory.CreateDirectory(stageDir);
+        string sourceBinPath = Path.Combine(stageDir, "session2_source.bin");
+        int totalWritten = pvdProbeSectors;
+
+        await using (var binFile = new FileStream(sourceBinPath, FileMode.Create, FileAccess.Write, FileShare.None, 1 << 16, useAsync: true))
+        {
+            await binFile.WriteAsync(headBuffer, ct).ConfigureAwait(false);
+
+            if (isoSectors > pvdProbeSectors)
+            {
+                int remaining = isoSectors - pvdProbeSectors;
+                var tailRead = await _burnEngine.ReadSectorsAsync(
+                    sourceRecorder,
+                    dataTrack.StartLba + pvdProbeSectors,
+                    remaining,
+                    raw2352Mode: false,
+                    async (_, sector) =>
+                    {
+                        if (sector.Length != OpticalConstants.DataSectorSize)
+                        {
+                            throw new InvalidDataException($"the drive returned {sector.Length} bytes for a data sector.");
+                        }
+                        await binFile.WriteAsync(sector, ct).ConfigureAwait(false);
+                        totalWritten++;
+                    },
+                    progress,
+                    ct).ConfigureAwait(false);
+
+                if (!tailRead.Success)
+                {
+                    return (null, tailRead.ErrorMessage ?? "the drive reported a read error in session 2.");
+                }
+            }
+        }
+
+        if (totalWritten != isoSectors)
+        {
+            return (null, $"only {totalWritten:N0} of {isoSectors:N0} session 2 sectors were read.");
+        }
+
+        string extractRoot = Path.Combine(stageDir, "session2_files");
+        Directory.CreateDirectory(extractRoot);
+
+        await using var binRead = new FileStream(sourceBinPath, FileMode.Open, FileAccess.Read, FileShare.Read, 1 << 16, useAsync: false);
+        using var offsetStream = new SessionOffsetStream(binRead, dataTrack.StartLba, leaveOpen: true);
+        using var isoReader = IsoImageReader.FromStream(offsetStream, leaveOpen: true, sessionStartLba: dataTrack.StartLba);
+
+        var staged = await CloneIsoTreeToCompilationAsync(isoReader, offsetStream, extractRoot, ct).ConfigureAwait(false);
+        return (staged, null);
+    }
+
+    private static async Task<StagedEnhancedDataSession> CloneIsoTreeToCompilationAsync(
+        IsoImageReader isoReader,
+        Stream isoStream,
+        string extractRoot,
+        CancellationToken ct)
+    {
+        var root = CompilationDirectory.CreateRoot();
+        int fileCounter = 0;
+        byte[] copyBuffer = new byte[64 * 1024];
+
+        async Task CopyDirectoryAsync(IsoDirectoryEntry sourceDir, CompilationDirectory targetDir)
+        {
+            foreach (var subDir in sourceDir.SubDirectories)
+            {
+                ct.ThrowIfCancellationRequested();
+                var childDir = new CompilationDirectory(
+                    subDir.Name,
+                    lastWriteTimeUtc: subDir.RecordingTimeUtc,
+                    attributes: subDir.IsHidden
+                        ? (FileAttributes.Directory | FileAttributes.Hidden)
+                        : FileAttributes.Directory);
+                targetDir.AddDirectory(childDir);
+                await CopyDirectoryAsync(subDir, childDir).ConfigureAwait(false);
+            }
+
+            foreach (var isoFile in sourceDir.Files)
+            {
+                ct.ThrowIfCancellationRequested();
+                string stagedFilePath = Path.Combine(extractRoot, $"f_{++fileCounter:D6}.dat");
+                await using (var outStream = new FileStream(stagedFilePath, FileMode.Create, FileAccess.Write, FileShare.None, copyBuffer.Length, useAsync: true))
+                {
+                    if (isoFile.SizeBytes > 0)
+                    {
+                        isoStream.Position = (long)isoFile.StartLba * OpticalConstants.DataSectorSize;
+                        long remaining = isoFile.SizeBytes;
+                        while (remaining > 0)
+                        {
+                            int toRead = (int)Math.Min(copyBuffer.Length, remaining);
+                            int read = isoStream.Read(copyBuffer, 0, toRead);
+                            if (read <= 0)
+                            {
+                                throw new EndOfStreamException($"Unexpected end of session 2 image while extracting '{isoFile.VirtualPath}'.");
+                            }
+                            await outStream.WriteAsync(copyBuffer.AsMemory(0, read), ct).ConfigureAwait(false);
+                            remaining -= read;
+                        }
+                    }
+                }
+
+                var compFile = new CompilationFile(
+                    isoFile.Name,
+                    stagedFilePath,
+                    isoFile.SizeBytes,
+                    importedStartLba: null,
+                    streamFactory: null,
+                    parent: null,
+                    lastWriteTimeUtc: isoFile.RecordingTimeUtc,
+                    attributes: isoFile.IsHidden ? FileAttributes.Hidden : FileAttributes.Normal);
+                targetDir.AddFile(compFile, DuplicateFilePolicy.Overwrite);
+            }
+        }
+
+        await CopyDirectoryAsync(isoReader.RootDirectory, root).ConfigureAwait(false);
+
+        string label = string.IsNullOrWhiteSpace(isoReader.VolumeLabel) ? "CD_EXTRA" : isoReader.VolumeLabel;
+        var buildOptions = new IsoBuildOptions(
+            VolumeLabel: label,
+            IncludeIso9660: true,
+            IncludeJoliet: isoReader.HasJoliet,
+            IncludeUdf: false);
+
+        return new StagedEnhancedDataSession(root, buildOptions);
+    }
+
+    private sealed class SessionOffsetStream : Stream
+    {
+        private readonly Stream _inner;
+        private readonly long _baseOffset;
+        private readonly long _length;
+        private readonly bool _leaveOpen;
+        private long _position;
+
+        public SessionOffsetStream(Stream inner, int sessionStartLba, bool leaveOpen = false)
+        {
+            _inner = inner;
+            _baseOffset = (long)sessionStartLba * OpticalConstants.DataSectorSize;
+            _length = _baseOffset + inner.Length;
+            _leaveOpen = leaveOpen;
+        }
+
+        public override bool CanRead => true;
+        public override bool CanSeek => true;
+        public override bool CanWrite => false;
+        public override long Length => _length;
+
+        public override long Position
+        {
+            get => _position;
+            set
+            {
+                if (value < 0)
+                {
+                    throw new ArgumentOutOfRangeException(nameof(value));
+                }
+                _position = value;
+            }
+        }
+
+        public override int Read(byte[] buffer, int offset, int count) => Read(buffer.AsSpan(offset, count));
+
+        public override int Read(Span<byte> buffer)
+        {
+            if (buffer.IsEmpty || _position >= _length)
+            {
+                return 0;
+            }
+
+            int totalRead = 0;
+            if (_position < _baseOffset)
+            {
+                int zeroCount = (int)Math.Min(buffer.Length, _baseOffset - _position);
+                buffer[..zeroCount].Clear();
+                _position += zeroCount;
+                totalRead += zeroCount;
+                buffer = buffer[zeroCount..];
+            }
+
+            if (!buffer.IsEmpty && _position < _length)
+            {
+                _inner.Position = _position - _baseOffset;
+                int maxRead = (int)Math.Min(buffer.Length, _length - _position);
+                int read = _inner.Read(buffer[..maxRead]);
+                _position += read;
+                totalRead += read;
+            }
+
+            return totalRead;
+        }
+
+        public override long Seek(long offset, SeekOrigin origin)
+        {
+            long target = origin switch
+            {
+                SeekOrigin.Begin => offset,
+                SeekOrigin.Current => _position + offset,
+                SeekOrigin.End => _length + offset,
+                _ => throw new ArgumentOutOfRangeException(nameof(origin))
+            };
+            if (target < 0)
+            {
+                throw new IOException("Cannot seek before start of stream.");
+            }
+            _position = target;
+            return _position;
+        }
+
+        public override void Flush() { }
+        public override void SetLength(long value) => throw new NotSupportedException();
+        public override void Write(byte[] buffer, int offset, int count) => throw new NotSupportedException();
+
+        protected override void Dispose(bool disposing)
+        {
+            if (disposing && !_leaveOpen)
+            {
+                _inner.Dispose();
+            }
+            base.Dispose(disposing);
         }
     }
 

@@ -274,6 +274,7 @@ public class BurnOperationResult
     public bool Success { get; init; }
     public BurnStatus Status { get; init; } = BurnStatus.NotStarted;
     public string? ErrorMessage { get; init; }
+    public string? WarningMessage { get; init; }
     public int SectorsWritten { get; init; }
     public TimeSpan TotalTime { get; init; }
     public double AverageSpeedMultiplier { get; init; }
@@ -454,6 +455,24 @@ public class AudioBurnOptions
     /// data over the disc's PCM (Enhanced CD / CD-Extra). Off by default.
     /// </summary>
     public bool IncludeRecoverySession { get; init; }
+
+    /// <summary>
+    /// Optional folder on disk whose files and subfolders are written as a Mode 1 ISO 9660 + Joliet second session
+    /// (Enhanced CD / CD-Extra) after the audio session is left open. Requires direct drive commands; cannot be
+    /// combined with <see cref="IncludeRecoverySession"/> or a mixed-mode track-1 data track.
+    /// </summary>
+    public string? DataSessionFolderPath { get; set; }
+
+    /// <summary>
+    /// Optional volume label for the second-session data volume when <see cref="DataSessionFolderPath"/> is set.
+    /// Defaults to <c>"CD_EXTRA"</c> when omitted or blank.
+    /// </summary>
+    public string? DataSessionVolumeLabel { get; set; }
+
+    /// <summary>
+    /// Whether to read back and verify the second-session data volume after writing (default <c>true</c>).
+    /// </summary>
+    public bool VerifyDataSession { get; set; } = true;
 }
 
 /// <summary>

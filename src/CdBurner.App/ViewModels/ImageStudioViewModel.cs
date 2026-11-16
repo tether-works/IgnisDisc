@@ -45,6 +45,7 @@ public class ImageStudioViewModel : ObservableObject
 
     private IDiscRecorderBackend? _copySourceRecorder;
     private IDiscRecorderBackend? _copyTargetRecorder;
+    private string _copySourceSummary = string.Empty;
     private int _copyCount = 1;
     private bool _copyRawCloneMode;
     private bool _copyVerifyEachDisc = true;
@@ -238,7 +239,10 @@ public class ImageStudioViewModel : ObservableObject
         set
         {
             _directDefault.UserChose();
-            SetProperty(ref _useDirectDriveCommands, value);
+            if (SetProperty(ref _useDirectDriveCommands, value))
+            {
+                UpdateCopySourceSummary();
+            }
         }
     }
 
@@ -251,6 +255,7 @@ public class ImageStudioViewModel : ObservableObject
         if (_directDefault.Decide(_useDirectDriveCommands, enabled && DirectWritingDefault.Prefers(status)) is bool value)
         {
             SetProperty(ref _useDirectDriveCommands, value, nameof(UseDirectDriveCommands));
+            UpdateCopySourceSummary();
         }
     }
 
@@ -380,8 +385,38 @@ public class ImageStudioViewModel : ObservableObject
     public IDiscRecorderBackend? CopySourceRecorder
     {
         get => _copySourceRecorder;
-        set => SetProperty(ref _copySourceRecorder, value);
+        set
+        {
+            var previous = _copySourceRecorder;
+            if (SetProperty(ref _copySourceRecorder, value))
+            {
+                if (previous is VirtualDiscRecorder prevVirtual)
+                {
+                    prevVirtual.MediaChanged -= OnCopySourceMediaChanged;
+                }
+                if (value is VirtualDiscRecorder nextVirtual)
+                {
+                    nextVirtual.MediaChanged += OnCopySourceMediaChanged;
+                }
+                UpdateCopySourceSummary();
+            }
+        }
     }
+
+    /// <summary>Plain-language explanation of what 1-Click Disc Copy will copy from the selected source drive.</summary>
+    public string CopySourceSummary
+    {
+        get => _copySourceSummary;
+        private set => SetProperty(ref _copySourceSummary, value);
+    }
+
+    /// <summary>Refreshes <see cref="CopySourceSummary"/> by inspecting the disc currently in <see cref="CopySourceRecorder"/>.</summary>
+    public void UpdateCopySourceSummary()
+    {
+        CopySourceSummary = DiscCopyService.DescribeCopyPlan(CopySourceRecorder, UseDirectDriveCommands).SummaryText;
+    }
+
+    private void OnCopySourceMediaChanged(object? sender, EventArgs e) => UpdateCopySourceSummary();
 
     /// <summary>
     /// Target optical drive for 1-Click Disc Copy operations.
@@ -657,6 +692,9 @@ public class ImageStudioViewModel : ObservableObject
 
     public AsyncRelayCommand CopyDiscCommand { get; }
 
+    /// <summary>Re-inspects the disc in <see cref="CopySourceRecorder"/> and updates <see cref="CopySourceSummary"/>.</summary>
+    public RelayCommand RefreshCopySourceCommand { get; }
+
     /// <summary>
     /// Clears all entries in the hardware/sector event log drawer.
     /// </summary>
@@ -699,6 +737,7 @@ public class ImageStudioViewModel : ObservableObject
         BrowseRipTargetFileCommand = new RelayCommand(BrowseRipTargetFile);
         ConvertLegacyImageToIsoCommand = new AsyncRelayCommand(async p => await ConvertLegacyImageToIsoAsync(p as string), _ => !IsBusy && IsLegacyImageLoaded);
         CopyDiscCommand = new AsyncRelayCommand(async _ => await CopyDiscAsync(), _ => !IsBusy);
+        RefreshCopySourceCommand = new RelayCommand(_ => UpdateCopySourceSummary());
         AddToBurnQueueCommand = new RelayCommand(p => AddToBurnQueue(p));
         RemoveFromBurnQueueCommand = new RelayCommand(p => RemoveFromBurnQueue(p));
         ClearBurnQueueCommand = new RelayCommand(() =>
@@ -724,6 +763,14 @@ public class ImageStudioViewModel : ObservableObject
                            ?? AvailableRecorders.FirstOrDefault();
         CopySourceRecorder = SelectedRecorder;
         CopyTargetRecorder = SelectedRecorder;
+        UpdateCopySourceSummary();
+        _deviceService.DeviceChanged += (_, e) =>
+        {
+            if (string.Equals(e.UniqueId, CopySourceRecorder?.UniqueId, StringComparison.OrdinalIgnoreCase))
+            {
+                UpdateCopySourceSummary();
+            }
+        };
         AppendLog("Disc Image Studio initialized. Ready for ISO/CUE/NRG/MDF/CCD mastering & 1-Click Disc Copy.");
     }
 
@@ -1237,6 +1284,7 @@ public class ImageStudioViewModel : ObservableObject
             _activeCts?.Dispose();
             _activeCts = null;
             IsBusy = false;
+            UpdateCopySourceSummary();
         }
     }
 
@@ -1442,6 +1490,7 @@ public class ImageStudioViewModel : ObservableObject
             _activeCts?.Dispose();
             _activeCts = null;
             IsBusy = false;
+            UpdateCopySourceSummary();
         }
     }
 
@@ -1643,6 +1692,7 @@ public class ImageStudioViewModel : ObservableObject
             _activeCts?.Dispose();
             _activeCts = null;
             IsBusy = false;
+            UpdateCopySourceSummary();
         }
     }
 
@@ -1934,6 +1984,10 @@ public class ImageStudioViewModel : ObservableObject
                 return await PromptForBlankTargetDiscAsync(targetRec, copyIdx, CopyCount, singleDrive, token);
             };
 
+            var directDataWriter = UseDirectDriveCommands
+                ? new CdBurner.Hardware.NativeWriting.NativeDataBurnEngine(_burnEngine, DirectBurnLogDirectory)
+                : null;
+
             var copyResult = await _copyService.CopyDiscAsync(
                 sourceRec,
                 targetRec,
@@ -1945,10 +1999,11 @@ public class ImageStudioViewModel : ObservableObject
                     KeepStagedImage = CopyKeepStagedImage,
                     WriteSpeed = SelectedWriteSpeed,
                     OnPrepareTargetDiscAsync = prepareCallback,
-                    // A mixed-mode CD's data track is copied only by the direct writer, and only when the user turned it on.
+                    // A mixed-mode or Enhanced CD's data is copied only by the direct writer, and only when the user turned it on.
                     MixedModeWriter = UseDirectDriveCommands
                         ? new CdBurner.Hardware.NativeWriting.NativeAudioBurnEngine(DirectBurnLogDirectory)
                         : null,
+                    DataSessionWriter = directDataWriter,
                     // Source audio that still reads wrong: ask before writing (as for damaged FLAC files). Unattended, the copy stops.
                     ConfirmSuspectAudioAsync = CdBurner.App.Views.BurnTargetDialog.IsInteractiveSession
                         ? async (problem, _) =>
@@ -1973,6 +2028,7 @@ public class ImageStudioViewModel : ObservableObject
                 BurnProgress = 100.0;
                 StatusMessage = $"Disc Copy complete: {copyResult.CopiesCompleted}/{copyResult.CopiesRequested} copy/copies burned ({copyResult.TotalSectorsWritten:N0} total sectors)."
                     + (copyResult.CopiedDataTrack ? " The data track was copied with the audio." : string.Empty)
+                    + (copyResult.CopiedDataSession ? " Both sessions (audio and data) were copied." : string.Empty)
                     + (copyResult.WarningMessage is { } copyWarning ? $" {copyWarning}" : string.Empty);
                 AppendLog(StatusMessage);
             }
@@ -2006,6 +2062,7 @@ public class ImageStudioViewModel : ObservableObject
             _activeCts?.Dispose();
             _activeCts = null;
             IsBusy = false;
+            UpdateCopySourceSummary();
         }
     }
 

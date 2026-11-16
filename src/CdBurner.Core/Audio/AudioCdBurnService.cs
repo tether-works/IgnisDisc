@@ -1,8 +1,24 @@
 using CdBurner.Core.Abstractions;
 using CdBurner.Core.Archival;
+using CdBurner.Core.Burning;
+using CdBurner.Core.Compilation;
+using CdBurner.Core.Iso;
 using CdBurner.Core.Primitives;
 
 namespace CdBurner.Core.Audio;
+
+/// <summary>
+/// Capacity and layout plan for a Mode 1 ISO 9660 + Joliet data session (session 2) on an Enhanced CD (CD-Extra).
+/// </summary>
+public sealed record EnhancedCdDataPlan(
+    CompilationDirectory Root,
+    IsoBuildOptions BuildOptions,
+    int FileCount,
+    int IsoSectors,
+    int PaddedTrackSectors,
+    int PredictedStartLba,
+    long TotalDiscSectorsRequired,
+    string? ShortenedNamesWarning);
 
 /// <summary>
 /// Service orchestrating Red Book Audio CD burning (Track-at-Once and gapless Disc-at-Once with Lead-In CD-Text),
@@ -28,6 +44,67 @@ public class AudioCdBurnService
     /// Manifest written to session 2 on the most recent Enhanced CD recovery burn, or null if none ran.
     /// </summary>
     public AudioRecoveryManifest? LastRecoveryManifest { get; private set; }
+
+    /// <summary>Number of 2,048-byte ISO sectors written to session 2 on the most recent Enhanced CD folder burn, or 0.</summary>
+    public int LastDataSessionSectors { get; private set; }
+
+    /// <summary>Start LBA (NWA) of session 2 on the most recent Enhanced CD folder burn, or null.</summary>
+    public int? LastDataSessionStartLba { get; private set; }
+
+    /// <summary>
+    /// Computes the ISO 9660 + Joliet session-2 layout and total disc sectors required for an Enhanced CD
+    /// carrying <paramref name="audioSessionFrames"/> of session-1 audio followed by <paramref name="folderPath"/>.
+    /// </summary>
+    public static EnhancedCdDataPlan PlanDataSessionFolder(
+        string folderPath,
+        string? volumeLabel,
+        int audioSessionFrames)
+    {
+        ArgumentException.ThrowIfNullOrWhiteSpace(folderPath);
+        if (!Directory.Exists(folderPath))
+        {
+            throw new DirectoryNotFoundException($"Data session folder does not exist: '{folderPath}'.");
+        }
+
+        var root = CompilationFolderImporter.ImportAsRoot(folderPath, strict: true);
+        if (root.Children.Count == 0)
+        {
+            throw new InvalidOperationException("The selected data session folder is empty.");
+        }
+
+        var files = root.GetAllFilesRecursive();
+        foreach (var file in files)
+        {
+            if (file.SizeBytes > uint.MaxValue)
+            {
+                throw new InvalidOperationException(
+                    $"File '{file.Name}' ({file.SizeBytes:N0} bytes) exceeds the 4 GiB ISO 9660 / Joliet single-file limit.");
+            }
+        }
+
+        string label = string.IsNullOrWhiteSpace(volumeLabel) ? "CD_EXTRA" : volumeLabel.Trim();
+        var buildOptions = new IsoBuildOptions(
+            VolumeLabel: label,
+            IncludeIso9660: true,
+            IncludeJoliet: true,
+            IncludeUdf: false);
+
+        int predictedNwa = Math.Max(0, audioSessionFrames) + (int)RecoverySessionBudget.FixedSessionSectors;
+        int isoSectors = IsoUdfImageBuilder.CalculateTotalSectors(root, buildOptions, predictedNwa) - predictedNwa;
+        int paddedSectors = Math.Max(300, isoSectors);
+        long totalRequired = (long)predictedNwa + paddedSectors + 2;
+        string? shortenedWarning = DataBurnService.DescribeShortenedNames(root, buildOptions, predictedNwa);
+
+        return new EnhancedCdDataPlan(
+            root,
+            buildOptions,
+            files.Count,
+            isoSectors,
+            paddedSectors,
+            predictedNwa,
+            totalRequired,
+            shortenedWarning);
+    }
 
     /// <summary>
     /// Initializes a new instance of <see cref="AudioCdBurnService"/>.
@@ -222,6 +299,57 @@ public class AudioCdBurnService
         }
 
         LastRecoveryManifest = null;
+        LastDataSessionSectors = 0;
+        LastDataSessionStartLba = null;
+
+        bool hasDataFolder = !string.IsNullOrWhiteSpace(options.DataSessionFolderPath);
+        if (hasDataFolder && !checkOnly)
+        {
+            if (options.IncludeRecoverySession)
+            {
+                return BurnOperationResult.Failed(
+                    "Choose either a data folder or a PAR2 recovery session for session 2, not both. Nothing was written to the disc.");
+            }
+            if (compilation.HasDataTrack)
+            {
+                return BurnOperationResult.Failed(
+                    "An Enhanced CD data folder (session 2) cannot be combined with a mixed-mode data track in track 1. Nothing was written to the disc.");
+            }
+            if (_recoveryDataEngine == null || !_burnEngine.WritesMixedModeCds)
+            {
+                return BurnOperationResult.Failed(
+                    "Enhanced CDs (audio, then a data folder in session 2) require direct drive commands. Nothing was written to the disc.");
+            }
+            if (!Directory.Exists(options.DataSessionFolderPath))
+            {
+                return BurnOperationResult.Failed(
+                    $"Data session folder does not exist: '{options.DataSessionFolderPath}'. Nothing was written to the disc.");
+            }
+
+            try
+            {
+                var preImport = CompilationFolderImporter.ImportAsRoot(options.DataSessionFolderPath!, strict: true);
+                if (preImport.Children.Count == 0)
+                {
+                    return BurnOperationResult.Failed("The selected data session folder is empty. Nothing was written to the disc.");
+                }
+                foreach (var file in preImport.GetAllFilesRecursive())
+                {
+                    if (file.SizeBytes > uint.MaxValue)
+                    {
+                        return BurnOperationResult.Failed(
+                            $"File '{file.Name}' exceeds the 4 GiB ISO 9660 / Joliet single-file limit. Nothing was written to the disc.");
+                    }
+                }
+            }
+            catch (Exception ex) when (ex is not OperationCanceledException)
+            {
+                return BurnOperationResult.Failed(
+                    $"Could not read data session folder '{options.DataSessionFolderPath}': {ex.Message} Nothing was written to the disc.",
+                    ex);
+            }
+        }
+
         string? par2Path = null;
         if (options.IncludeRecoverySession && !checkOnly)
         {
@@ -512,16 +640,28 @@ public class AudioCdBurnService
                 }
             }
 
+            EnhancedCdDataPlan? dataPlan = null;
+            if (hasDataFolder && !checkOnly)
+            {
+                dataPlan = PlanDataSessionFolder(options.DataSessionFolderPath!, options.DataSessionVolumeLabel, totalRequiredFrames);
+                if (dataPlan.TotalDiscSectorsRequired > discCapacitySectors ||
+                    (mediaStatus.FreeSectors > 0 && dataPlan.TotalDiscSectorsRequired > mediaStatus.FreeSectors))
+                {
+                    return BurnOperationResult.Failed(
+                        $"Audio ({totalRequiredFrames:N0} sectors), session gap ({RecoverySessionBudget.FixedSessionSectors:N0} sectors), and data folder ({dataPlan.PaddedTrackSectors:N0} sectors) need {dataPlan.TotalDiscSectorsRequired:N0} sectors, exceeding disc capacity ({discCapacitySectors:N0} sectors). Nothing was written to the disc.");
+                }
+            }
+
             // 5. Generate CD-Text payload if requested
             bool includeCdText = compilation.IncludeCdText || options.WriteCdText;
             byte[]? cdTextPayload = includeCdText ? compilation.BuildCdTextPacks() : null;
 
-            bool leaveOpenForRecovery = options.IncludeRecoverySession && !checkOnly;
+            bool leaveOpenForSession2 = (options.IncludeRecoverySession || hasDataFolder) && !checkOnly;
             var effectiveOptions = new AudioBurnOptions
             {
                 Speed = options.Speed,
                 Simulate = options.Simulate,
-                EjectWhenDone = options.EjectWhenDone && !leaveOpenForRecovery,
+                EjectWhenDone = options.EjectWhenDone && !leaveOpenForSession2,
                 PerformNormalization = false, // Already performed
                 WriteCdText = includeCdText,
                 UseDiscAtOnce = compilation.RecordingMode == AudioRecordingMode.DiscAtOnceGapless,
@@ -530,7 +670,7 @@ public class AudioCdBurnService
                 MediaCatalogNumber = options.MediaCatalogNumber ?? compilation.UpcEan,
                 KeepIndexMarks = options.KeepIndexMarks,
                 WriteOffsetSamples = options.WriteOffsetSamples,
-                LeaveSessionOpen = options.LeaveSessionOpen || leaveOpenForRecovery,
+                LeaveSessionOpen = options.LeaveSessionOpen || leaveOpenForSession2,
                 IncludeRecoverySession = options.IncludeRecoverySession,
                 DisableBufferUnderrunFree = options.DisableBufferUnderrunFree
             };
@@ -549,18 +689,62 @@ public class AudioCdBurnService
                 progress,
                 cancellationToken).ConfigureAwait(false);
 
-            if (!session1Result.Success || !leaveOpenForRecovery || options.Simulate)
+            if (!session1Result.Success || !leaveOpenForSession2 || options.Simulate)
             {
                 return session1Result;
             }
 
-            // 7. Build and write session 2 (PAR2 over PCM) at the next writable LBA and close the disc.
+            // 7. Build and write session 2 (data folder or PAR2 over PCM) at the next writable LBA and close the disc.
             var postAudioStatus = recorder.QueryMediaStatus();
             if (!postAudioStatus.IsAppendable || postAudioStatus.NextWritableLba <= 0)
             {
                 return BurnOperationResult.Failed(
                     "Session 1 audio finished, but the drive did not leave the disc open for session 2.",
                     session1Result.Exception);
+            }
+
+            if (hasDataFolder)
+            {
+                int actualNwa = postAudioStatus.NextWritableLba;
+                var session2FolderOptions = new DataBurnOptions
+                {
+                    VolumeLabel = dataPlan!.BuildOptions.VolumeLabel,
+                    Speed = options.Speed,
+                    Simulate = false,
+                    CloseDisc = true,
+                    VerifyAfterBurn = options.VerifyDataSession,
+                    EjectWhenDone = options.EjectWhenDone,
+                    DisableBufferUnderrunFree = options.DisableBufferUnderrunFree
+                };
+
+                var folderSessionResult = await new DataBurnService(_recoveryDataEngine!).BurnCompilationAsync(
+                    recorder,
+                    dataPlan.Root,
+                    session2FolderOptions,
+                    dataPlan.BuildOptions,
+                    progress,
+                    cancellationToken).ConfigureAwait(false);
+
+                if (!folderSessionResult.Success)
+                {
+                    return BurnOperationResult.Failed(
+                        $"Session 1 audio completed, but session 2 data write failed: {folderSessionResult.ErrorMessage}",
+                        folderSessionResult.Exception);
+                }
+
+                LastDataSessionStartLba = actualNwa;
+                LastDataSessionSectors = folderSessionResult.SectorsWritten;
+                return new BurnOperationResult
+                {
+                    Success = true,
+                    Status = BurnStatus.Succeeded,
+                    SectorsWritten = session1Result.SectorsWritten + folderSessionResult.SectorsWritten,
+                    TotalTime = session1Result.TotalTime + folderSessionResult.TotalTime,
+                    AverageSpeedMultiplier = session1Result.AverageSpeedMultiplier > 0
+                        ? session1Result.AverageSpeedMultiplier
+                        : folderSessionResult.AverageSpeedMultiplier,
+                    WarningMessage = DataBurnService.JoinWarnings(folderSessionResult.Warning, AudioRecoverySessionService.CarHeadUnitWarning)
+                };
             }
 
             progress?.Report(new BurnProgressSnapshot
