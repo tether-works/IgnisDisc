@@ -96,7 +96,7 @@ FUA over every sector, compared with the image. A test write skips the close and
 disc that is not blank is never erased by the writer.
 
 **Adding a session (CD-R, CD-RW, DVD-R, DVD-RW, DVD+R left open; built 2026-11-12; run on a real CD-RW, CD-R, DVD-R
-and DVD+R 2026-11-13, DVD-RW simulator only):** On a real open DVD-RW (2026-11-15) Windows' media status says
+and DVD+R 2026-11-13; DVD-RW only in the simulator, because the real open DVD-RW is not reachable, 2026-11-15):** On a real open DVD-RW (Ritek, 2026-11-15) Windows' media status says
 overwrite-only with no next writable address (state 0x1, profiles 0x0014 and 0x0013 both current), although the drive
 reports profile 0x0014 and disc status 1. `DataBurnService` and `NativeDataBurnEngine` take the disc from that status,
 so a second session is refused (nothing written) and the append path is never reached for DVD-RW. Reaching it needs
