@@ -34,7 +34,7 @@ back); a DVD-R written in one pass, a DVD-R left open and given a second session
 write; a used and a new DVD+RW; a DVD+R finalized by the drive; three added sessions on a CD-RW, a CD-R and a DVD+R and
 four on a DVD-R, every file of every session identical; a 60 s DVD-Video test disc on a DVD+RW, read back and decoded
 in full; and a dual-layer DVD+R with the layer break where IgnisDisc was told to put it (the Ubuntu 26.04 image, 6.5 GB,
-SHA-256 of the disc equal to the image). Also real: a two-film DVD-9 on a dual-layer DVD+R with the break on the second film's first cell, played on an Xbox Series X across the layer change. Real since 2026-11-15: DVD-RW closed (Disc-At-Once), left open (incremental) and in restricted overwrite mode (expanded with 13h). A second session added to a real DVD-RW the same day. Still simulator only: DVD-RAM, dual-layer DVD-R, Blu-ray, the open audio session with a data
+SHA-256 of the disc equal to the image). Also real: a two-film DVD-9 on a dual-layer DVD+R with the break on the second film's first cell, played on an Xbox Series X across the layer change. Real since 2026-11-15: DVD-RW closed (Disc-At-Once), left open (incremental) and in restricted overwrite mode (expanded with 13h). A second session added to a real DVD-RW the same day. Still simulator only: DVD-RAM, dual-layer DVD-R, Blu-ray, a Mode 2 / XA data track in a mixed-mode CD, the write-offset correction on a mixed-mode CD, the open audio session with a data
 session after it (CD-Extra), the Audio CD recovery session, CD picture tracks, the radial spread of archive recovery data, the archive
 `HEALTH.json` certificates, and the `eject` and `load` commands.
 
@@ -173,8 +173,14 @@ one block size to the other. A rip of such a disc keeps the post-gap at the end 
 leaves up to 150 trailing zero sectors to the writer, which writes the same zeros: the disc then matches the
 `.bin`. The read-back check reads track 1 with `READ CD` sector type Mode 1 (user data only), compares it with
 the image and the post-gap with zeros, then finds the audio offset and compares the audio from the first audio
-sector. No write-offset correction is applied: the shift would move audio samples across sector boundaries,
-and the data sectors cannot move with them.
+sector. The write-offset correction is applied to the audio tracks only (from the first audio sector to the
+lead-out); track 1, its pre-gap and post-gap stay byte-exact. This has run only against the virtual drive; no real
+mixed-mode disc has been written with a correction.
+
+**Mode 2 / CD-ROM XA track 1 (simulator only, 2026-11-15):** `MODE2/2352` and `MODE2/2336` are accepted as track 1 of a
+mixed-mode cue sheet and written with data form 20h (2,336-byte host blocks) and session format 20h, keeping the
+Form 1 / Form 2 sub-headers. The read-back check and the rip back were tested byte for byte against the virtual
+drive. Not yet run on a real disc.
 
 **Safety checks before the first WRITE** (any failure stops with nothing written): disc profile is CD-R or CD-RW;
 the CD Mastering feature is current and offers SAO, test write and (for CD-Text) R-W; the disc is blank; the audio
