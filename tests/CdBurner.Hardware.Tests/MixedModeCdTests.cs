@@ -102,16 +102,91 @@ public class MixedModeCdTests
         Assert.Contains("data track sectors read back differently, the first at LBA 0", result.Message);
     }
 
-    [Fact]
-    public void WriteOffsetShift_IsNotAppliedToAMixedModeDisc()
+    [Theory]
+    [InlineData(-30, 12)]
+    [InlineData(30, -12)]
+    [InlineData(-6, 6)]
+    [InlineData(-700, 24)]
+    [InlineData(700, -24)]
+    public void WriteOffsetShift_MovesAudioPartOnly_SoDiscHasByteExactDataAndSampleExactAudio(int writeOffset, int readOffset)
     {
-        var drive = new VirtualMmcDrive();
-        var notes = new List<string>();
+        var plain = new VirtualMmcDrive();
+        Assert.True(Run(plain, Request(shift: 0)).Success);
+        byte[] expected = plain.RecordedProgram();
 
-        var result = new NativeSaoAudioWriter(drive, notes.Add, _ => { }).Write(Request(shift: 6));
+        var moved = new VirtualMmcDrive { WriteOffsetSamples = writeOffset, ReadOffsetSamples = readOffset };
+        var notes = new List<string>();
+        var result = new NativeSaoAudioWriter(moved, notes.Add, _ => { }).Write(Request(shift: -writeOffset));
 
         Assert.True(result.Success, result.Message);
-        Assert.Contains(notes, n => n.Contains("write-offset correction (+6 samples) is not applied"));
+        Assert.True(result.Verification!.Passed, result.Verification.Message);
+        Assert.Equal(writeOffset + readOffset, result.Verification.OffsetSamples);
+        Assert.Contains(notes, n => n.Contains("shifting the audio part"));
+
+        int dataBytes = (150 + DataSectors + 150) * 2352;
+        byte[] actual = moved.RecordedProgram();
+        Assert.Equal(expected.Length, actual.Length);
+        Assert.True(actual.AsSpan(0, dataBytes).SequenceEqual(expected.AsSpan(0, dataBytes)));
+
+        byte[] image = Image();
+        Assert.Equal(image.AsSpan(0, 2048).ToArray(), RawSectorCodec.Extract2048From2352(actual.AsSpan(150 * 2352, 2352), out bool validFirst));
+        Assert.True(validFirst);
+        Assert.Equal(image.AsSpan((DataSectors - 1) * 2048, 2048).ToArray(),
+            RawSectorCodec.Extract2048From2352(actual.AsSpan((150 + DataSectors - 1) * 2352, 2352), out bool validLast));
+        Assert.True(validLast);
+
+        int tailSilenceBytes = Math.Max(0, -writeOffset) * 4;
+        int exactAudioBytes = actual.Length - dataBytes - tailSilenceBytes;
+        Assert.True(actual.AsSpan(dataBytes, exactAudioBytes).SequenceEqual(expected.AsSpan(dataBytes, exactAudioBytes)));
+        if (tailSilenceBytes > 0)
+        {
+            Assert.True(actual.AsSpan(actual.Length - tailSilenceBytes).IndexOfAnyExcept((byte)0) < 0);
+        }
+    }
+
+    [Fact]
+    public void Mode2XaMixedDisc_WithWriteOffsetCompensation_KeepsSubheadersByteExact_AndAudioSampleExact()
+    {
+        byte[] xaImage = BuildInterleavedMode2Xa2336(DataSectors);
+        NativeSaoWriteRequest XaRequest(int shift) => new(
+            new[]
+            {
+                new SaoTrack(1, DataSectors, 150, DataMode: SaoDataMode.Mode2Xa),
+                new SaoTrack(2, AudioSectors, 150)
+            },
+            i => new MemoryStream(i == 0 ? xaImage : Pcm(i)),
+            null, null, TestWrite: false)
+        { ShiftSamples = shift };
+
+        var plain = new VirtualMmcDrive();
+        Assert.True(Run(plain, XaRequest(shift: 0)).Success);
+        byte[] expected = plain.RecordedProgram();
+
+        var moved = new VirtualMmcDrive { WriteOffsetSamples = -24, ReadOffsetSamples = 12 };
+        var result = Run(moved, XaRequest(shift: 24));
+
+        Assert.True(result.Success, result.Message);
+        Assert.True(result.Verification!.Passed, result.Verification.Message);
+        Assert.Equal(-12, result.Verification.OffsetSamples);
+
+        int dataBytes = (150 + DataSectors + 150) * 2352;
+        byte[] actual = moved.RecordedProgram();
+        Assert.True(actual.AsSpan(0, dataBytes).SequenceEqual(expected.AsSpan(0, dataBytes)));
+        Assert.True(actual.AsSpan(dataBytes, actual.Length - dataBytes - 24 * 4).SequenceEqual(
+            expected.AsSpan(dataBytes, expected.Length - dataBytes - 24 * 4)));
+    }
+
+    [Fact]
+    public void ShiftLongerThanAudioPart_StopsBeforeWriting_AndLeavesDiscBlank()
+    {
+        var drive = new VirtualMmcDrive();
+
+        var result = Run(drive, Request(shift: (150 + 2 * AudioSectors) * 588));
+
+        Assert.False(result.Success);
+        Assert.True(result.StoppedBeforeWriting);
+        Assert.Equal(0, drive.WriteCommandCount);
+        Assert.False(drive.Recorded);
     }
 
     [Fact]

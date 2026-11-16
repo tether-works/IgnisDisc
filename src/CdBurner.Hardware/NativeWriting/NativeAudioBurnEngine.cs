@@ -254,7 +254,9 @@ public sealed class NativeAudioBurnEngine : IBurnEngineBackend, IAudioDiscVerifi
             log.Note($"IgnisDisc disc check (no writing). Drive: {recorder.VendorId} {recorder.ProductId} {recorder.ProductRevision} ({(recorder.IsVirtual ? "virtual" : "physical")}).");
             if (LastWriteOffsetPlan is { } plan)
             {
-                log.Note($"{plan.Explanation} The source is compared {plan.ShiftSamples:+0;-0;0} samples later, as a burn on this drive writes it.");
+                log.Note(request.Tracks.Any(t => t.IsData)
+                    ? $"{plan.Explanation} Mixed-mode CD: the audio part is compared {plan.ShiftSamples:+0;-0;0} samples later from the first audio sector (data track untouched)."
+                    : $"{plan.Explanation} The source is compared {plan.ShiftSamples:+0;-0;0} samples later, as a burn on this drive writes it.");
             }
             try
             {
@@ -347,8 +349,8 @@ public sealed class NativeAudioBurnEngine : IBurnEngineBackend, IAudioDiscVerifi
     {
         LastWriteOffsetPlan = null;
         bool automatic = UsesWriteOffsets(recorder);
-        bool mixedMode = tracks.Any(t => t.IsDataTrack); // the data track's sectors cannot move with the audio: no correction
-        if (!request.TestWrite && !mixedMode && (options.WriteOffsetSamples != null || automatic))
+        bool hasAudio = tracks.Any(t => !t.IsDataTrack);
+        if (!request.TestWrite && hasAudio && (options.WriteOffsetSamples != null || automatic))
         {
             int? readOffset = null;
             string? source = null;
@@ -398,13 +400,21 @@ public sealed class NativeAudioBurnEngine : IBurnEngineBackend, IAudioDiscVerifi
         string kind = request.TestWrite ? "test write only" : TestWriteFirst ? "test write, then real write" : "real write";
         log.Note($"IgnisDisc native Session-at-Once writer, {kind}. Drive: {recorder.VendorId} {recorder.ProductId} {recorder.ProductRevision} ({(recorder.IsVirtual ? "virtual" : "physical")}).");
         log.Note($"Tracks: {request.Tracks.Count}, CD-Text: {(request.CdTextPacks != null ? $"{request.CdTextPacks.Length / 18} packs" : "none")}.");
+        bool mixedMode = tracks.Any(t => t.IsDataTrack);
         if (LastWriteOffsetPlan is { } plan)
         {
-            log.Note(plan.ShiftSamples == 0 ? plan.Explanation : $"{plan.Explanation} The audio is sent {plan.ShiftSamples:+0;-0} samples later to correct it.");
-        }
-        else if (tracks.Any(t => t.IsDataTrack))
-        {
-            log.Note("Mixed-mode CD: no write-offset correction; the audio lands where this drive's write offset puts it.");
+            if (plan.ShiftSamples == 0)
+            {
+                log.Note(mixedMode ? $"Mixed-mode CD: {plan.Explanation}" : plan.Explanation);
+            }
+            else if (mixedMode)
+            {
+                log.Note($"Mixed-mode CD: {plan.Explanation} The audio part is sent {plan.ShiftSamples:+0;-0} samples later from the first audio sector (data track untouched).");
+            }
+            else
+            {
+                log.Note($"{plan.Explanation} The audio is sent {plan.ShiftSamples:+0;-0} samples later to correct it.");
+            }
         }
 
         IDisposable? exclusive = null;

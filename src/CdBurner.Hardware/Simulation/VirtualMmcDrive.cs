@@ -620,31 +620,38 @@ public sealed class VirtualMmcDrive : IScsiTransport
     /// </summary>
     private byte[]? _onDisc;
     private long _onDiscFor = -1;
+    private int _onDiscWriteOffset;
+    private int _onDiscDataEndLba;
 
     private byte[] OnDiscCached()
     {
-        if (_onDisc == null || _onDiscFor != ProgramAreaWritten.Length)
+        if (_onDisc == null || _onDiscFor != ProgramAreaWritten.Length || _onDiscWriteOffset != WriteOffsetSamples || _onDiscDataEndLba != _recordedDataEndLba)
         {
-            _onDisc = RecordedProgram();
+            _onDisc = BuildRecordedProgram(includeLeadOutOverflow: true);
             _onDiscFor = ProgramAreaWritten.Length;
+            _onDiscWriteOffset = WriteOffsetSamples;
+            _onDiscDataEndLba = _recordedDataEndLba;
         }
         return _onDisc;
     }
 
-    public byte[] RecordedProgram()
+    public byte[] RecordedProgram() => BuildRecordedProgram(includeLeadOutOverflow: false);
+
+    private byte[] BuildRecordedProgram(bool includeLeadOutOverflow)
     {
         ReadOnlySpan<byte> sent = ProgramAreaWritten.GetBuffer().AsSpan(0, (int)ProgramAreaWritten.Length);
-        byte[] onDisc = new byte[sent.Length];
         int dataBytes = _recordedDataEndLba > SaoAudioLayout.FirstWritableLba
             ? Math.Min(sent.Length, (_recordedDataEndLba - SaoAudioLayout.FirstWritableLba) * 2352)
             : 0;
+        int shift = WriteOffsetSamples * 4;
+        int extra = includeLeadOutOverflow && shift > 0 && sent.Length > dataBytes ? shift : 0;
+        byte[] onDisc = new byte[sent.Length + extra];
         if (dataBytes > 0)
         {
             sent.Slice(0, dataBytes).CopyTo(onDisc);
         }
-        int shift = WriteOffsetSamples * 4;
         int from = Math.Max(dataBytes, dataBytes - shift);
-        int to = Math.Min(sent.Length, sent.Length - shift);
+        int to = Math.Min(sent.Length, onDisc.Length - shift);
         if (to > from)
         {
             sent.Slice(from, to - from).CopyTo(onDisc.AsSpan(from + shift));
@@ -1255,9 +1262,12 @@ public sealed class VirtualMmcDrive : IScsiTransport
                 ? ProgramAreaWritten.GetBuffer().AsSpan(0, (int)ProgramAreaWritten.Length)
                 : OnDiscCached();
             int n = count * 2352;
+            long audioStart = _recordedDataEndLba > SaoAudioLayout.FirstWritableLba
+                ? (long)(_recordedDataEndLba - SaoAudioLayout.FirstWritableLba) * 2352
+                : 0;
             long source = (long)(lba + 150) * 2352 - (long)ReadOffsetSamples * 4;
             audio = new byte[n];
-            long from = Math.Max(source, 0);
+            long from = Math.Max(source, audioStart);
             long to = Math.Min(source + n, program.Length);
             if (to > from)
             {

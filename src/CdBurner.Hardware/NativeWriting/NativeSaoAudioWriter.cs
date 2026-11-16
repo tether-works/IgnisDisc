@@ -23,8 +23,9 @@ public sealed record NativeSaoWriteRequest(
     bool TestWrite,
     int? WriteSpeedKiloBytesPerSecond = null)
 {
-    /// <summary>Samples to move all the audio later before it is sent (negative: earlier), to correct the drive's write
-    /// offset; see <see cref="CdBurner.Core.Audio.WriteOffsetPlan"/>. 0 sends the audio as it is.</summary>
+    /// <summary>Samples to move the audio later before it is sent (negative: earlier), to correct the drive's write
+    /// offset; see <see cref="CdBurner.Core.Audio.WriteOffsetPlan"/>. On a mixed-mode CD only the audio part from
+    /// <see cref="SaoAudioLayout.AudioStartLba"/> is shifted (the data track is untouched). 0 sends the audio as it is.</summary>
     public int ShiftSamples { get; init; }
 
     /// <summary>True: leave the disc open for another session (mode page 05h multi-session 11b). The drive writes the
@@ -160,11 +161,17 @@ public sealed class NativeSaoAudioWriter
         }
 
         bool cdText = leadInCycle != null;
+        if (layout.AudioSectors == 0 && request.ShiftSamples != 0)
+        {
+            request = request with { ShiftSamples = 0 };
+        }
+        else if (request.ShiftSamples != 0 && Math.Abs((long)request.ShiftSamples) >= (long)layout.AudioSectors * NativeSaoVerifier.SamplesPerSector)
+        {
+            throw Stop("The write-offset shift is longer than the audio program area.");
+        }
         if (layout.HasDataTrack && request.ShiftSamples != 0)
         {
-            // The shift moves audio across sector boundaries; the data track's sectors cannot move with it.
-            _note($"Mixed-mode CD: the write-offset correction ({request.ShiftSamples:+0;-0} samples) is not applied.");
-            request = request with { ShiftSamples = 0 };
+            _note($"Mixed-mode CD: shifting the audio part by {request.ShiftSamples:+0;-0} sample(s) from LBA {layout.AudioStartLba}; the data track is untouched.");
         }
         Check(ct);
 
@@ -404,6 +411,10 @@ public sealed class NativeSaoAudioWriter
         if (layout.HasDataTrack)
         {
             WriteDataTrack(request, layout.Tracks[0], state, reporter, doneBefore, ct);
+        }
+        if (layout.AudioSectors == 0)
+        {
+            return;
         }
 
         byte[] buffer = new byte[AudioSectorsPerWrite * sectorSize];

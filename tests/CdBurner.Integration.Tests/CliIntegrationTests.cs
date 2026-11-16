@@ -1047,6 +1047,57 @@ public sealed class CliIntegrationTests : IDisposable
         Assert.Equal(600, tracks[1].StartLba);
     }
 
+    [Theory]
+    [InlineData(-30)]
+    [InlineData(25)]
+    public async Task BurnAudio_NativeMixedCueWithWriteOffset_ShiftsAudioPartOnly_AndVerifyCueMatches(int writeOffsetSamples)
+    {
+        using var medium = VirtualDiscMedium.CreateBlankCdRw700();
+        _recorder.InsertMedia(medium);
+        string cue = WriteMixedCue();
+        byte[] sourceBin = File.ReadAllBytes(Path.Combine(_tempDir, "mixed.bin"));
+
+        var burn = await Cli("burn-audio", "--drive", "VDRV-01", "--tracks", cue, "--dao", "--native",
+            "--write-offset", writeOffsetSamples.ToString(System.Globalization.CultureInfo.InvariantCulture),
+            "--log-dir", Path.Combine(_tempDir, "logs"), "--json");
+
+        Assert.True(burn.Exit == 0, burn.Out.ToString() + burn.Err);
+        using var burnDoc = ParseJsonOutput(burn.Out);
+        Assert.True(burnDoc.RootElement.GetProperty("verified").GetBoolean());
+        var writeOffset = burnDoc.RootElement.GetProperty("writeOffset");
+        Assert.Equal(writeOffsetSamples, writeOffset.GetProperty("writeOffsetSamples").GetInt32());
+        Assert.Equal(-writeOffsetSamples, writeOffset.GetProperty("shiftSamples").GetInt32());
+
+        const int totalSectors = 920;
+        const int dataBytes = 450 * OpticalConstants.RawSectorSize;
+        byte[] disc = new byte[totalSectors * OpticalConstants.RawSectorSize];
+        for (int lba = 0; lba < totalSectors; lba++)
+        {
+            medium.ReadSector(lba, OpticalConstants.RawSectorSize).CopyTo(disc, lba * OpticalConstants.RawSectorSize);
+        }
+        Assert.True(disc.AsSpan(0, dataBytes).SequenceEqual(sourceBin.AsSpan(0, dataBytes)));
+
+        ReadOnlySpan<byte> unshiftedAudio = sourceBin.AsSpan(dataBytes, 470 * OpticalConstants.RawSectorSize);
+        ReadOnlySpan<byte> discAudio = disc.AsSpan(dataBytes, unshiftedAudio.Length);
+        int shiftBytes = -writeOffsetSamples * 4;
+        for (int i = 0; i < unshiftedAudio.Length; i++)
+        {
+            byte expected = i - shiftBytes >= 0 && i - shiftBytes < unshiftedAudio.Length
+                ? unshiftedAudio[i - shiftBytes]
+                : (byte)0;
+            Assert.Equal(expected, discAudio[i]);
+        }
+
+        var verify = await Cli("verify", "--drive", "VDRV-01", "--cue", cue,
+            "--write-offset", writeOffsetSamples.ToString(System.Globalization.CultureInfo.InvariantCulture),
+            "--log-dir", Path.Combine(_tempDir, "logs"), "--json");
+
+        Assert.True(verify.Exit == 0, verify.Out.ToString() + verify.Err);
+        using var verifyDoc = ParseJsonOutput(verify.Out);
+        Assert.True(verifyDoc.RootElement.GetProperty("success").GetBoolean());
+        Assert.Equal(0, verifyDoc.RootElement.GetProperty("offsetSamples").GetInt32());
+    }
+
     [Fact]
     public async Task BurnAudio_MixedCueWithoutNative_IsRefused_AndTheDiscStaysBlank()
     {

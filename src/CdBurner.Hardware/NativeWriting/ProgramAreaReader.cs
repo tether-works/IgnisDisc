@@ -30,20 +30,23 @@ internal sealed class ProgramAreaReader : IDisposable
     private bool _rawEnded;
 
     /// <param name="shiftSamples">Moves all the audio this many samples later (negative: earlier), across track
-    /// boundaries, to correct the drive's write offset. Samples pushed past either end of the program area are
+    /// boundaries, to correct the drive's write offset. On a mixed-mode CD only the audio part from
+    /// <see cref="SaoAudioLayout.AudioStartLba"/> to <see cref="SaoAudioLayout.LeadOutLba"/> is read and shifted (Track 1
+    /// data is skipped in <see cref="ReadRawSector"/>). Samples pushed past either end of the audio program area are
     /// dropped and the gap is silence. The writer and the read-back check must pass the same value.</param>
     public ProgramAreaReader(SaoAudioLayout layout, Func<int, Stream> openTrackAudio, Action<string>? note = null, int shiftSamples = 0)
     {
         _layout = layout ?? throw new ArgumentNullException(nameof(layout));
         _openTrackAudio = openTrackAudio ?? throw new ArgumentNullException(nameof(openTrackAudio));
         _note = note ?? (_ => { });
-        _shiftBytes = checked(shiftSamples * 4);
-        _leadingSilence = Math.Max(0, _shiftBytes);
         _totalSectors = layout.Tracks.Where(t => !t.IsData).Sum(t => t.PreGapSectors + t.SectorCount);
-        if (_shiftBytes != 0 && Math.Abs(_shiftBytes) >= (long)_totalSectors * SectorSize)
+        long shiftBytes = (long)shiftSamples * 4;
+        if (shiftBytes != 0 && Math.Abs(shiftBytes) >= (long)_totalSectors * SectorSize)
         {
             throw new ArgumentOutOfRangeException(nameof(shiftSamples), "The shift is longer than the program area.");
         }
+        _shiftBytes = (int)shiftBytes;
+        _leadingSilence = Math.Max(0, _shiftBytes);
     }
 
     /// <summary>Number of the track the next sector belongs to (the last track once everything was read).</summary>
@@ -69,7 +72,7 @@ internal sealed class ProgramAreaReader : IDisposable
         if (!_skippedStart && _shiftBytes < 0)
         {
             _skippedStart = true;
-            TakeRaw(new byte[-_shiftBytes]);
+            SkipRaw(-_shiftBytes);
         }
 
         int filled = 0;
@@ -83,6 +86,17 @@ internal sealed class ProgramAreaReader : IDisposable
         TakeRaw(sector[filled..]);
         _sectorsOut++;
         return true;
+    }
+
+    private void SkipRaw(int bytes)
+    {
+        Span<byte> scratch = stackalloc byte[SectorSize];
+        while (bytes > 0)
+        {
+            int n = Math.Min(bytes, scratch.Length);
+            TakeRaw(scratch[..n]);
+            bytes -= n;
+        }
     }
 
     /// <summary>Copies the next bytes of the unshifted program area into <paramref name="destination"/>; silence once it has ended.</summary>

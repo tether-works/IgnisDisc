@@ -500,6 +500,10 @@ public sealed class NativeSaoVerifier
         {
             return Fail("There is no audio to compare.");
         }
+        if (_shiftSamples != 0 && Math.Abs((long)_shiftSamples) >= (long)totalSectors * SamplesPerSector)
+        {
+            return Fail("The write-offset shift is longer than the audio program area.");
+        }
 
         int offset;
         using (var probeSource = new ProgramAreaReader(layout, openTrackAudio, shiftSamples: _shiftSamples))
