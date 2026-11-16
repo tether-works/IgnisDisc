@@ -255,6 +255,19 @@ one assembly with a clear provenance boundary. Nothing in it touches a drive.
     calibration targets and reference sampler, and writing a picture into an image that already holds files
     (upstream's own file system writer). General image-to-DVD picture commands are not wired yet, while
     `rosetta ladder --media dvd` writes the DVD-R optical resolution-ladder `.iso` and JSON manifest burned via `burn-iso --native`.
+- `Ported/DiscImageStudio/BluRay/` (namespaces `CdBurner.Lithography.BluRay` and `.BluRay.Encoding`; ported from
+  `DiscImageStudio.BluRay`): the BD-R single-layer 25 GB picture generator. A picture pixel becomes a scrambled byte
+  `0xAA` (dark: many 3T runs) or `0x44` (light: many 6T runs) (`BluRayRunLengthMapping`); the sector stores that byte
+  XOR the cluster's scrambler byte (ISO/IEC 30190 clause 13.4, one seed for all 32 sectors of a cluster).
+  `BluRayImagePayloadMapping` places every payload byte on the spiral through the LDC interleave order
+  (`BluRayTrackGeometry`, constant or cubic pitch); `BluRayStreamingGenerator` writes whole 32-sector clusters only
+  (start and length must be multiples of 32); `BluRayImageGenerator` writes the raw 2,048-byte-sector image and its
+  `.json` sidecar (`BluRayIsoMetadata`, format `bd-r-image-v1`). `Encoding/` holds the diagnostic chain a drive
+  applies: EDC, scrambler, LDC/BIS Reed-Solomon and interleave (`BluRayEccEncoder`, 76,880 bytes per cluster), 17PP
+  modulation, frame sync, dc-control selection and a whole recording unit (`BluRayRecordingUnitEncoder`).
+  - Left out of the Blu-ray port: upstream's command module (`BluRayDiscModule`), its file system writer (a picture
+    image that also holds files is refused), calibration targets, previews and the burning code. Image output only: no
+    command or screen uses it yet, and no disc has been written from it.
 - `Imaging/PngRaster.cs` + `Imaging/WicPngDecoder.cs`: IgnisDisc's PNG framing/CRC-32 validator and Windows Imaging
   Component (`windowscodecs.dll`) decoder producing straight `32bppBGRA` `BgraRaster` buffers (plus 8-bit RGBA PNG writer)
   for picture input and read-back previews without a WPF dependency.
