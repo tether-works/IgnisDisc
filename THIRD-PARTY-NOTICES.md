@@ -89,10 +89,17 @@ IgnisDisc bundles two bitmap fonts as embedded resources in `CdBurner.Lithograph
 - **Spleen 5×8** (`src/CdBurner.Lithography/Fonts/Spleen/spleen-5x8.bdf`, version 2.2.0) and its licence text (`src/CdBurner.Lithography/Fonts/Spleen/LICENSE`): Copyright (c) 2018-2026, Frederic Cambus, licensed under the BSD 2-Clause License (`BSD-2-Clause`).
 - **GNU Unifont** (`src/CdBurner.Lithography/Fonts/Unifont/unifont.hex.gz`, version 17.0.05 BMP precompiled hex) and its licence text (`src/CdBurner.Lithography/Fonts/Unifont/OFL.txt`): IgnisDisc distributes the Unifont glyph data under the **SIL Open Font License 1.1** (`OFL-1.1`) option of GNU Unifont's dual licence (as stated in upstream `COPYING`: *"License for font files except the jiskan16 files mentioned above are dual-licensed under the SIL Open Font License version 1.1, and under this GNU license: All glyphs are released under the GNU General Public License (GPL) version 2 or (at your option) a later version, with the GNU font embedding exception"*). The font software remains under SIL OFL 1.1 (Reserved Font Name: `Unifont`), may not be sold by itself, and its full licence text ships in `src/CdBurner.Lithography/Fonts/Unifont/OFL.txt`.
 
+## CUETools / CUETools Database (reimplemented algorithms, GPL-2.0-or-later)
+
+The CUETools Database (`CTDB`) TOCID, sample-window CRC-32 calculation, and `lookup2.php` v3 XML client in
+`src/CdBurner.Core/Audio/CueToolsDatabase.cs` and `src/CdBurner.Core/Audio/DiscIdCalculator.cs` are clean-room
+reimplementations of the algorithms and wire protocol from [CUETools](https://github.com/gchudov/cuetools.net)
+(Copyright (C) 2008–2025 Grigory Chudov, licensed under `GPL-2.0-or-later`).
+
 ## Online services (optional, 1-click lookup & configurable defaults)
 
-Audio ripping can look up track names from [MusicBrainz](https://musicbrainz.org) (automatically during ripping or on demand via the 1-click **Look Up Disc (MusicBrainz)** button) and check rips against the
-[AccurateRip](http://www.accuraterip.com) database. Both lookups can be toggled in the **Audio CD Ripper** and **Settings** workspaces, and only send the disc's table-of-contents
+Audio ripping can look up track names from [MusicBrainz](https://musicbrainz.org) (automatically during ripping or on demand via the 1-click **Look Up Disc (MusicBrainz)** button), check rips against the
+[AccurateRip](http://www.accuraterip.com) database, and (when opted in) cross-reference track and disc CRC-32s against the [CUETools Database](http://db.cuetools.net). All three lookups can be toggled in the **Audio CD Ripper** and **Settings** workspaces, and only send the disc's table-of-contents
 identifiers, never audio or personal data.
 
 ## Test-only dependencies (not shipped)

@@ -513,4 +513,51 @@ public class AccurateRipAndOffsetTests : IClassFixture<VirtualAudioDiscFixture>
             trackStartByte += len;
         }
     }
+
+    [Fact]
+    public async Task Rip_PopulatesCtdbTrackAndDiscCrcs_AndOmitsDiscCrcForPartialRip()
+    {
+        byte[] whole = await GetZeroOffsetWholeAudioPcmAsync();
+
+        var ripper = new AudioCdRipperService();
+        string fullFolder = Path.Combine(_fixture.TempDir, "rip_ctdb_full");
+        var fullResult = await ripper.RipAudioCdAsync(_fixture.Recorder, _fixture.Engine, fullFolder, new AudioRipOptions());
+
+        Assert.True(fullResult.Success, fullResult.ErrorMessage);
+        Assert.Equal(3, fullResult.TrackInfos.Count);
+        Assert.NotNull(fullResult.CtdbDiscCrc);
+
+        long s1 = _fixture.Track1Pcm.Length / 4;
+        long s2 = _fixture.Track2Pcm.Length / 4;
+        long s3 = _fixture.Track3Pcm.Length / 4;
+        long totalSamples = s1 + s2 + s3;
+
+        var expectedDisc = CtdbChecksum.ForDisc(totalSamples);
+        expectedDisc.Append(whole);
+        Assert.Equal(expectedDisc.Value, fullResult.CtdbDiscCrc.Value);
+
+        var c1 = CtdbChecksum.ForTrack(0, s1, totalSamples);
+        c1.Append(_fixture.Track1Pcm);
+        var c2 = CtdbChecksum.ForTrack(s1, s2, totalSamples);
+        c2.Append(_fixture.Track2Pcm);
+        var c3 = CtdbChecksum.ForTrack(s1 + s2, s3, totalSamples);
+        c3.Append(_fixture.Track3Pcm);
+
+        Assert.Equal(c1.Value, fullResult.TrackInfos[0].CtdbTrackCrc);
+        Assert.Equal(c2.Value, fullResult.TrackInfos[1].CtdbTrackCrc);
+        Assert.Equal(c3.Value, fullResult.TrackInfos[2].CtdbTrackCrc);
+
+        // Partial rip computes the track CRC using full-disc offsets, and leaves CtdbDiscCrc null
+        string partialFolder = Path.Combine(_fixture.TempDir, "rip_ctdb_partial");
+        var partialResult = await ripper.RipAudioCdAsync(
+            _fixture.Recorder,
+            _fixture.Engine,
+            partialFolder,
+            new AudioRipOptions { TrackNumbersToRip = [2] });
+
+        Assert.True(partialResult.Success, partialResult.ErrorMessage);
+        Assert.Single(partialResult.TrackInfos);
+        Assert.Null(partialResult.CtdbDiscCrc);
+        Assert.Equal(c2.Value, partialResult.TrackInfos[0].CtdbTrackCrc);
+    }
 }

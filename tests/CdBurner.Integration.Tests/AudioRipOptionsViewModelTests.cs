@@ -1,4 +1,7 @@
 using System.IO;
+using System.Net;
+using System.Net.Http;
+using System.Text;
 using CdBurner.App.ViewModels;
 using CdBurner.Core.Audio;
 using CdBurner.Core.DvdVideo;
@@ -248,8 +251,89 @@ public sealed class AudioRipOptionsViewModelTests : IDisposable
         Assert.True(vm.SecureRip);
         Assert.False(vm.LookupMetadata);
         Assert.False(vm.VerifyAccurateRip);
+        Assert.False(vm.VerifyCtdb);
 
         vm.ReadOffsetSamples = 30;
         Assert.Equal(30, settingsService.CurrentSettings.AudioReadOffsetSamples);
+    }
+
+    [Fact]
+    public void VerifyCtdb_DefaultsToFalseWithOrWithoutSettings()
+    {
+        var vmWithoutSettings = new AudioBurnViewModel(_deviceManager, _burnEngine);
+        Assert.False(vmWithoutSettings.VerifyCtdb);
+
+        var settingsService = new AppSettingsService(Path.Combine(_tempDir, "ctdb-default.json"));
+        var vmWithSettings = new AudioBurnViewModel(_deviceManager, _burnEngine, settingsService: settingsService);
+        Assert.False(vmWithSettings.VerifyCtdb);
+    }
+
+    [Fact]
+    public async Task Rip_MakesNoNetworkCallsWhenLookupsOff_AndNoCtdbCallsWhenAccurateRipOn()
+    {
+        var vm = await CreateAndBurnVirtualAudioCdAsync();
+        var handler = new SpyHttpHandler(_ => new HttpResponseMessage(HttpStatusCode.NotFound));
+        using var client = new HttpClient(handler);
+
+        vm.LookupMetadata = false;
+        vm.VerifyAccurateRip = false;
+        vm.VerifyCtdb = false;
+        var ripOff = await vm.RipAudioCdAsync("VDRV-01", Path.Combine(_tempDir, "Rip_NetOff"), httpClient: client);
+        Assert.True(ripOff.Success, ripOff.ErrorMessage);
+        Assert.Empty(handler.Requests);
+
+        vm.VerifyAccurateRip = true;
+        vm.VerifyCtdb = false;
+        var ripArOnly = await vm.RipAudioCdAsync("VDRV-01", Path.Combine(_tempDir, "Rip_ArOnly"), httpClient: client);
+        Assert.True(ripArOnly.Success, ripArOnly.ErrorMessage);
+        Assert.NotEmpty(handler.Requests);
+        Assert.DoesNotContain(handler.Requests, u => string.Equals(u.Host, "db.cuetools.net", StringComparison.OrdinalIgnoreCase));
+    }
+
+    [Fact]
+    public async Task Rip_WhenVerifyCtdbEnabled_QueriesLookup2AndReportsMatch()
+    {
+        var vm = await CreateAndBurnVirtualAudioCdAsync();
+
+        // First rip offline to obtain the exact disc and track CTDB CRCs for the virtual medium
+        vm.LookupMetadata = false;
+        vm.VerifyAccurateRip = false;
+        vm.VerifyCtdb = false;
+        var baseline = await vm.RipAudioCdAsync("VDRV-01", Path.Combine(_tempDir, "Rip_CtdbBase"));
+        Assert.True(baseline.Success);
+        Assert.NotNull(baseline.CtdbDiscCrc);
+
+        string trackCrcs = string.Join(' ', baseline.TrackInfos.Select(t => t.CtdbTrackCrc.ToString("x8")));
+        string xml = $"""<ctdb><entry id="1" crc32="{baseline.CtdbDiscCrc.Value:x8}" confidence="4" trackcrcs="{trackCrcs}" /></ctdb>""";
+
+        var handler = new SpyHttpHandler(_ => new HttpResponseMessage(HttpStatusCode.OK)
+        {
+            Content = new StringContent(xml, Encoding.UTF8, "application/xml")
+        });
+        using var client = new HttpClient(handler);
+
+        vm.VerifyCtdb = true;
+        var rip = await vm.RipAudioCdAsync("VDRV-01", Path.Combine(_tempDir, "Rip_CtdbOn"), httpClient: client);
+        Assert.True(rip.Success, rip.ErrorMessage);
+
+        Assert.Single(handler.Requests);
+        Assert.Equal("db.cuetools.net", handler.Requests[0].Host);
+        Assert.Equal("/lookup2.php", handler.Requests[0].AbsolutePath);
+        Assert.Contains("CTDB:             checked", vm.RipReport);
+        Assert.Contains("accurate", vm.RipReport);
+    }
+
+    private sealed class SpyHttpHandler(Func<HttpRequestMessage, HttpResponseMessage> respond) : HttpMessageHandler
+    {
+        public List<Uri> Requests { get; } = [];
+
+        protected override Task<HttpResponseMessage> SendAsync(HttpRequestMessage request, CancellationToken cancellationToken)
+        {
+            if (request.RequestUri != null)
+            {
+                Requests.Add(request.RequestUri);
+            }
+            return Task.FromResult(respond(request));
+        }
     }
 }

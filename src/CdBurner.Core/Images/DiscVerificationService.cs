@@ -228,6 +228,80 @@ internal sealed class Crc32Algorithm
     public uint GetCurrentHashAsUInt32() => ~_crc;
 
     public string GetCurrentHashAsHexString() => GetCurrentHashAsUInt32().ToString("X8");
+
+    /// <summary>
+    /// Combines two IEEE 802.3 CRC-32 values (<paramref name="crc1"/> over the first chunk and
+    /// <paramref name="crc2"/> over a following chunk of <paramref name="length2"/> bytes) into
+    /// the CRC-32 of their concatenation using GF(2) matrix squaring.
+    /// </summary>
+    public static uint Combine(uint crc1, uint crc2, long length2)
+    {
+        if (length2 <= 0)
+        {
+            return crc1;
+        }
+
+        Span<uint> even = stackalloc uint[32];
+        Span<uint> odd = stackalloc uint[32];
+        odd[0] = 0xEDB88320u;
+        uint row = 1u;
+        for (int n = 1; n < 32; n++)
+        {
+            odd[n] = row;
+            row <<= 1;
+        }
+
+        Gf2MatrixSquare(even, odd);
+        Gf2MatrixSquare(odd, even);
+
+        ulong len = (ulong)length2;
+        do
+        {
+            Gf2MatrixSquare(even, odd);
+            if ((len & 1UL) != 0)
+            {
+                crc1 = Gf2MatrixTimes(even, crc1);
+            }
+            len >>= 1;
+            if (len == 0)
+            {
+                break;
+            }
+
+            Gf2MatrixSquare(odd, even);
+            if ((len & 1UL) != 0)
+            {
+                crc1 = Gf2MatrixTimes(odd, crc1);
+            }
+            len >>= 1;
+        } while (len != 0);
+
+        return crc1 ^ crc2;
+    }
+
+    private static uint Gf2MatrixTimes(ReadOnlySpan<uint> matrix, uint vec)
+    {
+        uint sum = 0;
+        int idx = 0;
+        while (vec != 0)
+        {
+            if ((vec & 1u) != 0)
+            {
+                sum ^= matrix[idx];
+            }
+            vec >>= 1;
+            idx++;
+        }
+        return sum;
+    }
+
+    private static void Gf2MatrixSquare(Span<uint> square, ReadOnlySpan<uint> mat)
+    {
+        for (int n = 0; n < 32; n++)
+        {
+            square[n] = Gf2MatrixTimes(mat, mat[n]);
+        }
+    }
 }
 
 /// <summary>

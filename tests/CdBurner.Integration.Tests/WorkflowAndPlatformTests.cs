@@ -202,11 +202,13 @@ public sealed class WorkflowAndPlatformTests : IDisposable
         Assert.False(vm.CheckForUpdatesOnStartup);
         Assert.True(vm.LookupMusicBrainzByDefault);
         Assert.True(vm.VerifyAccurateRipByDefault);
+        Assert.False(vm.VerifyCtdbByDefault);
 
         // Change and save
         vm.CheckForUpdatesOnStartup = true;
         vm.LookupMusicBrainzByDefault = false;
         vm.VerifyAccurateRipByDefault = false;
+        vm.VerifyCtdbByDefault = true;
         vm.SaveSettingsCommand.Execute(null);
 
         // Reload
@@ -215,12 +217,14 @@ public sealed class WorkflowAndPlatformTests : IDisposable
         Assert.True(reloadedService.CurrentSettings.CheckForUpdatesOnStartup);
         Assert.False(reloadedService.CurrentSettings.LookupMusicBrainzByDefault);
         Assert.False(reloadedService.CurrentSettings.VerifyAccurateRipByDefault);
+        Assert.True(reloadedService.CurrentSettings.VerifyCtdbByDefault);
 
         // Reset
         vm.ResetSettingsCommand.Execute(null);
         Assert.False(vm.CheckForUpdatesOnStartup);
         Assert.True(vm.LookupMusicBrainzByDefault);
         Assert.True(vm.VerifyAccurateRipByDefault);
+        Assert.False(vm.VerifyCtdbByDefault);
     }
 
     [Fact]

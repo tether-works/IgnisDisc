@@ -685,6 +685,12 @@
                                           Foreground="{DynamicResource TextPrimaryBrush}"
                                           Margin="0,2,20,2"
                                           ToolTip="Cross-reference extracted track checksums with the online AccurateRip database." />
+                                <CheckBox Content="Verify with CTDB"
+                                          AutomationProperties.Name="Verify with CTDB"
+                                          IsChecked="{Binding VerifyCtdb}"
+                                          Foreground="{DynamicResource TextPrimaryBrush}"
+                                          Margin="0,2,20,2"
+                                          ToolTip="Opt-in: cross-reference extracted track and disc CRCs with the online CUETools Database (db.cuetools.net)." />
                                 <CheckBox Content="Continue past unreadable sectors"
                                           AutomationProperties.Name="Continue past unreadable sectors"
                                           IsChecked="{Binding ContinueOnUnreadable}"

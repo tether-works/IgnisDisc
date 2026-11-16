@@ -33,6 +33,7 @@ public static partial class CliCommandRunner
         "secureAudioRipByDefault",
         "lookupMusicBrainzByDefault",
         "verifyAccurateRipByDefault",
+        "verifyCtdbByDefault",
         "checkForUpdatesOnStartup"
     ];
 
@@ -81,6 +82,7 @@ public static partial class CliCommandRunner
         "secureAudioRipByDefault" => settings.SecureAudioRipByDefault,
         "lookupMusicBrainzByDefault" => settings.LookupMusicBrainzByDefault,
         "verifyAccurateRipByDefault" => settings.VerifyAccurateRipByDefault,
+        "verifyCtdbByDefault" => settings.VerifyCtdbByDefault,
         "checkForUpdatesOnStartup" => settings.CheckForUpdatesOnStartup,
         _ => throw new CommandLineException($"Unknown setting '{canonicalKey}'.")
     };
@@ -155,6 +157,9 @@ public static partial class CliCommandRunner
                 break;
             case "verifyAccurateRipByDefault":
                 settings.VerifyAccurateRipByDefault = ParseSettingBool(canonicalKey, rawValue);
+                break;
+            case "verifyCtdbByDefault":
+                settings.VerifyCtdbByDefault = ParseSettingBool(canonicalKey, rawValue);
                 break;
             case "checkForUpdatesOnStartup":
                 settings.CheckForUpdatesOnStartup = ParseSettingBool(canonicalKey, rawValue);

@@ -104,6 +104,12 @@ public class AppSettings
     public bool VerifyAccurateRipByDefault { get; set; } = true;
 
     /// <summary>
+    /// Whether to verify extracted audio track and disc CRCs against the CUETools Database (CTDB) by default.
+    /// Strictly opt-in (default is false).
+    /// </summary>
+    public bool VerifyCtdbByDefault { get; set; } = false;
+
+    /// <summary>
     /// Whether to automatically check for application updates on startup against GitHub Releases.
     /// Strictly opt-in (default is false).
     /// </summary>
@@ -165,6 +171,7 @@ public class AppSettings
             SecureAudioRipByDefault = SecureAudioRipByDefault,
             LookupMusicBrainzByDefault = LookupMusicBrainzByDefault,
             VerifyAccurateRipByDefault = VerifyAccurateRipByDefault,
+            VerifyCtdbByDefault = VerifyCtdbByDefault,
             CheckForUpdatesOnStartup = CheckForUpdatesOnStartup,
             SettingsVersion = SettingsVersion
         };

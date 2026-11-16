@@ -28,7 +28,7 @@ pipeline can be tested without hardware or blank media.
 | Burn / verify / convert legacy images | ✅ | ✅ | Nero `.nrg`, Alcohol 120% `.mdf`/`.mds`, CloneCD `.ccd`/`.img`, incl. Mode 2 / XA; streamed, no size limit. DiscJuggler `.cdi` (v2, v3, v3.5) is read as well, checked only on hand-built files that follow the published layout, not on an image made by DiscJuggler; the first data track is used |
 | Disc copy (one or two drives, multi-copy) | ⚠️ | ✅ | Swap prompts between copies; audio CDs copied track by track. A mixed-mode CD (data track first, then audio) is copied whole with direct drive commands turned on, otherwise only its audio; done once on a real drive (one drive, a CD-RW copied to a CD-R). The source audio is read with error checks and re-reads, and a copy stops before writing when sectors still read wrong |
 | Rip audio CD to `.wav` / `.flac` / `.mp3` / `.opus` / `.m4a` + `.cue` | ✅ | ✅ | Reads the real TOC and CD-Text; optional MusicBrainz track names. AAC uses the encoder built into Windows; FLAC, MP3 and Opus use the optional ffmpeg download (no encoder is bundled). Ripping has run on a real drive (LG GP60NB50): tracks from CD-Rs and a CD-RW burned by IgnisDisc came back identical to the source audio. The encoders and output formats are otherwise tested on the virtual drive only; the built-in FLAC decoder (used for burning) is also checked against files made by the official flac 1.5.0 encoder |
-| AccurateRip verification + read-offset correction | ✅ | ✅ | Detects your drive's offset from a disc in the AccurateRip database |
+| AccurateRip verification + read-offset correction | ✅ | ✅ | Detects your drive's offset from a disc in the AccurateRip database; optional opt-in CUETools Database (CTDB) track and disc CRC-32 lookup (`--verify-ctdb`, off by default) |
 | Secure audio ripping (C2 error pointers + re-reads) | ✅ | ✅ | Flags suspect sectors; can be slow on badly scratched discs |
 | Archive Studio: span folders across discs | ✅ | ✅ | SHA-256 manifest on every disc; optional PAR2 recovery data (needs `par2.exe`) fills the space left on each disc, split over an inner, middle and outer zone with a copy of the volume descriptor in each; `recover` copies the files off a damaged archive disc and rebuilds them, also with sector 16, the first UDF anchor and one whole zone destroyed (tested on images). An archive burn can also write a HEALTH.json and HEALTH.svg report, and `check-disc --compare` sets a later read against it; this has only been tested on the virtual drive, not run on a real drive |
 | Quick / full erase of rewritable media | ✅ | ✅ | |
@@ -57,7 +57,8 @@ Reading from physical drives uses SCSI pass-through when Windows allows it and f
 Download `IgnisDisc-Setup.exe` (per-user install, no admin rights) or the portable `.zip` from the Releases page.
 The builds are not code-signed yet, so Windows SmartScreen may show a warning on first run; check the SHA-256 checksum
 listed on the release page first. IgnisDisc has no telemetry. It goes online only to look up an audio CD
-(MusicBrainz titles, AccurateRip checksums — both on by default when ripping and switchable off) and, if you turn it
+(MusicBrainz titles and AccurateRip checksums — both on by default when ripping and switchable off; CUETools Database
+(CTDB) checksums — strictly off by default until you turn it on) and, if you turn it
 on, to check GitHub for a newer release. [SECURITY.md](SECURITY.md) lists exactly what is sent.
 
 ---
@@ -102,7 +103,7 @@ ignisdisc-cli <command> [options]
                                                Show resolved audio CD track lengths, pre-gaps, normalization gain, and 74/80-min fit
   rip        --drive <id> --output <file.iso|file.bin> [--raw]
   rip-audio  --drive <id> --output <folder> [--format wav|flac|mp3|opus|aac] [--bitrate <kbps>] [--tracks 1,3,5] [--lookup]
-             [--read-offset <samples>] [--verify-accuraterip] [--no-secure] [--repair] [--continue-on-error] [--cover <image>]
+             [--read-offset <samples>] [--verify-accuraterip] [--verify-ctdb] [--no-secure] [--repair] [--continue-on-error] [--cover <image>]
                                                --repair rebuilds damaged audio from a session-2 PAR2 recovery session;
                                                exit code 2 when sectors may be wrong (still suspect or unreadable)
   detect-offset --drive <id>                   Find the drive's audio read offset (AccurateRip)
@@ -358,7 +359,7 @@ pwsh scripts/Build-Installer.ps1 -FfmpegPath C:\tools\ffmpeg\bin\ffmpeg.exe -Ffm
 
 - Direct drive-command writing tried on real DVD-RAM, dual-layer DVD-R and Blu-ray discs (CD-R, CD-RW, DVD-R, DVD-RW, DVD+R, DVD+RW and dual-layer DVD+R have run on real discs)- More drive models and stand-alone CD player checks (including CD-Extra and Audio CD PAR2 recovery sessions on real discs)
 - Blu-ray burning, tested on real drives
-- CUETools Database (CTDB) verification and audio repair alongside AccurateRip
+- CUETools Database (CTDB) parity-based audio repair (CTDB TOCID, checksums, and opt-in lookup are implemented)
 
 ---
 
@@ -373,7 +374,7 @@ unsigned until certificate provisioning completes).
   `.github/workflows/release.yml` on GitHub-hosted runners.
 - **Privacy policy:** This program will not transfer any information to other networked systems unless specifically
   requested by the user or the person installing or operating it. See [SECURITY.md](SECURITY.md) for full details on
-  optional MusicBrainz, AccurateRip, and release update checks, and the optional tool downloads (FFmpeg, par2, subtitle tool)
+  optional MusicBrainz, AccurateRip, opt-in CUETools Database (CTDB), and release update checks, and the optional tool downloads (FFmpeg, par2, subtitle tool)
   you start yourself.
 
 ---

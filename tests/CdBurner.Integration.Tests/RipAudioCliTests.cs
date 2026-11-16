@@ -1,5 +1,8 @@
 using System.Buffers.Binary;
 using System.IO;
+using System.Net;
+using System.Net.Http;
+using System.Text;
 using System.Text.Json;
 using CdBurner.Cli;
 using CdBurner.Core.Abstractions;
@@ -608,6 +611,86 @@ public sealed class RipAudioCliTests : IAsyncLifetime, IDisposable
         Assert.Equal(
             srcMedium.RecordedMmcDrive!.ProgramAreaWritten.ToArray(),
             dstMedium.RecordedMmcDrive!.ProgramAreaWritten.ToArray());
+    }
+
+    [Fact]
+    public async Task RipAudio_EmitsCtdbIdsWithoutNetworkByDefault_AndQueriesWhenVerifyCtdbPassed()
+    {
+        string outOff = Path.Combine(_tempDir, "cli-ctdb-off");
+        var spyOff = new SpyHttpHandler(_ => new HttpResponseMessage(HttpStatusCode.NotFound));
+        using var clientOff = new HttpClient(spyOff);
+
+        var (stdoutOff, stderrOff) = CreateStringWriters();
+        int exitOff = await CliCommandRunner.RunAsync(
+            ["rip-audio", "--drive", "VDRV-01", "--output", outOff, "--json"],
+            stdoutOff,
+            stderrOff,
+            _deviceService,
+            _burnEngine,
+            clientOff);
+        Assert.Equal(0, exitOff);
+        Assert.Empty(spyOff.Requests);
+
+        using var docOff = ParseJsonOutput(stdoutOff);
+        var rootOff = docOff.RootElement;
+        string? tocId = rootOff.GetProperty("ctdbTocId").GetString();
+        string? discCrc = rootOff.GetProperty("ctdbDiscCrc").GetString();
+        Assert.NotNull(tocId);
+        Assert.Equal(28, tocId!.Length);
+        Assert.NotNull(discCrc);
+        Assert.Equal(8, discCrc!.Length);
+        Assert.False(rootOff.TryGetProperty("ctdb", out _));
+
+        var trackChecksums = rootOff.GetProperty("trackChecksums").EnumerateArray().ToList();
+        Assert.Equal(3, trackChecksums.Count);
+        var trackCrcs = new List<string>(3);
+        foreach (var tc in trackChecksums)
+        {
+            string? c = tc.GetProperty("ctdbCrc").GetString();
+            Assert.NotNull(c);
+            Assert.Equal(8, c!.Length);
+            trackCrcs.Add(c.ToLowerInvariant());
+        }
+
+        string xml = $"""<ctdb><entry id="42" crc32="{discCrc.ToLowerInvariant()}" confidence="7" trackcrcs="{string.Join(' ', trackCrcs)}" /></ctdb>""";
+        string outOn = Path.Combine(_tempDir, "cli-ctdb-on");
+        var spyOn = new SpyHttpHandler(_ => new HttpResponseMessage(HttpStatusCode.OK)
+        {
+            Content = new StringContent(xml, Encoding.UTF8, "application/xml")
+        });
+        using var clientOn = new HttpClient(spyOn);
+
+        var (stdoutOn, stderrOn) = CreateStringWriters();
+        int exitOn = await CliCommandRunner.RunAsync(
+            ["rip-audio", "--drive", "VDRV-01", "--output", outOn, "--verify-ctdb", "--json"],
+            stdoutOn,
+            stderrOn,
+            _deviceService,
+            _burnEngine,
+            clientOn);
+        Assert.Equal(0, exitOn);
+        Assert.Single(spyOn.Requests);
+        Assert.Equal("/lookup2.php", spyOn.Requests[0].AbsolutePath);
+
+        using var docOn = ParseJsonOutput(stdoutOn);
+        var ctdbObj = docOn.RootElement.GetProperty("ctdb");
+        Assert.Equal("checked", ctdbObj.GetProperty("status").GetString());
+        Assert.True(ctdbObj.GetProperty("discAccurate").GetBoolean());
+        Assert.Equal(7, ctdbObj.GetProperty("discConfidence").GetInt32());
+    }
+
+    private sealed class SpyHttpHandler(Func<HttpRequestMessage, HttpResponseMessage> respond) : HttpMessageHandler
+    {
+        public List<Uri> Requests { get; } = [];
+
+        protected override Task<HttpResponseMessage> SendAsync(HttpRequestMessage request, CancellationToken cancellationToken)
+        {
+            if (request.RequestUri != null)
+            {
+                Requests.Add(request.RequestUri);
+            }
+            return Task.FromResult(respond(request));
+        }
     }
 
     private sealed class TestDeviceService : IDiscDeviceService

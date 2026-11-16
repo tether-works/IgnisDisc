@@ -1,3 +1,4 @@
+using System.Globalization;
 using System.Security.Cryptography;
 using System.Text;
 using CdBurner.Core.Abstractions;
@@ -12,12 +13,16 @@ namespace CdBurner.Core.Audio;
 /// <param name="AccurateRipId1">AccurateRip disc ID 1 (sum of audio track offsets plus lead-out).</param>
 /// <param name="AccurateRipId2">AccurateRip disc ID 2 (track-number-weighted sum of offsets).</param>
 /// <param name="AudioTrackCount">Number of audio tracks covered by the IDs.</param>
+/// <param name="CtdbTocId">28-character CUETools Database (CTDB) TOCID derived from audio track durations.</param>
+/// <param name="CtdbToc">Colon-delimited CTDB <c>toc</c> query parameter (data tracks prefixed with '-').</param>
 public sealed record DiscIdentifiers(
     string MusicBrainzId,
     uint FreeDbId,
     uint AccurateRipId1,
     uint AccurateRipId2,
-    int AudioTrackCount)
+    int AudioTrackCount,
+    string CtdbTocId = "",
+    string CtdbToc = "")
 {
     /// <summary>freedb ID in its conventional 8-digit lowercase hex form.</summary>
     public string FreeDbIdHex => FreeDbId.ToString("x8");
@@ -107,7 +112,55 @@ public static class DiscIdCalculator
         arId1 += (uint)audioLeadOutLba;
         arId2 += Math.Max((uint)audioLeadOutLba, 1u) * ++position;
 
-        return new DiscIdentifiers(musicBrainzId, freeDbId, arId1, arId2, audioTracks.Count);
+        string ctdbTocId = CalculateCtdbTocId(audioTracks, audioLeadOutLba);
+        string ctdbToc = CalculateCtdbToc(allTracks, discLeadOutLba);
+
+        return new DiscIdentifiers(musicBrainzId, freeDbId, arId1, arId2, audioTracks.Count, ctdbTocId, ctdbToc);
+    }
+
+    /// <summary>
+    /// CUETools Database (CTDB) TOCID: SHA-1 over an 800-char uppercase-hex buffer of relative audio track offsets
+    /// (tracks 2..N plus audio lead-out relative to track 1 start, zero-padded to 800 chars), base64-encoded with
+    /// '+', '/', '=' replaced by '.', '_', '-'. Algorithm derived from CUETools (GPL-2.0-or-later).
+    /// </summary>
+    internal static string CalculateCtdbTocId(IReadOnlyList<DiscTocTrack> audioTracks, int audioLeadOutLba)
+    {
+        int firstAudioStart = audioTracks[0].StartLba;
+        var sb = new StringBuilder(800);
+        for (int i = 1; i < audioTracks.Count; i++)
+        {
+            sb.Append(Math.Max(0, audioTracks[i].StartLba - firstAudioStart).ToString("X8", CultureInfo.InvariantCulture));
+        }
+        sb.Append(Math.Max(0, audioLeadOutLba - firstAudioStart).ToString("X8", CultureInfo.InvariantCulture));
+
+        if (sb.Length < 800)
+        {
+            sb.Append('0', 800 - sb.Length);
+        }
+        else if (sb.Length > 800)
+        {
+            sb.Length = 800;
+        }
+
+        byte[] digest = SHA1.HashData(Encoding.ASCII.GetBytes(sb.ToString()));
+        return Convert.ToBase64String(digest).Replace('+', '.').Replace('/', '_').Replace('=', '-');
+    }
+
+    /// <summary>
+    /// Formats the colon-delimited CTDB <c>toc</c> query parameter across all disc tracks and the disc lead-out.
+    /// Data tracks are prefixed with '-'.
+    /// </summary>
+    internal static string CalculateCtdbToc(IReadOnlyList<DiscTocTrack> allTracks, int discLeadOutLba)
+    {
+        var parts = new List<string>(allTracks.Count + 1);
+        foreach (var track in allTracks)
+        {
+            parts.Add(track.IsAudio
+                ? track.StartLba.ToString(CultureInfo.InvariantCulture)
+                : (track.StartLba == 0 ? "-0" : $"-{track.StartLba.ToString(CultureInfo.InvariantCulture)}"));
+        }
+        parts.Add(discLeadOutLba.ToString(CultureInfo.InvariantCulture));
+        return string.Join(':', parts);
     }
 
     /// <summary>

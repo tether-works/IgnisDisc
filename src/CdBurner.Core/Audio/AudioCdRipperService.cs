@@ -88,6 +88,9 @@ public class AudioRipOptions
 /// <param name="AccurateRipV2">AccurateRip v2 checksum.</param>
 /// <param name="AudioTrackIndex">0-based position of the track among all audio tracks on the disc (AccurateRip entry index).</param>
 /// <param name="UnreadableSectors">Number of sectors that failed every retry and were replaced by silence.</param>
+/// <param name="ReplayGainTrackGain">Calculated track ReplayGain in dB, if requested.</param>
+/// <param name="ReplayGainTrackPeak">Calculated track peak amplitude, if requested.</param>
+/// <param name="CtdbTrackCrc">CUETools Database (CTDB) track CRC-32.</param>
 public sealed record AudioTrackRipInfo(
     int TrackNumber,
     string FilePath,
@@ -102,7 +105,8 @@ public sealed record AudioTrackRipInfo(
     string Performer = "",
     string? Isrc = null,
     double? ReplayGainTrackGain = null,
-    double? ReplayGainTrackPeak = null);
+    double? ReplayGainTrackPeak = null,
+    uint CtdbTrackCrc = 0);
 
 /// <summary>
 /// Discovered audio track descriptor extracted from optical medium TOC or session metadata.
@@ -154,6 +158,9 @@ public class AudioCdRipResult
     /// <summary>Result of verifying and repairing tracks from session 2 PAR2 data, when requested.</summary>
     public AudioRecoveryRepairResult? RecoveryRepair { get; init; }
 
+    /// <summary>Whole-disc CUETools Database (CTDB) CRC-32 when all audio tracks were ripped, otherwise null.</summary>
+    public uint? CtdbDiscCrc { get; init; }
+
     public static AudioCdRipResult Succeeded(
         IReadOnlyList<string> filePaths,
         int totalSectors,
@@ -166,7 +173,8 @@ public class AudioCdRipResult
         double? replayGainAlbumGain = null,
         double? replayGainAlbumPeak = null,
         AudioRecoveryRepairResult? recoveryRepair = null,
-        string? hiddenTrackOneAudioPath = null) => new()
+        string? hiddenTrackOneAudioPath = null,
+        uint? ctdbDiscCrc = null) => new()
     {
         SecureModeUsed = secureModeUsed,
         Success = true,
@@ -181,7 +189,8 @@ public class AudioCdRipResult
         BadSectorLbas = badSectorLbas ?? Array.Empty<int>(),
         ReplayGainAlbumGain = replayGainAlbumGain,
         ReplayGainAlbumPeak = replayGainAlbumPeak,
-        RecoveryRepair = recoveryRepair
+        RecoveryRepair = recoveryRepair,
+        CtdbDiscCrc = ctdbDiscCrc
     };
 
     public static AudioCdRipResult Failed(string error, Exception? ex = null) => new()
@@ -510,6 +519,15 @@ public class AudioCdRipperService
         tracksToRip = tracksToRip.Select(ApplySubcode).ToList();
         audioOrder = allTracks.OrderBy(t => t.StartLba).ToList();
 
+        // CTDB sample windows are computed over the full disc audio area (excluding HTOA before Track 1 INDEX 01).
+        long totalDiscAudioSamples = 0;
+        var trackStartSamples = new long[audioOrder.Count];
+        for (int i = 0; i < audioOrder.Count; i++)
+        {
+            trackStartSamples[i] = totalDiscAudioSamples;
+            totalDiscAudioSamples += (long)audioOrder[i].SectorCount * CtdbChecksum.SamplesPerSector;
+        }
+
         int audioEndLba = audioOrder.Max(t => t.StartLba + t.SectorCount);
         long totalSectorsToRip = tracksToRip.Sum(t => (long)t.SectorCount);
         byte[] silence = new byte[OpticalConstants.RawSectorSize];
@@ -594,10 +612,12 @@ public class AudioCdRipperService
             string targetWavPath = Path.Combine(outputDirectory, fileName);
 
             int audioIndex = audioOrder.IndexOf(track);
+            long trackSamples = (long)track.SectorCount * CtdbChecksum.SamplesPerSector;
             var arChecksum = new AccurateRipChecksum(
                 (long)track.SectorCount * OpticalConstants.RawSectorSize / 4,
                 isFirstTrack: audioIndex == 0,
                 isLastTrack: audioIndex == audioOrder.Count - 1);
+            var ctdbChecksum = CtdbChecksum.ForTrack(trackStartSamples[audioIndex], trackSamples, totalDiscAudioSamples);
             var crc32 = new Crc32Algorithm();
 
             long sectorsBeforeTrack = totalSectorsRead - (hiddenTrackOneAudioPath != null ? audioOrder[0].StartLba : 0);
@@ -624,6 +644,7 @@ public class AudioCdRipperService
                 onChunk: slice =>
                 {
                     arChecksum.Append(slice);
+                    ctdbChecksum.Append(slice);
                     crc32.Append(slice);
                 },
                 cancellationToken).ConfigureAwait(false);
@@ -671,7 +692,8 @@ public class AudioCdRipperService
                 track.Performer,
                 track.Isrc,
                 trackGain,
-                trackPeak));
+                trackPeak,
+                ctdbChecksum.Value));
             totalSectorsRead += track.SectorCount;
         }
 
@@ -725,6 +747,10 @@ public class AudioCdRipperService
             albumGain = albumResult.AlbumGainDb;
             albumPeak = albumResult.AlbumPeakAmplitude;
         }
+
+        uint? ctdbDiscCrc = trackInfos.Count == audioOrder.Count
+            ? CtdbChecksum.CombineTrackCrcs(trackInfos, trackStartSamples, totalDiscAudioSamples)
+            : null;
 
         // Generate companion CUE sheet
         string? cueSheetPath = null;
@@ -804,7 +830,8 @@ public class AudioCdRipperService
             albumGain,
             albumPeak,
             recoveryRepair,
-            hiddenTrackOneAudioPath);
+            hiddenTrackOneAudioPath,
+            ctdbDiscCrc);
     }
 
     private readonly record struct RangeExtractOutcome(bool Completed, int? StoppedAtLba, int BadSectors, int RecoveredSectors, int SuspectSectors);

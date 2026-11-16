@@ -80,6 +80,7 @@ public class AudioBurnViewModel : ObservableObject, IDisposable
     private bool _secureRip = true; // matches AppSettings.SecureAudioRipByDefault
     private bool _lookupMetadata = true;
     private bool _verifyAccurateRip = true;
+    private bool _verifyCtdb;
     private bool _continueOnUnreadable;
     private bool _includeRecoverySession; // off by default: some car head units refuse Enhanced CDs
     private bool _repairFromRecoverySession = true;
@@ -645,6 +646,22 @@ public class AudioBurnViewModel : ObservableObject, IDisposable
         }
     }
 
+    /// <summary>
+    /// Whether to verify extracted track and disc checksums against the online CUETools Database (CTDB) after ripping.
+    /// Strictly opt-in (default false).
+    /// </summary>
+    public bool VerifyCtdb
+    {
+        get => _verifyCtdb;
+        set
+        {
+            if (SetProperty(ref _verifyCtdb, value))
+            {
+                SaveSettingsIfAvailable();
+            }
+        }
+    }
+
     /// <summary>Output formats offered by the rip screen.</summary>
     public IReadOnlyList<AudioRipFormat> RipFormats { get; } =
         [AudioRipFormat.Wav, AudioRipFormat.Flac, AudioRipFormat.Mp3, AudioRipFormat.Opus, AudioRipFormat.Aac];
@@ -808,6 +825,7 @@ public class AudioBurnViewModel : ObservableObject, IDisposable
             _secureRip = s.SecureAudioRipByDefault;
             _lookupMetadata = s.LookupMusicBrainzByDefault;
             _verifyAccurateRip = s.VerifyAccurateRipByDefault;
+            _verifyCtdb = s.VerifyCtdbByDefault;
         }
         else
         {
@@ -815,6 +833,7 @@ public class AudioBurnViewModel : ObservableObject, IDisposable
             _secureRip = false;
             _lookupMetadata = true;
             _verifyAccurateRip = true;
+            _verifyCtdb = false;
         }
         _continueOnUnreadable = false;
         _ripReport = string.Empty;
@@ -2129,6 +2148,7 @@ public class AudioBurnViewModel : ObservableObject, IDisposable
             SecureRip = settings.SecureAudioRipByDefault;
             LookupMetadata = settings.LookupMusicBrainzByDefault;
             VerifyAccurateRip = settings.VerifyAccurateRipByDefault;
+            VerifyCtdb = settings.VerifyCtdbByDefault;
         }
         finally
         {
@@ -2149,6 +2169,7 @@ public class AudioBurnViewModel : ObservableObject, IDisposable
             settings.SecureAudioRipByDefault = _secureRip;
             settings.LookupMusicBrainzByDefault = _lookupMetadata;
             settings.VerifyAccurateRipByDefault = _verifyAccurateRip;
+            settings.VerifyCtdbByDefault = _verifyCtdb;
             _settingsService.CurrentSettings = settings;
             _settingsService.Save();
         }
@@ -2342,12 +2363,13 @@ public class AudioBurnViewModel : ObservableObject, IDisposable
             rip.RecoveryRepair,
             hiddenTrackOneAudioPath: rip.HiddenTrackOneAudioPath != null && files.Count > 0
                 ? Path.ChangeExtension(rip.HiddenTrackOneAudioPath, Path.GetExtension(files[0]))
-                : null);
+                : null,
+            ctdbDiscCrc: rip.CtdbDiscCrc);
 
     /// <summary>
     /// Extracts Red Book audio tracks from the inserted CD into uncompressed WAV files and companion CUE sheet.
     /// </summary>
-    public async Task<AudioCdRipResult> RipAudioCdAsync(string? driveId = null, string? outputFolder = null, CancellationToken ct = default)
+    public async Task<AudioCdRipResult> RipAudioCdAsync(string? driveId = null, string? outputFolder = null, CancellationToken ct = default, HttpClient? httpClient = null)
     {
         RipReport = string.Empty;
 
@@ -2451,9 +2473,10 @@ public class AudioBurnViewModel : ObservableObject, IDisposable
 
             if (LookupMetadata && ids != null)
             {
+                HttpClient? ownedHttp = null;
                 try
                 {
-                    using var http = new HttpClient { Timeout = TimeSpan.FromSeconds(15) };
+                    var http = httpClient ?? (ownedHttp = new HttpClient { Timeout = TimeSpan.FromSeconds(15) });
                     var mbClient = new MusicBrainzClient(http, MusicBrainzClient.DefaultUserAgent);
                     var releases = await mbClient.LookupDiscIdAsync(ids.MusicBrainzId, activeToken).ConfigureAwait(false);
                     if (releases != null && releases.Count > 0)
@@ -2472,6 +2495,10 @@ public class AudioBurnViewModel : ObservableObject, IDisposable
                 catch (Exception ex)
                 {
                     warning = $"MusicBrainz lookup failed: {ex.Message}";
+                }
+                finally
+                {
+                    ownedHttp?.Dispose();
                 }
             }
 
@@ -2528,9 +2555,10 @@ public class AudioBurnViewModel : ObservableObject, IDisposable
                 }
                 else
                 {
+                    HttpClient? ownedHttp = null;
                     try
                     {
-                        using var http = new HttpClient { Timeout = TimeSpan.FromSeconds(15) };
+                        var http = httpClient ?? (ownedHttp = new HttpClient { Timeout = TimeSpan.FromSeconds(15) });
                         var pressings = await AccurateRipDatabase.FetchAsync(http, ids, cancellationToken: activeToken).ConfigureAwait(false);
                         accurateRipStatus = pressings.Count == 0 ? "not-in-database" : "checked";
                         foreach (var info in ripResult.TrackInfos)
@@ -2550,12 +2578,62 @@ public class AudioBurnViewModel : ObservableObject, IDisposable
                         accurateRipStatus = "failed";
                         warning = (warning == null ? "" : warning + "\n") + $"AccurateRip lookup failed: {ex.Message}";
                     }
+                    finally
+                    {
+                        ownedHttp?.Dispose();
+                    }
                 }
 
                 if (ReadOffsetSamples == 0 && accurateRipStatus == "checked" && accurateRipTracks.Any(t => t.Verdict is { IsAccurate: false }))
                 {
                     warning = (warning == null ? "" : warning + "\n") +
                         "No read offset was configured; AccurateRip only matches when the drive's read offset is corrected (use 'Detect' or check the AccurateRip drive offset list).";
+                }
+            }
+
+            string? ctdbStatus = null;
+            (bool Matched, int Confidence, int TotalSubmissions)? ctdbDiscMatch = null;
+            var ctdbTracks = new List<(AudioTrackRipInfo Info, CtdbTrackVerdict? Verdict)>();
+
+            if (ripResult.Success && VerifyCtdb)
+            {
+                if (ids == null || string.IsNullOrWhiteSpace(ids.CtdbToc))
+                {
+                    ctdbStatus = "unavailable";
+                }
+                else
+                {
+                    HttpClient? ownedHttp = null;
+                    try
+                    {
+                        var http = httpClient ?? (ownedHttp = new HttpClient { Timeout = TimeSpan.FromSeconds(15) });
+                        var entries = await CueToolsDatabase.FetchAsync(http, ids, cancellationToken: activeToken).ConfigureAwait(false);
+                        ctdbStatus = entries.Count == 0 ? "not-in-database" : "checked";
+                        if (entries.Count > 0)
+                        {
+                            ctdbDiscMatch = CueToolsDatabase.MatchDisc(entries, ripResult.CtdbDiscCrc);
+                        }
+                        foreach (var info in ripResult.TrackInfos)
+                        {
+                            ctdbTracks.Add((info, entries.Count == 0
+                                ? null
+                                : CueToolsDatabase.MatchTrack(entries, info.AudioTrackIndex, info.CtdbTrackCrc, ripResult.CtdbDiscCrc)));
+                        }
+                    }
+                    catch (Exception ex) when (ex is HttpRequestException or TaskCanceledException or InvalidDataException)
+                    {
+                        ctdbStatus = "failed";
+                        warning = (warning == null ? "" : warning + "\n") + $"CTDB lookup failed: {ex.Message}";
+                    }
+                    catch (Exception ex)
+                    {
+                        ctdbStatus = "failed";
+                        warning = (warning == null ? "" : warning + "\n") + $"CTDB lookup failed: {ex.Message}";
+                    }
+                    finally
+                    {
+                        ownedHttp?.Dispose();
+                    }
                 }
             }
 
@@ -2574,6 +2652,7 @@ public class AudioBurnViewModel : ObservableObject, IDisposable
                 sb.AppendLine($"  MusicBrainz ID:   {ids?.MusicBrainzId ?? "n/a"}");
                 sb.AppendLine($"  freedb ID:        {ids?.FreeDbIdHex ?? "n/a"}");
                 sb.AppendLine($"  AccurateRip:      {ids?.AccurateRipDatabasePath ?? "n/a"}");
+                sb.AppendLine($"  CTDB TOCID:       {ids?.CtdbTocId ?? "n/a"}");
                 sb.AppendLine($"  Metadata Source:  {metadataSource}");
                 sb.AppendLine($"  Read Offset:      {ReadOffsetSamples:+0;-0;0} samples");
                 if (SecureRip)
@@ -2607,6 +2686,22 @@ public class AudioBurnViewModel : ObservableObject, IDisposable
                         sb.AppendLine($"    Track {info.TrackNumber:D2}: {line}  [v1 {info.AccurateRipV1:x8} v2 {info.AccurateRipV2:x8}]");
                     }
                 }
+                if (ctdbStatus != null)
+                {
+                    string discLine = ctdbDiscMatch is { } dm && ripResult.CtdbDiscCrc is uint discCrc
+                        ? $"{ctdbStatus} (disc {(dm.Matched ? $"accurate, confidence {dm.Confidence}/{dm.TotalSubmissions}" : $"NOT accurate, 0/{dm.TotalSubmissions} submissions match")}, crc {discCrc:x8})"
+                        : ctdbStatus;
+                    sb.AppendLine($"  CTDB:             {discLine}");
+                    foreach (var (info, verdict) in ctdbTracks)
+                    {
+                        string line = verdict == null
+                            ? "not in database"
+                            : verdict.IsAccurate
+                                ? $"accurate (confidence {verdict.Confidence}/{verdict.TotalSubmissions})"
+                                : $"NOT accurate (0/{verdict.TotalSubmissions} submissions match)";
+                        sb.AppendLine($"    Track {info.TrackNumber:D2}: {line}  [ctdb {info.CtdbTrackCrc:x8}]");
+                    }
+                }
                 if (!string.IsNullOrEmpty(warning))
                 {
                     sb.AppendLine($"  Warning:          {warning}");
@@ -2636,6 +2731,7 @@ public class AudioBurnViewModel : ObservableObject, IDisposable
                     sb.AppendLine($"  MusicBrainz ID:   {ids.MusicBrainzId}");
                     sb.AppendLine($"  freedb ID:        {ids.FreeDbIdHex}");
                     sb.AppendLine($"  AccurateRip:      {ids.AccurateRipDatabasePath}");
+                    sb.AppendLine($"  CTDB TOCID:       {ids.CtdbTocId}");
                 }
                 if (!string.IsNullOrEmpty(warning))
                 {

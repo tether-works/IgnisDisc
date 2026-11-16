@@ -42,6 +42,10 @@ it:
 - **AccurateRip check** (audio CD ripping; *on by default* in the app's rip options, off unless you pass
   `--verify-accuraterip` or run `detect-offset` on the command line): IDs computed from the disc's table of contents
   are used to download the matching checksum file from `accuraterip.com`.
+- **CUETools Database (CTDB) check** (audio CD ripping; *off by default*, only when you turn on *Verify with CTDB*
+  in the rip options or Settings, or pass `--verify-ctdb` on the command line): the disc's table of contents
+  (track start positions and lead-out) is sent to `db.cuetools.net` (`lookup2.php`) to download matching track and disc
+  CRC-32 entries. No audio or personal data is sent.
 - **Optional tool downloads** (only when you click *Install FFmpeg (1-Click)* or *Install par2 (1-Click)*): the
   program is downloaded from its project's GitHub releases. The par2cmdline-turbo archive's SHA-256 is pinned in
   IgnisDisc and any other download is refused before it is unpacked; ffmpeg comes from BtbN's rolling `latest` LGPL
@@ -56,4 +60,4 @@ it:
   *Check for Updates Now* in Settings, the app asks `api.github.com` for the latest IgnisDisc release. No personal or
   machine identifiers are sent.
 
-Both ripping lookups can be switched off in the rip options; the choice is remembered.
+All three ripping lookups can be switched on or off in the rip options and Settings; the choice is remembered.

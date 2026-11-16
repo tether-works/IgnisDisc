@@ -84,8 +84,8 @@
     "featureHtml": "AccurateRip verification and read-offset correction",
     "physical": "✅",
     "virtual": "✅",
-    "notesMarkdown": "Detects your drive's offset from a disc in the AccurateRip database",
-    "notesHtml": "Detects your drive's offset from a disc in the AccurateRip database"
+    "notesMarkdown": "Detects your drive's offset from a disc in the AccurateRip database; optional opt-in CUETools Database (CTDB) track and disc CRC-32 lookup (`--verify-ctdb`, off by default)",
+    "notesHtml": "Detects your drive's offset from a disc in the AccurateRip database; optional opt-in CUETools Database (CTDB) track and disc CRC-32 lookup (<code>--verify-ctdb</code>, off by default)"
   },
   {
     "featureMarkdown": "Secure audio ripping (C2 error pointers + re-reads)",

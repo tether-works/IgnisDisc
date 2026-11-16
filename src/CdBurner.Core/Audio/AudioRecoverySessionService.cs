@@ -727,6 +727,7 @@ public static class AudioRecoverySessionService
         var repairedTracks = new List<int>();
         var failedTracks = new List<int>();
         int totalDiscTracks = manifest.Tracks.Count;
+        long totalDiscAudioSamples = manifest.TotalPcmBytes / 4;
 
         await using (var repairedPcm = new FileStream(pcmPath, FileMode.Open, FileAccess.Read, FileShare.Read))
         {
@@ -753,7 +754,13 @@ public static class AudioRecoverySessionService
                 if (rippedByTrack.TryGetValue(trackNumber, out var ripInfo))
                 {
                     OverwriteWavPcmSlice(ripInfo.FilePath, fixedPcm);
-                    UpdateRipInfoAfterRepair(rippedTrackInfos, ripInfo, fixedPcm, totalDiscTracks);
+                    UpdateRipInfoAfterRepair(
+                        rippedTrackInfos,
+                        ripInfo,
+                        fixedPcm,
+                        totalDiscTracks,
+                        entry.ByteOffset / 4,
+                        totalDiscAudioSamples);
                 }
                 repairedTracks.Add(trackNumber);
             }
@@ -830,7 +837,9 @@ public static class AudioRecoverySessionService
         IList<AudioTrackRipInfo> rippedTrackInfos,
         AudioTrackRipInfo existing,
         byte[] fixedPcm,
-        int totalDiscTracks)
+        int totalDiscTracks,
+        long trackStartSampleInDisc,
+        long totalDiscAudioSamples)
     {
         var crc = new Crc32Algorithm();
         crc.Append(fixedPcm);
@@ -840,6 +849,9 @@ public static class AudioRecoverySessionService
             isFirstTrack: existing.AudioTrackIndex == 0,
             isLastTrack: existing.AudioTrackIndex == totalDiscTracks - 1);
         ar.Append(fixedPcm);
+
+        var ctdb = CtdbChecksum.ForTrack(trackStartSampleInDisc, fixedPcm.Length / 4, totalDiscAudioSamples);
+        ctdb.Append(fixedPcm);
 
         double? rgGain = existing.ReplayGainTrackGain;
         double? rgPeak = existing.ReplayGainTrackPeak;
@@ -868,7 +880,8 @@ public static class AudioRecoverySessionService
                 UnreadableSectors = 0,
                 SuspectSectors = 0,
                 ReplayGainTrackGain = rgGain,
-                ReplayGainTrackPeak = rgPeak
+                ReplayGainTrackPeak = rgPeak,
+                CtdbTrackCrc = ctdb.Value
             };
         }
     }

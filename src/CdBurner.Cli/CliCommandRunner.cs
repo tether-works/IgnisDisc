@@ -49,7 +49,7 @@ public static partial class CliCommandRunner
     private static readonly HashSet<string> KnownFlags = new(StringComparer.OrdinalIgnoreCase)
     {
         "json", "udf", "joliet", "verify", "close", "no-close", "raw", "full", "dao", "help", "h", "version", "v",
-        "lookup", "keep-wav", "continue-on-error", "verify-accuraterip", "secure", "plan-only",
+        "lookup", "keep-wav", "continue-on-error", "verify-accuraterip", "verify-ctdb", "secure", "plan-only",
         "overwrite", "strict-verify", "no-verify", "no-secure", "allow-damaged", "no-fill", "keep-folders",
         "generate-subtitles", "no-menu", "dual-layer", "fit-to-disc", "no-ffmpeg", "no-cd-text", "normalize", "peak-normalize", "rms-level",
         "no-burnfree", "append", "delete-backups", "confirm-shutdown", "windows-writer"
@@ -86,7 +86,8 @@ public static partial class CliCommandRunner
         TextWriter stdout,
         TextWriter stderr,
         IDiscDeviceService? customDeviceService = null,
-        IBurnEngineBackend? customBurnEngine = null)
+        IBurnEngineBackend? customBurnEngine = null,
+        HttpClient? customHttpClient = null)
     {
         ArgumentNullException.ThrowIfNull(args);
         ArgumentNullException.ThrowIfNull(stdout);
@@ -139,7 +140,7 @@ public static partial class CliCommandRunner
 
         try
         {
-            return await DispatchCommandAsync(parsed, stdout, stderr, deviceService, burnEngine).ConfigureAwait(false);
+            return await DispatchCommandAsync(parsed, stdout, stderr, deviceService, burnEngine, customHttpClient).ConfigureAwait(false);
         }
         catch (CommandLineException cle)
         {
@@ -185,7 +186,8 @@ public static partial class CliCommandRunner
         TextWriter stdout,
         TextWriter stderr,
         IDiscDeviceService deviceService,
-        IBurnEngineBackend burnEngine)
+        IBurnEngineBackend burnEngine,
+        HttpClient? customHttpClient = null)
     {
         string subcommand = cmd.Subcommand?.ToLowerInvariant() ?? string.Empty;
 
@@ -199,7 +201,7 @@ public static partial class CliCommandRunner
             "burn-audio" or "burnaudio" => await HandleBurnAudioAsync(cmd, stdout, stderr, deviceService, burnEngine).ConfigureAwait(false),
             "burn-dvd" or "burndvd" => await HandleBurnDvdAsync(cmd, stdout, stderr, deviceService, burnEngine).ConfigureAwait(false),
             "rip" or "rip-disc" => await HandleRipAsync(cmd, stdout, stderr, deviceService, burnEngine).ConfigureAwait(false),
-            "rip-audio" or "ripaudio" => await HandleRipAudioAsync(cmd, stdout, stderr, deviceService, burnEngine).ConfigureAwait(false),
+            "rip-audio" or "ripaudio" => await HandleRipAudioAsync(cmd, stdout, stderr, deviceService, burnEngine, customHttpClient).ConfigureAwait(false),
             "detect-offset" or "detectoffset" => await HandleDetectOffsetAsync(cmd, stdout, stderr, deviceService, burnEngine).ConfigureAwait(false),
             "check-disc" or "checkdisc" => HandleCheckDisc(cmd, stdout, deviceService),
             "copy-disc" or "copydisc" or "copy" => await HandleCopyDiscAsync(cmd, stdout, stderr, deviceService, burnEngine).ConfigureAwait(false),
@@ -1841,7 +1843,8 @@ public static partial class CliCommandRunner
         TextWriter stdout,
         TextWriter stderr,
         IDiscDeviceService deviceService,
-        IBurnEngineBackend burnEngine)
+        IBurnEngineBackend burnEngine,
+        HttpClient? customHttpClient = null)
     {
         string driveId = cmd.GetRequiredOption("drive", "--drive <id>");
         string outputFolder = cmd.GetRequiredOption("output", "--output <folder>");
@@ -1925,9 +1928,10 @@ public static partial class CliCommandRunner
 
         if (cmd.HasFlag("lookup") && ids != null)
         {
+            HttpClient? ownedHttp = null;
             try
             {
-                using var http = new HttpClient { Timeout = TimeSpan.FromSeconds(15) };
+                var http = customHttpClient ?? (ownedHttp = new HttpClient { Timeout = TimeSpan.FromSeconds(15) });
                 var mbClient = new MusicBrainzClient(http, MusicBrainzClient.DefaultUserAgent);
                 var releases = await mbClient.LookupDiscIdAsync(ids.MusicBrainzId).ConfigureAwait(false);
                 if (releases != null && releases.Count > 0)
@@ -1946,6 +1950,10 @@ public static partial class CliCommandRunner
             catch (Exception ex)
             {
                 warning = $"MusicBrainz lookup failed: {ex.Message}";
+            }
+            finally
+            {
+                ownedHttp?.Dispose();
             }
         }
 
@@ -2007,6 +2015,7 @@ public static partial class CliCommandRunner
                     musicBrainzId = ids?.MusicBrainzId,
                     freeDbId = ids?.FreeDbIdHex,
                     accurateRipPath = ids?.AccurateRipDatabasePath,
+                    ctdbTocId = ids?.CtdbTocId,
                     metadataSource = metadataSource,
                     warning = warning,
                     files = Array.Empty<string>(),
@@ -2032,9 +2041,10 @@ public static partial class CliCommandRunner
             }
             else
             {
+                HttpClient? ownedHttp = null;
                 try
                 {
-                    using var http = new HttpClient { Timeout = TimeSpan.FromSeconds(15) };
+                    var http = customHttpClient ?? (ownedHttp = new HttpClient { Timeout = TimeSpan.FromSeconds(15) });
                     var pressings = await AccurateRipDatabase.FetchAsync(http, ids).ConfigureAwait(false);
                     accurateRipStatus = pressings.Count == 0 ? "not-in-database" : "checked";
                     foreach (var info in result.TrackInfos)
@@ -2049,12 +2059,56 @@ public static partial class CliCommandRunner
                     accurateRipStatus = "failed";
                     warning = (warning == null ? "" : warning + " ") + $"AccurateRip lookup failed: {ex.Message}";
                 }
+                finally
+                {
+                    ownedHttp?.Dispose();
+                }
             }
 
             if (readOffset == 0 && accurateRipStatus == "checked" && accurateRipTracks.Any(t => t.Verdict is { IsAccurate: false }))
             {
                 warning = (warning == null ? "" : warning + " ") +
                     "No --read-offset was given; AccurateRip only matches when the drive's read offset is corrected (see the AccurateRip drive offset list).";
+            }
+        }
+
+        string? ctdbStatus = null;
+        (bool Matched, int Confidence, int TotalSubmissions)? ctdbDiscMatch = null;
+        var ctdbTracks = new List<(AudioTrackRipInfo Info, CtdbTrackVerdict? Verdict)>();
+        if (cmd.HasFlag("verify-ctdb"))
+        {
+            if (ids == null || string.IsNullOrWhiteSpace(ids.CtdbToc))
+            {
+                ctdbStatus = "unavailable";
+            }
+            else
+            {
+                HttpClient? ownedHttp = null;
+                try
+                {
+                    var http = customHttpClient ?? (ownedHttp = new HttpClient { Timeout = TimeSpan.FromSeconds(15) });
+                    var entries = await CueToolsDatabase.FetchAsync(http, ids).ConfigureAwait(false);
+                    ctdbStatus = entries.Count == 0 ? "not-in-database" : "checked";
+                    if (entries.Count > 0)
+                    {
+                        ctdbDiscMatch = CueToolsDatabase.MatchDisc(entries, result.CtdbDiscCrc);
+                    }
+                    foreach (var info in result.TrackInfos)
+                    {
+                        ctdbTracks.Add((info, entries.Count == 0
+                            ? null
+                            : CueToolsDatabase.MatchTrack(entries, info.AudioTrackIndex, info.CtdbTrackCrc, result.CtdbDiscCrc)));
+                    }
+                }
+                catch (Exception ex) when (ex is HttpRequestException or TaskCanceledException or InvalidDataException)
+                {
+                    ctdbStatus = "failed";
+                    warning = (warning == null ? "" : warning + " ") + $"CTDB lookup failed: {ex.Message}";
+                }
+                finally
+                {
+                    ownedHttp?.Dispose();
+                }
             }
         }
 
@@ -2122,6 +2176,8 @@ public static partial class CliCommandRunner
                 musicBrainzId = ids?.MusicBrainzId,
                 freeDbId = ids?.FreeDbIdHex,
                 accurateRipPath = ids?.AccurateRipDatabasePath,
+                ctdbTocId = ids?.CtdbTocId,
+                ctdbDiscCrc = result.CtdbDiscCrc?.ToString("X8"),
                 metadataSource = metadataSource,
                 warning = warning,
                 files = finalOutputFiles.Select(Path.GetFullPath).ToList(),
@@ -2134,6 +2190,7 @@ public static partial class CliCommandRunner
                     crc32 = t.Crc32.ToString("X8"),
                     accurateRipV1 = t.AccurateRipV1.ToString("x8"),
                     accurateRipV2 = t.AccurateRipV2.ToString("x8"),
+                    ctdbCrc = t.CtdbTrackCrc.ToString("X8"),
                     unreadableSectors = t.UnreadableSectors,
                     recoveredSectors = t.RecoveredSectors,
                     suspectSectors = t.SuspectSectors
@@ -2149,6 +2206,20 @@ public static partial class CliCommandRunner
                         confidence = t.Verdict?.Confidence,
                         totalSubmissions = t.Verdict?.TotalSubmissions,
                         matchedV2 = t.Verdict?.MatchedV2
+                    }).ToList()
+                },
+                ctdb = ctdbStatus == null ? null : new
+                {
+                    status = ctdbStatus,
+                    discAccurate = ctdbDiscMatch?.Matched,
+                    discConfidence = ctdbDiscMatch?.Confidence,
+                    totalSubmissions = ctdbDiscMatch?.TotalSubmissions,
+                    tracks = ctdbTracks.Select(t => new
+                    {
+                        trackNumber = t.Info.TrackNumber,
+                        accurate = t.Verdict?.IsAccurate,
+                        confidence = t.Verdict?.Confidence,
+                        totalSubmissions = t.Verdict?.TotalSubmissions
                     }).ToList()
                 },
                 error = (string?)null
@@ -2170,6 +2241,7 @@ public static partial class CliCommandRunner
         stdout.WriteLine($"  MusicBrainz ID:   {ids?.MusicBrainzId ?? "n/a"}");
         stdout.WriteLine($"  freedb ID:        {ids?.FreeDbIdHex ?? "n/a"}");
         stdout.WriteLine($"  AccurateRip:      {ids?.AccurateRipDatabasePath ?? "n/a"}");
+        stdout.WriteLine($"  CTDB TOCID:       {ids?.CtdbTocId ?? "n/a"}");
         stdout.WriteLine($"  Metadata Source:  {metadataSource}");
         stdout.WriteLine($"  Read Offset:      {readOffset:+0;-0;0} samples");
         if (!cmd.HasFlag("no-secure"))
@@ -2201,6 +2273,22 @@ public static partial class CliCommandRunner
                         ? $"accurate (confidence {verdict.Confidence}/{verdict.TotalSubmissions}, {(verdict.MatchedV2 ? "v2" : "v1")})"
                         : $"NOT accurate (0/{verdict.TotalSubmissions} submissions match)";
                 stdout.WriteLine($"    Track {info.TrackNumber:D2}: {line}  [v1 {info.AccurateRipV1:x8} v2 {info.AccurateRipV2:x8}]");
+            }
+        }
+        if (ctdbStatus != null)
+        {
+            string discLine = ctdbDiscMatch is { } dm && result.CtdbDiscCrc is uint discCrc
+                ? $"{ctdbStatus} (disc {(dm.Matched ? $"accurate, confidence {dm.Confidence}/{dm.TotalSubmissions}" : $"NOT accurate, 0/{dm.TotalSubmissions} submissions match")}, crc {discCrc:x8})"
+                : ctdbStatus;
+            stdout.WriteLine($"  CTDB:             {discLine}");
+            foreach (var (info, verdict) in ctdbTracks)
+            {
+                string line = verdict == null
+                    ? "not in database"
+                    : verdict.IsAccurate
+                        ? $"accurate (confidence {verdict.Confidence}/{verdict.TotalSubmissions})"
+                        : $"NOT accurate (0/{verdict.TotalSubmissions} submissions match)";
+                stdout.WriteLine($"    Track {info.TrackNumber:D2}: {line}  [ctdb {info.CtdbTrackCrc:x8}]");
             }
         }
         if (!string.IsNullOrEmpty(warning))
@@ -3204,7 +3292,7 @@ public static partial class CliCommandRunner
         stdout.WriteLine("      Makes machine-generated subtitles for a movie (FFmpeg + whisper.cpp). Fast on an NVIDIA GPU, much slower on the processor; names are often misheard.");
         stdout.WriteLine("  rip --drive <id> --output <file.iso|file.bin> [--raw] [--json]");
         stdout.WriteLine("      Rips optical disc to an ISO or raw BIN+CUE image.");
-        stdout.WriteLine("  rip-audio --drive <id> --output <folder> [--format wav|flac|mp3|opus|aac] [--bitrate <kbps>] [--tracks 1,3,5] [--lookup] [--keep-wav] [--continue-on-error] [--read-offset <samples>] [--verify-accuraterip] [--no-secure] [--repair] [--json]");
+        stdout.WriteLine("  rip-audio --drive <id> --output <folder> [--format wav|flac|mp3|opus|aac] [--bitrate <kbps>] [--tracks 1,3,5] [--lookup] [--keep-wav] [--continue-on-error] [--read-offset <samples>] [--verify-accuraterip] [--verify-ctdb] [--no-secure] [--repair] [--json]");
         stdout.WriteLine("      Rips Red Book Audio CD to WAV, FLAC, MP3, Opus or AAC (FLAC, MP3, Opus need the optional ffmpeg; AAC uses the Windows encoder) with CD-Text and optional MusicBrainz lookup. Exit code 2 when sectors may be wrong (still suspect or unreadable).");
         stdout.WriteLine("  copy-disc --source <id> [--target <id>] [--copies <n>] [--speed <X|max>] [--raw] [--native [--log-dir <folder>]] [--allow-suspect] [--keep-image <folder>] [--wait-minutes <n>] [--json]");
         stdout.WriteLine("      Copies a disc, with one drive or two. With one drive (or for each further copy) the tray opens and the copy waits for a blank disc.");
@@ -3305,7 +3393,7 @@ public static partial class CliCommandRunner
         {
             stdout.WriteLine(LegalBanner.VersionNotice);
             stdout.WriteLine();
-            stdout.WriteLine("  rip-audio --drive <id> --output <folder> [--format wav|flac|mp3|opus|aac] [--bitrate <kbps>] [--tracks 1,3,5] [--lookup] [--keep-wav] [--continue-on-error] [--read-offset <samples>] [--verify-accuraterip] [--no-secure] [--repair] [--cover <image>] [--no-replaygain] [--json]");
+            stdout.WriteLine("  rip-audio --drive <id> --output <folder> [--format wav|flac|mp3|opus|aac] [--bitrate <kbps>] [--tracks 1,3,5] [--lookup] [--keep-wav] [--continue-on-error] [--read-offset <samples>] [--verify-accuraterip] [--verify-ctdb] [--no-secure] [--repair] [--cover <image>] [--no-replaygain] [--json]");
             stdout.WriteLine("      Rips Red Book Audio CD to WAV, FLAC, MP3, Opus or AAC (FLAC, MP3, Opus need the optional ffmpeg; AAC uses the Windows encoder) with CD-Text and optional MusicBrainz lookup. Exit code 2 when sectors may be wrong (still suspect or unreadable).");
             stdout.WriteLine("      --repair checks and repairs damaged samples from session 2 PAR2 recovery data on Enhanced CDs.");
             stdout.WriteLine("      FLAC files get ReplayGain 2.0 tags (unless --no-replaygain) and, with --cover, embedded front cover art.");

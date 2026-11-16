@@ -33,6 +33,7 @@ public class SettingsViewModel : ObservableObject
     private int _logRingBufferCapacity;
     private bool _lookupMusicBrainzByDefault = true;
     private bool _verifyAccurateRipByDefault = true;
+    private bool _verifyCtdbByDefault;
     private IDiscRecorderBackend? _selectedRecorder;
     private string _statusMessage = "Ready";
     private bool _checkForUpdatesOnStartup;
@@ -52,7 +53,7 @@ public class SettingsViewModel : ObservableObject
         nameof(EjectAfterBurnByDefault), nameof(NotifyWhenBurnFinishes), nameof(EnableBurnFreeByDefault),
         nameof(TempStagingDirectory), nameof(ThemeMode), nameof(FfmpegExecutablePath), nameof(EnableVirtualDrive),
         nameof(LogRingBufferCapacity), nameof(LookupMusicBrainzByDefault), nameof(VerifyAccurateRipByDefault),
-        nameof(CheckForUpdatesOnStartup), nameof(DirectWritingForDvdRw)
+        nameof(VerifyCtdbByDefault), nameof(CheckForUpdatesOnStartup), nameof(DirectWritingForDvdRw)
     ];
 
     /// <summary>
@@ -286,6 +287,16 @@ public class SettingsViewModel : ObservableObject
     }
 
     /// <summary>
+    /// Whether to verify extracted Audio CD tracks against the CUETools Database (CTDB) by default when ripping.
+    /// Strictly opt-in (default false).
+    /// </summary>
+    public bool VerifyCtdbByDefault
+    {
+        get => _verifyCtdbByDefault;
+        set => SetProperty(ref _verifyCtdbByDefault, value);
+    }
+
+    /// <summary>
     /// Whether to check for updates against GitHub Releases on startup. Strictly opt-in (default false).
     /// </summary>
     public bool CheckForUpdatesOnStartup
@@ -460,6 +471,7 @@ public class SettingsViewModel : ObservableObject
         LogRingBufferCapacity = settings.LogRingBufferCapacity;
         LookupMusicBrainzByDefault = settings.LookupMusicBrainzByDefault;
         VerifyAccurateRipByDefault = settings.VerifyAccurateRipByDefault;
+        VerifyCtdbByDefault = settings.VerifyCtdbByDefault;
         CheckForUpdatesOnStartup = settings.CheckForUpdatesOnStartup;
         NotifyWhenBurnFinishes = settings.NotifyWhenBurnFinishes;
         DirectWritingForDvdRw = settings.DirectWritingForDvdRw;
@@ -487,6 +499,7 @@ public class SettingsViewModel : ObservableObject
         settings.LogRingBufferCapacity = LogRingBufferCapacity;
         settings.LookupMusicBrainzByDefault = LookupMusicBrainzByDefault;
         settings.VerifyAccurateRipByDefault = VerifyAccurateRipByDefault;
+        settings.VerifyCtdbByDefault = VerifyCtdbByDefault;
         settings.CheckForUpdatesOnStartup = CheckForUpdatesOnStartup;
         settings.NotifyWhenBurnFinishes = NotifyWhenBurnFinishes;
 
