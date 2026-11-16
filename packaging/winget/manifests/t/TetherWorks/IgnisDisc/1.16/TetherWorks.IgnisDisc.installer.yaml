@@ -1,0 +1,52 @@
+# yaml-language-server: $schema=https://aka.ms/winget-manifest.installer.1.6.0.schema.json
+
+PackageIdentifier: TetherWorks.IgnisDisc
+PackageVersion: "1.16"
+Platform:
+  - Windows.Desktop
+MinimumOSVersion: 10.0.19041.0
+InstallerType: exe
+Scope: user
+InstallModes:
+  - interactive
+  - silent
+InstallerSwitches:
+  Silent: --silent
+  SilentWithProgress: --silent
+UpgradeBehavior: install
+Commands:
+  - ignisdisc-cli
+ReleaseDate: 2026-11-15
+AppsAndFeaturesEntries:
+  - DisplayName: IgnisDisc Optical Studio
+    Publisher: tetherworks
+    DisplayVersion: "1.16"
+    ProductCode: IgnisDisc
+Installers:
+  - Architecture: x64
+    InstallerUrl: https://github.com/tether-works/IgnisDisc/releases/download/v1.16/IgnisDisc-Setup.exe
+    InstallerSha256: 2A91913FB9967A62A9AD5D446833F00ECF4EBE723B0A9607BEC73E85A0898AB1
+ManifestType: installer
+ManifestVersion: 1.6.0
+
+
+
+
+
+
+
+
+
+
+
+
+
+
+
+
+
+
+
+
+
+
