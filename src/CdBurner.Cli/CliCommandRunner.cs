@@ -1165,6 +1165,7 @@ public static partial class CliCommandRunner
         bool recoverySession = cmd.HasFlag("recovery-session");
         string? dataFolder = cmd.GetOption("data-folder");
         string? dataLabel = cmd.GetOption("data-label");
+        bool blueBook = cmd.HasFlag("blue-book");
         bool disableBufe = cmd.HasFlag("no-burnfree");
         var postAction = ParsePostBurnAction(cmd);
         string? speedStr = cmd.GetOption("speed");
@@ -1184,6 +1185,10 @@ public static partial class CliCommandRunner
         if (!string.IsNullOrWhiteSpace(dataFolder) && recoverySession)
         {
             throw new CommandLineException("--data-folder cannot be combined with --recovery-session.");
+        }
+        if (blueBook && string.IsNullOrWhiteSpace(dataFolder))
+        {
+            throw new CommandLineException("--blue-book lays out the --data-folder session as an Enhanced CD; give --data-folder too.");
         }
 
         using var mfDecoder = OperatingSystem.IsWindows() ? new MediaFoundationAudioDecoder() : null;
@@ -1235,6 +1240,7 @@ public static partial class CliCommandRunner
                 IncludeRecoverySession = recoverySession,
                 DataSessionFolderPath = dataFolder,
                 DataSessionVolumeLabel = dataLabel,
+                BlueBookLayout = blueBook,
                 DisableBufferUnderrunFree = disableBufe
             }).ConfigureAwait(false);
 
@@ -1253,6 +1259,7 @@ public static partial class CliCommandRunner
                 recoverySession,
                 recoverySessionWritten = recoveryManifest != null,
                 dataSessionFolder = dataFolder,
+                dataSessionBlueBook = blueBook,
                 dataSessionWritten = audioBurnService.LastDataSessionSectors > 0,
                 dataSessionStartLba = audioBurnService.LastDataSessionStartLba,
                 dataSessionSectors = audioBurnService.LastDataSessionSectors,
@@ -3310,8 +3317,8 @@ public static partial class CliCommandRunner
         stdout.WriteLine("      Burns an ISO image directly to the target optical drive. --layer-break: sectors on the first layer of a DVD+R DL (multiple of 16). A DVD-RW is written with direct drive commands unless --windows-writer.");
         stdout.WriteLine("  burn-data --drive <id> --input <folder> [--label <vol>] [--speed <X|max>] [--udf] [--udf-rev <1.02|1.50|2.00|2.01|2.50|2.60>] [--joliet] [--boot-bios <img>] [--boot-uefi <img>] [--no-verify | --strict-verify] [--no-close] [--append] [--no-burnfree] [--overwrite] [--post-action none|eject|sound|eject-sound|shutdown] [--fixed-time <unix|iso8601>] [--sha256sums] [--blake3sums] [--windows-writer | --native [--test-write | --test-first] [--layer-break <sectors>] [--log-dir <folder>]] [--json]");
         stdout.WriteLine("      Compiles a folder and burns it to optical media (--append merges and adds a session on an appendable disc). A DVD-RW is written with direct drive commands unless --windows-writer.");
-        stdout.WriteLine("  burn-audio (--drive <id> | --plan-only) (--tracks <files|.cue|.m3u|.pls> | --tracks-file <file.json>) [--title <album>] [--artist <name>] [--songwriter <name>] [--upc <13digits>] [--speed <X|max>] [--dao] [--pregap <frames>] [--normalize] [--rms-level] [--loudness track|album|off] [--crossfade <sec>] [--no-cd-text] [--no-burnfree] [--post-action none|eject|sound|eject-sound|shutdown] [--allow-damaged] [--native [--test-write | --test-first] [--recovery-session | --data-folder <dir> [--data-label <label>]] [--write-offset <samples|auto>] [--log-dir <folder>]] [--json]");
-        stdout.WriteLine("      Burns Red Book Audio CD from WAV, FLAC, MP3, AAC/M4A, WMA, .cue, .m3u/.pls, or a JSON --tracks-file (--recovery-session adds session-2 PAR2 recovery; --data-folder burns an Enhanced CD data session; --plan-only previews without burning).");
+        stdout.WriteLine("  burn-audio (--drive <id> | --plan-only) (--tracks <files|.cue|.m3u|.pls> | --tracks-file <file.json>) [--title <album>] [--artist <name>] [--songwriter <name>] [--upc <13digits>] [--speed <X|max>] [--dao] [--pregap <frames>] [--normalize] [--rms-level] [--loudness track|album|off] [--crossfade <sec>] [--no-cd-text] [--no-burnfree] [--post-action none|eject|sound|eject-sound|shutdown] [--allow-damaged] [--native [--test-write | --test-first] [--recovery-session | --data-folder <dir> [--data-label <label>] [--blue-book]] [--write-offset <samples|auto>] [--log-dir <folder>]] [--json]");
+        stdout.WriteLine("      Burns Red Book Audio CD from WAV, FLAC, MP3, AAC/M4A, WMA, .cue, .m3u/.pls, or a JSON --tracks-file (--recovery-session adds session-2 PAR2 recovery; --data-folder burns an Enhanced CD data session; --blue-book writes it as CD-ROM XA Mode 2 with CDPLUS/INFO.CDP and PICTURES/; --plan-only previews without burning).");
         stdout.WriteLine("  burn-dvd --drive <id> --video-ts <folder|movie> [--label <vol>] [--menu-title <title>] [--menu on|off | --no-menu] [--menu-autoplay <never|sec>] [--after-title next|menu] [--standard ntsc|pal] [--aspect 16:9|4:3] [--chapters <none|sec>] [--subtitles-default on|off] [--subtitle-size small|medium|large] [--video-bitrate <fit|kbps>] [--fit-to-disc] [--title-names <a;b;...>] [--dual-layer] [--generate-subtitles [--subtitle-language <code>]] [--speed <X|max>] [--no-verify] [--no-burnfree] [--overwrite] [--post-action none|eject|sound|eject-sound|shutdown] [--native [--test-write | --test-first] [--log-dir <folder>]] [--json]");
         stdout.WriteLine("      Validates, normalizes/authors, aligns, and burns a DVD-Video compliant disc from VIDEO_TS or movie files.");
         stdout.WriteLine("      --dual-layer authors movie files for a DVD-9 (longest title first). On a dual-layer disc, --native puts the layer break on a cell boundary.");

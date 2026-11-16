@@ -22,6 +22,15 @@ namespace CdBurner.Core.Iso;
 /// only.</param>
 /// <param name="WriteBlake3Manifest">Adds a <c>BLAKE3SUMS</c> file (<c>b3sum</c> format) the same way, using IgnisDisc's
 /// built-in BLAKE3. Can be combined with <paramref name="WriteSha256Manifest"/>; the source is still read once.</param>
+/// <param name="CdRomXa">Marks the ISO 9660 volume as CD-ROM XA, for a track written as Mode 2 Form 1: <c>CD-XA001</c>
+/// at byte 1024 of the Primary Volume Descriptor and a 14-byte XA system use field in every ISO 9660 directory record
+/// (CD-ROM XA system description; the same fields cdrkit's <c>xa.h</c> and libisofs write). The Joliet tree is left as
+/// it is. Not with archive discs.</param>
+/// <param name="PinnedFilePath">A file (path from the root with '/' separators, as added to the tree) whose data must
+/// start exactly <paramref name="PinnedFileSector"/> sectors after the session start, for example
+/// <c>CDPLUS/INFO.CDP</c> at sector 75 on an Enhanced CD. The build fails when the file system's own structures already
+/// reach that sector.</param>
+/// <param name="PinnedFileSector">See <paramref name="PinnedFilePath"/>.</param>
 public record IsoBuildOptions(
     string VolumeLabel = "CDBURNER_DISC",
     bool IncludeIso9660 = true,
@@ -33,5 +42,8 @@ public record IsoBuildOptions(
     ElToritoBootConfiguration? BootConfiguration = null,
     DateTime? FixedTimestampUtc = null,
     bool WriteSha256Manifest = false,
-    bool WriteBlake3Manifest = false);
+    bool WriteBlake3Manifest = false,
+    bool CdRomXa = false,
+    string? PinnedFilePath = null,
+    int PinnedFileSector = 0);
 

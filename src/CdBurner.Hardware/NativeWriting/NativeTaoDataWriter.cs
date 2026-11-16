@@ -37,6 +37,10 @@ public sealed record NativeDataWriteRequest(
 
     /// <summary>True to disable buffer-underrun protection (BUFE) in Mode Page 0x05.</summary>
     public bool DisableBufferUnderrunFree { get; init; }
+
+    /// <summary>CD only: write the track as CD-ROM XA Mode 2 Form 1 (data block type 10, session format 20h) instead of
+    /// Mode 1. The image stays 2,048-byte sectors; the drive adds the sub-header. Refused on DVD and Blu-ray.</summary>
+    public bool Mode2Form1 { get; init; }
 }
 
 /// <summary>Outcome of a native Track-at-Once data write.</summary>
@@ -210,6 +214,10 @@ public sealed partial class NativeTaoDataWriter
         // 1. Drive ready, disc type, Track-at-Once support. A DVD goes its own way from here (NativeTaoDataWriter.Dvd.cs).
         WaitUntilReady(TimeSpan.FromSeconds(30), ct, state, "before writing");
         var tao = ReadTrackAtOnceFeature();
+        if (request.Mode2Form1 && (IsDvdProfile(tao.Profile) || IsBluRayProfile(tao.Profile) || OverwritableKindOf(tao.Profile) != null))
+        {
+            throw Stop($"Mode 2 Form 1 (CD-ROM XA) is a CD format; the disc in the drive has profile 0x{tao.Profile:X4}.");
+        }
         if (request.AppendsSession && (IsBluRayProfile(tao.Profile) || OverwritableKindOf(tao.Profile) != null))
         {
             state.UnsupportedDisc = true;
@@ -279,21 +287,36 @@ public sealed partial class NativeTaoDataWriter
         // 3. Write parameters, then read them back.
         var current = ReadWriteParameters() ?? throw Stop("The drive did not return its write parameters (mode page 0x05).");
         bool useBufe = tao.BufferUnderrunFree && !request.DisableBufferUnderrunFree;
-        var wanted = current.ForTrackAtOnceData(request.TestWrite, useBufe, request.CloseDisc);
+        string modeName = request.Mode2Form1 ? "Mode 2 Form 1" : "Mode 1";
+        if (request.Mode2Form1)
+        {
+            state.WriteMode = "track-at-once, mode 2 form 1 (CD-ROM XA)";
+            if (!current.HasSubHeader)
+            {
+                throw Stop("The drive's write parameters page has no sub-header bytes, so it cannot write Mode 2 Form 1.");
+            }
+        }
+        var wanted = current.ForTrackAtOnceData(request.TestWrite, useBufe, request.CloseDisc, request.Mode2Form1);
         if (!SelectWriteParameters(wanted))
         {
-            throw Stop("The drive rejected the Track-at-Once data write parameters.");
+            throw Stop($"The drive rejected the Track-at-Once {modeName} data write parameters.");
         }
         var confirmed = ReadWriteParameters() ?? throw Stop("The drive did not report its write parameters after they were set.");
-        if (confirmed.WriteType != WriteParametersPage.WriteTypeTrackAtOnce || confirmed.DataBlockType != WriteParametersPage.DataBlockTypeMode1)
+        byte blockType = request.Mode2Form1 ? WriteParametersPage.DataBlockTypeMode2Form1 : WriteParametersPage.DataBlockTypeMode1;
+        byte sessionFormat = request.Mode2Form1 ? WriteParametersPage.SessionFormatCdRomXa : WriteParametersPage.SessionFormatCdDaOrCdRom;
+        if (confirmed.WriteType != WriteParametersPage.WriteTypeTrackAtOnce || confirmed.DataBlockType != blockType || confirmed.SessionFormat != sessionFormat)
         {
-            throw Stop($"The drive did not switch to Track-at-Once Mode 1 (write type {confirmed.WriteType}, data block type {confirmed.DataBlockType}).");
+            throw Stop($"The drive did not switch to Track-at-Once {modeName} (write type {confirmed.WriteType}, data block type {confirmed.DataBlockType}, session format 0x{confirmed.SessionFormat:X2}).");
+        }
+        if (request.Mode2Form1 && !confirmed.SubHeader.SequenceEqual(wanted.SubHeader))
+        {
+            throw Stop("The drive did not keep the Mode 2 sub-header that was set.");
         }
         if (confirmed.TestWrite != request.TestWrite)
         {
             throw Stop("The drive did not confirm test-write mode, so nothing was written.");
         }
-        _note($"Write parameters confirmed: TAO, Mode 1, test write {confirmed.TestWrite}, BUFE {confirmed.BufferUnderrunFree}, multi-session {confirmed.MultiSession}.");
+        _note($"Write parameters confirmed: TAO, {modeName}, test write {confirmed.TestWrite}, BUFE {confirmed.BufferUnderrunFree}, multi-session {confirmed.MultiSession}.");
 
         // 4. Speed from the drive's own list for this disc, never left to chance.
         ChooseAndSetSpeed(request.WriteSpeedKiloBytesPerSecond, state);
@@ -342,7 +365,7 @@ public sealed partial class NativeTaoDataWriter
         WaitUntilReady(FlushTimeout, CancellationToken.None, state, "while closing the session");
 
         // 8. A quick look at what the drive now reports: the data track where it was written.
-        string tocNote = append is { } added ? CheckAddedSession(added, state.ImageSectors) : CheckTableOfContents(startLba, state.ImageSectors);
+        string tocNote = append is { } added ? CheckAddedSession(added, state.ImageSectors, request.Mode2Form1) : CheckTableOfContents(startLba, state.ImageSectors);
         reporter.Report(trackSectors, "Done");
         return new NativeDataWriteResult
         {
@@ -355,7 +378,8 @@ public sealed partial class NativeTaoDataWriter
             WritingTime = writing.Elapsed,
             SpeedSetKiloBytesPerSecond = state.SpeedSet,
             DriveSpeedsKiloBytesPerSecond = state.DriveSpeeds,
-            DiscRecorded = true
+            DiscRecorded = true,
+            WriteMode = state.WriteMode
         };
     }
 
@@ -629,13 +653,19 @@ public sealed partial class NativeTaoDataWriter
     /// After adding a session: READ TRACK INFORMATION of the new track by number (the reliable source; READ TOC was seen
     /// to go stale after an added DVD session until a reload), then the table of contents as a second opinion.
     /// </summary>
-    private string CheckAddedSession(AppendTarget added, int imageSectors)
+    private string CheckAddedSession(AppendTarget added, int imageSectors, bool mode2Form1 = false)
     {
-        string trackNote = ReadTrackInformation(added.TrackNumber) is { } t
+        var info = ReadTrackInformation(added.TrackNumber);
+        string trackNote = info is { } t
             ? t.TrackStart == added.StartLba
                 ? $"Track {added.TrackNumber} starts at sector {t.TrackStart:N0}."
                 : $"The drive reports track {added.TrackNumber} at sector {t.TrackStart:N0}, not {added.StartLba:N0}."
             : $"The drive did not report track {added.TrackNumber}.";
+        if (mode2Form1 && info is { } m)
+        {
+            // READ TRACK INFORMATION byte 6 bits 3-0, data mode: 1 for Mode 1, 2 for Mode 2 (MMC-5 6.27.3.4).
+            trackNote += m.DataMode == 2 ? " Data mode 2 (CD-ROM XA)." : $" WARNING: the drive reports data mode {m.DataMode}, not 2.";
+        }
         _note(trackNote);
         return trackNote + " " + CheckTableOfContents(added.StartLba, imageSectors);
     }
@@ -683,7 +713,7 @@ public sealed partial class NativeTaoDataWriter
     }
 
     internal readonly record struct TrackInformation(bool NextWritableAddressValid, int NextWritableAddress, long FreeBlocks, bool Blank,
-        byte TrackMode = 0, long TrackSize = 0, int TrackNumber = 0, int TrackStart = 0, int SessionNumber = 0);
+        byte TrackMode = 0, long TrackSize = 0, int TrackNumber = 0, int TrackStart = 0, int SessionNumber = 0, byte DataMode = 0);
 
     private TrackInformation? ReadTrackInformation(int trackNumber)
     {
@@ -704,7 +734,8 @@ public sealed partial class NativeTaoDataWriter
             TrackNumber: buffer[2] | (r.DataTransferLength >= 33 ? buffer[32] << 8 : 0),
             TrackStart: BinaryPrimitives.ReadInt32BigEndian(buffer.AsSpan(8, 4)),
             // MMC READ TRACK INFORMATION: session number LSB in byte 3, MSB in byte 33.
-            SessionNumber: buffer[3] | (r.DataTransferLength >= 34 ? buffer[33] << 8 : 0));
+            SessionNumber: buffer[3] | (r.DataTransferLength >= 34 ? buffer[33] << 8 : 0),
+            DataMode: (byte)(buffer[6] & 0x0F));
     }
 
     private bool SelectWriteParameters(WriteParametersPage page)

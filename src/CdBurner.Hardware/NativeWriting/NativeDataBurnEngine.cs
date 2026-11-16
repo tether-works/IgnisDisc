@@ -78,6 +78,15 @@ public sealed class NativeDataBurnEngine : IBurnEngineBackend, IWriterMediaStatu
                     : !status.IsBlank && !appending && !(status.IsOverwriteOnly && options.OverwriteExistingData)
                         ? "the disc already holds data that direct writing would not keep"
                         : null;
+        if (options.CdRomXaMode2Form1 && reason == null && !status.MediaType.IsCd())
+        {
+            reason = "Mode 2 Form 1 (CD-ROM XA) is a CD format";
+        }
+        if (reason != null && options.CdRomXaMode2Form1)
+        {
+            // Windows' writer can only write Mode 1, which is not what was asked for: stop instead of falling back.
+            return BurnOperationResult.Failed($"A CD-ROM XA Mode 2 Form 1 session needs direct writing, but {reason}. Nothing was written to the disc.");
+        }
         if (reason != null)
         {
             LastFallbackReason = $"Written with Windows' writer: {reason}.";
@@ -94,11 +103,12 @@ public sealed class NativeDataBurnEngine : IBurnEngineBackend, IWriterMediaStatu
             OverwriteExistingData: options.OverwriteExistingData, LayerBreakSectors: options.LayerBreakSectors,
             SessionStartLba: appending ? status.NextWritableLba : null)
         {
-            DisableBufferUnderrunFree = options.DisableBufferUnderrunFree
+            DisableBufferUnderrunFree = options.DisableBufferUnderrunFree,
+            Mode2Form1 = options.CdRomXaMode2Form1
         };
 
         var result = await Task.Run(() => Run(recorder, request, progress, cancellationToken), CancellationToken.None).ConfigureAwait(false);
-        if (result is { UnsupportedDisc: true, StoppedBeforeWriting: true })
+        if (result is { UnsupportedDisc: true, StoppedBeforeWriting: true } && !options.CdRomXaMode2Form1)
         {
             // The drive reported a different disc than Windows did; nothing was written, so let Windows write it.
             LastFallbackReason = $"Written with Windows' writer: {result.Message}";

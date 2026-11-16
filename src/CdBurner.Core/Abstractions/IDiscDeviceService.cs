@@ -396,6 +396,13 @@ public class DataBurnOptions
     /// Disables buffer-underrun protection (BURN-Free) for this write when true. Off by default.
     /// </summary>
     public bool DisableBufferUnderrunFree { get; init; }
+
+    /// <summary>
+    /// CD only, direct drive-command writer only: write the data track as CD-ROM XA Mode 2 Form 1 (data block type 10,
+    /// session format 20h) instead of Mode 1. Off by default. A writer that cannot honour it must fail rather than
+    /// write Mode 1.
+    /// </summary>
+    public bool CdRomXaMode2Form1 { get; init; }
 }
 
 /// <summary>
@@ -473,6 +480,13 @@ public class AudioBurnOptions
     /// Whether to read back and verify the second-session data volume after writing (default <c>true</c>).
     /// </summary>
     public bool VerifyDataSession { get; set; } = true;
+
+    /// <summary>
+    /// With <see cref="DataSessionFolderPath"/>: lay the second session out as an Enhanced CD (Blue Book): CD-ROM XA
+    /// Mode 2 Form 1, with <c>CDPLUS/INFO.CDP</c> (album and track text) and <c>PICTURES/</c> next to the folder's
+    /// files. Off by default: Windows reads a Mode 1 session best.
+    /// </summary>
+    public bool BlueBookLayout { get; set; }
 }
 
 /// <summary>

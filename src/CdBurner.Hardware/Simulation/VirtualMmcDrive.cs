@@ -294,8 +294,12 @@ public sealed class VirtualMmcDrive : IScsiTransport
 
     // ---- Multi-session data discs ----
 
-    /// <summary>One data session on the disc: its single track's start and length, and the lead-out the drive reports.</summary>
-    public sealed record DataSession(int TrackStartLba, int TrackSectors, int LeadOutLba);
+    /// <summary>One data session on the disc: its single track's start and length, and the lead-out the drive reports.
+    /// <paramref name="DataMode"/> is 1 for Mode 1 sectors, 2 for CD-ROM XA Mode 2 Form 1 sectors (written with data block
+    /// type 10); <paramref name="SessionFormat"/> is the disc type of its lead-in (00h CD-ROM, 20h CD-ROM XA), and
+    /// <paramref name="SubHeader"/> the 4-byte sub-header the drive put in every Mode 2 sector.</summary>
+    public sealed record DataSession(int TrackStartLba, int TrackSectors, int LeadOutLba, byte DataMode = 1, byte SessionFormat = 0x00,
+        byte[]? SubHeader = null);
 
     private readonly List<DataSession> _dataSessions = new();
     private readonly List<(int StartLba, byte[] Data)> _laterSessionData = new();
@@ -443,6 +447,10 @@ public sealed class VirtualMmcDrive : IScsiTransport
         _laterSessionData.RemoveAll(e => e.StartLba == startLba);
         _laterSessionData.Add((startLba, data));
     }
+
+    /// <summary>The recorded data session whose track holds <paramref name="lba"/>, or null.</summary>
+    private DataSession? FindDataSession(int lba) =>
+        _dataSessions.FirstOrDefault(d => lba >= d.TrackStartLba && lba < d.TrackStartLba + d.TrackSectors);
 
     private bool TryFindRecorded(int lba, int count, [System.Diagnostics.CodeAnalysis.NotNullWhen(true)] out byte[]? source, out int offset)
     {
@@ -976,6 +984,14 @@ public sealed class VirtualMmcDrive : IScsiTransport
         {
             return Sense(0x05, 0x26, 0x00); // Mode 1 blocks need a data track mode
         }
+        if (blockType == WriteParametersPage.DataBlockTypeMode2Form1 &&
+            (writeType != WriteParametersPage.WriteTypeTrackAtOnce || WritesLikeDvd || (page[3] & 0x0F) != WriteParametersPage.TrackModeData ||
+             page[8] != WriteParametersPage.SessionFormatCdRomXa || page.Length < WriteParametersPage.SubHeaderOffset + 4))
+        {
+            // Mode 2 Form 1 blocks (2,048 bytes, sub-header from bytes 48-51): a CD data track in a CD-ROM XA session.
+            // Only Track-at-Once is simulated; a drive that also takes them Session-at-Once is not modelled here.
+            return Sense(0x05, 0x26, 0x00);
+        }
         if (IsDvd)
         {
             // DVD-R/-RW: Disc-At-Once (2) or incremental (0), track mode 5, data block type 8; fixed packets of 16
@@ -1141,9 +1157,11 @@ public sealed class VirtualMmcDrive : IScsiTransport
     /// 38h gives 2,336 bytes on Mode 2 (5/24/00 on Mode 1); F8h gives the whole 2,352-byte sector. Read as CD-DA
     /// (sector type 1), with a mismatched sector type, or across into the audio, they are refused with 5/64/00.
     /// </summary>
-    private ScsiExecutionResult ReadDataSectors(int lba, int count, int sectorType, bool withC2, byte mainChannel, Span<byte> data)
+    /// <param name="rawSector">Sector i of the read as recorded: 2,352 bytes with sync and header.</param>
+    private ScsiExecutionResult ReadDataSectors(int lba, int count, int sectorType, bool withC2, byte mainChannel, Span<byte> data,
+        Func<int, byte[]> rawSector)
     {
-        if (sectorType == 1 || sectorType > 5 || lba + count > _recordedDataEndLba)
+        if (sectorType == 1 || sectorType > 5)
         {
             return Sense(0x05, 0x64, 0x00);
         }
@@ -1171,12 +1189,11 @@ public sealed class VirtualMmcDrive : IScsiTransport
             return Sense(0x05, 0x24, 0x00);
         }
 
-        ReadOnlySpan<byte> program = ProgramAreaWritten.GetBuffer().AsSpan(0, (int)ProgramAreaWritten.Length);
         var destination = data.Slice(0, count * size);
         destination.Clear();
         for (int i = 0; i < count; i++)
         {
-            ReadOnlySpan<byte> raw = program.Slice((lba + i + 150) * 2352, 2352);
+            ReadOnlySpan<byte> raw = rawSector(i);
             byte mode = raw[15];
             bool form2 = mode == 2 && (raw[18] & 0x20) != 0;
             bool sectorTypeMismatch =
@@ -1249,7 +1266,30 @@ public sealed class VirtualMmcDrive : IScsiTransport
         int sectorType = (cdb[1] >> 2) & 0x07; // 0 any, 1 CD-DA, 2 Mode 1, 3 Mode 2, 4 Form 1, 5 Form 2
         if (Recorded && lba >= 0 && count > 0 && lba < _recordedDataEndLba)
         {
-            return ReadDataSectors(lba, count, sectorType, withC2, cdb[9], data);
+            ReadOnlySpan<byte> program = ProgramAreaWritten.GetBuffer().AsSpan(0, (int)ProgramAreaWritten.Length);
+            if (lba + count > _recordedDataEndLba)
+            {
+                return Sense(0x05, 0x64, 0x00);
+            }
+            byte[] programCopy = program.Slice((lba + 150) * 2352, count * 2352).ToArray();
+            return ReadDataSectors(lba, count, sectorType, withC2, cdb[9], data, i => programCopy.AsSpan(i * 2352, 2352).ToArray());
+        }
+        if (Recorded && count > 0 && FindDataSession(lba) is { } session)
+        {
+            // A Track-at-Once data session (Mode 1, or Mode 2 Form 1 in a CD-ROM XA session): the drive returns each
+            // sector as it was recorded, with sync, header (and sub-header) and EDC/ECC. A read past the track fails.
+            if (lba + count > session.TrackStartLba + session.TrackSectors || !TryFindRecorded(lba, count, out byte[]? user, out int at))
+            {
+                return Sense(0x05, 0x21, 0x00);
+            }
+            byte[]? sub = session.SubHeader;
+            return ReadDataSectors(lba, count, sectorType, withC2, cdb[9], data, i =>
+            {
+                var block = user.AsSpan(at + i * 2048, 2048);
+                return session.DataMode == 2
+                    ? CdBurner.Core.Images.RawSectorCodec.Convert2048To2352Mode2Xa(block, lba + i, sub![0], sub[1], sub[2], sub[3])
+                    : CdBurner.Core.Images.RawSectorCodec.Convert2048To2352Mode1(block, lba + i);
+            });
         }
         if (sectorType is >= 2 and <= 5)
         {
@@ -1421,7 +1461,7 @@ public sealed class VirtualMmcDrive : IScsiTransport
             return CopyOut(r, data);
         }
 
-        if (format == 0x02 && RecordedCueSheet != null && _dataSessions.Count == 0)
+        if (format == 0x02 && RecordedCueSheet != null)
         {
             return CopyOut(BuildFullToc(), data);
         }
@@ -1451,31 +1491,55 @@ public sealed class VirtualMmcDrive : IScsiTransport
     private byte[] BuildFullToc()
     {
         var entries = new List<byte[]>();
-        byte firstControl = (byte)(DropsControlBits ? 0 : _recordedTracks[0].CueControl >> 4);
-        byte lastControl = (byte)(DropsControlBits ? 0 : _recordedTracks[^1].CueControl >> 4);
+        // With data sessions after it (CD-Extra), the Session-at-Once session holds only the first tracks.
+        var sessionOne = _dataSessions.Count > 0 ? _recordedTracks.Take(_audioSessionTracks).ToList() : _recordedTracks;
+        int sessionOneLeadOut = _dataSessions.Count > 0 ? _audioSessionLeadOutLba : RecordedLeadOutLba;
+        byte firstControl = (byte)(DropsControlBits ? 0 : sessionOne[0].CueControl >> 4);
+        byte lastControl = (byte)(DropsControlBits ? 0 : sessionOne[^1].CueControl >> 4);
 
-        static byte[] Entry(byte adrControl, byte point, Msf time, byte zero, Msf p) =>
-            [1, adrControl, 0, point, time.Minute, time.Second, time.Frame, zero, p.Minute, p.Second, p.Frame];
+        static byte[] Entry(byte session, byte adrControl, byte point, Msf time, byte zero, Msf p) =>
+            [session, adrControl, 0, point, time.Minute, time.Second, time.Frame, zero, p.Minute, p.Second, p.Frame];
 
-        entries.Add(Entry((byte)(0x10 | firstControl), 0xA0, default, 0, new Msf(_recordedTracks[0].TrackNumber, _recordedSessionFormat, 0)));
-        entries.Add(Entry((byte)(0x10 | lastControl), 0xA1, default, 0, new Msf(_recordedTracks[^1].TrackNumber, 0, 0)));
-        entries.Add(Entry((byte)(0x10 | lastControl), 0xA2, default, 0, Msf.FromLba(RecordedLeadOutLba)));
-        foreach (var t in _recordedTracks)
+        entries.Add(Entry(1, (byte)(0x10 | firstControl), 0xA0, default, 0, new Msf(sessionOne[0].TrackNumber, _recordedSessionFormat, 0)));
+        entries.Add(Entry(1, (byte)(0x10 | lastControl), 0xA1, default, 0, new Msf(sessionOne[^1].TrackNumber, 0, 0)));
+        entries.Add(Entry(1, (byte)(0x10 | lastControl), 0xA2, default, 0, Msf.FromLba(sessionOneLeadOut)));
+        foreach (var t in sessionOne)
         {
             byte control = (byte)(DropsControlBits ? 0 : t.CueControl >> 4);
-            entries.Add(Entry((byte)(0x10 | control), t.TrackNumber, default, 0, Msf.FromLba(t.Index01Lba)));
+            entries.Add(Entry(1, (byte)(0x10 | control), t.TrackNumber, default, 0, Msf.FromLba(t.Index01Lba)));
         }
-        if (DiscStatus == 1 && NextSessionAddress is int next)
+        int? afterSessionOne = _dataSessions.Count > 0 ? _dataSessions[0].TrackStartLba : DiscStatus == 1 ? NextSessionAddress : null;
+        if (afterSessionOne is int next)
         {
             const byte modeFivePointers = 2; // B0h and C0h
-            entries.Add(Entry((byte)(0x50 | firstControl), 0xB0, Msf.FromLba(next - 150), modeFivePointers, LastLeadOutStart));
-            entries.Add(Entry((byte)(0x50 | firstControl), 0xC0, default, 0, LeadInStart));
+            entries.Add(Entry(1, (byte)(0x50 | firstControl), 0xB0, Msf.FromLba(next - 150), modeFivePointers, LastLeadOutStart));
+            entries.Add(Entry(1, (byte)(0x50 | firstControl), 0xC0, default, 0, LeadInStart));
+        }
+
+        // Each later session's lead-in (Orange Book Part II; MMC-3 Table 237): A0h with the session format of that
+        // session in PSEC (00h CD-ROM, 20h CD-ROM XA), A1h, A2h, its one data track, and B0h while another session
+        // follows or may follow. C0h is only in the first lead-in.
+        for (int k = 0; k < _dataSessions.Count; k++)
+        {
+            var d = _dataSessions[k];
+            byte session = (byte)(2 + k);
+            byte track = (byte)(_audioSessionTracks + k + 1);
+            byte control = (byte)(DropsControlBits ? 0 : 0x04);
+            entries.Add(Entry(session, (byte)(0x10 | control), 0xA0, default, 0, new Msf(track, d.SessionFormat, 0)));
+            entries.Add(Entry(session, (byte)(0x10 | control), 0xA1, default, 0, new Msf(track, 0, 0)));
+            entries.Add(Entry(session, (byte)(0x10 | control), 0xA2, default, 0, Msf.FromLba(d.LeadOutLba)));
+            entries.Add(Entry(session, (byte)(0x10 | control), track, default, 0, Msf.FromLba(d.TrackStartLba)));
+            int? following = k + 1 < _dataSessions.Count ? _dataSessions[k + 1].TrackStartLba : DiscStatus == 1 ? NextSessionAddress : null;
+            if (following is int start)
+            {
+                entries.Add(Entry(session, (byte)(0x50 | control), 0xB0, Msf.FromLba(start - 150), 1, LastLeadOutStart));
+            }
         }
 
         byte[] r = new byte[4 + 11 * entries.Count];
         BinaryPrimitives.WriteUInt16BigEndian(r, (ushort)(r.Length - 2));
         r[2] = 1; // first complete session
-        r[3] = 1; // last complete session
+        r[3] = (byte)(1 + _dataSessions.Count); // last complete session
         for (int i = 0; i < entries.Count; i++)
         {
             entries[i].CopyTo(r, 4 + 11 * i);
@@ -1886,7 +1950,7 @@ public sealed class VirtualMmcDrive : IScsiTransport
         {
             return Good(0);
         }
-        int blockSize = (_modePage05[4] & 0x0F) == WriteParametersPage.DataBlockTypeMode1 ? 2048 : 2352;
+        int blockSize = (_modePage05[4] & 0x0F) is WriteParametersPage.DataBlockTypeMode1 or WriteParametersPage.DataBlockTypeMode2Form1 ? 2048 : 2352;
         if (data.Length != count * blockSize)
         {
             return Sense(0x05, 0x24, 0x00);
@@ -1965,7 +2029,7 @@ public sealed class VirtualMmcDrive : IScsiTransport
             var s = _dataSessions[number - audioTracks - 1];
             r[2] = (byte)number; r[3] = (byte)(SessionsBeforeData + number - audioTracks);
             r[5] = 0x04;
-            r[6] = 0x01;
+            r[6] = s.DataMode; // data mode: 1 Mode 1, 2 Mode 2 (MMC-5 6.27.3.4)
             BinaryPrimitives.WriteInt32BigEndian(r.AsSpan(8), s.TrackStartLba);
             BinaryPrimitives.WriteInt32BigEndian(r.AsSpan(24), s.TrackSectors);
             return CopyOut(r, data);
@@ -2074,7 +2138,9 @@ public sealed class VirtualMmcDrive : IScsiTransport
         // A DVD-R session left open with less on it than the drive's minimum still reports its lead-out there.
         // A DVD+R has no such minimum (measured 2026-11-13).
         int leadOut = discStatus == 1 && sessionNumber == 1 && IsDvd && !IsDvdPlusR ? Math.Max(end, DvdFirstSessionMinimumEndLba) : end;
-        _dataSessions.Add(new DataSession(start, sectors, leadOut));
+        bool form1 = (_modePage05[4] & 0x0F) == WriteParametersPage.DataBlockTypeMode2Form1;
+        _dataSessions.Add(new DataSession(start, sectors, leadOut, form1 ? (byte)2 : (byte)1, _modePage05[8],
+            form1 ? _modePage05.AsSpan(WriteParametersPage.SubHeaderOffset, 4).ToArray() : null));
         Recorded = true;
         _recordedTracks.Add(((byte)trackNumber, start, 0x40)); // the CD-Text of an audio first session stays readable
         RecordedLeadOutLba = leadOut;

@@ -354,7 +354,8 @@ public class DataBurnService
             VolumeLabel = burnOptions.VolumeLabel,
             OverwriteExistingData = burnOptions.OverwriteExistingData,
             LayerBreakSectors = burnOptions.LayerBreakSectors,
-            DisableBufferUnderrunFree = burnOptions.DisableBufferUnderrunFree
+            DisableBufferUnderrunFree = burnOptions.DisableBufferUnderrunFree,
+            CdRomXaMode2Form1 = burnOptions.CdRomXaMode2Form1
         };
 
         BurnOperationResult burnResult;

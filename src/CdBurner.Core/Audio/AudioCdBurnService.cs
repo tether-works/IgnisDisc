@@ -55,10 +55,13 @@ public class AudioCdBurnService
     /// Computes the ISO 9660 + Joliet session-2 layout and total disc sectors required for an Enhanced CD
     /// carrying <paramref name="audioSessionFrames"/> of session-1 audio followed by <paramref name="folderPath"/>.
     /// </summary>
+    /// <param name="blueBook">When given, the session is laid out as an Enhanced CD (Blue Book): <c>CDPLUS/INFO.CDP</c>
+    /// with this text and <c>PICTURES/</c> are added, and the volume is marked CD-ROM XA (see <see cref="BlueBookLayout"/>).</param>
     public static EnhancedCdDataPlan PlanDataSessionFolder(
         string folderPath,
         string? volumeLabel,
-        int audioSessionFrames)
+        int audioSessionFrames,
+        BlueBookDiscInfo? blueBook = null)
     {
         ArgumentException.ThrowIfNullOrWhiteSpace(folderPath);
         if (!Directory.Exists(folderPath))
@@ -88,6 +91,12 @@ public class AudioCdBurnService
             IncludeIso9660: true,
             IncludeJoliet: true,
             IncludeUdf: false);
+        if (blueBook != null)
+        {
+            BlueBookLayout.Apply(root, blueBook);
+            buildOptions = BlueBookLayout.WithBlueBook(buildOptions);
+            files = root.GetAllFilesRecursive();
+        }
 
         int predictedNwa = Math.Max(0, audioSessionFrames) + (int)RecoverySessionBudget.FixedSessionSectors;
         int isoSectors = IsoUdfImageBuilder.CalculateTotalSectors(root, buildOptions, predictedNwa) - predictedNwa;
@@ -303,6 +312,11 @@ public class AudioCdBurnService
         LastDataSessionStartLba = null;
 
         bool hasDataFolder = !string.IsNullOrWhiteSpace(options.DataSessionFolderPath);
+        if (options.BlueBookLayout && !hasDataFolder && !checkOnly)
+        {
+            return BurnOperationResult.Failed(
+                "The Enhanced CD (Blue Book) layout applies to a data folder in session 2; choose a data folder or turn the layout off. Nothing was written to the disc.");
+        }
         if (hasDataFolder && !checkOnly)
         {
             if (options.IncludeRecoverySession)
@@ -340,6 +354,11 @@ public class AudioCdBurnService
                         return BurnOperationResult.Failed(
                             $"File '{file.Name}' exceeds the 4 GiB ISO 9660 / Joliet single-file limit. Nothing was written to the disc.");
                     }
+                }
+                if (options.BlueBookLayout)
+                {
+                    // Before any audio is written: a name clash with the Enhanced CD folders stops here, not after session 1.
+                    BlueBookLayout.Apply(preImport, BlueBookDiscInfo.From(compilation));
                 }
             }
             catch (Exception ex) when (ex is not OperationCanceledException)
@@ -643,7 +662,8 @@ public class AudioCdBurnService
             EnhancedCdDataPlan? dataPlan = null;
             if (hasDataFolder && !checkOnly)
             {
-                dataPlan = PlanDataSessionFolder(options.DataSessionFolderPath!, options.DataSessionVolumeLabel, totalRequiredFrames);
+                dataPlan = PlanDataSessionFolder(options.DataSessionFolderPath!, options.DataSessionVolumeLabel, totalRequiredFrames,
+                    options.BlueBookLayout ? BlueBookDiscInfo.From(compilation) : null);
                 if (dataPlan.TotalDiscSectorsRequired > discCapacitySectors ||
                     (mediaStatus.FreeSectors > 0 && dataPlan.TotalDiscSectorsRequired > mediaStatus.FreeSectors))
                 {
@@ -714,7 +734,8 @@ public class AudioCdBurnService
                     CloseDisc = true,
                     VerifyAfterBurn = options.VerifyDataSession,
                     EjectWhenDone = options.EjectWhenDone,
-                    DisableBufferUnderrunFree = options.DisableBufferUnderrunFree
+                    DisableBufferUnderrunFree = options.DisableBufferUnderrunFree,
+                    CdRomXaMode2Form1 = options.BlueBookLayout
                 };
 
                 var folderSessionResult = await new DataBurnService(_recoveryDataEngine!).BurnCompilationAsync(

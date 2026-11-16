@@ -85,6 +85,7 @@ public class AudioBurnViewModel : ObservableObject, IDisposable
     private bool _includeRecoverySession; // off by default: some car head units refuse Enhanced CDs
     private string _dataSessionFolderPath = string.Empty;
     private string _dataSessionVolumeLabel = "CD_EXTRA";
+    private bool _blueBookLayout;
     private string _dataSessionSummaryText = string.Empty;
     private bool _repairFromRecoverySession = true;
     private string _recoverySessionCapacityText = string.Empty;
@@ -409,6 +410,22 @@ public class AudioBurnViewModel : ObservableObject, IDisposable
                     }
                 }
                 OnPropertyChanged(nameof(HasDataSessionFolder));
+                RecalculateTotals();
+            }
+        }
+    }
+
+    /// <summary>
+    /// Lay the session-2 data folder out as an Enhanced CD (Blue Book): CD-ROM XA Mode 2 Form 1 with CDPLUS/INFO.CDP and
+    /// PICTURES/ next to the folder's files. Off by default: Windows reads a Mode 1 session best.
+    /// </summary>
+    public bool BlueBookLayout
+    {
+        get => _blueBookLayout;
+        set
+        {
+            if (SetProperty(ref _blueBookLayout, value))
+            {
                 RecalculateTotals();
             }
         }
@@ -1582,14 +1599,16 @@ public class AudioBurnViewModel : ObservableObject, IDisposable
             {
                 try
                 {
-                    var plan = AudioCdBurnService.PlanDataSessionFolder(_dataSessionFolderPath, _dataSessionVolumeLabel, totalFrames);
+                    var plan = AudioCdBurnService.PlanDataSessionFolder(_dataSessionFolderPath, _dataSessionVolumeLabel, totalFrames,
+                        _blueBookLayout ? new BlueBookDiscInfo(AlbumTitle, AlbumPerformer, Array.Empty<BlueBookTrackInfo>()) : null);
+                    string layoutNote = _blueBookLayout ? " Enhanced CD layout: CD-ROM XA Mode 2 with CDPLUS/INFO.CDP and PICTURES/." : string.Empty;
                     effectiveFrames = plan.TotalDiscSectorsRequired;
                     string shortNote = plan.ShortenedNamesWarning != null ? $" {plan.ShortenedNamesWarning}" : string.Empty;
                     string fitNote = maxFrames > 0 && plan.TotalDiscSectorsRequired > maxFrames
                         ? $" Exceeds disc capacity ({maxFrames:N0} sectors)."
                         : string.Empty;
                     DataSessionSummaryText =
-                        $"Session 2 data folder: {plan.FileCount:N0} file(s), {plan.PaddedTrackSectors:N0} sectors + 11,400-sector session gap.{shortNote}{fitNote} {AudioRecoverySessionService.CarHeadUnitWarning}";
+                        $"Session 2 data folder: {plan.FileCount:N0} file(s), {plan.PaddedTrackSectors:N0} sectors + 11,400-sector session gap.{layoutNote}{shortNote}{fitNote} {AudioRecoverySessionService.CarHeadUnitWarning}";
                 }
                 catch (Exception ex)
                 {
@@ -2110,7 +2129,8 @@ public class AudioBurnViewModel : ObservableObject, IDisposable
                 AllowDamagedAudio = allowDamagedAudio,
                 IncludeRecoverySession = IncludeRecoverySession,
                 DataSessionFolderPath = HasDataSessionFolder ? DataSessionFolderPath : null,
-                DataSessionVolumeLabel = DataSessionVolumeLabel
+                DataSessionVolumeLabel = DataSessionVolumeLabel,
+                BlueBookLayout = HasDataSessionFolder && BlueBookLayout
             };
 
             var burnService = directEngine != null ? new AudioCdBurnService(directEngine, _audioDecoder, directDataEngine) : _audioBurnService;

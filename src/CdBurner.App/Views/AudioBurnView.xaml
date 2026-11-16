@@ -221,6 +221,14 @@
                                         VerticalAlignment="Center"
                                         Margin="0,0,12,0" />
 
+                                <CheckBox Content="Blue Book layout"
+                                          AutomationProperties.Name="Blue Book layout"
+                                          IsChecked="{Binding BlueBookLayout}"
+                                          Visibility="{Binding HasDataSessionFolder, Converter={StaticResource BoolToVis}}"
+                                          ToolTip="Write session 2 as CD-ROM XA Mode 2 Form 1 with CDPLUS/INFO.CDP (album and track titles) and a PICTURES folder, for players and programs that look for an Enhanced CD. Off by default: Windows reads the normal Mode 1 session best."
+                                          VerticalAlignment="Center"
+                                          Margin="0,0,12,0" />
+
                                 <TextBlock Text="Crossfade (s):"
                                            VerticalAlignment="Center"
                                            Foreground="{DynamicResource TextSecondaryBrush}"

@@ -405,10 +405,10 @@ public static class IsoUdfImageBuilder
             // 3. Pre-calculate extent sector requirements for each directory
             foreach (var dir in ctx.BfsDirectories)
             {
-                dir.IsoSectorCount = CalculateDirectorySectors(dir, isJoliet: false);
+                dir.IsoSectorCount = CalculateDirectorySectors(dir, isJoliet: false, XaSystemUseLength(options, isJoliet: false));
                 if (options.IncludeJoliet)
                 {
-                    dir.JolietSectorCount = CalculateDirectorySectors(dir, isJoliet: true);
+                    dir.JolietSectorCount = CalculateDirectorySectors(dir, isJoliet: true, systemUseLength: 0);
                 }
             }
 
@@ -467,6 +467,21 @@ public static class IsoUdfImageBuilder
             {
                 throw new NotSupportedException(
                     $"File '{oversized.SourceFile.Name}' is {oversized.SourceFile.SizeBytes:N0} bytes. Files of 4 GiB or larger require the UDF file system; enable UDF for this compilation.");
+            }
+
+            if (options.CdRomXa && IsArchiveLayout(ctx, rootLayout, sessionStartLba))
+            {
+                throw new ArgumentException("A CD-ROM XA volume cannot also be an archive disc (both use the descriptor's application use field).", nameof(options));
+            }
+            FileLayoutNode? pinned = null;
+            if (options.PinnedFilePath != null)
+            {
+                pinned = FindFile(rootLayout, options.PinnedFilePath)
+                    ?? throw new ArgumentException($"The file '{options.PinnedFilePath}' to place at session sector {options.PinnedFileSector} is not in the tree.", nameof(options));
+                if (options.PinnedFileSector <= 16)
+                {
+                    throw new ArgumentOutOfRangeException(nameof(options), "A pinned file must start after the volume descriptors (sector 17 or later).");
+                }
             }
 
             // 5. Assign LBA sectors sequentially
@@ -604,6 +619,19 @@ public static class IsoUdfImageBuilder
                 ? ArchiveExtentSlots(ctx, rootLayout, contentFiles)
                 : contentFiles.Cast<FileLayoutNode?>().ToList();
             extentSlots.AddRange(ctx.Manifests.Select(m => (FileLayoutNode?)m.Node!));
+            if (pinned != null)
+            {
+                // The pinned file goes first, at its fixed sector; the sectors before it stay empty (zero filled).
+                int pinnedLba = sessionStartLba + options.PinnedFileSector;
+                if (currentLba > pinnedLba)
+                {
+                    throw new InvalidOperationException(
+                        $"The file system's own structures reach sector {currentLba - sessionStartLba} of the session, so '{options.PinnedFilePath}' cannot start at sector {options.PinnedFileSector}. Use fewer folders.");
+                }
+                extentSlots.Remove(pinned);
+                pinned.StartLba = pinnedLba;
+                currentLba = pinnedLba + pinned.SectorCount;
+            }
             foreach (var slot in extentSlots)
             {
                 if (slot == null)
@@ -1019,6 +1047,20 @@ public static class IsoUdfImageBuilder
             return bytes;
         }
 
+        /// <summary>The file at <paramref name="path"/> ('/' separated, names as added to the tree, case-insensitive).</summary>
+        private static FileLayoutNode? FindFile(DirectoryLayoutNode root, string path)
+        {
+            string[] parts = path.Split('/', StringSplitOptions.RemoveEmptyEntries);
+            DirectoryLayoutNode? dir = root;
+            for (int i = 0; i < parts.Length - 1 && dir != null; i++)
+            {
+                dir = dir.SubDirectories.FirstOrDefault(d => string.Equals(d.SourceDir.Name, parts[i], StringComparison.OrdinalIgnoreCase));
+            }
+            return parts.Length == 0 || dir == null
+                ? null
+                : dir.Files.FirstOrDefault(f => string.Equals(f.SourceFile.Name, parts[^1], StringComparison.OrdinalIgnoreCase));
+        }
+
         private static DirectoryLayoutNode BuildNodeHierarchy(CompilationDirectory dir, DirectoryLayoutNode? parent = null)
         {
             var dirNode = new DirectoryLayoutNode(dir) { Parent = parent };
@@ -1039,12 +1081,12 @@ public static class IsoUdfImageBuilder
             return dirNode;
         }
 
-        private static int CalculateDirectorySectors(DirectoryLayoutNode dir, bool isJoliet)
+        private static int CalculateDirectorySectors(DirectoryLayoutNode dir, bool isJoliet, int systemUseLength)
         {
             var recordLengths = new List<int>
             {
-                34, // '.' entry
-                34  // '..' entry
+                34 + systemUseLength, // '.' entry
+                34 + systemUseLength  // '..' entry
             };
 
             foreach (var sub in dir.SubDirectories)
@@ -1055,7 +1097,7 @@ public static class IsoUdfImageBuilder
                     ? Encoding.BigEndianUnicode.GetByteCount(name)
                     : Encoding.ASCII.GetByteCount(name);
 
-                recordLengths.Add(GetDirectoryRecordLength(identLen));
+                recordLengths.Add(GetDirectoryRecordLength(identLen) + systemUseLength);
             }
 
             foreach (var file in dir.Files)
@@ -1070,7 +1112,7 @@ public static class IsoUdfImageBuilder
                     ? Encoding.BigEndianUnicode.GetByteCount(name)
                     : Encoding.ASCII.GetByteCount(name);
 
-                recordLengths.Add(GetDirectoryRecordLength(identLen));
+                recordLengths.Add(GetDirectoryRecordLength(identLen) + systemUseLength);
             }
 
             int sectors = 1;
@@ -1554,6 +1596,12 @@ public static class IsoUdfImageBuilder
         WriteIsoDateTime(pvd.AsSpan(864, 17), nowUtc); // Effective
 
         pvd[881] = 0x01; // File Structure Version
+        if (ctx.Options.CdRomXa)
+        {
+            // CD-ROM XA label in the Application Use field (ECMA-119 8.4.32), as genisoimage -XA writes it:
+            // "CD-XA001" at byte 1024, then XA flags (2), start directory (8) and reserved (8) bytes, all zero.
+            Encoding.ASCII.GetBytes(XaVolumeSignature, pvd.AsSpan(XaVolumeSignatureOffset, 8));
+        }
         if (ctx.DescriptorCopyLbas.Count > 0)
         {
             // Archive discs: where the copies of this descriptor are (Application Use field, ECMA-119 8.4.32).
@@ -2328,6 +2376,10 @@ public static class IsoUdfImageBuilder
     {
         uint extentBytes = isJoliet ? dir.JolietExtentSizeBytes : dir.IsoExtentSizeBytes;
         byte[] extent = new byte[extentBytes];
+        bool xa = XaSystemUseLength(ctx.Options, isJoliet) > 0;
+        byte[] xaDirectory = xa ? BuildXaSystemUse(XaAttributesDirectory) : Array.Empty<byte>();
+        byte[] xaFile = xa ? BuildXaSystemUse(XaAttributesFile) : Array.Empty<byte>();
+        int dotLength = 34 + xaDirectory.Length;
 
         int sectorIdx = 0;
         int offsetInSector = 0;
@@ -2335,26 +2387,28 @@ public static class IsoUdfImageBuilder
         // 1. '.' entry (current directory)
         uint thisLba = isJoliet ? (uint)dir.JolietLba : (uint)dir.IsoLba;
         WriteDirectoryRecord(
-            extent.AsSpan(0, 34),
+            extent.AsSpan(0, dotLength),
             thisLba,
             extentBytes,
             ctx.Stamp(dir.SourceDir.LastWriteTimeUtc),
             fileFlags: 0x02,
-            identifierBytes: new byte[] { 0x00 });
-        offsetInSector += 34;
+            identifierBytes: new byte[] { 0x00 },
+            systemUse: xaDirectory);
+        offsetInSector += dotLength;
 
         // 2. '..' entry (parent directory)
         var parent = dir.Parent ?? dir;
         uint parentLba = isJoliet ? (uint)parent.JolietLba : (uint)parent.IsoLba;
         uint parentBytes = isJoliet ? parent.JolietExtentSizeBytes : parent.IsoExtentSizeBytes;
         WriteDirectoryRecord(
-            extent.AsSpan(34, 34),
+            extent.AsSpan(dotLength, dotLength),
             parentLba,
             parentBytes,
             ctx.Stamp(parent.SourceDir.LastWriteTimeUtc),
             fileFlags: 0x02,
-            identifierBytes: new byte[] { 0x01 });
-        offsetInSector += 34;
+            identifierBytes: new byte[] { 0x01 },
+            systemUse: xaDirectory);
+        offsetInSector += dotLength;
 
         // 3. Child Subdirectories
         foreach (var sub in dir.SubDirectories)
@@ -2365,7 +2419,7 @@ public static class IsoUdfImageBuilder
                 ? Encoding.BigEndianUnicode.GetBytes(name)
                 : Encoding.ASCII.GetBytes(name);
 
-            byte recordLen = GetDirectoryRecordLength(ident.Length);
+            byte recordLen = (byte)(GetDirectoryRecordLength(ident.Length) + xaDirectory.Length);
             if (offsetInSector + recordLen > SectorSize)
             {
                 sectorIdx++;
@@ -2388,7 +2442,8 @@ public static class IsoUdfImageBuilder
                 subBytes,
                 ctx.Stamp(sub.SourceDir.LastWriteTimeUtc),
                 flags,
-                ident);
+                ident,
+                xaDirectory);
 
             offsetInSector += recordLen;
         }
@@ -2406,7 +2461,7 @@ public static class IsoUdfImageBuilder
                 ? Encoding.BigEndianUnicode.GetBytes(name)
                 : Encoding.ASCII.GetBytes(name);
 
-            byte recordLen = GetDirectoryRecordLength(ident.Length);
+            byte recordLen = (byte)(GetDirectoryRecordLength(ident.Length) + xaFile.Length);
             if (offsetInSector + recordLen > SectorSize)
             {
                 sectorIdx++;
@@ -2426,7 +2481,8 @@ public static class IsoUdfImageBuilder
                 (uint)Math.Min(file.SourceFile.SizeBytes, 0xFFFFF800L), // >4 GiB files are fully described only in UDF
                 ctx.Stamp(file.SourceFile.LastWriteTimeUtc),
                 flags,
-                ident);
+                ident,
+                xaFile);
 
             offsetInSector += recordLen;
         }
@@ -2529,10 +2585,11 @@ public static class IsoUdfImageBuilder
         uint dataLength,
         DateTime recordingTimeUtc,
         byte fileFlags,
-        ReadOnlySpan<byte> identifierBytes)
+        ReadOnlySpan<byte> identifierBytes,
+        ReadOnlySpan<byte> systemUse = default)
     {
         byte identLen = (byte)identifierBytes.Length;
-        byte recordLen = GetDirectoryRecordLength(identLen);
+        byte recordLen = (byte)(GetDirectoryRecordLength(identLen) + systemUse.Length);
 
         destination[0] = recordLen;
         destination[1] = 0x00; // Extended Attribute record length
@@ -2561,6 +2618,39 @@ public static class IsoUdfImageBuilder
         {
             destination[33 + identLen] = 0x00;
         }
+
+        // System Use field (ECMA-119 9.1.13) after the padding: the CD-ROM XA record on an XA volume.
+        systemUse.CopyTo(destination.Slice(GetDirectoryRecordLength(identLen)));
+    }
+
+    /// <summary>"CD-XA001" at byte 1024 of the Primary Volume Descriptor marks a CD-ROM XA volume.</summary>
+    public const string XaVolumeSignature = "CD-XA001";
+
+    /// <summary>Where <see cref="XaVolumeSignature"/> sits in the Primary Volume Descriptor.</summary>
+    public const int XaVolumeSignatureOffset = 1024;
+
+    /// <summary>Length of the CD-ROM XA system use record in a directory record.</summary>
+    public const int XaSystemUseRecordLength = 14;
+
+    // XA attribute bits (libcdio xa.h): read 0x0001/0x0010/0x0100 and execute 0x0004/0x0040/0x0400 for owner, group and
+    // world, 0x0800 Mode 2 Form 1, 0x8000 directory.
+    private const ushort XaAttributesFile = 0x0D55;
+    private const ushort XaAttributesDirectory = 0x8D55;
+
+    private static int XaSystemUseLength(IsoBuildOptions options, bool isJoliet) =>
+        options.CdRomXa && !isJoliet ? XaSystemUseRecordLength : 0;
+
+    /// <summary>
+    /// The 14-byte CD-ROM XA directory record extension: owner group ID and user ID (big-endian, 0), attributes
+    /// (big-endian), signature "XA", file number 0 and five reserved zero bytes (genisoimage rock.c gen_xa).
+    /// </summary>
+    private static byte[] BuildXaSystemUse(ushort attributes)
+    {
+        byte[] r = new byte[XaSystemUseRecordLength];
+        BinaryPrimitives.WriteUInt16BigEndian(r.AsSpan(4, 2), attributes);
+        r[6] = (byte)'X';
+        r[7] = (byte)'A';
+        return r;
     }
 
     public static void WriteBothEndianUInt16(Span<byte> destination, ushort value)

@@ -97,17 +97,56 @@ public sealed class WriteParametersPage
     /// A copy of this page set up for one Mode 1 data track written Track-at-Once. <paramref name="closeDisc"/> false
     /// leaves room for another session (multi-session 11b); true closes the disc.
     /// </summary>
-    public WriteParametersPage ForTrackAtOnceData(bool testWrite, bool bufferUnderrunFree, bool closeDisc)
+    public WriteParametersPage ForTrackAtOnceData(bool testWrite, bool bufferUnderrunFree, bool closeDisc) =>
+        ForTrackAtOnceData(testWrite, bufferUnderrunFree, closeDisc, mode2Form1: false);
+
+    /// <summary>
+    /// Data block type 10 (MMC-3/MMC-5 Data Block Type table): 2,048 bytes of user data written as CD-ROM XA Mode 2
+    /// Form 1; the drive adds sync, header, the sub-header from bytes 48-51 of this page, EDC and ECC.
+    /// </summary>
+    public const byte DataBlockTypeMode2Form1 = 0x0A;
+
+    /// <summary>First byte of the sub-header the drive puts in every Mode 2 Form 1 sector (bytes 48-51: file number,
+    /// channel number, submode, coding information).</summary>
+    public const int SubHeaderOffset = 48;
+
+    /// <summary>Submode byte of a Form 1 data sector: only the Data bit (bit 3) set (CD-ROM XA sub-header).</summary>
+    public const byte SubmodeData = 0x08;
+
+    /// <summary>True when the page is long enough to carry the Mode 2 sub-header (bytes 48-51).</summary>
+    public bool HasSubHeader => _page.Length >= SubHeaderOffset + 4;
+
+    /// <summary>The sub-header bytes 48-51, or empty when the page is shorter.</summary>
+    public ReadOnlySpan<byte> SubHeader => HasSubHeader ? _page.AsSpan(SubHeaderOffset, 4) : ReadOnlySpan<byte>.Empty;
+
+    /// <summary>
+    /// A copy of this page set up for one data track written Track-at-Once: Mode 1 (data block type 8, session format
+    /// CD-ROM), or with <paramref name="mode2Form1"/> CD-ROM XA Mode 2 Form 1 (data block type 10, session format 20h,
+    /// sub-header 00 00 08 00: file 0, channel 0, data). <paramref name="closeDisc"/> false leaves room for another
+    /// session (multi-session 11b); true closes the disc.
+    /// </summary>
+    public WriteParametersPage ForTrackAtOnceData(bool testWrite, bool bufferUnderrunFree, bool closeDisc, bool mode2Form1)
     {
+        if (mode2Form1 && !HasSubHeader)
+        {
+            throw new InvalidOperationException("The drive's write parameters page has no sub-header bytes, so it cannot write Mode 2 Form 1.");
+        }
         byte[] p = (byte[])_page.Clone();
         p[0] &= 0x3F;
         p[2] = (byte)((p[2] & 0xA0) | WriteTypeTrackAtOnce);
         if (testWrite) p[2] |= 0x10;
         if (bufferUnderrunFree) p[2] |= 0x40;
         p[3] = (byte)((closeDisc ? 0x00 : 0xC0) | TrackModeData); // FP and Copy off: not packet writing
-        p[4] = (byte)((p[4] & 0xF0) | DataBlockTypeMode1);
-        p[8] = 0x00;                                    // session format: CD-ROM
+        p[4] = (byte)((p[4] & 0xF0) | (mode2Form1 ? DataBlockTypeMode2Form1 : DataBlockTypeMode1));
+        p[8] = mode2Form1 ? SessionFormatCdRomXa : SessionFormatCdDaOrCdRom;
         p[10] = p[11] = p[12] = p[13] = 0;              // packet size: unused
+        if (mode2Form1)
+        {
+            p[SubHeaderOffset] = 0;                     // file number
+            p[SubHeaderOffset + 1] = 0;                 // channel number
+            p[SubHeaderOffset + 2] = SubmodeData;
+            p[SubHeaderOffset + 3] = 0;                 // coding information
+        }
         return new WriteParametersPage(p);
     }
 
