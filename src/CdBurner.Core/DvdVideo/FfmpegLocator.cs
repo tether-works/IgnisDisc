@@ -25,6 +25,35 @@ public static class FfmpegLocator
     /// <returns>The absolute path to the FFmpeg executable, or <c>null</c> if not found.</returns>
     public static string? FindFfmpegExecutable(string? customPath = null)
     {
+        string? managedDirectory = null;
+        try
+        {
+            managedDirectory = CdBurner.Core.Utilities.ExternalToolInstallerService.GetDefaultFfmpegInstallDirectory();
+        }
+        catch (Exception ex) when (ex is IOException or UnauthorizedAccessException or ArgumentException or NotSupportedException or PlatformNotSupportedException)
+        {
+            // No per-user folder: skip the 1-click copy
+        }
+
+        return FindFfmpegExecutable(customPath, AppContext.BaseDirectory, managedDirectory, Environment.GetEnvironmentVariable("PATH"));
+    }
+
+    /// <summary>
+    /// Searches for FFmpeg in this order: <paramref name="customPath"/> (the user's own setting), the copy IgnisDisc's
+    /// 1-click download installed in <paramref name="managedInstallDirectory"/>, then the application folder, the
+    /// <paramref name="pathEnvironment"/> directories and common install locations.
+    /// </summary>
+    /// <remarks>
+    /// The 1-click copy comes before the application folder because the user chose to install it, while an
+    /// <c>ffmpeg.exe</c> next to the program can be any old build someone copied there (one from 2021 without the MP3
+    /// encoder was found shadowing a current 1-click install, so MP3 rips failed although the right ffmpeg was installed).
+    /// </remarks>
+    public static string? FindFfmpegExecutable(
+        string? customPath,
+        string? appBaseDirectory,
+        string? managedInstallDirectory,
+        string? pathEnvironment)
+    {
         // 1. Explicit custom path
         if (!string.IsNullOrWhiteSpace(customPath))
         {
@@ -41,8 +70,27 @@ public static class FfmpegLocator
             }
         }
 
-        // 2. Application base directory
-        string baseDir = AppContext.BaseDirectory;
+        // 2. The copy IgnisDisc's own 1-click download installed: the user chose it, so it wins over a stray copy in the
+        //    application folder and over whatever build happens to be on PATH (an old one there was seen to fail when
+        //    muxing DVD subtitles).
+        if (!string.IsNullOrWhiteSpace(managedInstallDirectory))
+        {
+            try
+            {
+                string managed = Path.Combine(managedInstallDirectory, "ffmpeg.exe");
+                if (File.Exists(managed))
+                {
+                    return Path.GetFullPath(managed);
+                }
+            }
+            catch (Exception ex) when (ex is IOException or UnauthorizedAccessException or ArgumentException or NotSupportedException)
+            {
+                // Fall through to the application folder
+            }
+        }
+
+        // 3. Application base directory
+        string? baseDir = appBaseDirectory;
         if (!string.IsNullOrEmpty(baseDir))
         {
             string[] appCandidates =
@@ -68,23 +116,8 @@ public static class FfmpegLocator
             }
         }
 
-        // 2b. The copy IgnisDisc's own 1-click download installed: the user chose it, so it wins over whatever build
-        //     happens to be on PATH (an old one there was seen to fail when muxing DVD subtitles).
-        try
-        {
-            string managed = Path.Combine(CdBurner.Core.Utilities.ExternalToolInstallerService.GetDefaultFfmpegInstallDirectory(), "ffmpeg.exe");
-            if (File.Exists(managed))
-            {
-                return Path.GetFullPath(managed);
-            }
-        }
-        catch (Exception ex) when (ex is IOException or UnauthorizedAccessException or ArgumentException or NotSupportedException)
-        {
-            // Fall through to PATH
-        }
-
-        // 3. System PATH environment directories
-        string? pathEnv = Environment.GetEnvironmentVariable("PATH");
+        // 4. System PATH environment directories
+        string? pathEnv = pathEnvironment;
         if (!string.IsNullOrWhiteSpace(pathEnv))
         {
             var directories = pathEnv.Split(Path.PathSeparator, StringSplitOptions.RemoveEmptyEntries | StringSplitOptions.TrimEntries);
@@ -133,7 +166,7 @@ public static class FfmpegLocator
             }
         }
 
-        // 4. Common known installation paths and WinGet / per-user Programs directory
+        // 5. Common known installation paths and WinGet / per-user Programs directory
         foreach (var path in CommonPaths)
         {
             try
