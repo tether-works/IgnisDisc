@@ -12,10 +12,30 @@ public static partial class CliCommandRunner
         + "       ignisdisc-cli disc-art calibrate fit --points <record.calibration.json> [--candidate <n>] [--drive-model <text> --media-id <text>] [--store <file>]\n"
         + "       ignisdisc-cli disc-art calibrate list [--store <file>]";
 
-    private static int HandleDiscArtCommand(CommandLineArgs cmd, TextWriter stdout, TextWriter stderr)
+    private static async Task<int> HandleDiscArtCommandAsync(
+        CommandLineArgs cmd, TextWriter stdout, TextWriter stderr,
+        CdBurner.Core.Abstractions.IDiscDeviceService deviceService, CdBurner.Core.Abstractions.IBurnEngineBackend burnEngine)
     {
-        if (cmd.Positionals.Count < 2
-            || !string.Equals(cmd.Positionals[0], "calibrate", StringComparison.OrdinalIgnoreCase))
+        string verb = cmd.Positionals.Count > 0 ? cmd.Positionals[0].ToLowerInvariant() : string.Empty;
+        switch (verb)
+        {
+            case "generate":
+                return HandleDiscArtGenerate(cmd, stdout, stderr);
+            case "preview":
+                return HandleDiscArtPreview(cmd, stdout);
+            case "burn":
+                return await HandleDiscArtBurnAsync(cmd, stdout, stderr, deviceService, burnEngine).ConfigureAwait(false);
+            case "calibrate":
+                return HandleDiscArtCalibrate(cmd, stdout, stderr);
+            default:
+                throw new CommandLineException(DiscArtGenerateUsage + "\n" + DiscArtPreviewUsage + "\n" + DiscArtBurnUsage
+                    + "\n" + DiscArtCalibrateUsage);
+        }
+    }
+
+    private static int HandleDiscArtCalibrate(CommandLineArgs cmd, TextWriter stdout, TextWriter stderr)
+    {
+        if (cmd.Positionals.Count < 2)
         {
             throw new CommandLineException(DiscArtCalibrateUsage);
         }

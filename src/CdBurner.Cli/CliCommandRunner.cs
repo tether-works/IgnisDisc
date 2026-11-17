@@ -233,7 +233,7 @@ public static partial class CliCommandRunner
             "book-type" or "booktype" => HandleBookTypeCommand(cmd, stdout, stderr, deviceService),
             "repair-par2" or "repairpar2" => await HandleRepairPar2Async(cmd, stdout, stderr).ConfigureAwait(false),
             "rosetta" or "rosetta-ladder" or "rosettaladder" => HandleRosettaCommand(cmd, stdout, stderr),
-            "disc-art" or "discart" => HandleDiscArtCommand(cmd, stdout, stderr),
+            "disc-art" or "discart" => await HandleDiscArtCommandAsync(cmd, stdout, stderr, deviceService, burnEngine).ConfigureAwait(false),
             _ => throw new CommandLineException($"Unknown command '{cmd.Subcommand}'. Use --help for usage information.")
         };
     }
@@ -3586,6 +3586,12 @@ public static partial class CliCommandRunner
         stdout.WriteLine("      Verifies and repairs a folder in place from its PAR2 recovery set (keeps backup files unless --delete-backups).");
         stdout.WriteLine("  rosetta ladder --media dvd --output <file.iso> [--json-output <file.json>] [--disc-preset <id>] [--start-angle <deg>] [--plan-only] [--json]");
         stdout.WriteLine("      Generates a DVD-R optical resolution-ladder image (250x375 down to 13x17 um across inner, middle, and outer radii) plus a JSON manifest of rung positions.");
+        stdout.WriteLine("  disc-art generate --media cd|dvd|bd --picture <file.png> --output <file> [--files <folder> [--files-outer]] [--append-to <base.cue>] [--label <text>] [--tone photo|binary] [--start-angle <deg>] [--read-compat] [--no-interleave] [--plan-only] [--overwrite] [--disc-preset <id>] [--drive-model <text> --media-id <text>] [--json]");
+        stdout.WriteLine("      Draws a picture in the data sectors of a DVD or BD image (optionally with files on the same disc) or makes a CD picture track, with its description file for the preview.");
+        stdout.WriteLine("  disc-art preview --image <file.iso|.wav|.raw> --output <file.png> [--size <px>] [--json]");
+        stdout.WriteLine("      Renders what a drive would show from an image made by 'disc-art generate' (DVD and CD; not yet BD).");
+        stdout.WriteLine("  disc-art burn --drive <id> --image <file.iso|.cue> [any burn-iso or burn-audio option] [--json]");
+        stdout.WriteLine("      Burns the finished picture-disc image: an .iso with burn-iso, a .cue (CD picture track) with burn-audio --dao --native.");
         stdout.WriteLine("  disc-art calibrate target --media cd|dvd|bd --stage coarse|boundary|fine --output <file> [--disc-preset <id>] [--drive-model <text> --media-id <text>] [--overwrite] [--json]");
         stdout.WriteLine("      Writes a calibration target to burn (CD: .wav/.raw, DVD/BD: .iso) and its calibration record.");
         stdout.WriteLine("  disc-art calibrate fit --points <record.calibration.json> [--candidate <n>] [--drive-model <text> --media-id <text>] [--json]");
@@ -3752,6 +3758,29 @@ public static partial class CliCommandRunner
             string.Equals(subcommand, "discart", StringComparison.OrdinalIgnoreCase))
         {
             stdout.WriteLine(LegalBanner.VersionNotice);
+            stdout.WriteLine();
+            stdout.WriteLine("  disc-art generate --media cd|dvd|bd --picture <file.png> --output <file> [options] [--json]");
+            stdout.WriteLine("      Makes a picture disc image and, next to it, <file>.disc-art.json (what the preview needs).");
+            stdout.WriteLine("      --media cd|dvd|bd          Disc type. CD output is .wav (with a CUE sheet) or .raw; DVD and BD output is .iso.");
+            stdout.WriteLine("      --picture <file.png>       The picture, mapped over the whole disc radius.");
+            stdout.WriteLine("      --files <folder>           DVD/BD: put these files on the same disc (ISO 9660 + Joliet + UDF), then 2 MiB of empty sectors, then the picture.");
+            stdout.WriteLine("      --files-outer              Put the files at the outer end instead (second session, ISO 9660 + Joliet) and the picture from the start.");
+            stdout.WriteLine("      --append-to <base.cue>     CD: add the picture as the last track of this audio or mixed-mode CUE (needs .wav output; at least one minute must remain).");
+            stdout.WriteLine("      --label <text>             Volume label of the files (default DISC_ART).");
+            stdout.WriteLine("      --tone photo|binary        Photo (default) dithers midtones; binary is plain black and white.");
+            stdout.WriteLine("      --start-angle <deg>        Rotate the picture on the disc.");
+            stdout.WriteLine("      --read-compat              DVD: use the read-compatibility recipe (periodic-9b-16-v1).");
+            stdout.WriteLine("      --no-interleave            CD only: write the track without the CD-DA delay interleave.");
+            stdout.WriteLine("      --plan-only                Print the sector plan and write nothing.");
+            stdout.WriteLine("      --overwrite                Replace existing output files.");
+            stdout.WriteLine("      --disc-preset, --disc-presets-file, --drive-model, --media-id, --store, --inner-radius-mm, --outer-radius-mm, --sectors, --pitch-*");
+            stdout.WriteLine("                                 Disc geometry, as for 'disc-art calibrate target' (a saved calibration for the drive and disc is used automatically).");
+            stdout.WriteLine();
+            stdout.WriteLine("  disc-art preview --image <file.iso|.wav|.raw> --output <file.png> [--size <px>] [--json]");
+            stdout.WriteLine("      Renders what a drive would show from an image made by 'disc-art generate', using its description file. DVD and CD only; BD is not available yet.");
+            stdout.WriteLine();
+            stdout.WriteLine("  disc-art burn --drive <id> --image <file.iso|.cue> [any burn-iso or burn-audio option] [--json]");
+            stdout.WriteLine("      Burns the finished image. An .iso goes to burn-iso (its direct-writer default applies); a .cue (a CD picture track) goes to burn-audio --dao --native.");
             stdout.WriteLine();
             stdout.WriteLine("  disc-art calibrate target --media cd|dvd|bd --stage coarse|boundary|fine --output <file> [options] [--json]");
             stdout.WriteLine("      Writes a calibration target to burn and, next to it, its calibration record (<name>.calibration.json).");

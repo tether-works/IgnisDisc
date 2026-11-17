@@ -25,6 +25,11 @@
   </ItemGroup>
 
   <ItemGroup>
+    <!-- The picture-disc builder (DiscArt) lays files out with the Core ISO/UDF planner. Core does not reference this project. -->
+    <ProjectReference Include="..\CdBurner.Core\CdBurner.Core.csproj" />
+  </ItemGroup>
+
+  <ItemGroup>
     <!-- The ported encoders are internal; their tests check tables and sector layouts directly. -->
     <InternalsVisibleTo Include="CdBurner.Lithography.Tests" />
   </ItemGroup>
