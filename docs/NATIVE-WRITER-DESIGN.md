@@ -133,8 +133,9 @@ to import: the image is laid out from the next writable address alone. On such a
 counts the audio tracks (track 3 after two audio tracks, in session 2), so the writer names the session from `READ
 TRACK INFORMATION` byte 3 (session number) rather than from the track number. The simulator numbers tracks and
 sessions that way, answers `READ (10)` of the audio with 5/64/00, and places session 2 11,400 sectors after the audio
-lead-out starts. The data track is Mode 1, not the CD-ROM XA Mode 2 Form 1 the Blue Book asks for. Not yet exposed in
-the CLI or app, and not yet run on a real disc (to check there: Windows mounts session 2, a CD player plays session 1).
+lead-out starts. The data track is Mode 1 by default; `--blue-book` (burn-audio) and "Blue Book layout" (Audio CD screen) write CD-ROM XA
+Mode 2 Form 1 instead, with `CDPLUS/INFO.CDP` and a `PICTURES` folder (simulator only, 2026-11-16). Both layouts are available from the
+CLI and the app, and neither has been run on a real disc (to check there: Windows mounts session 2, a CD player plays session 1).
 
 **Audio CD, Session-at-Once with CD-Text:**
 

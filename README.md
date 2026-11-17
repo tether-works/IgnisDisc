@@ -257,6 +257,7 @@ where players expect the layer change. On real hardware: two films (103 and 86 m
 on a Verbatim DVD+R DL with the break where the second film starts; an Xbox Series X played both, and playing on
 through the end of the first film into the second crossed the layer change without a stop.
 An audio CD written this way can be left open for a second session, and a data session can be added after it (CD-Extra); copying an Enhanced CD whole (audio session, then data session) works the same way. The data session can optionally use the Blue Book layout (`--blue-book`, or "Blue Book layout" in the app; off by default): CD-ROM XA Mode 2 Form 1 with `CDPLUS/INFO.CDP` holding the album and track titles, and a `PICTURES` folder. These, and the optional recovery-data session on an audio CD, have run only in the built-in drive simulator, not on a real disc.
+The picture-disc and Rosetta commands (`disc-art generate/preview/burn`, `rosetta build/burn`, including the hybrid DVD-R with an archive inside and text pages outside, and the rim header) have been tested only on images and in the drive simulator: no disc has been burned from them on a real drive, and no result has been looked at under a microscope.
 `--test-write` and
 `--test-first` work as for audio (DVD+R has no test write). On real hardware it has run on one drive so far; other
 drives are still to be tried.
@@ -365,6 +366,7 @@ pwsh scripts/Build-Installer.ps1 -FfmpegPath C:\tools\ffmpeg\bin\ffmpeg.exe -Ffm
 - Direct drive-command writing tried on real DVD-RAM, dual-layer DVD-R and Blu-ray discs (CD-R, CD-RW, DVD-R, DVD-RW, DVD+R, DVD+RW and dual-layer DVD+R have run on real discs)
 - More drive models and stand-alone CD player checks (including CD-Extra and Audio CD PAR2 recovery sessions on real discs)
 - Blu-ray burning, tested on real drives
+- Picture discs (`disc-art`) and the Rosetta hybrid DVD-R burned and read back on a real disc
 - CUETools Database (CTDB) parity repair tried on a physically scratched disc (it has repaired a real rip with damage added afterwards, against the live database)
 
 ---
