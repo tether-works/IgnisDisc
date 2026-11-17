@@ -86,6 +86,9 @@ public class AudioBurnViewModel : ObservableObject, IDisposable
     private string _dataSessionFolderPath = string.Empty;
     private string _dataSessionVolumeLabel = "CD_EXTRA";
     private bool _blueBookLayout;
+    private bool _fillWithPicture; // off by default: the whole disc is written and closed
+    private string _fillPicturePath = string.Empty; // empty: the automatic picture
+    private bool _fillPictureLookupOnline; // off by default: asks MusicBrainz and the Cover Art Archive
     private string _dataSessionSummaryText = string.Empty;
     private bool _repairFromRecoverySession = true;
     private string _recoverySessionCapacityText = string.Empty;
@@ -343,6 +346,7 @@ public class AudioBurnViewModel : ObservableObject, IDisposable
                 TestWriteFirst = false;
                 IncludeRecoverySession = false;
                 DataSessionFolderPath = string.Empty;
+                FillWithPicture = false;
             }
         }
     }
@@ -384,6 +388,7 @@ public class AudioBurnViewModel : ObservableObject, IDisposable
             {
                 if (value)
                 {
+                    FillWithPicture = false;
                     if (!string.IsNullOrWhiteSpace(_dataSessionFolderPath))
                     {
                         _dataSessionFolderPath = string.Empty;
@@ -414,6 +419,7 @@ public class AudioBurnViewModel : ObservableObject, IDisposable
             {
                 if (!string.IsNullOrWhiteSpace(trimmed))
                 {
+                    FillWithPicture = false;
                     if (_includeRecoverySession)
                     {
                         _includeRecoverySession = false;
@@ -459,6 +465,78 @@ public class AudioBurnViewModel : ObservableObject, IDisposable
             }
         }
     }
+
+    /// <summary>
+    /// Fill the empty space after the music with a picture, drawn in a hidden second session (Mode 1 data) to the end of
+    /// the disc; CD players see the same tracks. Off by default. Needs direct drive commands and cannot be combined
+    /// with a recovery session or a data folder (each fills session 2).
+    /// </summary>
+    public bool FillWithPicture
+    {
+        get => _fillWithPicture;
+        set
+        {
+            if (SetProperty(ref _fillWithPicture, value) && value)
+            {
+                if (_includeRecoverySession)
+                {
+                    _includeRecoverySession = false;
+                    OnPropertyChanged(nameof(IncludeRecoverySession));
+                }
+                if (!string.IsNullOrWhiteSpace(_dataSessionFolderPath))
+                {
+                    _dataSessionFolderPath = string.Empty;
+                    OnPropertyChanged(nameof(DataSessionFolderPath));
+                    OnPropertyChanged(nameof(HasDataSessionFolder));
+                }
+                if (!_useDirectDriveCommands)
+                {
+                    UseDirectDriveCommands = true;
+                }
+                RecalculateTotals();
+            }
+        }
+    }
+
+    /// <summary>The chosen picture for <see cref="FillWithPicture"/>; empty for the automatic one (cover art).</summary>
+    public string FillPicturePath
+    {
+        get => _fillPicturePath;
+        set
+        {
+            if (SetProperty(ref _fillPicturePath, value?.Trim() ?? string.Empty))
+            {
+                OnPropertyChanged(nameof(FillPictureChoiceText));
+            }
+        }
+    }
+
+    /// <summary>
+    /// With the automatic picture: when no cover art is embedded in the files or lies next to them, look the album up
+    /// on MusicBrainz and take its front cover from the Cover Art Archive. Off by default (an online lookup).
+    /// </summary>
+    public bool FillPictureLookupOnline
+    {
+        get => _fillPictureLookupOnline;
+        set => SetProperty(ref _fillPictureLookupOnline, value);
+    }
+
+    /// <summary>What the picture fill will draw, for the screen.</summary>
+    public string FillPictureChoiceText => string.IsNullOrWhiteSpace(_fillPicturePath)
+        ? "Picture: automatic (cover art in the files, else cover.jpg / folder.jpg next to them)"
+        : $"Picture: {Path.GetFileName(_fillPicturePath)}";
+
+    /// <summary>The explanation shown next to the picture fill option.</summary>
+    public string FillPictureNote => CdBurner.Lithography.DiscArt.AudioCdFillPicture.ScreenNote;
+
+    /// <summary>HTTP client for the online cover lookup; null makes a new one per burn (tests set a fake).</summary>
+    public HttpClient? FillPictureHttpClient { get; set; }
+
+    /// <summary>Opens a file picker for the fill picture.</summary>
+    public RelayCommand BrowseFillPictureCommand { get; }
+
+    /// <summary>Goes back to the automatic fill picture.</summary>
+    public RelayCommand ClearFillPictureCommand { get; }
 
     /// <summary>True when a session-2 data folder is selected for an Enhanced CD.</summary>
     public bool HasDataSessionFolder => !string.IsNullOrWhiteSpace(_dataSessionFolderPath);
@@ -1206,6 +1284,8 @@ public class AudioBurnViewModel : ObservableObject, IDisposable
         StartAudioBurnCommand = new AsyncRelayCommand(async p => await StartAudioBurnAsync(p as string), _ => !IsBusy && Tracks.Count > 0);
         BrowseDataSessionFolderCommand = new RelayCommand(BrowseDataSessionFolder);
         ClearDataSessionFolderCommand = new RelayCommand(_ => DataSessionFolderPath = string.Empty);
+        BrowseFillPictureCommand = new RelayCommand(BrowseFillPicture);
+        ClearFillPictureCommand = new RelayCommand(_ => FillPicturePath = string.Empty);
         CancelBurnCommand = new RelayCommand(_ => CancelActiveBurn(), _ => IsBusy);
         RipAudioCdCommand = new AsyncRelayCommand(async p => await RipAudioCdAsync(p as string), _ => !IsBusy);
         DetectReadOffsetCommand = new AsyncRelayCommand(DetectReadOffsetAsync, () => !IsBusy);
@@ -1911,6 +1991,55 @@ public class AudioBurnViewModel : ObservableObject, IDisposable
         }
     }
 
+    private void BrowseFillPicture(object? _)
+    {
+        var dlg = new OpenFileDialog
+        {
+            Title = "Choose the picture for the empty disc space",
+            Filter = "Pictures (*.jpg;*.jpeg;*.png;*.bmp;*.gif;*.tif;*.tiff)|*.jpg;*.jpeg;*.png;*.bmp;*.gif;*.tif;*.tiff|All files (*.*)|*.*",
+            CheckFileExists = true
+        };
+        if (dlg.ShowDialog() == true && !string.IsNullOrWhiteSpace(dlg.FileName))
+        {
+            FillPicturePath = dlg.FileName;
+        }
+    }
+
+    /// <summary>
+    /// The picture session for a burn with <see cref="FillWithPicture"/>: the chosen picture, or the automatic one. Returns
+    /// (null, note) when the automatic picture finds nothing (the disc is burned without it); throws
+    /// <see cref="ArgumentException"/> when the chosen picture cannot be read.
+    /// </summary>
+    internal async Task<(CdBurner.Lithography.DiscArt.AudioCdPictureSession? Session, string? Note)> PrepareFillPictureAsync(
+        AudioCdCompilation compilation, CancellationToken ct)
+    {
+        CdBurner.Lithography.DiscArt.AudioCdPicture? picture;
+        string? note = null;
+        if (!string.IsNullOrWhiteSpace(_fillPicturePath))
+        {
+            picture = CdBurner.Lithography.DiscArt.AudioCdFillPicture.LoadChosen(_fillPicturePath);
+        }
+        else
+        {
+            HttpClient? owned = null;
+            try
+            {
+                HttpClient? http = _fillPictureLookupOnline
+                    ? FillPictureHttpClient ?? (owned = new HttpClient { Timeout = TimeSpan.FromSeconds(15) })
+                    : null;
+                (picture, note) = await CdBurner.Lithography.DiscArt.AudioCdFillPicture.FindAutoPictureAsync(
+                    compilation, _audioDecoder, http, cancellationToken: ct).ConfigureAwait(true);
+            }
+            finally
+            {
+                owned?.Dispose();
+            }
+        }
+        return picture == null
+            ? (null, note)
+            : (new CdBurner.Lithography.DiscArt.AudioCdPictureSession(picture, BlueBookDiscInfo.From(compilation)), null);
+    }
+
     private void UpdateRecoveryEstimate(long audioFrames, long capacityFrames)
     {
         var est = AudioRecoverySessionService.EstimateCapacity(audioFrames, capacityFrames);
@@ -2362,9 +2491,9 @@ public class AudioBurnViewModel : ObservableObject, IDisposable
 
             // Direct drive commands only for drives whose probe shows Session-at-Once. When they are on only as the
             // app's default, a drive without it burns with the Windows writer instead of refusing.
-            bool direct = UseDirectDriveCommands || IncludeRecoverySession || HasDataSessionFolder;
+            bool direct = UseDirectDriveCommands || IncludeRecoverySession || HasDataSessionFolder || FillWithPicture;
             string? writerNote = null;
-            if (direct && _directIsAppDefault && !IncludeRecoverySession && !HasDataSessionFolder && !recorder.GetCapabilities().SupportsNativeSao)
+            if (direct && _directIsAppDefault && !IncludeRecoverySession && !HasDataSessionFolder && !FillWithPicture && !recorder.GetCapabilities().SupportsNativeSao)
             {
                 direct = false;
                 writerNote = "This drive does not report Session-at-Once writing, so the Windows writer burned the disc (no CD-Text, track codes or exact gaps).";
@@ -2393,6 +2522,24 @@ public class AudioBurnViewModel : ObservableObject, IDisposable
                 directDataEngine = new CdBurner.Hardware.NativeWriting.NativeDataBurnEngine(_burnEngine, DirectBurnLogDirectory);
             }
 
+            CdBurner.Lithography.DiscArt.AudioCdPictureSession? pictureSession = null;
+            string? pictureNote = null;
+            if (FillWithPicture)
+            {
+                try
+                {
+                    StatusMessage = "Finding the picture for the empty disc space...";
+                    (pictureSession, pictureNote) = await PrepareFillPictureAsync(compilation, activeToken);
+                }
+                catch (ArgumentException ex)
+                {
+                    StatusMessage = $"Burn not started: {ex.Message}";
+                    var refused = BurnOperationResult.Failed(StatusMessage);
+                    LastBurnResult = refused;
+                    return refused;
+                }
+            }
+
             AudioBurnOptions Options(bool allowDamagedAudio) => new()
             {
                 UseDiscAtOnce = (RecordingMode == AudioRecordingMode.DiscAtOnceGapless),
@@ -2405,7 +2552,8 @@ public class AudioBurnViewModel : ObservableObject, IDisposable
                 IncludeRecoverySession = IncludeRecoverySession,
                 DataSessionFolderPath = HasDataSessionFolder ? DataSessionFolderPath : null,
                 DataSessionVolumeLabel = DataSessionVolumeLabel,
-                BlueBookLayout = HasDataSessionFolder && BlueBookLayout
+                BlueBookLayout = HasDataSessionFolder && BlueBookLayout,
+                SessionTwoImage = pictureSession
             };
 
             var burnService = directEngine != null ? new AudioCdBurnService(directEngine, _audioDecoder, directDataEngine) : _audioBurnService;
@@ -2439,11 +2587,17 @@ public class AudioBurnViewModel : ObservableObject, IDisposable
 
             if (burnResult.Success && direct)
             {
-                StatusMessage = burnService.LastDataSessionSectors > 0
+                StatusMessage = pictureSession?.StartLba != null && burnService.LastDataSessionSectors > 0
+                    ? $"Audio CD burned and read back correctly; the picture fills the rest of the disc in a hidden second session (LBA {pictureSession.PictureStartLba:N0} to {pictureSession.PictureEndLba - 1:N0}, {pictureSession.Picture.Source}), {burnResult.TotalTime}."
+                    : burnService.LastDataSessionSectors > 0
                     ? $"Enhanced CD burned ({burnResult.SectorsWritten:N0} total sectors, session 2 data at LBA {burnService.LastDataSessionStartLba:N0}, {burnResult.TotalTime})."
                     : burnService.LastRecoveryManifest is { } recManifest
                         ? $"Audio CD + PAR2 recovery session burned ({burnResult.SectorsWritten:N0} frames, {recManifest.Par2RecoveryBlocks:N0} recovery blocks, {burnResult.TotalTime})."
                         : $"Audio CD burned with direct drive commands and read back correctly ({burnResult.SectorsWritten:N0} frames, {burnResult.TotalTime}).";
+                if (pictureNote != null)
+                {
+                    StatusMessage += " " + pictureNote; // automatic picture found nothing: burned without it
+                }
                 BurnProgress = 100.0;
                 if (directEngine?.LastWriteOffsetPlan is { } offsetPlan)
                 {

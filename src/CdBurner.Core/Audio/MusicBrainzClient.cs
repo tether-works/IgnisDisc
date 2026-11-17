@@ -94,6 +94,58 @@ public sealed class MusicBrainzClient
         }
     }
 
+    /// <summary>
+    /// Release IDs whose title is <paramref name="albumTitle"/> (case ignored) by <paramref name="artist"/>, best match
+    /// first, from the release search (<c>release/?query=release:"…" AND artist:"…"</c>, MusicBrainz API search, JSON
+    /// <c>releases[].id/title/score</c>). Only results scored 90 or more are kept. No match gives an empty list.
+    /// </summary>
+    public async Task<IReadOnlyList<string>> SearchReleaseIdsAsync(string albumTitle, string artist, int limit = 5, CancellationToken cancellationToken = default)
+    {
+        ArgumentException.ThrowIfNullOrWhiteSpace(albumTitle);
+        ArgumentException.ThrowIfNullOrWhiteSpace(artist);
+        string query = $"release:\"{EscapeQueryPhrase(albumTitle.Trim())}\" AND artist:\"{EscapeQueryPhrase(artist.Trim())}\"";
+        string url = $"{_baseUrl}release/?query={Uri.EscapeDataString(query)}&limit={Math.Clamp(limit, 1, 25)}&fmt=json";
+
+        using HttpResponseMessage response = await SendRequestAsync(url, cancellationToken).ConfigureAwait(false);
+        if (response.StatusCode == HttpStatusCode.NotFound)
+        {
+            return Array.Empty<string>();
+        }
+        if (!response.IsSuccessStatusCode)
+        {
+            throw new HttpRequestException(
+                $"MusicBrainz search failed with HTTP status code {(int)response.StatusCode}.", null, response.StatusCode);
+        }
+
+        using var stream = await response.Content.ReadAsStreamAsync(cancellationToken).ConfigureAwait(false);
+        using var doc = await JsonDocument.ParseAsync(stream, cancellationToken: cancellationToken).ConfigureAwait(false);
+        if (!doc.RootElement.TryGetProperty("releases", out var releases) || releases.ValueKind != JsonValueKind.Array)
+        {
+            return Array.Empty<string>();
+        }
+
+        var found = new List<(string Id, int Score)>();
+        foreach (var release in releases.EnumerateArray())
+        {
+            if (release.ValueKind != JsonValueKind.Object
+                || GetNullableString(release, "id") is not { } id
+                || !Guid.TryParseExact(id, "D", out _)
+                || !string.Equals(GetNullableString(release, "title")?.Trim(), albumTitle.Trim(), StringComparison.OrdinalIgnoreCase))
+            {
+                continue;
+            }
+            int score = release.TryGetProperty("score", out var s) && s.ValueKind == JsonValueKind.Number && s.TryGetInt32(out int v) ? v : 0;
+            if (score >= 90)
+            {
+                found.Add((id, score));
+            }
+        }
+        return found.OrderByDescending(f => f.Score).Select(f => f.Id).ToList();
+    }
+
+    /// <summary>Escapes a phrase for a quoted Lucene query term: backslash and double quote.</summary>
+    private static string EscapeQueryPhrase(string text) => text.Replace("\\", "\\\\", StringComparison.Ordinal).Replace("\"", "\\\"", StringComparison.Ordinal);
+
     public static CdTextAlbumMetadata ToAlbumMetadata(MusicBrainzRelease release, string musicBrainzDiscId)
     {
         ArgumentNullException.ThrowIfNull(release);

@@ -487,6 +487,14 @@ public class AudioBurnOptions
     /// files. Off by default: Windows reads a Mode 1 session best.
     /// </summary>
     public bool BlueBookLayout { get; set; }
+
+    /// <summary>
+    /// Optional second session built after the audio is written, at the address the drive gives for it, and written as
+    /// one Mode 1 data track to the end of the disc, which is then closed. Null (the default) writes no such session.
+    /// Requires direct drive commands; cannot be combined with <see cref="DataSessionFolderPath"/>,
+    /// <see cref="IncludeRecoverySession"/> or a mixed-mode track-1 data track.
+    /// </summary>
+    public CdBurner.Core.Audio.IAudioCdSessionTwoImage? SessionTwoImage { get; init; }
 }
 
 /// <summary>

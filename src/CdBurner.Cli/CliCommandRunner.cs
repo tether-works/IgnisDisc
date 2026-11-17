@@ -201,7 +201,7 @@ public static partial class CliCommandRunner
             "build-iso" or "buildiso" => await HandleBuildIsoAsync(cmd, stdout).ConfigureAwait(false),
             "burn-iso" or "burniso" => await HandleBurnIsoAsync(cmd, stdout, stderr, deviceService, burnEngine).ConfigureAwait(false),
             "burn-data" or "burndata" => await HandleBurnDataAsync(cmd, stdout, stderr, deviceService, burnEngine).ConfigureAwait(false),
-            "burn-audio" or "burnaudio" => await HandleBurnAudioAsync(cmd, stdout, stderr, deviceService, burnEngine).ConfigureAwait(false),
+            "burn-audio" or "burnaudio" => await HandleBurnAudioAsync(cmd, stdout, stderr, deviceService, burnEngine, customHttpClient).ConfigureAwait(false),
             "burn-dvd" or "burndvd" => await HandleBurnDvdAsync(cmd, stdout, stderr, deviceService, burnEngine).ConfigureAwait(false),
             "rip" or "rip-disc" => await HandleRipAsync(cmd, stdout, stderr, deviceService, burnEngine).ConfigureAwait(false),
             "rip-audio" or "ripaudio" => await HandleRipAudioAsync(cmd, stdout, stderr, deviceService, burnEngine, customHttpClient).ConfigureAwait(false),
@@ -1176,7 +1176,8 @@ public static partial class CliCommandRunner
         TextWriter stdout,
         TextWriter stderr,
         IDiscDeviceService deviceService,
-        IBurnEngineBackend burnEngine)
+        IBurnEngineBackend burnEngine,
+        HttpClient? customHttpClient = null)
     {
         bool planOnly = cmd.HasFlag("plan-only");
         bool dao = cmd.HasFlag("dao");
@@ -1211,6 +1212,15 @@ public static partial class CliCommandRunner
         {
             throw new CommandLineException("--blue-book lays out the --data-folder session as an Enhanced CD; give --data-folder too.");
         }
+        bool fillPicture = cmd.Options.ContainsKey("fill-picture") || cmd.HasFlag("fill-picture");
+        if (fillPicture && !native)
+        {
+            throw new CommandLineException("--fill-picture requires --native (direct drive commands): the picture is a second session after the music, and Windows IMAPIv2 cannot leave the audio session open for it.");
+        }
+        if (fillPicture && (!string.IsNullOrWhiteSpace(dataFolder) || recoverySession))
+        {
+            throw new CommandLineException("--fill-picture fills the rest of the disc, so it cannot be combined with --data-folder or --recovery-session.");
+        }
 
         using var mfDecoder = OperatingSystem.IsWindows() ? new MediaFoundationAudioDecoder() : null;
         var (compilation, loadNote) = BuildAudioCompilation(cmd, mfDecoder, stderr);
@@ -1238,6 +1248,13 @@ public static partial class CliCommandRunner
             stderr.WriteLine(loadNote);
         }
 
+        var (pictureSession, pictureNote) = await PrepareAudioFillPictureAsync(cmd, compilation, mfDecoder, customHttpClient, dataLabel)
+            .ConfigureAwait(false);
+        if (pictureNote != null && !cmd.IsJson)
+        {
+            stderr.WriteLine(pictureNote);
+        }
+
         string? logDir = cmd.GetOption("log-dir");
         var nativeEngine = native ? new NativeAudioBurnEngine(logDir) { TestWriteFirst = testFirst } : null;
         var nativeDataEngine = native ? new NativeDataBurnEngine(burnEngine, logDir) : null;
@@ -1262,6 +1279,7 @@ public static partial class CliCommandRunner
                 DataSessionFolderPath = dataFolder,
                 DataSessionVolumeLabel = dataLabel,
                 BlueBookLayout = blueBook,
+                SessionTwoImage = pictureSession,
                 DisableBufferUnderrunFree = disableBufe
             }).ConfigureAwait(false);
 
@@ -1284,6 +1302,18 @@ public static partial class CliCommandRunner
                 dataSessionWritten = audioBurnService.LastDataSessionSectors > 0,
                 dataSessionStartLba = audioBurnService.LastDataSessionStartLba,
                 dataSessionSectors = audioBurnService.LastDataSessionSectors,
+                fillPicture = pictureSession?.StartLba is int pictureSessionStart && audioBurnService.LastDataSessionSectors > 0
+                    ? new
+                    {
+                        source = pictureSession.Picture.Source,
+                        origin = pictureSession.Picture.Origin,
+                        sessionStartLba = pictureSessionStart,
+                        volumeSectors = pictureSession.VolumeSectors,
+                        pictureStartLba = pictureSession.PictureStartLba,
+                        pictureEndLba = pictureSession.PictureEndLba
+                    }
+                    : null,
+                fillPictureNote = pictureNote,
                 warning = result.WarningMessage,
                 recoverySessionDetails = recoveryManifest == null ? null : new
                 {
@@ -1375,6 +1405,10 @@ public static partial class CliCommandRunner
                 if (audioBurnService.LastDataSessionSectors > 0)
                 {
                     stdout.WriteLine($"  Data Session:   session 2 written at LBA {audioBurnService.LastDataSessionStartLba:N0} ({audioBurnService.LastDataSessionSectors:N0} sectors)");
+                    if (pictureSession?.StartLba != null)
+                    {
+                        stdout.WriteLine($"  Picture:        drawn on LBA {pictureSession.PictureStartLba:N0} to {pictureSession.PictureEndLba - 1:N0} ({pictureSession.Picture.Source}: {pictureSession.Picture.Origin})");
+                    }
                     if (!string.IsNullOrWhiteSpace(result.WarningMessage))
                     {
                         stderr.WriteLine($"Note: {result.WarningMessage}");
@@ -3572,7 +3606,7 @@ public static partial class CliCommandRunner
         stdout.WriteLine("      Burns an ISO image directly to the target optical drive. --layer-break: sectors on the first layer of a DVD+R DL (multiple of 16). A DVD-RW is written with direct drive commands unless --windows-writer.");
         stdout.WriteLine("  burn-data --drive <id> --input <folder> [--label <vol>] [--speed <X|max>] [--udf] [--udf-rev <1.02|1.50|2.00|2.01|2.50|2.60>] [--joliet] [--boot-bios <img>] [--boot-uefi <img>] [--no-verify | --strict-verify] [--no-close] [--append] [--no-burnfree] [--overwrite] [--post-action none|eject|sound|eject-sound|shutdown] [--fixed-time <unix|iso8601>] [--sha256sums] [--blake3sums] [--fill-picture <file.png> [--disc-preset <id>]] [--windows-writer | --native [--test-write | --test-first] [--layer-break <sectors>] [--log-dir <folder>]] [--json]");
         stdout.WriteLine("      Compiles a folder and burns it to optical media (--append merges and adds a session on an appendable disc). A DVD-RW is written with direct drive commands unless --windows-writer.");
-        stdout.WriteLine("  burn-audio (--drive <id> | --plan-only) (--tracks <files|.cue|.m3u|.pls> | --tracks-file <file.json>) [--title <album>] [--artist <name>] [--songwriter <name>] [--upc <13digits>] [--speed <X|max>] [--dao] [--pregap <frames>] [--normalize] [--rms-level] [--loudness track|album|off] [--crossfade <sec>] [--no-cd-text] [--no-burnfree] [--post-action none|eject|sound|eject-sound|shutdown] [--allow-damaged] [--native [--test-write | --test-first] [--recovery-session | --data-folder <dir> [--data-label <label>] [--blue-book]] [--write-offset <samples|auto>] [--log-dir <folder>]] [--json]");
+        stdout.WriteLine("  burn-audio (--drive <id> | --plan-only) (--tracks <files|.cue|.m3u|.pls> | --tracks-file <file.json>) [--title <album>] [--artist <name>] [--songwriter <name>] [--upc <13digits>] [--speed <X|max>] [--dao] [--pregap <frames>] [--normalize] [--rms-level] [--loudness track|album|off] [--crossfade <sec>] [--no-cd-text] [--no-burnfree] [--post-action none|eject|sound|eject-sound|shutdown] [--allow-damaged] [--native [--test-write | --test-first] [--recovery-session | --data-folder <dir> [--data-label <label>] [--blue-book] | --fill-picture <picture>|auto [--lookup]] [--write-offset <samples|auto>] [--log-dir <folder>]] [--json]");
         stdout.WriteLine("      Burns Red Book Audio CD from WAV, FLAC, MP3, AAC/M4A, WMA, .cue, .m3u/.pls, or a JSON --tracks-file (--recovery-session adds session-2 PAR2 recovery; --data-folder burns an Enhanced CD data session; --blue-book writes it as CD-ROM XA Mode 2 with CDPLUS/INFO.CDP and PICTURES/; --plan-only previews without burning).");
         stdout.WriteLine("  burn-dvd --drive <id> --video-ts <folder|movie> [--label <vol>] [--menu-title <title>] [--menu on|off | --no-menu] [--menu-autoplay <never|sec>] [--after-title next|menu] [--standard ntsc|pal] [--aspect 16:9|4:3] [--chapters <none|sec>] [--subtitles-default on|off] [--subtitle-size small|medium|large] [--video-bitrate <fit|kbps>] [--fit-to-disc] [--title-names <a;b;...>] [--dual-layer] [--generate-subtitles [--subtitle-language <code>]] [--speed <X|max>] [--no-verify] [--no-burnfree] [--overwrite] [--fill-picture <file.png>|auto [--disc-preset <id>]] [--post-action none|eject|sound|eject-sound|shutdown] [--native [--test-write | --test-first] [--log-dir <folder>]] [--json]");
         stdout.WriteLine("      Validates, normalizes/authors, aligns, and burns a DVD-Video compliant disc from VIDEO_TS or movie files.");
@@ -3668,6 +3702,7 @@ public static partial class CliCommandRunner
         stdout.WriteLine("  Data and DVD-Video burns are read back and compared afterwards; --no-verify skips that.");
         stdout.WriteLine("  rip-audio reads with C2 error pointers and re-reads doubtful sectors; --no-secure reads once.");
         stdout.WriteLine("  burn-audio checks FLAC files first and stops if one is damaged; --allow-damaged burns anyway.");
+        stdout.WriteLine("  burn-audio --fill-picture (off unless given): after the music, a hidden Mode 1 data session draws the picture to the end of the disc and closes it; players see the same tracks. auto: cover art embedded in the files, else cover.jpg/folder.jpg next to them, else (only with --lookup) the Cover Art Archive by album title and artist.");
     }
 
     private static void PrintSubcommandHelp(string? subcommand, TextWriter stdout)

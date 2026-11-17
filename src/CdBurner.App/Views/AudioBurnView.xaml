@@ -230,6 +230,46 @@
                                           VerticalAlignment="Center"
                                           Margin="0,0,12,0" />
 
+                                <CheckBox Content="Fill empty space with a picture"
+                                          AutomationProperties.Name="Fill empty space with a picture"
+                                          IsChecked="{Binding FillWithPicture}"
+                                          ToolTip="{Binding FillPictureNote}"
+                                          VerticalAlignment="Center"
+                                          Margin="0,0,6,0" />
+
+                                <Button Content="Picture..."
+                                        AutomationProperties.Name="Choose the fill picture"
+                                        Command="{Binding BrowseFillPictureCommand}"
+                                        Visibility="{Binding FillWithPicture, Converter={StaticResource BoolToVis}}"
+                                        Padding="8,3"
+                                        FontSize="11.5"
+                                        ToolTip="Choose the picture to draw. Without one, the cover art embedded in the music files is used, else cover.jpg or folder.jpg next to them."
+                                        VerticalAlignment="Center"
+                                        Margin="0,0,6,0" />
+
+                                <Button Content="Automatic"
+                                        AutomationProperties.Name="Use the automatic fill picture"
+                                        Command="{Binding ClearFillPictureCommand}"
+                                        Visibility="{Binding FillWithPicture, Converter={StaticResource BoolToVis}}"
+                                        Padding="8,3"
+                                        FontSize="11.5"
+                                        VerticalAlignment="Center"
+                                        Margin="0,0,6,0" />
+
+                                <TextBlock Text="{Binding FillPictureChoiceText}"
+                                           Visibility="{Binding FillWithPicture, Converter={StaticResource BoolToVis}}"
+                                           Foreground="{DynamicResource TextSecondaryBrush}"
+                                           VerticalAlignment="Center"
+                                           Margin="0,0,6,0" />
+
+                                <CheckBox Content="Look up the cover online"
+                                          AutomationProperties.Name="Look up the fill picture cover online"
+                                          IsChecked="{Binding FillPictureLookupOnline}"
+                                          Visibility="{Binding FillWithPicture, Converter={StaticResource BoolToVis}}"
+                                          ToolTip="When the files have no cover art: look the album up on MusicBrainz by its title and artist and take the front cover from the Cover Art Archive. Off by default."
+                                          VerticalAlignment="Center"
+                                          Margin="0,0,12,0" />
+
                                 <TextBlock Text="Crossfade (s):"
                                            VerticalAlignment="Center"
                                            Foreground="{DynamicResource TextSecondaryBrush}"

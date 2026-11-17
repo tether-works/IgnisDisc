@@ -307,6 +307,16 @@ one assembly with a clear provenance boundary. Nothing in it touches a drive.
   open, used, CD and dual-layer burns before anything is drawn; `FitToDisc` cuts the preset at the blank disc's size
   without moving any sector. The `auto` picture is one frame of the main movie (largest title set) taken by FFmpeg at a
   third of its running time; without FFmpeg the burn goes ahead without the picture and says so.
+- `DiscArt/AudioCdFillPicture.cs`: the same option for audio CDs (off by default; `burn-audio --native --fill-picture`,
+  and the option on the Audio CD screen). `AudioCdPictureSession` implements Core's `IAudioCdSessionTwoImage`:
+  `AudioCdBurnService` checks its `MinimumSectors` before any audio is written, leaves the audio session open, and
+  after it asks for the image at the drive's next writable address with the sectors left before the lead-out (less
+  the 2 run-out blocks). The image (temporary file, deleted on close) is an ISO 9660 + Joliet volume with the Blue
+  Book folders (`CDPLUS/INFO.CDP` at session sector 75, `PICTURES/COVER.*`) but no CD-ROM XA mark, 150 zero
+  sectors, then `CdMode1Drawing` sectors to 150 sectors before the lead-out; it is written as one Mode 1 Track-at-Once
+  track and the disc is closed. Drawing uses the built-in `cd-80` geometry with sector 0 at absolute time 00:00:00
+  (LBA -150). The `auto` picture: embedded cover art, then `cover.*`/`folder.*` next to the files, then (opt-in) a
+  MusicBrainz release search by album title and artist and the Cover Art Archive front cover.
 - `Imaging/PngRaster.cs` + `Imaging/WicPngDecoder.cs`: IgnisDisc's PNG framing/CRC-32 validator and Windows Imaging
   Component (`windowscodecs.dll`) decoder producing straight `32bppBGRA` `BgraRaster` buffers (plus 8-bit RGBA PNG writer)
   for picture input and read-back previews without a WPF dependency.

@@ -312,6 +312,25 @@ public class AudioCdBurnService
         LastDataSessionStartLba = null;
 
         bool hasDataFolder = !string.IsNullOrWhiteSpace(options.DataSessionFolderPath);
+        bool hasSessionTwoImage = options.SessionTwoImage != null && !checkOnly;
+        if (hasSessionTwoImage)
+        {
+            if (hasDataFolder || options.IncludeRecoverySession)
+            {
+                return BurnOperationResult.Failed(
+                    "The picture session fills the rest of the disc, so it cannot be combined with a data folder or a PAR2 recovery session. Nothing was written to the disc.");
+            }
+            if (compilation.HasDataTrack)
+            {
+                return BurnOperationResult.Failed(
+                    "The picture session cannot be combined with a mixed-mode data track in track 1. Nothing was written to the disc.");
+            }
+            if (_recoveryDataEngine == null || !_burnEngine.WritesMixedModeCds)
+            {
+                return BurnOperationResult.Failed(
+                    "A picture session after the audio requires direct drive commands. Nothing was written to the disc.");
+            }
+        }
         if (options.BlueBookLayout && !hasDataFolder && !checkOnly)
         {
             return BurnOperationResult.Failed(
@@ -672,11 +691,22 @@ public class AudioCdBurnService
                 }
             }
 
+            if (hasSessionTwoImage)
+            {
+                long needed = (long)totalRequiredFrames + RecoverySessionBudget.FixedSessionSectors + options.SessionTwoImage!.MinimumSectors
+                    + SessionTwoRunOutSectors;
+                if (needed > discCapacitySectors)
+                {
+                    return BurnOperationResult.Failed(
+                        $"Audio ({totalRequiredFrames:N0} sectors), session gap ({RecoverySessionBudget.FixedSessionSectors:N0} sectors) and the smallest picture session ({options.SessionTwoImage.MinimumSectors:N0} sectors) need {needed:N0} sectors, more than the disc holds ({discCapacitySectors:N0}). Turn the picture off or remove a track. Nothing was written to the disc.");
+                }
+            }
+
             // 5. Generate CD-Text payload if requested
             bool includeCdText = compilation.IncludeCdText || options.WriteCdText;
             byte[]? cdTextPayload = includeCdText ? compilation.BuildCdTextPacks() : null;
 
-            bool leaveOpenForSession2 = (options.IncludeRecoverySession || hasDataFolder) && !checkOnly;
+            bool leaveOpenForSession2 = (options.IncludeRecoverySession || hasDataFolder || hasSessionTwoImage) && !checkOnly;
             var effectiveOptions = new AudioBurnOptions
             {
                 Speed = options.Speed,
@@ -721,6 +751,12 @@ public class AudioCdBurnService
                 return BurnOperationResult.Failed(
                     "Session 1 audio finished, but the drive did not leave the disc open for session 2.",
                     session1Result.Exception);
+            }
+
+            if (hasSessionTwoImage)
+            {
+                return await WriteSessionTwoImageAsync(recorder, options, session1Result, postAudioStatus, discCapacitySectors,
+                    progress, cancellationToken).ConfigureAwait(false);
             }
 
             if (hasDataFolder)
@@ -833,6 +869,77 @@ public class AudioCdBurnService
                 try { trk.PcmStream?.Dispose(); } catch { }
             }
             compilation.ReleaseCachedAlbumBuffers();
+        }
+    }
+
+    /// <summary>A Track-at-Once data track ends with 2 run-out blocks (Orange Book; the direct writer checks the same).</summary>
+    public const int SessionTwoRunOutSectors = 2;
+
+    /// <summary>
+    /// Sectors a session starting at <paramref name="startLba"/> may use on a disc of <paramref name="capacitySectors"/>
+    /// (the start of the last possible lead-out) with <paramref name="freeSectors"/> free as the drive reports it (0: not
+    /// reported): up to the lead-out, less the track's run-out blocks.
+    /// </summary>
+    public static long SessionTwoSectorsAvailable(int startLba, long capacitySectors, long freeSectors)
+    {
+        long untilLeadOut = capacitySectors - startLba;
+        if (freeSectors > 0)
+        {
+            untilLeadOut = Math.Min(untilLeadOut, freeSectors);
+        }
+        return Math.Max(0, untilLeadOut - SessionTwoRunOutSectors);
+    }
+
+    private async Task<BurnOperationResult> WriteSessionTwoImageAsync(
+        IDiscRecorderBackend recorder,
+        AudioBurnOptions options,
+        BurnOperationResult session1Result,
+        MediaStatusDto postAudioStatus,
+        long discCapacitySectors,
+        IProgress<BurnProgressSnapshot>? progress,
+        CancellationToken cancellationToken)
+    {
+        int nwa = postAudioStatus.NextWritableLba;
+        long capacity = postAudioStatus.TotalSectors > 0 ? postAudioStatus.TotalSectors : discCapacitySectors;
+        long available = SessionTwoSectorsAvailable(nwa, capacity, postAudioStatus.FreeSectors);
+        const string audioDone = "Session 1 audio completed and plays, but the picture session was not written";
+
+        Stream image;
+        try
+        {
+            image = await options.SessionTwoImage!.BuildAsync(nwa, available, progress, cancellationToken).ConfigureAwait(false);
+        }
+        catch (Exception ex) when (ex is ArgumentException or InvalidOperationException or IOException or UnauthorizedAccessException)
+        {
+            return BurnOperationResult.Failed($"{audioDone}: {ex.Message} The disc is left open.", ex);
+        }
+
+        await using (image.ConfigureAwait(false))
+        {
+            var session2Options = new DataBurnOptions
+            {
+                VolumeLabel = options.DataSessionVolumeLabel,
+                Speed = options.Speed,
+                Simulate = false,
+                CloseDisc = true, // the session runs to the end of the disc: nothing could follow it
+                EjectWhenDone = options.EjectWhenDone,
+                VerifyAfterBurn = false, // the picture sectors are not files; the file system is checked by reading it
+                DisableBufferUnderrunFree = options.DisableBufferUnderrunFree,
+                CdRomXaMode2Form1 = false // the picture is drawn for Mode 1 sectors
+            };
+            var session2Result = await _recoveryDataEngine!.BurnDataStreamAsync(recorder, image, session2Options, progress, cancellationToken)
+                .ConfigureAwait(false);
+            if (!session2Result.Success)
+            {
+                return BurnOperationResult.Failed($"{audioDone}: {session2Result.ErrorMessage}", session2Result.Exception);
+            }
+
+            LastDataSessionStartLba = nwa;
+            LastDataSessionSectors = session2Result.SectorsWritten;
+            return BurnOperationResult.Succeeded(
+                session1Result.SectorsWritten + session2Result.SectorsWritten,
+                session1Result.TotalTime + session2Result.TotalTime,
+                session1Result.AverageSpeedMultiplier > 0 ? session1Result.AverageSpeedMultiplier : session2Result.AverageSpeedMultiplier);
         }
     }
 
