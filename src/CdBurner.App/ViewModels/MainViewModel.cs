@@ -30,6 +30,7 @@ public class MainViewModel : ObservableObject, IDisposable
     private readonly DriveUtilitiesViewModel _driveUtilities;
     private readonly VirtualDriveViewModel _virtualDrive;
     private readonly CalibrationViewModel _calibration = new();
+    private readonly DiscArtViewModel _discArt;
     private readonly SettingsViewModel _settings;
 
     private IDiscRecorderBackend? _selectedRecorder;
@@ -85,6 +86,11 @@ public class MainViewModel : ObservableObject, IDisposable
     /// Gets the disc picture calibration workspace view model.
     /// </summary>
     public CalibrationViewModel Calibration => _calibration;
+
+    /// <summary>
+    /// Gets the Disc Art (picture disc) workspace view model.
+    /// </summary>
+    public DiscArtViewModel DiscArt => _discArt;
 
     /// <summary>
     /// Gets the Application Settings configuration workspace view model.
@@ -462,6 +468,7 @@ public class MainViewModel : ObservableObject, IDisposable
         _driveUtilities = new DriveUtilitiesViewModel(_deviceService, _burnEngine);
         _virtualDrive = new VirtualDriveViewModel(_deviceService);
         _settings = new SettingsViewModel(settingsService, this);
+        _discArt = new DiscArtViewModel(BurnDiscArtImageAsync);
 
         _dataBurn.PropertyChanged += (_, e) =>
         {
@@ -676,12 +683,30 @@ public class MainViewModel : ObservableObject, IDisposable
             "🎯",
             _calibration);
 
+        _workspaces[NavigationTab.DiscArt] = new WorkspaceViewModel(
+            NavigationTab.DiscArt,
+            "Disc Art",
+            "Draw one picture on a CD, DVD or BD: place it, set the tone, generate the image and burn it.",
+            "🖼️",
+            _discArt);
+
         _workspaces[NavigationTab.Settings] = new WorkspaceViewModel(
             NavigationTab.Settings,
             "Application Settings",
             "Configure default write speeds, overburn policies, temporary scratch directories, and logging.",
             "⚙️",
             _settings);
+    }
+
+    /// <summary>
+    /// Burns a picture disc image from the Disc Art screen through the Disc Image screen, which asks for the drive,
+    /// shows the progress and verifies after the burn.
+    /// </summary>
+    private Task<BurnOperationResult> BurnDiscArtImageAsync(string imagePath)
+    {
+        _imageStudio.SourceImagePath = imagePath;
+        NavigateCommand.Execute(NavigationTab.ImageStudio);
+        return _imageStudio.BurnImageToDiscAsync();
     }
 
     /// <summary>

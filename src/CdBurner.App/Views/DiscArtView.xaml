@@ -1,0 +1,173 @@
+<UserControl x:Class="CdBurner.App.Views.DiscArtView"
+             xmlns="http://schemas.microsoft.com/winfx/2006/xaml/presentation"
+             xmlns:x="http://schemas.microsoft.com/winfx/2006/xaml"
+             xmlns:d="http://schemas.microsoft.com/expression/blend/2008"
+             xmlns:mc="http://schemas.openxmlformats.org/markup-compatibility/2006"
+             xmlns:vm="clr-namespace:CdBurner.App.ViewModels"
+             xmlns:converters="clr-namespace:CdBurner.App.Converters"
+             mc:Ignorable="d"
+             d:DataContext="{d:DesignInstance Type=vm:DiscArtViewModel}"
+             Background="{DynamicResource SurfaceBackgroundBrush}"
+             Foreground="{DynamicResource TextPrimaryBrush}">
+
+    <UserControl.Resources>
+        <converters:PngBytesToImageSourceConverter x:Key="PngToImage" />
+        <converters:BooleanToVisibilityConverter x:Key="BoolToVis" />
+        <converters:InverseBooleanConverter x:Key="Not" />
+    </UserControl.Resources>
+
+    <Grid Margin="16">
+        <Grid.ColumnDefinitions>
+            <ColumnDefinition Width="360" />
+            <ColumnDefinition Width="*" />
+        </Grid.ColumnDefinitions>
+
+        <!-- Controls -->
+        <ScrollViewer Grid.Column="0" VerticalScrollBarVisibility="Auto" HorizontalScrollBarVisibility="Disabled" Margin="0,0,12,0">
+            <StackPanel IsEnabled="{Binding IsBusy, Converter={StaticResource Not}}">
+                <TextBlock Text="1. Picture and disc" FontWeight="SemiBold" Margin="0,0,0,4" />
+                <Button Content="Open picture (PNG)..." Command="{Binding OpenPictureCommand}" HorizontalAlignment="Left"
+                        AutomationProperties.Name="Open picture" />
+                <TextBlock Text="{Binding PicturePath}" TextWrapping="Wrap" Margin="0,4,0,6"
+                           Foreground="{DynamicResource TextSecondaryBrush}" />
+                <StackPanel Orientation="Horizontal">
+                    <RadioButton Content="CD" GroupName="DiscArtMedium" IsChecked="{Binding IsCd}" Margin="0,0,12,0"
+                                 AutomationProperties.Name="CD picture track" />
+                    <RadioButton Content="DVD" GroupName="DiscArtMedium" IsChecked="{Binding IsDvd}" Margin="0,0,12,0"
+                                 AutomationProperties.Name="DVD picture disc" />
+                    <RadioButton Content="BD" GroupName="DiscArtMedium" IsChecked="{Binding IsBluRay}"
+                                 AutomationProperties.Name="BD picture disc" />
+                </StackPanel>
+                <TextBlock Text="Disc preset or saved calibration" Margin="0,6,0,2" />
+                <ComboBox ItemsSource="{Binding DiscChoices}" SelectedItem="{Binding SelectedDisc}"
+                          AutomationProperties.Name="Disc preset or saved calibration" />
+
+                <TextBlock Text="2. Placement" FontWeight="SemiBold" Margin="0,12,0,4" />
+                <TextBlock Text="{Binding Scale, StringFormat=Scale {0:0.00}}" />
+                <Slider Minimum="0.1" Maximum="4" Value="{Binding Scale}" SmallChange="0.01" LargeChange="0.1"
+                        AutomationProperties.Name="Picture scale" />
+                <TextBlock Text="{Binding OffsetXMm, StringFormat=Move right {0:0.0} mm}" />
+                <Slider Minimum="-60" Maximum="60" Value="{Binding OffsetXMm}" SmallChange="0.5" LargeChange="5"
+                        AutomationProperties.Name="Move picture right in millimetres" />
+                <TextBlock Text="{Binding OffsetYMm, StringFormat=Move down {0:0.0} mm}" />
+                <Slider Minimum="-60" Maximum="60" Value="{Binding OffsetYMm}" SmallChange="0.5" LargeChange="5"
+                        AutomationProperties.Name="Move picture down in millimetres" />
+                <TextBlock Text="{Binding RotationDegrees, StringFormat=Rotate clockwise {0:0} degrees}" />
+                <Slider Minimum="-180" Maximum="180" Value="{Binding RotationDegrees}" SmallChange="1" LargeChange="15"
+                        AutomationProperties.Name="Rotate picture clockwise in degrees" />
+                <StackPanel Orientation="Horizontal" Margin="0,4,0,0">
+                    <CheckBox Content="Fit to the drawn ring" IsChecked="{Binding FitToRing}" Margin="0,0,12,0"
+                              AutomationProperties.Name="Fit picture to the drawn ring" />
+                    <Button Content="Reset" Command="{Binding ResetPlacementCommand}"
+                            AutomationProperties.Name="Reset placement" />
+                </StackPanel>
+                <TextBlock Text="Drag the preview to move the picture; the mouse wheel scales it." TextWrapping="Wrap"
+                           Margin="0,4,0,0" Foreground="{DynamicResource TextSecondaryBrush}" />
+
+                <TextBlock Text="3. Tone" FontWeight="SemiBold" Margin="0,12,0,4" />
+                <StackPanel Orientation="Horizontal">
+                    <Button Content="Photo" Command="{Binding PhotoToneCommand}" Margin="0,0,6,0"
+                            AutomationProperties.Name="Photo tone preset" />
+                    <Button Content="Black and white" Command="{Binding BinaryToneCommand}"
+                            AutomationProperties.Name="Black and white tone preset" />
+                </StackPanel>
+                <TextBlock Text="{Binding DitherStrength, StringFormat=Dither {0:0.00}}" Margin="0,6,0,0" />
+                <Slider Minimum="0" Maximum="1" Value="{Binding DitherStrength}" SmallChange="0.05" LargeChange="0.25"
+                        AutomationProperties.Name="Dither strength" />
+                <TextBlock Text="{Binding Brightness, StringFormat=Brightness {0:+0;-0;0}}" />
+                <Slider Minimum="-64" Maximum="64" Value="{Binding Brightness}" SmallChange="1" LargeChange="8"
+                        AutomationProperties.Name="Brightness" />
+                <CheckBox Content="sRGB linear light" IsChecked="{Binding SrgbLinearization}"
+                          AutomationProperties.Name="sRGB linear light" />
+                <CheckBox Content="Four grey levels (CD only)" IsChecked="{Binding FourLevels}" IsEnabled="{Binding IsCd}"
+                          AutomationProperties.Name="Four grey levels" />
+                <TextBlock Text="{Binding ToneSummary}" TextWrapping="Wrap" Margin="0,4,0,0"
+                           Foreground="{DynamicResource TextSecondaryBrush}" />
+
+                <StackPanel IsEnabled="{Binding CanCarryFiles}">
+                    <TextBlock Text="4. Files and art band (DVD / BD)" FontWeight="SemiBold" Margin="0,12,0,4" />
+                    <StackPanel Orientation="Horizontal">
+                        <Button Content="Files folder..." Command="{Binding ChooseFilesFolderCommand}" Margin="0,0,6,0"
+                                AutomationProperties.Name="Choose files folder" />
+                        <Button Content="No files" Command="{Binding ClearFilesFolderCommand}"
+                                AutomationProperties.Name="Remove files folder" />
+                    </StackPanel>
+                    <TextBlock Text="{Binding FilesFolder}" TextWrapping="Wrap" Margin="0,4,0,0"
+                               Foreground="{DynamicResource TextSecondaryBrush}" />
+                    <CheckBox Content="Files at the outer edge (cannot be burned yet)" IsChecked="{Binding FilesOuter}"
+                              IsEnabled="{Binding HasFiles}" Margin="0,4,0,0"
+                              AutomationProperties.Name="Files at the outer edge" />
+                    <TextBlock Text="Volume label" Margin="0,6,0,2" />
+                    <TextBox Text="{Binding VolumeLabel, UpdateSourceTrigger=PropertyChanged}"
+                             AutomationProperties.Name="Volume label" />
+                    <TextBlock Text="Art band, inner and outer radius in mm (empty: whole disc)" TextWrapping="Wrap" Margin="0,6,0,2" />
+                    <StackPanel Orientation="Horizontal">
+                        <TextBox Text="{Binding ArtInnerRadiusText, UpdateSourceTrigger=LostFocus}" Width="80" Margin="0,0,6,0"
+                                 AutomationProperties.Name="Art band inner radius in millimetres" />
+                        <TextBox Text="{Binding ArtOuterRadiusText, UpdateSourceTrigger=LostFocus}" Width="80"
+                                 AutomationProperties.Name="Art band outer radius in millimetres" />
+                    </StackPanel>
+                </StackPanel>
+
+                <TextBlock Text="5. Image and burn" FontWeight="SemiBold" Margin="0,12,0,4" />
+                <TextBlock Text="{Binding OutputHint}" TextWrapping="Wrap" Foreground="{DynamicResource TextSecondaryBrush}" />
+                <StackPanel Orientation="Horizontal" Margin="0,4,0,0">
+                    <Button Content="Save as..." Command="{Binding ChooseOutputCommand}" Margin="0,0,6,0"
+                            AutomationProperties.Name="Choose image file" />
+                </StackPanel>
+                <TextBlock Text="{Binding OutputPath}" TextWrapping="Wrap" Margin="0,4,0,0"
+                           Foreground="{DynamicResource TextSecondaryBrush}" />
+            </StackPanel>
+        </ScrollViewer>
+
+        <!-- Previews, actions and status -->
+        <Grid Grid.Column="1">
+            <Grid.RowDefinitions>
+                <RowDefinition Height="Auto" />
+                <RowDefinition Height="Auto" />
+                <RowDefinition Height="*" />
+            </Grid.RowDefinitions>
+
+            <StackPanel Grid.Row="0" Orientation="Horizontal">
+                <StackPanel Margin="0,0,16,0">
+                    <TextBlock Text="Placement" FontWeight="SemiBold" Margin="0,0,0,4" />
+                    <Border BorderThickness="1" BorderBrush="{DynamicResource CardBorderBrush}" Background="Black">
+                        <Image x:Name="DiscSurface" Width="360" Height="360" Stretch="Fill"
+                               RenderOptions.BitmapScalingMode="NearestNeighbor" Cursor="SizeAll"
+                               Source="{Binding PlacementPreviewPng, Converter={StaticResource PngToImage}}"
+                               MouseLeftButtonDown="DiscSurface_MouseLeftButtonDown"
+                               MouseMove="DiscSurface_MouseMove"
+                               MouseLeftButtonUp="DiscSurface_MouseLeftButtonUp"
+                               MouseWheel="DiscSurface_MouseWheel"
+                               AutomationProperties.Name="Placement preview" />
+                    </Border>
+                </StackPanel>
+                <StackPanel>
+                    <TextBlock Text="Read back from the image" FontWeight="SemiBold" Margin="0,0,0,4" />
+                    <Border BorderThickness="1" BorderBrush="{DynamicResource CardBorderBrush}" Background="Black">
+                        <Image x:Name="ReadbackSurface" Width="360" Height="360" Stretch="Uniform"
+                               Source="{Binding ReadbackPreviewPng, Converter={StaticResource PngToImage}}"
+                               AutomationProperties.Name="Read-back preview of the generated image" />
+                    </Border>
+                </StackPanel>
+            </StackPanel>
+
+            <TextBlock Grid.Row="1" Text="{Binding PlanSummary}" TextWrapping="Wrap" Margin="0,8,0,0"
+                       Foreground="{DynamicResource TextSecondaryBrush}" />
+
+            <StackPanel Grid.Row="2" Margin="0,12,0,0">
+                <StackPanel Orientation="Horizontal">
+                    <Button Content="Generate image" Command="{Binding GenerateCommand}" Margin="0,0,6,0"
+                            AutomationProperties.Name="Generate picture disc image" />
+                    <Button Content="Burn..." Command="{Binding BurnCommand}" Margin="0,0,6,0"
+                            AutomationProperties.Name="Burn picture disc image" />
+                    <Button Content="Cancel" Command="{Binding CancelCommand}"
+                            AutomationProperties.Name="Cancel generating" />
+                </StackPanel>
+                <ProgressBar Value="{Binding Progress, Mode=OneWay}" Maximum="100" Height="6" Margin="0,8,0,0"
+                             Visibility="{Binding IsBusy, Converter={StaticResource BoolToVis}}" />
+                <TextBlock Text="{Binding StatusMessage}" TextWrapping="Wrap" Margin="0,8,0,0" FontWeight="SemiBold" />
+            </StackPanel>
+        </Grid>
+    </Grid>
+</UserControl>

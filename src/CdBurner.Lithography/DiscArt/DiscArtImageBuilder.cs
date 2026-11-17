@@ -76,6 +76,9 @@ public sealed record DiscArtBand(
     long SavedSectors,
     double SavedSecondsAt1x);
 
+/// <summary>Plan of a picture disc and the radius its picture is mapped across (the encoder's sampling radius).</summary>
+public sealed record DiscArtPlacement(DiscArtPlan Plan, double PictureRadiusMm);
+
 public sealed record DiscArtResult(
     DiscArtPlan Plan,
     string OutputPath,                  // .iso / .wav / .raw
@@ -106,6 +109,18 @@ public static class DiscArtImageBuilder
 
     /// <summary>Sector plan of the image without generating any picture bytes.</summary>
     public static DiscArtPlan Plan(DiscArtRequest request) => Prepare(request).Plan;
+
+    /// <summary>
+    /// The plan and the radius the picture is mapped across, which is what <see cref="DiscArtCanvas.Render"/> needs to
+    /// show where a placed picture lands (canvas width = 2 x <see cref="DiscArtPlacement.PictureRadiusMm"/>, ring outer
+    /// radius = <see cref="DiscArtPlan.PictureOuterRadiusMm"/>). Nothing is written; the output file may exist.
+    /// </summary>
+    public static DiscArtPlacement Placement(DiscArtRequest request)
+    {
+        ArgumentNullException.ThrowIfNull(request);
+        Prepared p = Prepare(request with { Overwrite = true });
+        return new DiscArtPlacement(p.Plan, p.PictureRadiusMm);
+    }
 
     public static DiscArtResult Generate(DiscArtRequest request,
         IProgress<DiscJobProgress>? progress = null, CancellationToken cancellationToken = default)

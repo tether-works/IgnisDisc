@@ -1,6 +1,6 @@
 using System.Globalization;
-using CdBurner.Lithography.BluRay;
 using CdBurner.Lithography.Calibration;
+using CdBurner.Lithography.DiscArt;
 using CdBurner.Lithography.Presets;
 
 namespace CdBurner.Cli;
@@ -437,12 +437,7 @@ public static partial class CliCommandRunner
     private static (CalibrationParameters Parameters, string PresetId) PresetCalibrationParameters(
         CommandLineArgs cmd, CalibrationDiscKind kind)
     {
-        string presetId = cmd.GetOption("disc-preset") ?? kind switch
-        {
-            CalibrationDiscKind.Cd => "cd-80",
-            CalibrationDiscKind.Dvd => "dvd-5-120mm",
-            _ => "bd-r-sl-25gb",
-        };
+        string presetId = cmd.GetOption("disc-preset") ?? DiscArtPresets.DefaultPresetId(kind);
         DiscPresetJsonDocument doc = LoadDiscPresets(cmd.GetOption("disc-presets-file"));
         switch (kind)
         {
@@ -451,9 +446,7 @@ public static partial class CliCommandRunner
                 CdDiscPresetDefinition preset = doc.CdPresets.FirstOrDefault(
                     p => string.Equals(p.Id, presetId, StringComparison.OrdinalIgnoreCase))
                     ?? throw UnknownPreset("CD", presetId, doc.CdPresets.Select(p => p.Id));
-                return (new CalibrationParameters(kind, preset.InnerRadiusMm, preset.OuterRadiusMm, preset.Sectors,
-                    preset.LinearVelocityMmPerSecond, preset.PitchLinear, preset.PitchQuadratic, preset.PitchCubic,
-                    UsableSectors: preset.UsableSectors), preset.Id);
+                return (DiscArtPresets.ToParameters(preset), preset.Id);
             }
 
             case CalibrationDiscKind.Dvd:
@@ -461,9 +454,7 @@ public static partial class CliCommandRunner
                 DvdDiscPresetDefinition preset = doc.DvdPresets.FirstOrDefault(
                     p => string.Equals(p.Id, presetId, StringComparison.OrdinalIgnoreCase))
                     ?? throw UnknownPreset("DVD", presetId, doc.DvdPresets.Select(p => p.Id));
-                return (new CalibrationParameters(kind, preset.InnerRadiusMm, preset.OuterRadiusMm, preset.TotalSectors,
-                    preset.ChannelBitLengthNm, preset.PitchLinear, preset.PitchQuadratic, preset.PitchCubic,
-                    UsableSectors: preset.UsableSectors), preset.Id);
+                return (DiscArtPresets.ToParameters(preset), preset.Id);
             }
 
             default:
@@ -472,23 +463,14 @@ public static partial class CliCommandRunner
                 BluRayDiscPresetDefinition preset = presets.FirstOrDefault(
                     p => string.Equals(p.Id, presetId, StringComparison.OrdinalIgnoreCase))
                     ?? throw UnknownPreset("Blu-ray", presetId, presets.Select(p => p.Id));
-                BluRayDiscParameters disc;
                 try
                 {
-                    disc = new BluRayDiscParameters(preset.TotalSectors, 1, preset.InnerRadiusMm, preset.OuterRadiusMm,
-                        PitchLinear: preset.PitchLinear, PitchQuadratic: preset.PitchQuadratic,
-                        PitchCubic: preset.PitchCubic, UsableSectors: preset.UsableSectors);
-                    disc.Validate();
+                    return (DiscArtPresets.ToParameters(preset), preset.Id);
                 }
                 catch (ArgumentException ex)
                 {
                     throw new CommandLineException($"Blu-ray preset '{preset.Id}': {ex.Message}");
                 }
-
-                return (new CalibrationParameters(kind, disc.InnerRadiusMm, disc.OuterRadiusMm, disc.TotalSectors,
-                    CalibrationParameters.BluRayChannelBitLengthNm, disc.PitchLinear, disc.PitchQuadratic,
-                    disc.PitchCubic, BluRayInvertMapping: preset.InvertMapping, DrawingStartSector: 0,
-                    DrawingEndSectorExclusive: disc.OutputSectors, UsableSectors: disc.OutputSectors), preset.Id);
             }
         }
     }

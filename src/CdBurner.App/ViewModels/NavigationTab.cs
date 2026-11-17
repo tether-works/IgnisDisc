@@ -48,5 +48,10 @@ public enum NavigationTab
     /// <summary>
     /// Disc picture calibration from a photo of a burned calibration target.
     /// </summary>
-    DiscCalibration
+    DiscCalibration,
+
+    /// <summary>
+    /// A picture drawn on a CD, DVD or BD: placement, tone, disc preset, image generation and burn.
+    /// </summary>
+    DiscArt
 }

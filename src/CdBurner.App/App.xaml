@@ -48,6 +48,9 @@
             <DataTemplate DataType="{x:Type vm:CalibrationViewModel}">
                 <views:CalibrationView />
             </DataTemplate>
+            <DataTemplate DataType="{x:Type vm:DiscArtViewModel}">
+                <views:DiscArtView />
+            </DataTemplate>
             <DataTemplate DataType="{x:Type vm:SettingsViewModel}">
                 <views:SettingsView />
             </DataTemplate>
