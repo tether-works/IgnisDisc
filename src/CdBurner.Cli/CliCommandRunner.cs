@@ -52,7 +52,8 @@ public static partial class CliCommandRunner
         "lookup", "keep-wav", "continue-on-error", "verify-accuraterip", "verify-ctdb", "no-ctdb-repair", "secure", "plan-only",
         "overwrite", "strict-verify", "no-verify", "no-secure", "allow-damaged", "no-fill", "keep-folders",
         "generate-subtitles", "no-menu", "dual-layer", "fit-to-disc", "no-ffmpeg", "no-cd-text", "normalize", "peak-normalize", "rms-level",
-        "no-burnfree", "append", "delete-backups", "confirm-shutdown", "windows-writer", "no-interleave"
+        "no-burnfree", "append", "delete-backups", "confirm-shutdown", "windows-writer", "no-interleave",
+        "no-cover-lookup", "no-folder-image", "recursive"
     };
 
     private static void WriteJsonResult(TextWriter stdout, object payload)
@@ -202,6 +203,7 @@ public static partial class CliCommandRunner
             "burn-dvd" or "burndvd" => await HandleBurnDvdAsync(cmd, stdout, stderr, deviceService, burnEngine).ConfigureAwait(false),
             "rip" or "rip-disc" => await HandleRipAsync(cmd, stdout, stderr, deviceService, burnEngine).ConfigureAwait(false),
             "rip-audio" or "ripaudio" => await HandleRipAudioAsync(cmd, stdout, stderr, deviceService, burnEngine, customHttpClient).ConfigureAwait(false),
+            "convert-audio" or "convertaudio" => await HandleConvertAudioAsync(cmd, stdout, stderr).ConfigureAwait(false),
             "detect-offset" or "detectoffset" => await HandleDetectOffsetAsync(cmd, stdout, stderr, deviceService, burnEngine).ConfigureAwait(false),
             "check-disc" or "checkdisc" => HandleCheckDisc(cmd, stdout, deviceService),
             "copy-disc" or "copydisc" or "copy" => await HandleCopyDiscAsync(cmd, stdout, stderr, deviceService, burnEngine).ConfigureAwait(false),
@@ -1885,48 +1887,60 @@ public static partial class CliCommandRunner
         HttpClient? customHttpClient = null)
     {
         string driveId = cmd.GetRequiredOption("drive", "--drive <id>");
-        string outputFolder = cmd.GetRequiredOption("output", "--output <folder>");
 
-        string formatStr = cmd.GetOption("format") ?? "wav";
-        if (!AudioRipFormats.TryParse(formatStr, out AudioRipFormat ripFormat))
+        // --library is the finished collection; --output is the working folder for the WAV files (and the
+        // destination itself when no --library is given). Without --output, the WAV files go in a hidden
+        // working folder inside the library and that folder is removed when it is empty again.
+        string? libraryOpt = cmd.GetOption("library");
+        string? libraryFolder = string.IsNullOrWhiteSpace(libraryOpt) ? null : libraryOpt;
+        if (libraryOpt != null && libraryFolder == null)
         {
-            throw new CommandLineException($"Invalid audio format '{formatStr}'. Supported formats are wav, flac, mp3, opus, aac.");
+            throw new CommandLineException("Missing value for --library <folder>.");
         }
 
-        int bitrateKbps = 0;
-        string? bitrateOpt = cmd.GetOption("bitrate");
-        if (bitrateOpt != null)
+        bool ownsWorkFolder = false;
+        string outputFolder;
+        if (libraryFolder != null && string.IsNullOrWhiteSpace(cmd.GetOption("output")))
         {
-            if (!int.TryParse(bitrateOpt.TrimEnd('k', 'K'), NumberStyles.None, CultureInfo.InvariantCulture, out bitrateKbps) || bitrateKbps <= 0)
-            {
-                throw new CommandLineException($"Invalid bitrate '{bitrateOpt}'. Expected kbit/s as a whole number (e.g. --bitrate 192).");
-            }
-            string? bitrateError = AudioRipFormats.ValidateBitrate(ripFormat, bitrateKbps);
-            if (bitrateError != null)
-            {
-                throw new CommandLineException(bitrateError);
-            }
+            outputFolder = Path.Combine(libraryFolder, ".rip-work-" + Guid.NewGuid().ToString("N")[..8]);
+            ownsWorkFolder = true;
+        }
+        else
+        {
+            outputFolder = cmd.GetRequiredOption("output", "--output <folder>");
         }
 
-        string? ffmpegPath = AudioRipFormats.RequiresFfmpeg(ripFormat) ? FfmpegLocator.FindFfmpegExecutable() : null;
-        var transcodeSettings = new AudioRipTranscodeSettings(ripFormat, bitrateKbps, ffmpegPath, cmd.HasFlag("keep-wav"));
-        var transcoder = new AudioRipTranscoder(new MediaFoundationAacEncoder());
-        string? prerequisiteError = transcoder.CheckPrerequisites(transcodeSettings);
+        var exportTargets = ParseAudioTargets(cmd, "wav");
+        string? releaseOpt = cmd.GetOption("release");
+        if (releaseOpt != null && string.IsNullOrWhiteSpace(releaseOpt))
+        {
+            throw new CommandLineException("Missing value for --release <number|id>.");
+        }
+        if (releaseOpt != null && !cmd.HasFlag("lookup"))
+        {
+            throw new CommandLineException("--release chooses a MusicBrainz release, so it needs --lookup.");
+        }
+
+        string? ffmpegPath = exportTargets.Any(t => AudioRipFormats.RequiresFfmpeg(t.Format)) ? FfmpegLocator.FindFfmpegExecutable() : null;
+        string rootFolder = libraryFolder ?? outputFolder;
+        string namingTemplate = cmd.GetOption("naming") ?? (libraryFolder != null ? AudioNamingTemplate.Default : AudioNamingTemplate.Flat);
+        var exporter = new AudioLibraryExporter(new MediaFoundationAacEncoder());
+        var exportCheck = new AudioExportOptions(
+            exportTargets, rootFolder, namingTemplate, new AudioAlbumInfo(string.Empty, string.Empty, null), ffmpegPath,
+            KeepWav: cmd.HasFlag("keep-wav"),
+            WriteFolderImage: !cmd.HasFlag("no-folder-image"),
+            Overwrite: cmd.HasFlag("overwrite"));
+        string? prerequisiteError = exporter.CheckPrerequisites(exportCheck);
         if (prerequisiteError != null)
         {
             throw new CommandLineException(prerequisiteError);
         }
-        string formatLabel = ripFormat switch
-        {
-            AudioRipFormat.Wav => "WAV",
-            AudioRipFormat.Flac => "FLAC",
-            AudioRipFormat.Mp3 => "MP3",
-            AudioRipFormat.Opus => "OPUS",
-            _ => "AAC"
-        };
-        int effectiveBitrate = AudioRipFormats.UsesBitrate(ripFormat)
-            ? (bitrateKbps > 0 ? bitrateKbps : AudioRipFormats.DefaultBitrateKbps(ripFormat))
-            : 0;
+
+        string formatLabel = string.Join("+", exportTargets.Select(t => FormatLabel(t.Format)));
+        int effectiveBitrate = exportTargets
+            .Where(t => AudioRipFormats.UsesBitrate(t.Format) && !t.Mp3VbrQuality.HasValue)
+            .Select(t => t.BitrateKbps > 0 ? t.BitrateKbps : AudioRipFormats.DefaultBitrateKbps(t.Format))
+            .FirstOrDefault();
 
         List<int>? requestedTracks = null;
         string? tracksOpt = cmd.GetOption("tracks");
@@ -1964,6 +1978,8 @@ public static partial class CliCommandRunner
         string? warning = null;
         CdTextAlbumMetadata? metadataOverride = null;
 
+        IReadOnlyList<MusicBrainzRelease> releases = [];
+        MusicBrainzRelease? chosenRelease = null;
         if (cmd.HasFlag("lookup") && ids != null)
         {
             HttpClient? ownedHttp = null;
@@ -1971,11 +1987,7 @@ public static partial class CliCommandRunner
             {
                 var http = customHttpClient ?? (ownedHttp = new HttpClient { Timeout = TimeSpan.FromSeconds(15) });
                 var mbClient = new MusicBrainzClient(http, MusicBrainzClient.DefaultUserAgent);
-                var releases = await mbClient.LookupDiscIdAsync(ids.MusicBrainzId).ConfigureAwait(false);
-                if (releases != null && releases.Count > 0)
-                {
-                    metadataOverride = MusicBrainzClient.ToAlbumMetadata(releases[0], ids.MusicBrainzId);
-                }
+                releases = await mbClient.LookupDiscIdAsync(ids.MusicBrainzId).ConfigureAwait(false) ?? [];
             }
             catch (HttpRequestException hre)
             {
@@ -1993,6 +2005,35 @@ public static partial class CliCommandRunner
             {
                 ownedHttp?.Dispose();
             }
+        }
+
+        // Several releases can share one disc ID (for example a German and an American pressing with different
+        // track titles). When they differ, the user picks the edition before the disc is read.
+        if (releases.Count > 0)
+        {
+            if (releaseOpt != null)
+            {
+                chosenRelease = MusicBrainzReleaseChoice.Select(releases, releaseOpt);
+                if (chosenRelease == null)
+                {
+                    return WriteReleaseChoiceError(cmd, stdout, stderr, driveId, releases, $"No MusicBrainz release matches --release {releaseOpt}.");
+                }
+            }
+            else if (MusicBrainzReleaseChoice.Differences(releases).Count > 0)
+            {
+                return WriteReleaseChoiceError(cmd, stdout, stderr, driveId, releases, "More than one MusicBrainz release matches this disc, and they differ.");
+            }
+            else
+            {
+                chosenRelease = releases[0];
+            }
+
+            metadataOverride = MusicBrainzClient.ToAlbumMetadata(chosenRelease, ids!.MusicBrainzId);
+        }
+        else if (releaseOpt != null)
+        {
+            string reason = warning ?? "MusicBrainz knows no release for this disc.";
+            return WriteSimpleError(cmd, stdout, stderr, $"--release was given, but no release could be chosen. {reason}");
         }
 
         string? coverPath = cmd.GetOption("cover") ?? cmd.GetOption("cover-art");
@@ -2181,21 +2222,58 @@ public static partial class CliCommandRunner
             }
         }
 
-        var finalOutputFiles = new List<string>();
-        try
+        // Front cover from the Cover Art Archive when the user gave no image of their own.
+        string? coverSource = coverBytes != null ? "file" : null;
+        if (coverBytes == null && chosenRelease != null && !cmd.HasFlag("no-cover-lookup"))
         {
-            var converted = await transcoder.TranscodeAsync(
-                result, transcodeSettings, options.CoverArtBytes, options.CoverArtMimeType).ConfigureAwait(false);
-            finalOutputFiles.AddRange(converted.Files);
-            if (converted.Warnings.Count > 0)
+            HttpClient? ownedHttp = null;
+            try
             {
-                warning = (warning == null ? "" : warning + " ") + string.Join(" ", converted.Warnings);
+                var http = customHttpClient ?? (ownedHttp = new HttpClient { Timeout = TimeSpan.FromSeconds(15) });
+                var image = await CoverArtArchiveClient.FetchFrontAsync(http, chosenRelease.ReleaseId, MusicBrainzClient.DefaultUserAgent).ConfigureAwait(false);
+                if (image != null)
+                {
+                    coverBytes = image.Bytes;
+                    coverMime = image.MimeType;
+                    coverSource = "coverartarchive";
+                }
+                else
+                {
+                    warning = (warning == null ? "" : warning + " ") + "The Cover Art Archive has no usable front cover for this release.";
+                }
+            }
+            catch (Exception ex)
+            {
+                warning = (warning == null ? "" : warning + " ") + $"Cover art lookup failed: {ex.Message}";
+            }
+            finally
+            {
+                ownedHttp?.Dispose();
             }
         }
-        catch (Exception ex) when (ex is InvalidOperationException or IOException or System.Runtime.InteropServices.COMException)
+
+        var album = new AudioAlbumInfo(
+            result.CdText?.AlbumPerformer ?? string.Empty,
+            result.CdText?.AlbumTitle ?? string.Empty,
+            chosenRelease == null ? null : MusicBrainzReleaseChoice.Year(chosenRelease),
+            chosenRelease?.ReleaseId,
+            coverBytes,
+            coverMime);
+        var exportOptions = exportCheck with { Album = album };
+
+        AudioExportResult exported;
+        try
         {
-            // The WAV files stay in place, so the rip is not lost when only the conversion fails.
-            string message = $"The disc was read, but converting to {formatLabel} failed: {ex.Message} The WAV files are kept in '{Path.GetFullPath(outputFolder)}'.";
+            exported = await exporter.ExportAsync(result, exportOptions).ConfigureAwait(false);
+            if (exported.Warnings.Count > 0)
+            {
+                warning = (warning == null ? "" : warning + " ") + string.Join(" ", exported.Warnings);
+            }
+        }
+        catch (Exception ex) when (ex is InvalidOperationException or IOException or UnauthorizedAccessException or System.Runtime.InteropServices.COMException)
+        {
+            // The WAV files stay in place, so the rip is not lost when only the export fails.
+            string message = $"The disc was read, but writing the {formatLabel} files failed: {ex.Message} The WAV files are kept in '{Path.GetFullPath(outputFolder)}'.";
             if (cmd.IsJson)
             {
                 WriteJsonResult(stdout, new { success = false, format = formatLabel, files = result.RippedFilePaths.Select(Path.GetFullPath).ToList(), error = message });
@@ -2203,6 +2281,22 @@ public static partial class CliCommandRunner
             }
             stderr.WriteLine(message);
             return 1;
+        }
+
+        var finalOutputFiles = exported.Files.Select(f => f.Path).ToList();
+        if (ownsWorkFolder)
+        {
+            try
+            {
+                if (Directory.Exists(outputFolder) && !Directory.EnumerateFileSystemEntries(outputFolder).Any())
+                {
+                    Directory.Delete(outputFolder);
+                }
+            }
+            catch (Exception ex) when (ex is IOException or UnauthorizedAccessException)
+            {
+                warning = (warning == null ? "" : warning + " ") + $"Could not remove the working folder '{outputFolder}': {ex.Message}";
+            }
         }
 
         // A rip with sectors that may be wrong is finished but not clean: exit code 2 (as `recover` uses for lost files),
@@ -2252,7 +2346,26 @@ public static partial class CliCommandRunner
                 metadataSource = metadataSource,
                 warning = warning,
                 files = finalOutputFiles.Select(Path.GetFullPath).ToList(),
-                cueSheet = result.CueSheetPath != null && File.Exists(result.CueSheetPath) ? Path.GetFullPath(result.CueSheetPath) : null,
+                formats = exportTargets.Select(t => FormatLabel(t.Format)).ToList(),
+                exports = exported.Files
+                    .GroupBy(f => f.Format)
+                    .Select(g => new { format = FormatLabel(g.Key), files = g.Select(f => Path.GetFullPath(f.Path)).ToList() })
+                    .ToList(),
+                libraryFolder = libraryFolder == null ? null : Path.GetFullPath(libraryFolder),
+                cueSheet = exported.CueSheets.Count > 0
+                    ? Path.GetFullPath(exported.CueSheets[0])
+                    : (result.CueSheetPath != null && File.Exists(result.CueSheetPath) ? Path.GetFullPath(result.CueSheetPath) : null),
+                cueSheets = exported.CueSheets.Select(Path.GetFullPath).ToList(),
+                folderImages = exported.FolderImages.Select(Path.GetFullPath).ToList(),
+                coverSource,
+                release = chosenRelease == null ? null : new
+                {
+                    id = chosenRelease.ReleaseId,
+                    title = chosenRelease.Title,
+                    artist = chosenRelease.Artist,
+                    date = chosenRelease.Date,
+                    country = chosenRelease.Country
+                },
                 readOffset,
                 badSectors = result.BadSectorLbas,
                 trackChecksums = result.TrackInfos.Select(t => new
@@ -2396,14 +2509,37 @@ public static partial class CliCommandRunner
         {
             stdout.WriteLine($"  Warning:          {warning}");
         }
-        stdout.WriteLine("  Files:");
-        foreach (var file in finalOutputFiles)
+        if (chosenRelease != null)
         {
-            stdout.WriteLine($"    {Path.GetFullPath(file)}");
+            stdout.WriteLine($"  Release:          {chosenRelease.Title} - {chosenRelease.Artist}" +
+                (string.IsNullOrWhiteSpace(chosenRelease.Country) && string.IsNullOrWhiteSpace(chosenRelease.Date)
+                    ? ""
+                    : $" ({string.Join(", ", new[] { chosenRelease.Country, chosenRelease.Date }.Where(x => !string.IsNullOrWhiteSpace(x)))})"));
         }
-        if (!string.IsNullOrEmpty(result.CueSheetPath) && File.Exists(result.CueSheetPath))
+        if (coverSource != null)
+        {
+            stdout.WriteLine($"  Cover Art:        {(coverSource == "file" ? "from the --cover file" : "from the Cover Art Archive")}");
+        }
+        stdout.WriteLine("  Files:");
+        foreach (var group in exported.Files.GroupBy(f => f.Format))
+        {
+            stdout.WriteLine($"    {FormatLabel(group.Key)}:");
+            foreach (var file in group)
+            {
+                stdout.WriteLine($"      {Path.GetFullPath(file.Path)}");
+            }
+        }
+        foreach (string cue in exported.CueSheets)
+        {
+            stdout.WriteLine($"  CUE Sheet:        {Path.GetFullPath(cue)}");
+        }
+        if (exported.CueSheets.Count == 0 && !string.IsNullOrEmpty(result.CueSheetPath) && File.Exists(result.CueSheetPath))
         {
             stdout.WriteLine($"  CUE Sheet:        {Path.GetFullPath(result.CueSheetPath)}");
+        }
+        foreach (string image in exported.FolderImages)
+        {
+            stdout.WriteLine($"  Folder Image:     {Path.GetFullPath(image)}");
         }
 
         return exitCode;
@@ -3393,7 +3529,8 @@ public static partial class CliCommandRunner
         stdout.WriteLine("      Makes machine-generated subtitles for a movie (FFmpeg + whisper.cpp). Fast on an NVIDIA GPU, much slower on the processor; names are often misheard.");
         stdout.WriteLine("  rip --drive <id> --output <file.iso|file.bin> [--raw] [--json]");
         stdout.WriteLine("      Rips optical disc to an ISO or raw BIN+CUE image.");
-        stdout.WriteLine("  rip-audio --drive <id> --output <folder> [--format wav|flac|mp3|opus|aac] [--bitrate <kbps>] [--tracks 1,3,5] [--lookup] [--keep-wav] [--continue-on-error] [--read-offset <samples>] [--verify-accuraterip] [--verify-ctdb] [--no-ctdb-repair] [--no-secure] [--repair] [--json]");
+        stdout.WriteLine("  rip-audio --drive <id> --output <folder> [--format wav|flac|mp3|opus|aac[,...]] [--bitrate <kbps>] [--mp3-bitrate <kbps> | --mp3-quality V0..V9] [--opus-bitrate <kbps>] [--aac-bitrate <kbps>] [--library <folder>] [--naming <template>] [--tracks 1,3,5] [--lookup] [--release <n|mbid>] [--no-cover-lookup] [--no-folder-image] [--overwrite] [--keep-wav] [--continue-on-error] [--read-offset <samples>] [--verify-accuraterip] [--verify-ctdb] [--no-ctdb-repair] [--no-secure] [--repair] [--json]");
+        stdout.WriteLine("  convert-audio --input <file|folder>[;<more>] --output <folder> --format flac|mp3|opus|aac[,...] [--recursive] [--naming <template>] [--overwrite] [--bitrate <kbps>] [--mp3-bitrate <kbps> | --mp3-quality V0..V9] [--opus-bitrate <kbps>] [--aac-bitrate <kbps>] [--json]");
         stdout.WriteLine("      Rips Red Book Audio CD to WAV, FLAC, MP3, Opus or AAC (FLAC, MP3, Opus need the optional ffmpeg; AAC uses the Windows encoder) with CD-Text and optional MusicBrainz lookup. Exit code 2 when sectors may be wrong (still suspect or unreadable).");
         stdout.WriteLine("  copy-disc --source <id> [--target <id>] [--copies <n>] [--speed <X|max>] [--raw] [--native [--log-dir <folder>]] [--allow-suspect] [--keep-image <folder>] [--wait-minutes <n>] [--json]");
         stdout.WriteLine("      Copies a disc, with one drive or two. With one drive (or for each further copy) the tray opens and the copy waits for a blank disc.");
@@ -3498,10 +3635,27 @@ public static partial class CliCommandRunner
         {
             stdout.WriteLine(LegalBanner.VersionNotice);
             stdout.WriteLine();
-            stdout.WriteLine("  rip-audio --drive <id> --output <folder> [--format wav|flac|mp3|opus|aac] [--bitrate <kbps>] [--tracks 1,3,5] [--lookup] [--keep-wav] [--continue-on-error] [--read-offset <samples>] [--verify-accuraterip] [--verify-ctdb] [--no-ctdb-repair] [--no-secure] [--repair] [--cover <image>] [--no-replaygain] [--json]");
+            stdout.WriteLine("  rip-audio --drive <id> --output <folder> [--format wav|flac|mp3|opus|aac[,...]] [--bitrate <kbps>] [--mp3-bitrate <kbps> | --mp3-quality V0..V9] [--opus-bitrate <kbps>] [--aac-bitrate <kbps>] [--library <folder>] [--naming <template>] [--tracks 1,3,5] [--lookup] [--release <n|mbid>] [--no-cover-lookup] [--no-folder-image] [--overwrite] [--keep-wav] [--continue-on-error] [--read-offset <samples>] [--verify-accuraterip] [--verify-ctdb] [--no-ctdb-repair] [--no-secure] [--repair] [--cover <image>] [--no-replaygain] [--json]");
             stdout.WriteLine("      Rips Red Book Audio CD to WAV, FLAC, MP3, Opus or AAC (FLAC, MP3, Opus need the optional ffmpeg; AAC uses the Windows encoder) with CD-Text and optional MusicBrainz lookup. Exit code 2 when sectors may be wrong (still suspect or unreadable).");
             stdout.WriteLine("      --repair checks and repairs damaged samples from session 2 PAR2 recovery data on Enhanced CDs.");
             stdout.WriteLine("      FLAC files get ReplayGain 2.0 tags (unless --no-replaygain) and, with --cover, embedded front cover art.");
+            stdout.WriteLine("      --format takes a comma list (flac,mp3): each format is written once, in its own {format} folder unless --naming has {format}.");
+            stdout.WriteLine("      --library <folder> files the album by --naming (default {albumartist}\\{album}[ ({year})]\\{track} - {title}); --output is then only the working folder.");
+            stdout.WriteLine("      Tokens: {albumartist} {artist} {album} {year} {track} {tracktotal} {title} {disc} {format}; text in [ ] is dropped when a token in it is empty.");
+            stdout.WriteLine("      --lookup: when several MusicBrainz releases share the disc ID and differ, the command stops before reading the disc and lists them; pick one with --release <number|mbid>.");
+            stdout.WriteLine("      The chosen release's front cover comes from the Cover Art Archive (--no-cover-lookup to skip; --cover <image> wins). folder.jpg is written beside the files (--no-folder-image to skip).");
+            stdout.WriteLine("      --bitrate applies only when exactly one lossy format is chosen; otherwise use --mp3-bitrate, --mp3-quality (V0 best .. V9), --opus-bitrate, --aac-bitrate. --overwrite replaces existing files.");
+            return;
+        }
+        if (string.Equals(subcommand, "convert-audio", StringComparison.OrdinalIgnoreCase) ||
+            string.Equals(subcommand, "convertaudio", StringComparison.OrdinalIgnoreCase))
+        {
+            stdout.WriteLine(LegalBanner.VersionNotice);
+            stdout.WriteLine();
+            stdout.WriteLine("  convert-audio --input <file|folder>[;<more>] --output <folder> --format flac|mp3|opus|aac[,...] [--recursive] [--naming <template>] [--overwrite] [--bitrate <kbps>] [--mp3-bitrate <kbps> | --mp3-quality V0..V9] [--opus-bitrate <kbps>] [--aac-bitrate <kbps>] [--json]");
+            stdout.WriteLine("      Converts audio files (wav flac mp3 m4a aac ogg opus wma aif) with ffmpeg; tags and, for MP3 and FLAC, cover art are carried over. Input files are never changed.");
+            stdout.WriteLine("      Several inputs: separate them with ';'. Without --naming the folder layout under each input folder is kept; with --naming the tags decide the path (same tokens as rip-audio).");
+            stdout.WriteLine("      Existing outputs are skipped unless --overwrite. Exit code 2 when some files failed; converting already-lossy files cannot restore quality.");
             return;
         }
 

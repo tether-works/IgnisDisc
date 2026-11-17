@@ -33,7 +33,10 @@ public static class FfmpegProcess
             UseShellExecute = false,
             CreateNoWindow = true,
             RedirectStandardOutput = true,
-            RedirectStandardError = true
+            RedirectStandardError = true,
+            // ffmpeg writes tags and messages as UTF-8.
+            StandardOutputEncoding = System.Text.Encoding.UTF8,
+            StandardErrorEncoding = System.Text.Encoding.UTF8
         };
         foreach (var arg in args)
         {
@@ -107,7 +110,8 @@ public static class FfmpegAudioEncoder
 
     /// <summary>
     /// Builds the ffmpeg arguments. MP3 gets ID3v2.3 tags (ReplayGain as TXXX frames) and optional front cover;
-    /// Opus gets Vorbis comments. A cover image is attached to MP3 only.
+    /// Opus gets Vorbis comments. A cover image is attached to MP3 only. <paramref name="mp3VbrQuality"/> (0 best to
+    /// 9 smallest, LAME's -V scale) replaces the MP3 bitrate with variable bitrate; other formats ignore it.
     /// </summary>
     public static IReadOnlyList<string> BuildArguments(
         AudioRipFormat format,
@@ -115,7 +119,8 @@ public static class FfmpegAudioEncoder
         string outputPath,
         AudioTrackTags tags,
         int bitrateKbps,
-        string? coverImagePath = null)
+        string? coverImagePath = null,
+        int? mp3VbrQuality = null)
     {
         ArgumentException.ThrowIfNullOrWhiteSpace(wavPath);
         ArgumentException.ThrowIfNullOrWhiteSpace(outputPath);
@@ -123,6 +128,11 @@ public static class FfmpegAudioEncoder
         if (format is not (AudioRipFormat.Mp3 or AudioRipFormat.Opus))
         {
             throw new ArgumentOutOfRangeException(nameof(format));
+        }
+
+        if (mp3VbrQuality is < 0 or > 9)
+        {
+            throw new ArgumentOutOfRangeException(nameof(mp3VbrQuality), "MP3 quality must be between 0 (best) and 9.");
         }
 
         bool withCover = format == AudioRipFormat.Mp3 && !string.IsNullOrEmpty(coverImagePath);
@@ -142,7 +152,17 @@ public static class FfmpegAudioEncoder
 
         if (format == AudioRipFormat.Mp3)
         {
-            args.AddRange(["-c:a", "libmp3lame", "-b:a", $"{bitrateKbps}k", "-id3v2_version", "3"]);
+            args.AddRange(["-c:a", "libmp3lame"]);
+            if (mp3VbrQuality is { } quality)
+            {
+                args.AddRange(["-q:a", quality.ToString(System.Globalization.CultureInfo.InvariantCulture)]);
+            }
+            else
+            {
+                args.AddRange(["-b:a", $"{bitrateKbps}k"]);
+            }
+
+            args.AddRange(["-id3v2_version", "3"]);
             if (withCover)
             {
                 args.AddRange(["-c:v", "copy", "-disposition:v", "attached_pic",
@@ -204,7 +224,8 @@ public static class FfmpegAudioEncoder
         AudioTrackTags tags,
         int bitrateKbps,
         string? coverImagePath = null,
-        CancellationToken cancellationToken = default)
+        CancellationToken cancellationToken = default,
+        int? mp3VbrQuality = null)
     {
         if (!File.Exists(wavPath))
         {
@@ -219,7 +240,7 @@ public static class FfmpegAudioEncoder
                 "Install the optional ffmpeg download from IgnisDisc, which includes it.");
         }
 
-        var args = BuildArguments(format, wavPath, outputPath, tags, bitrateKbps, coverImagePath);
+        var args = BuildArguments(format, wavPath, outputPath, tags, bitrateKbps, coverImagePath, mp3VbrQuality);
         await FfmpegProcess.RunAsync(ffmpegPath, args, $"{AudioRipFormats.DisplayName(format)} encoding", cancellationToken).ConfigureAwait(false);
     }
 }

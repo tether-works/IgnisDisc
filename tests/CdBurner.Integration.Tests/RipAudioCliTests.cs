@@ -729,6 +729,208 @@ public sealed class RipAudioCliTests : IAsyncLifetime, IDisposable
             .OrderBy(f => f, StringComparer.Ordinal);
     }
 
+    // ---- MusicBrainz edition choice, library layout, cover art -------------------------------------------------
+
+    private const string DeReleaseId = "0d3e1c3a-7a4b-4b1a-9c55-0a8f6b6a1e01";
+    private const string CaReleaseId = "5b8d2a4c-1f3e-4d6a-8b7c-2e9f0a1b3c02";
+    private const string UsReleaseId = "a1b2c3d4-e5f6-4a7b-8c9d-0e1f2a3b4c03";
+
+    private static readonly byte[] TinyPng =
+        [0x89, 0x50, 0x4E, 0x47, 0x0D, 0x0A, 0x1A, 0x0A, 0x00, 0x00, 0x00, 0x0D, 0x49, 0x48, 0x44, 0x52, 0x00, 0x00, 0x00, 0x01];
+
+    /// <summary>
+    /// Three releases that share the virtual disc's ID: tracks 1 and 2 agree, track 3 is titled differently on the
+    /// German release. (The virtual disc has three tracks, so the differing track is number 3.)
+    /// </summary>
+    private static string ThreeReleasesJson()
+    {
+        static string Release(string id, string date, string country, string track3) => $$"""
+            {
+              "id": "{{id}}", "title": "Sehnsucht", "date": "{{date}}", "country": "{{country}}",
+              "artist-credit": [ { "name": "Rammstein", "joinphrase": "" } ],
+              "media": [ { "tracks": [
+                { "position": 1, "title": "Spieluhr", "artist-credit": [ { "name": "Rammstein", "joinphrase": "" } ] },
+                { "position": 2, "title": "Bück dich", "artist-credit": [ { "name": "Rammstein", "joinphrase": "" } ] },
+                { "position": 3, "title": "{{track3}}", "artist-credit": [ { "name": "Rammstein", "joinphrase": "" } ] }
+              ] } ]
+            }
+            """;
+
+        return "{ \"releases\": [" +
+            Release(DeReleaseId, "1998-01-13", "DE", "Du riechst so gut '98") + "," +
+            Release(CaReleaseId, "1997", "CA", "Stripped") + "," +
+            Release(UsReleaseId, "1997", "US", "Stripped") + "] }";
+    }
+
+    private static SpyHttpHandler MusicBrainzAndCoverStub() => new(request =>
+    {
+        string host = request.RequestUri!.Host;
+        if (host.Contains("coverartarchive", StringComparison.Ordinal))
+        {
+            return new HttpResponseMessage(HttpStatusCode.OK) { Content = new ByteArrayContent(TinyPng) };
+        }
+
+        return new HttpResponseMessage(HttpStatusCode.OK)
+        {
+            Content = new StringContent(ThreeReleasesJson(), Encoding.UTF8, "application/json")
+        };
+    });
+
+    [Fact]
+    public async Task RipAudio_Lookup_WithDifferingReleases_StopsBeforeReadingTheDisc()
+    {
+        string outDir = Path.Combine(_tempDir, "choose-edition");
+        var spy = MusicBrainzAndCoverStub();
+        using var http = new HttpClient(spy);
+        var (stdout, stderr) = CreateStringWriters();
+
+        int exit = await CliCommandRunner.RunAsync(
+            ["rip-audio", "--drive", "VDRV-01", "--output", outDir, "--lookup", "--json"],
+            stdout, stderr, _deviceService, _burnEngine, http);
+
+        Assert.Equal(1, exit);
+        using var doc = ParseJsonOutput(stdout);
+        var root = doc.RootElement;
+        Assert.False(root.GetProperty("success").GetBoolean());
+        Assert.Contains("--release <number>", root.GetProperty("error").GetString(), StringComparison.Ordinal);
+        Assert.Contains("track 3: Du riechst so gut '98 / Stripped", root.GetProperty("error").GetString(), StringComparison.Ordinal);
+        var releases = root.GetProperty("releases").EnumerateArray().ToList();
+        Assert.Equal(3, releases.Count);
+        Assert.Equal(3, releases[2].GetProperty("index").GetInt32());
+        Assert.Equal(UsReleaseId, releases[2].GetProperty("id").GetString());
+        Assert.Equal("US", releases[2].GetProperty("country").GetString());
+        var difference = Assert.Single(root.GetProperty("differences").EnumerateArray());
+        Assert.Equal(3, difference.GetProperty("trackNumber").GetInt32());
+        Assert.Equal(2, difference.GetProperty("titles").GetArrayLength());
+
+        // The disc was not read: nothing was written and only MusicBrainz was contacted.
+        Assert.True(!Directory.Exists(outDir) || Directory.GetFiles(outDir, "*", SearchOption.AllDirectories).Length == 0);
+        Assert.All(spy.Requests, r => Assert.Contains("musicbrainz", r.Host, StringComparison.Ordinal));
+    }
+
+    [Fact]
+    public async Task RipAudio_ReleaseChoice_FilesTheAlbumInTheLibraryWithCoverFromTheArchive()
+    {
+        string library = Path.Combine(_tempDir, "library");
+        var spy = MusicBrainzAndCoverStub();
+        using var http = new HttpClient(spy);
+        var (stdout, stderr) = CreateStringWriters();
+
+        int exit = await CliCommandRunner.RunAsync(
+            ["rip-audio", "--drive", "VDRV-01", "--lookup", "--release", "3", "--library", library, "--format", "wav", "--json"],
+            stdout, stderr, _deviceService, _burnEngine, http);
+
+        Assert.Equal(0, exit);
+        using var doc = ParseJsonOutput(stdout);
+        var root = doc.RootElement;
+        string albumDir = Path.Combine(library, "Rammstein", "Sehnsucht (1997)");
+        Assert.True(File.Exists(Path.Combine(albumDir, "03 - Stripped.wav")));
+        Assert.True(File.Exists(Path.Combine(albumDir, "01 - Spieluhr.wav")));
+        Assert.Equal("coverartarchive", root.GetProperty("coverSource").GetString());
+        Assert.True(File.Exists(Path.Combine(albumDir, "folder.png")));
+        Assert.Equal(TinyPng, File.ReadAllBytes(Path.Combine(albumDir, "folder.png")));
+        Assert.Equal(UsReleaseId, root.GetProperty("release").GetProperty("id").GetString());
+        Assert.Equal("1997", root.GetProperty("release").GetProperty("date").GetString());
+        Assert.Equal(3, root.GetProperty("files").GetArrayLength());
+        var export = Assert.Single(root.GetProperty("exports").EnumerateArray());
+        Assert.Equal("WAV", export.GetProperty("format").GetString());
+        Assert.Single(root.GetProperty("folderImages").EnumerateArray());
+        Assert.Single(root.GetProperty("cueSheets").EnumerateArray());
+        Assert.Contains(spy.Requests, r => r.AbsolutePath == $"/release/{UsReleaseId}/front-500");
+
+        // The hidden working folder and the WAV files it held are gone.
+        Assert.Empty(Directory.GetDirectories(library, ".rip-work-*"));
+    }
+
+    [Fact]
+    public async Task RipAudio_ReleaseChoice_ByIdAndWithoutCoverLookup_WritesNoFolderImage()
+    {
+        string library = Path.Combine(_tempDir, "library-id");
+        var spy = MusicBrainzAndCoverStub();
+        using var http = new HttpClient(spy);
+        var (stdout, stderr) = CreateStringWriters();
+
+        int exit = await CliCommandRunner.RunAsync(
+            ["rip-audio", "--drive", "VDRV-01", "--lookup", "--release", DeReleaseId.ToUpperInvariant(), "--no-cover-lookup",
+             "--library", library, "--output", Path.Combine(_tempDir, "work-id"), "--format", "wav", "--json"],
+            stdout, stderr, _deviceService, _burnEngine, http);
+
+        Assert.Equal(0, exit);
+        using var doc = ParseJsonOutput(stdout);
+        Assert.False(doc.RootElement.TryGetProperty("coverSource", out var source) && source.ValueKind == JsonValueKind.String);
+        Assert.True(File.Exists(Path.Combine(library, "Rammstein", "Sehnsucht (1998)", "03 - Du riechst so gut '98.wav")));
+        Assert.Empty(Directory.GetFiles(library, "folder.*", SearchOption.AllDirectories));
+        Assert.DoesNotContain(spy.Requests, r => r.Host.Contains("coverartarchive", StringComparison.Ordinal));
+    }
+
+    [Fact]
+    public async Task RipAudio_UnknownRelease_ListsTheReleasesAndReadsNothing()
+    {
+        string outDir = Path.Combine(_tempDir, "unknown-release");
+        using var http = new HttpClient(MusicBrainzAndCoverStub());
+        var (stdout, stderr) = CreateStringWriters();
+
+        int exit = await CliCommandRunner.RunAsync(
+            ["rip-audio", "--drive", "VDRV-01", "--output", outDir, "--lookup", "--release", "9", "--json"],
+            stdout, stderr, _deviceService, _burnEngine, http);
+
+        Assert.Equal(1, exit);
+        using var doc = ParseJsonOutput(stdout);
+        Assert.Equal(3, doc.RootElement.GetProperty("releases").GetArrayLength());
+        Assert.False(Directory.Exists(outDir) && Directory.GetFiles(outDir, "*.wav").Length > 0);
+    }
+
+    [Fact]
+    public async Task RipAudio_SameFormatTwice_IsAnError()
+    {
+        string outDir = Path.Combine(_tempDir, "twice");
+        var (stdout, stderr) = CreateStringWriters();
+
+        int exit = await CliCommandRunner.RunAsync(
+            ["rip-audio", "--drive", "VDRV-01", "--output", outDir, "--format", "wav,wav", "--json"],
+            stdout, stderr, _deviceService, _burnEngine);
+
+        Assert.Equal(1, exit);
+        using var doc = ParseJsonOutput(stdout);
+        Assert.Contains("more than once", doc.RootElement.GetProperty("error").GetString(), StringComparison.Ordinal);
+        Assert.False(Directory.Exists(outDir) && Directory.GetFiles(outDir, "*.wav").Length > 0);
+    }
+
+    [Fact]
+    public async Task RipAudio_GenericBitrateWithTwoLossyFormats_NamesThePerFormatOptions()
+    {
+        var (stdout, stderr) = CreateStringWriters();
+
+        int exit = await CliCommandRunner.RunAsync(
+            ["rip-audio", "--drive", "VDRV-01", "--output", Path.Combine(_tempDir, "two-lossy"), "--bitrate", "192", "--format", "mp3,opus", "--json"],
+            stdout, stderr, _deviceService, _burnEngine);
+
+        Assert.Equal(1, exit);
+        using var doc = ParseJsonOutput(stdout);
+        string error = doc.RootElement.GetProperty("error").GetString()!;
+        Assert.Contains("--mp3-bitrate", error, StringComparison.Ordinal);
+        Assert.Contains("--opus-bitrate", error, StringComparison.Ordinal);
+        Assert.Contains("--aac-bitrate", error, StringComparison.Ordinal);
+    }
+
+    [Theory]
+    [InlineData("--mp3-quality", "V10")]
+    [InlineData("--mp3-quality", "x")]
+    [InlineData("--naming", "{bogus}\\{title}")]
+    [InlineData("--opus-bitrate", "128")] // opus is not among the chosen formats
+    public async Task RipAudio_BadExportOptions_FailBeforeTheDiscIsRead(string option, string value)
+    {
+        string outDir = Path.Combine(_tempDir, "bad-option-" + Guid.NewGuid().ToString("N"));
+        var (stdout, stderr) = CreateStringWriters();
+
+        int exit = await CliCommandRunner.RunAsync(
+            ["rip-audio", "--drive", "VDRV-01", "--output", outDir, "--format", "wav", option, value, "--json"],
+            stdout, stderr, _deviceService, _burnEngine);
+
+        Assert.Equal(1, exit);
+        Assert.False(Directory.Exists(outDir));
+    }
+
     private sealed class SpyHttpHandler(Func<HttpRequestMessage, HttpResponseMessage> respond) : HttpMessageHandler
     {
         public List<Uri> Requests { get; } = [];
