@@ -4,6 +4,7 @@
              xmlns:d="http://schemas.microsoft.com/expression/blend/2008"
              xmlns:mc="http://schemas.openxmlformats.org/markup-compatibility/2006"
              xmlns:vm="clr-namespace:CdBurner.App.ViewModels"
+             xmlns:local="clr-namespace:CdBurner.App.Views"
              xmlns:converters="clr-namespace:CdBurner.App.Converters"
              xmlns:audio="clr-namespace:CdBurner.Core.Audio;assembly=CdBurner.Core"
              mc:Ignorable="d"
@@ -593,13 +594,15 @@
                     </Border>
 
                     <!-- Ripper Options & Accuracy Settings Card -->
-                    <Border Grid.Row="1"
-                            Background="{DynamicResource CardBackgroundBrush}"
+                    <ScrollViewer Grid.Row="1"
+                                  VerticalScrollBarVisibility="Auto"
+                                  MaxHeight="420"
+                                  Margin="0,0,0,12">
+                    <Border Background="{DynamicResource CardBackgroundBrush}"
                             BorderBrush="{DynamicResource CardBorderBrush}"
                             BorderThickness="1"
                             CornerRadius="8"
-                            Padding="16,12"
-                            Margin="0,0,0,12">
+                            Padding="16,12">
                         <StackPanel>
                             <!-- Read Offset Row -->
                             <Grid Margin="0,0,0,10">
@@ -633,34 +636,74 @@
                                         ToolTip="Detect drive read offset using an inserted commercial Audio CD against AccurateRip" />
                             </Grid>
 
-                            <!-- Output format row -->
-                            <StackPanel Orientation="Horizontal" Margin="0,0,0,10">
-                                <TextBlock Text="Format:"
+                            <!-- Output formats row -->
+                            <WrapPanel Orientation="Horizontal" Margin="0,0,0,6">
+                                <TextBlock Text="Formats:"
+                                           FontWeight="SemiBold"
+                                           VerticalAlignment="Center"
+                                           Foreground="{DynamicResource TextSecondaryBrush}"
+                                           Margin="0,0,12,0" />
+                                <CheckBox Content="WAV"
+                                          AutomationProperties.Name="Save as WAV"
+                                          IsChecked="{Binding RipAsWav}"
+                                          Foreground="{DynamicResource TextPrimaryBrush}"
+                                          Margin="0,2,16,2"
+                                          ToolTip="Uncompressed WAV files. Needs nothing extra." />
+                                <CheckBox Content="FLAC"
+                                          AutomationProperties.Name="Save as FLAC"
+                                          IsChecked="{Binding RipAsFlac}"
+                                          Foreground="{DynamicResource TextPrimaryBrush}"
+                                          Margin="0,2,16,2"
+                                          ToolTip="Lossless FLAC files. Uses the optional ffmpeg download." />
+                                <CheckBox Content="MP3"
+                                          AutomationProperties.Name="Save as MP3"
+                                          IsChecked="{Binding RipAsMp3}"
+                                          Foreground="{DynamicResource TextPrimaryBrush}"
+                                          Margin="0,2,16,2"
+                                          ToolTip="MP3 files. Uses the optional ffmpeg download." />
+                                <CheckBox Content="Opus"
+                                          AutomationProperties.Name="Save as Opus"
+                                          IsChecked="{Binding RipAsOpus}"
+                                          Foreground="{DynamicResource TextPrimaryBrush}"
+                                          Margin="0,2,16,2"
+                                          ToolTip="Opus files. Uses the optional ffmpeg download." />
+                                <CheckBox Content="AAC"
+                                          AutomationProperties.Name="Save as AAC"
+                                          IsChecked="{Binding RipAsAac}"
+                                          Foreground="{DynamicResource TextPrimaryBrush}"
+                                          Margin="0,2,0,2"
+                                          ToolTip="AAC (.m4a) files made with the Windows AAC encoder. Needs nothing extra." />
+                            </WrapPanel>
+
+                            <!-- Quality row -->
+                            <WrapPanel Orientation="Horizontal" Margin="0,0,0,10">
+                                <TextBlock Text="MP3 quality:"
                                            FontWeight="SemiBold"
                                            VerticalAlignment="Center"
                                            Foreground="{DynamicResource TextSecondaryBrush}"
                                            Margin="0,0,10,0" />
-                                <ComboBox Width="140"
-                                          AutomationProperties.Name="Rip output format"
-                                          ItemsSource="{Binding RipFormats}"
-                                          SelectedItem="{Binding SelectedRipFormat}"
-                                          Margin="0,0,16,0"
-                                          ToolTip="WAV and AAC need nothing extra. FLAC, MP3 and Opus use the optional ffmpeg download." />
-                                <TextBlock Text="Bitrate (kbit/s):"
+                                <ComboBox Width="210"
+                                          AutomationProperties.Name="MP3 quality"
+                                          ItemsSource="{Binding Mp3QualityChoices}"
+                                          SelectedItem="{Binding SelectedMp3Quality}"
+                                          IsEnabled="{Binding RipMp3Selected}"
+                                          Margin="0,0,20,0"
+                                          ToolTip="Constant bitrate or variable bitrate (VBR) for MP3 files. Available when MP3 is checked." />
+                                <TextBlock Text="Opus/AAC bitrate (kbit/s):"
                                            FontWeight="SemiBold"
                                            VerticalAlignment="Center"
                                            Foreground="{DynamicResource TextSecondaryBrush}"
                                            Margin="0,0,10,0" />
                                 <TextBox Width="70"
-                                         AutomationProperties.Name="Rip bitrate in kilobits per second"
+                                         AutomationProperties.Name="Opus and AAC bitrate in kilobits per second"
                                          Text="{Binding RipBitrateKbps, UpdateSourceTrigger=PropertyChanged}"
-                                         IsEnabled="{Binding RipFormatUsesBitrate}"
+                                         IsEnabled="{Binding RipBitrateApplies}"
                                          Padding="8,6"
                                          Background="{DynamicResource ControlBackgroundBrush}"
                                          Foreground="{DynamicResource TextPrimaryBrush}"
                                          BorderBrush="{DynamicResource ControlBorderBrush}"
-                                         ToolTip="MP3 32-320, Opus 6-510, AAC 96, 128, 160 or 192. Empty uses the default for the format." />
-                            </StackPanel>
+                                         ToolTip="Opus 6-510, AAC 96, 128, 160 or 192. Empty uses the default for the format. Available when Opus or AAC is checked." />
+                            </WrapPanel>
 
                             <!-- Cover image row -->
                             <Grid Margin="0,0,0,10">
@@ -698,6 +741,122 @@
                                         VerticalAlignment="Center" />
                             </Grid>
 
+                            <!-- Library folder row -->
+                            <Grid Margin="0,0,0,2">
+                                <Grid.ColumnDefinitions>
+                                    <ColumnDefinition Width="Auto" />
+                                    <ColumnDefinition Width="*" />
+                                    <ColumnDefinition Width="Auto" />
+                                </Grid.ColumnDefinitions>
+                                <TextBlock Grid.Column="0"
+                                           Text="Library folder:"
+                                           FontWeight="SemiBold"
+                                           VerticalAlignment="Center"
+                                           Foreground="{DynamicResource TextSecondaryBrush}"
+                                           Margin="0,0,10,0" />
+                                <TextBox Grid.Column="1"
+                                         AutomationProperties.Name="Library folder"
+                                         Text="{Binding RipLibraryFolder, UpdateSourceTrigger=PropertyChanged}"
+                                         Padding="8,6"
+                                         Background="{DynamicResource ControlBackgroundBrush}"
+                                         Foreground="{DynamicResource TextPrimaryBrush}"
+                                         BorderBrush="{DynamicResource ControlBorderBrush}"
+                                         Margin="0,0,8,0"
+                                         ToolTip="Folder for the finished album, filed by artist and album. Empty saves the files in the output folder." />
+                                <Button Grid.Column="2"
+                                        Content="Browse..."
+                                        AutomationProperties.Name="Browse Library Folder"
+                                        Command="{Binding BrowseRipLibraryFolderCommand}"
+                                        ToolTip="Choose the library folder"
+                                        VerticalAlignment="Center" />
+                            </Grid>
+                            <TextBlock Text="Empty: save in the output folder"
+                                       FontSize="11"
+                                       Foreground="{DynamicResource TextMutedBrush}"
+                                       Margin="0,0,0,10" />
+
+                            <!-- File names row -->
+                            <Grid Margin="0,0,0,2" IsEnabled="{Binding HasRipLibraryFolder}">
+                                <Grid.ColumnDefinitions>
+                                    <ColumnDefinition Width="Auto" />
+                                    <ColumnDefinition Width="*" />
+                                </Grid.ColumnDefinitions>
+                                <TextBlock Grid.Column="0"
+                                           Text="File names:"
+                                           FontWeight="SemiBold"
+                                           VerticalAlignment="Center"
+                                           Foreground="{DynamicResource TextSecondaryBrush}"
+                                           Margin="0,0,10,0" />
+                                <ComboBox Grid.Column="1"
+                                          IsEditable="True"
+                                          AutomationProperties.Name="File names template"
+                                          ItemsSource="{Binding NamingTemplateChoices}"
+                                          Text="{Binding RipNamingTemplate, UpdateSourceTrigger=PropertyChanged}"
+                                          ToolTip="Tokens: {albumartist} {artist} {album} {year} {track} {title} {disc} {format}. Text in [square brackets] is left out when a token inside it is empty. Used when a library folder is set." />
+                            </Grid>
+                            <TextBlock Text="{Binding RipNamingPreview, StringFormat='Example: {0}'}"
+                                       AutomationProperties.Name="File name example"
+                                       FontSize="11"
+                                       Foreground="{DynamicResource TextMutedBrush}"
+                                       Margin="0,2,0,0" />
+                            <TextBlock Text="{Binding RipNamingProblem}"
+                                       AutomationProperties.Name="File names problem"
+                                       FontSize="11"
+                                       TextWrapping="Wrap"
+                                       Foreground="{DynamicResource CapacityOverburnBrush}"
+                                       Margin="0,2,0,10" />
+
+                            <!-- Cover and overwrite options -->
+                            <WrapPanel Orientation="Horizontal" Margin="0,0,0,8">
+                                <CheckBox Content="Fetch cover art (Cover Art Archive)"
+                                          AutomationProperties.Name="Fetch cover art (Cover Art Archive)"
+                                          IsChecked="{Binding FetchCoverArt}"
+                                          Foreground="{DynamicResource TextPrimaryBrush}"
+                                          Margin="0,2,20,2"
+                                          ToolTip="Download the front cover from coverartarchive.org when MusicBrainz identifies the disc and no cover image is chosen above." />
+                                <CheckBox Content="Save folder.jpg"
+                                          AutomationProperties.Name="Save folder.jpg"
+                                          IsChecked="{Binding WriteFolderImage}"
+                                          Foreground="{DynamicResource TextPrimaryBrush}"
+                                          Margin="0,2,20,2"
+                                          ToolTip="Save the cover as folder.jpg (or folder.png) in the album folder." />
+                                <CheckBox Content="Replace existing files"
+                                          AutomationProperties.Name="Replace existing files"
+                                          IsChecked="{Binding OverwriteExistingFiles}"
+                                          Foreground="{DynamicResource TextPrimaryBrush}"
+                                          Margin="0,2,0,2"
+                                          ToolTip="Overwrite files that already exist at the destination. Off: the rip stops and keeps its WAV files." />
+                            </WrapPanel>
+
+                            <!-- Edition choice (shown when MusicBrainz lists several editions) -->
+                            <StackPanel Margin="0,0,0,8"
+                                        Visibility="{Binding HasReleaseChoice, Converter={StaticResource BoolToVis}}">
+                                <Grid>
+                                    <Grid.ColumnDefinitions>
+                                        <ColumnDefinition Width="Auto" />
+                                        <ColumnDefinition Width="*" />
+                                    </Grid.ColumnDefinitions>
+                                    <TextBlock Grid.Column="0"
+                                               Text="Edition:"
+                                               FontWeight="SemiBold"
+                                               VerticalAlignment="Center"
+                                               Foreground="{DynamicResource TextSecondaryBrush}"
+                                               Margin="0,0,10,0" />
+                                    <ComboBox Grid.Column="1"
+                                              AutomationProperties.Name="MusicBrainz edition of this disc"
+                                              ItemsSource="{Binding ReleaseChoices}"
+                                              SelectedIndex="{Binding SelectedReleaseIndex}"
+                                              ToolTip="Several editions of this disc are listed on musicbrainz.org. Choose the one that matches your CD." />
+                                </Grid>
+                                <TextBlock Text="{Binding ReleaseDifferenceNote}"
+                                           AutomationProperties.Name="How the editions differ"
+                                           Visibility="{Binding HasReleaseDifferenceNote, Converter={StaticResource BoolToVis}}"
+                                           TextWrapping="Wrap"
+                                           FontSize="11"
+                                           Foreground="{DynamicResource TextSecondaryBrush}"
+                                           Margin="0,4,0,0" />
+                            </StackPanel>
+
                             <!-- CheckBoxes -->
                             <WrapPanel Orientation="Horizontal">
                                 <CheckBox Content="Secure rip (C2 re-reads)"
@@ -711,7 +870,13 @@
                                           IsChecked="{Binding LookupMetadata}"
                                           Foreground="{DynamicResource TextPrimaryBrush}"
                                           Margin="0,2,20,2"
-                                          ToolTip="Fetch album and track titles from MusicBrainz before ripping." />
+                                          ToolTip="Fetch album and track titles from musicbrainz.org before ripping." />
+                                <Button Content="Look up editions"
+                                        AutomationProperties.Name="Look up editions"
+                                        Command="{Binding LookUpReleasesCommand}"
+                                        Padding="10,2"
+                                        Margin="0,0,20,0"
+                                        ToolTip="Read the disc's table of contents (no audio) and ask musicbrainz.org which editions of this disc exist, so you can choose yours before ripping." />
                                 <CheckBox Content="Verify with AccurateRip"
                                           AutomationProperties.Name="Verify with AccurateRip"
                                           IsChecked="{Binding VerifyAccurateRip}"
@@ -739,6 +904,7 @@
                             </WrapPanel>
                         </StackPanel>
                     </Border>
+                    </ScrollViewer>
 
                     <!-- Spacer / Ripper Results Card -->
                     <Border Grid.Row="2"
@@ -880,6 +1046,13 @@
                         </Grid>
                     </Border>
                 </Grid>
+            </TabItem>
+
+            <!-- ========================================================================= -->
+            <!-- TAB 3: CONVERT AUDIO FILES                                                -->
+            <!-- ========================================================================= -->
+            <TabItem Header="Convert Audio" Padding="12,6" FontSize="13">
+                <local:AudioConvertView DataContext="{Binding Convert}" />
             </TabItem>
         </TabControl>
     </Grid>

@@ -91,7 +91,22 @@ public class AudioBurnViewModel : ObservableObject, IDisposable
     private string _recoverySessionCapacityText = string.Empty;
     private AudioRecoveryEstimate? _recoveryEstimate;
     private string _ripReport = string.Empty;
-    private AudioRipFormat _selectedRipFormat = AudioRipFormat.Wav;
+    private bool _ripAsWav = true;
+    private bool _ripAsFlac;
+    private bool _ripAsMp3;
+    private bool _ripAsOpus;
+    private bool _ripAsAac;
+    private string _selectedMp3Quality = AudioTargetChoices.DefaultMp3Quality;
+    private string _ripLibraryFolder = string.Empty;
+    private string _ripNamingTemplate = AudioNamingTemplate.Default;
+    private bool _fetchCoverArt = true;
+    private bool _writeFolderImage = true;
+    private bool _overwriteExistingFiles;
+    private IReadOnlyList<MusicBrainzRelease> _releaseList = [];
+    private string? _releaseDiscId;
+    private int _selectedReleaseIndex = -1;
+    private string? _releaseDifferenceNote;
+    private int _releaseLookupGeneration;
     private string _ripBitrateKbps = string.Empty;
     private string _ripCoverArtPath = string.Empty;
 
@@ -746,25 +761,249 @@ public class AudioBurnViewModel : ObservableObject, IDisposable
         }
     }
 
-    /// <summary>Output formats offered by the rip screen.</summary>
-    public IReadOnlyList<AudioRipFormat> RipFormats { get; } =
-        [AudioRipFormat.Wav, AudioRipFormat.Flac, AudioRipFormat.Mp3, AudioRipFormat.Opus, AudioRipFormat.Aac];
+    /// <summary>Save the rip as uncompressed WAV files.</summary>
+    public bool RipAsWav
+    {
+        get => _ripAsWav;
+        set => SetFormatFlag(ref _ripAsWav, value);
+    }
 
-    /// <summary>Format the ripped tracks are saved in. WAV needs nothing extra; AAC uses the Windows encoder; FLAC, MP3 and Opus need ffmpeg.</summary>
+    /// <summary>Also save the rip as FLAC (needs the optional ffmpeg download).</summary>
+    public bool RipAsFlac
+    {
+        get => _ripAsFlac;
+        set => SetFormatFlag(ref _ripAsFlac, value);
+    }
+
+    /// <summary>Also save the rip as MP3 (needs the optional ffmpeg download).</summary>
+    public bool RipAsMp3
+    {
+        get => _ripAsMp3;
+        set => SetFormatFlag(ref _ripAsMp3, value);
+    }
+
+    /// <summary>Also save the rip as Opus (needs the optional ffmpeg download).</summary>
+    public bool RipAsOpus
+    {
+        get => _ripAsOpus;
+        set => SetFormatFlag(ref _ripAsOpus, value);
+    }
+
+    /// <summary>Also save the rip as AAC (uses the Windows AAC encoder).</summary>
+    public bool RipAsAac
+    {
+        get => _ripAsAac;
+        set => SetFormatFlag(ref _ripAsAac, value);
+    }
+
+    /// <summary>
+    /// The first checked format in WAV, FLAC, MP3, Opus, AAC order (WAV when none is checked). Setting it checks exactly
+    /// that one format, which keeps older code that thinks of a single format working.
+    /// </summary>
     public AudioRipFormat SelectedRipFormat
     {
-        get => _selectedRipFormat;
+        get => CheckedRipFormats() is { Count: > 0 } formats ? formats[0] : AudioRipFormat.Wav;
         set
         {
-            if (SetProperty(ref _selectedRipFormat, value))
+            _ripAsWav = value == AudioRipFormat.Wav;
+            _ripAsFlac = value == AudioRipFormat.Flac;
+            _ripAsMp3 = value == AudioRipFormat.Mp3;
+            _ripAsOpus = value == AudioRipFormat.Opus;
+            _ripAsAac = value == AudioRipFormat.Aac;
+            OnPropertyChanged(nameof(RipAsWav));
+            OnPropertyChanged(nameof(RipAsFlac));
+            OnPropertyChanged(nameof(RipAsMp3));
+            OnPropertyChanged(nameof(RipAsOpus));
+            OnPropertyChanged(nameof(RipAsAac));
+            RipFormatSelectionChanged();
+        }
+    }
+
+    private List<AudioRipFormat> CheckedRipFormats()
+    {
+        var formats = new List<AudioRipFormat>();
+        if (_ripAsWav) formats.Add(AudioRipFormat.Wav);
+        if (_ripAsFlac) formats.Add(AudioRipFormat.Flac);
+        if (_ripAsMp3) formats.Add(AudioRipFormat.Mp3);
+        if (_ripAsOpus) formats.Add(AudioRipFormat.Opus);
+        if (_ripAsAac) formats.Add(AudioRipFormat.Aac);
+        return formats;
+    }
+
+    private void SetFormatFlag(ref bool field, bool value, [System.Runtime.CompilerServices.CallerMemberName] string? name = null)
+    {
+        if (SetProperty(ref field, value, name))
+        {
+            RipFormatSelectionChanged();
+        }
+    }
+
+    private void RipFormatSelectionChanged()
+    {
+        OnPropertyChanged(nameof(SelectedRipFormat));
+        OnPropertyChanged(nameof(RipBitrateApplies));
+        OnPropertyChanged(nameof(RipMp3Selected));
+        OnPropertyChanged(nameof(RipNamingPreview));
+        SaveSettingsIfAvailable();
+    }
+
+    /// <summary>Whether the bitrate box applies: Opus or AAC is checked.</summary>
+    public bool RipBitrateApplies => _ripAsOpus || _ripAsAac;
+
+    /// <summary>Whether the MP3 quality box applies: MP3 is checked.</summary>
+    public bool RipMp3Selected => _ripAsMp3;
+
+    /// <summary>MP3 qualities offered: constant bitrates and the two common VBR settings.</summary>
+    public IReadOnlyList<string> Mp3QualityChoices => AudioTargetChoices.Mp3Qualities;
+
+    /// <summary>The chosen MP3 quality, one of <see cref="Mp3QualityChoices"/>. Unknown text is ignored.</summary>
+    public string SelectedMp3Quality
+    {
+        get => _selectedMp3Quality;
+        set
+        {
+            if (value != null && AudioTargetChoices.Mp3Qualities.Contains(value) && SetProperty(ref _selectedMp3Quality, value))
             {
-                OnPropertyChanged(nameof(RipFormatUsesBitrate));
+                SaveSettingsIfAvailable();
             }
         }
     }
 
-    /// <summary>Whether the chosen format takes a bitrate (MP3, Opus, AAC).</summary>
-    public bool RipFormatUsesBitrate => AudioRipFormats.UsesBitrate(_selectedRipFormat);
+    /// <summary>
+    /// Folder that receives the finished album (artist and album folders under it, named by <see cref="RipNamingTemplate"/>).
+    /// Empty saves the files in <see cref="RipOutputFolder"/> with the flat names used before.
+    /// </summary>
+    public string RipLibraryFolder
+    {
+        get => _ripLibraryFolder;
+        set
+        {
+            if (SetProperty(ref _ripLibraryFolder, value ?? string.Empty))
+            {
+                OnPropertyChanged(nameof(HasRipLibraryFolder));
+                SaveSettingsIfAvailable();
+            }
+        }
+    }
+
+    /// <summary>True when a library folder is set, so the naming template is used.</summary>
+    public bool HasRipLibraryFolder => !string.IsNullOrWhiteSpace(_ripLibraryFolder);
+
+    /// <summary>Templates offered in the File names box; any other text can be typed.</summary>
+    public IReadOnlyList<string> NamingTemplateChoices { get; } =
+        [AudioNamingTemplate.Default, AudioNamingTemplate.Flat, @"{format}\" + AudioNamingTemplate.Default];
+
+    /// <summary>Naming template for files in the library folder (tokens are listed in <see cref="AudioNamingTemplate"/>).</summary>
+    public string RipNamingTemplate
+    {
+        get => _ripNamingTemplate;
+        set
+        {
+            if (SetProperty(ref _ripNamingTemplate, value ?? string.Empty))
+            {
+                OnPropertyChanged(nameof(RipNamingProblem));
+                OnPropertyChanged(nameof(RipNamingPreview));
+                SaveSettingsIfAvailable();
+            }
+        }
+    }
+
+    /// <summary>What is wrong with <see cref="RipNamingTemplate"/>, or null when it can be used.</summary>
+    public string? RipNamingProblem => AudioNamingTemplate.Validate(_ripNamingTemplate);
+
+    /// <summary>The sample track used for the preview under the File names box.</summary>
+    public static AudioNamingFields NamingPreviewSample(AudioRipFormat format) =>
+        new("Rammstein", "Rammstein", "Sehnsucht", "1997", 12, 12, "Stripped", format);
+
+    /// <summary>The path the template gives a sample track, for example "Rammstein\Sehnsucht (1997)\12 - Stripped.mp3". Empty when the template is invalid.</summary>
+    public string RipNamingPreview
+    {
+        get
+        {
+            if (AudioNamingTemplate.Validate(_ripNamingTemplate) != null)
+            {
+                return string.Empty;
+            }
+
+            var format = SelectedRipFormat;
+            string template = CheckedRipFormats().Count > 1 && !_ripNamingTemplate.Contains("{format}", StringComparison.OrdinalIgnoreCase)
+                ? @"{format}\" + _ripNamingTemplate
+                : _ripNamingTemplate;
+            try
+            {
+                return AudioNamingTemplate.Render(template, NamingPreviewSample(format), AudioRipFormats.Extension(format));
+            }
+            catch (Exception ex) when (ex is ArgumentException or InvalidOperationException)
+            {
+                return string.Empty;
+            }
+        }
+    }
+
+    /// <summary>Download the front cover from the Cover Art Archive when a MusicBrainz edition is known and no cover file is chosen.</summary>
+    public bool FetchCoverArt
+    {
+        get => _fetchCoverArt;
+        set
+        {
+            if (SetProperty(ref _fetchCoverArt, value))
+            {
+                SaveSettingsIfAvailable();
+            }
+        }
+    }
+
+    /// <summary>Save folder.jpg (or .png) next to the album's files when a cover exists.</summary>
+    public bool WriteFolderImage
+    {
+        get => _writeFolderImage;
+        set
+        {
+            if (SetProperty(ref _writeFolderImage, value))
+            {
+                SaveSettingsIfAvailable();
+            }
+        }
+    }
+
+    /// <summary>Replace files that already exist at the destination. Off: such a rip stops and keeps the WAV files.</summary>
+    public bool OverwriteExistingFiles
+    {
+        get => _overwriteExistingFiles;
+        set => SetProperty(ref _overwriteExistingFiles, value);
+    }
+
+    /// <summary>One line per MusicBrainz edition of the inserted disc; filled when editions differ or after "Look up editions".</summary>
+    public ObservableCollection<string> ReleaseChoices { get; } = new();
+
+    /// <summary>Index into <see cref="ReleaseChoices"/> of the edition the user picked; -1 when none.</summary>
+    public int SelectedReleaseIndex
+    {
+        get => _selectedReleaseIndex;
+        set => SetProperty(ref _selectedReleaseIndex, value);
+    }
+
+    /// <summary>Plain-language list of what differs between the editions, or null.</summary>
+    public string? ReleaseDifferenceNote
+    {
+        get => _releaseDifferenceNote;
+        private set
+        {
+            if (SetProperty(ref _releaseDifferenceNote, value))
+            {
+                OnPropertyChanged(nameof(HasReleaseDifferenceNote));
+            }
+        }
+    }
+
+    /// <summary>True when <see cref="ReleaseDifferenceNote"/> has text.</summary>
+    public bool HasReleaseDifferenceNote => !string.IsNullOrEmpty(_releaseDifferenceNote);
+
+    /// <summary>True when more than one edition is listed, so the Edition box is shown.</summary>
+    public bool HasReleaseChoice => ReleaseChoices.Count > 1;
+
+    /// <summary>The convert-files panel (the "Convert Audio" tab).</summary>
+    public AudioConvertViewModel Convert { get; }
 
     /// <summary>Bitrate in kbit/s for MP3, Opus and AAC; empty uses the default for the format.</summary>
     public string RipBitrateKbps
@@ -775,6 +1014,7 @@ public class AudioBurnViewModel : ObservableObject, IDisposable
 
     /// <summary>
     /// Optional front-cover image (JPEG, PNG, GIF or WebP) embedded in ripped FLAC and MP3 files. Empty means no cover.
+    /// A chosen file is used instead of the Cover Art Archive.
     /// </summary>
     public string RipCoverArtPath
     {
@@ -865,6 +1105,18 @@ public class AudioBurnViewModel : ObservableObject, IDisposable
     /// </summary>
     public RelayCommand BrowseRipOutputFolderCommand { get; }
 
+    /// <summary>Opens a folder picker for the library folder.</summary>
+    public RelayCommand BrowseRipLibraryFolderCommand { get; }
+
+    /// <summary>
+    /// Reads the disc's table of contents (no audio) and asks musicbrainz.org which editions share it; fills
+    /// <see cref="ReleaseChoices"/>.
+    /// </summary>
+    public AsyncRelayCommand LookUpReleasesCommand { get; }
+
+    /// <summary>The most recent "Look up editions" run, so tests can await it.</summary>
+    public Task? LookUpReleasesTask { get; private set; }
+
     /// <summary>Picks the cover image to embed in ripped files.</summary>
     public RelayCommand BrowseRipCoverArtCommand { get; }
 
@@ -916,6 +1168,7 @@ public class AudioBurnViewModel : ObservableObject, IDisposable
             _lookupMetadata = s.LookupMusicBrainzByDefault;
             _verifyAccurateRip = s.VerifyAccurateRipByDefault;
             _verifyCtdb = s.VerifyCtdbByDefault;
+            LoadRipExportSettings(s);
         }
         else
         {
@@ -958,6 +1211,14 @@ public class AudioBurnViewModel : ObservableObject, IDisposable
         DetectReadOffsetCommand = new AsyncRelayCommand(DetectReadOffsetAsync, () => !IsBusy);
         LookupDiscMetadataCommand = new AsyncRelayCommand(async _ => await LookupDiscMetadataAsync(), _ => !IsBusy);
         BrowseRipOutputFolderCommand = new RelayCommand(BrowseRipOutputFolder);
+        BrowseRipLibraryFolderCommand = new RelayCommand(BrowseRipLibraryFolder);
+        LookUpReleasesCommand = new AsyncRelayCommand(_ =>
+        {
+            LookUpReleasesTask = LookUpReleasesAsync();
+            return LookUpReleasesTask;
+        }, _ => !IsBusy);
+        ReleaseChoices.CollectionChanged += (_, _) => OnPropertyChanged(nameof(HasReleaseChoice));
+        Convert = new AudioConvertViewModel(_settingsService);
         BrowseRipCoverArtCommand = new RelayCommand(BrowseRipCoverArt);
         ClearRipCoverArtCommand = new RelayCommand(_ => RipCoverArtPath = string.Empty);
         PreviewSelectedTrackCommand = new RelayCommand(p => PreviewTrack(p as AudioTrackRowViewModel), _ => SelectedTrack != null || Tracks.Count > 0);
@@ -1989,6 +2250,20 @@ public class AudioBurnViewModel : ObservableObject, IDisposable
         }
     }
 
+    private void BrowseRipLibraryFolder()
+    {
+        var dlg = new OpenFolderDialog
+        {
+            Title = "Select Library Folder for Ripped Albums",
+            InitialDirectory = Directory.Exists(RipLibraryFolder) ? RipLibraryFolder : Environment.GetFolderPath(Environment.SpecialFolder.MyMusic)
+        };
+
+        if (dlg.ShowDialog() == true && !string.IsNullOrWhiteSpace(dlg.FolderName))
+        {
+            RipLibraryFolder = dlg.FolderName;
+        }
+    }
+
     private void BrowseRipCoverArt()
     {
         var dlg = new OpenFileDialog
@@ -2295,10 +2570,49 @@ public class AudioBurnViewModel : ObservableObject, IDisposable
             LookupMetadata = settings.LookupMusicBrainzByDefault;
             VerifyAccurateRip = settings.VerifyAccurateRipByDefault;
             VerifyCtdb = settings.VerifyCtdbByDefault;
+            LoadRipExportSettings(settings);
         }
         finally
         {
             _applyingSettings = false;
+        }
+    }
+
+    /// <summary>Reads the format, MP3 quality, library folder and naming settings (an older file without them gives the defaults).</summary>
+    private void LoadRipExportSettings(AppSettings settings)
+    {
+        bool wasApplying = _applyingSettings;
+        _applyingSettings = true;
+        try
+        {
+            var formats = new HashSet<AudioRipFormat>();
+            foreach (string token in (settings.RipFormats ?? string.Empty).Split(',', StringSplitOptions.RemoveEmptyEntries | StringSplitOptions.TrimEntries))
+            {
+                if (AudioRipFormats.TryParse(token, out AudioRipFormat format))
+                {
+                    formats.Add(format);
+                }
+            }
+
+            if (formats.Count == 0)
+            {
+                formats.Add(AudioRipFormat.Wav);
+            }
+
+            RipAsWav = formats.Contains(AudioRipFormat.Wav);
+            RipAsFlac = formats.Contains(AudioRipFormat.Flac);
+            RipAsMp3 = formats.Contains(AudioRipFormat.Mp3);
+            RipAsOpus = formats.Contains(AudioRipFormat.Opus);
+            RipAsAac = formats.Contains(AudioRipFormat.Aac);
+            SelectedMp3Quality = AudioTargetChoices.Mp3Qualities.Contains(settings.Mp3Quality) ? settings.Mp3Quality : AudioTargetChoices.DefaultMp3Quality;
+            RipLibraryFolder = settings.RipLibraryFolder ?? string.Empty;
+            RipNamingTemplate = string.IsNullOrWhiteSpace(settings.RipNamingTemplate) ? AudioNamingTemplate.Default : settings.RipNamingTemplate;
+            FetchCoverArt = settings.FetchCoverArtByDefault;
+            WriteFolderImage = settings.WriteFolderImage;
+        }
+        finally
+        {
+            _applyingSettings = wasApplying;
         }
     }
 
@@ -2316,6 +2630,12 @@ public class AudioBurnViewModel : ObservableObject, IDisposable
             settings.LookupMusicBrainzByDefault = _lookupMetadata;
             settings.VerifyAccurateRipByDefault = _verifyAccurateRip;
             settings.VerifyCtdbByDefault = _verifyCtdb;
+            settings.RipFormats = string.Join(",", CheckedRipFormats().Select(f => AudioRipFormats.Extension(f).TrimStart('.')));
+            settings.Mp3Quality = _selectedMp3Quality;
+            settings.RipLibraryFolder = _ripLibraryFolder;
+            settings.RipNamingTemplate = _ripNamingTemplate;
+            settings.FetchCoverArtByDefault = _fetchCoverArt;
+            settings.WriteFolderImage = _writeFolderImage;
             _settingsService.CurrentSettings = settings;
             _settingsService.Save();
         }
@@ -2502,15 +2822,154 @@ public class AudioBurnViewModel : ObservableObject, IDisposable
         }
     }
 
-    private static AudioCdRipResult AudioRipResultWithFiles(AudioCdRipResult rip, IReadOnlyList<string> files) =>
-        AudioCdRipResult.Succeeded(
-            files, rip.TotalSectorsRead, rip.TotalTime, rip.CueSheetPath, rip.CdText, rip.TrackInfos,
+    /// <summary>The rip result with the files of the first chosen format as its file list (the other formats are in the report).</summary>
+    private static AudioCdRipResult WithExportedFiles(AudioCdRipResult rip, AudioExportResult exported, AudioRipFormat primary)
+    {
+        var primaryFiles = exported.Files.Where(f => f.Format == primary).OrderBy(f => f.TrackNumber).ToList();
+        if (primaryFiles.Count == 0)
+        {
+            return rip;
+        }
+
+        return AudioCdRipResult.Succeeded(
+            primaryFiles.Select(f => f.Path).ToList(), rip.TotalSectorsRead, rip.TotalTime,
+            exported.CueSheets.FirstOrDefault() ?? rip.CueSheetPath, rip.CdText, rip.TrackInfos,
             rip.BadSectorLbas, rip.SecureModeUsed, rip.ReplayGainAlbumGain, rip.ReplayGainAlbumPeak,
             rip.RecoveryRepair,
-            hiddenTrackOneAudioPath: rip.HiddenTrackOneAudioPath != null && files.Count > 0
-                ? Path.ChangeExtension(rip.HiddenTrackOneAudioPath, Path.GetExtension(files[0]))
-                : null,
+            hiddenTrackOneAudioPath: primaryFiles.FirstOrDefault(f => f.TrackNumber == 0)?.Path,
             ctdbDiscCrc: rip.CtdbDiscCrc);
+    }
+
+    /// <summary>
+    /// The edition to use for this rip: the one the user picked for this disc, otherwise the only one (or the first
+    /// when the editions name every track alike). Null when the editions differ and none was picked.
+    /// </summary>
+    private MusicBrainzRelease? PickRelease(IReadOnlyList<MusicBrainzRelease> releases, string discId)
+    {
+        if (string.Equals(_releaseDiscId, discId, StringComparison.Ordinal) &&
+            _selectedReleaseIndex >= 0 && _selectedReleaseIndex < _releaseList.Count)
+        {
+            string wanted = _releaseList[_selectedReleaseIndex].ReleaseId;
+            var match = releases.FirstOrDefault(r => string.Equals(r.ReleaseId, wanted, StringComparison.OrdinalIgnoreCase));
+            if (match != null)
+            {
+                return match;
+            }
+        }
+
+        return MusicBrainzReleaseChoice.Differences(releases).Count > 0 ? null : releases[0];
+    }
+
+    private void SetReleaseChoices(string discId, IReadOnlyList<MusicBrainzRelease> releases)
+    {
+        _releaseList = releases;
+        _releaseDiscId = discId;
+        ReleaseChoices.Clear();
+        for (int i = 0; i < releases.Count; i++)
+        {
+            ReleaseChoices.Add(MusicBrainzReleaseChoice.Describe(releases[i], i + 1));
+        }
+
+        SelectedReleaseIndex = -1;
+        ReleaseDifferenceNote = BuildDifferenceNote(releases);
+    }
+
+    private void ClearReleaseChoices()
+    {
+        _releaseList = [];
+        _releaseDiscId = null;
+        ReleaseChoices.Clear();
+        SelectedReleaseIndex = -1;
+        ReleaseDifferenceNote = null;
+    }
+
+    private static string? BuildDifferenceNote(IReadOnlyList<MusicBrainzRelease> releases)
+    {
+        var differences = MusicBrainzReleaseChoice.Differences(releases);
+        if (differences.Count == 0)
+        {
+            return null;
+        }
+
+        var parts = new List<string>();
+        foreach (var difference in differences)
+        {
+            string where = difference.TrackNumber == 0 ? "the album title or artist" : $"track {difference.TrackNumber}";
+            var quoted = difference.Titles.Select(t => $"'{t}'").ToList();
+            string alternatives = quoted.Count > 2
+                ? string.Join(", ", quoted.Take(quoted.Count - 1)) + " or " + quoted[^1]
+                : string.Join(" or ", quoted);
+            parts.Add($"{where} is {alternatives}");
+        }
+
+        return "Editions differ: " + string.Join("; ", parts) + ". Choose the one on your CD.";
+    }
+
+    /// <summary>
+    /// Reads the disc's table of contents (no audio is read) and asks MusicBrainz which editions share it. Fills
+    /// <see cref="ReleaseChoices"/>; choose one before ripping.
+    /// </summary>
+    public async Task LookUpReleasesAsync(HttpClient? httpClient = null, CancellationToken ct = default)
+    {
+        var recorder = ResolveRecorder();
+        if (recorder == null)
+        {
+            StatusMessage = Strings.StatusAudioBurnNoOpticalRecorderSelectedOrAvailable;
+            return;
+        }
+
+        int generation = ++_releaseLookupGeneration;
+        IsBusy = true;
+        StatusMessage = $"Looking up editions of the disc in {recorder.UniqueId} on musicbrainz.org...";
+        HttpClient? ownedHttp = null;
+        try
+        {
+            var ids = DiscIdCalculator.CalculateForRecorder(recorder);
+            if (ids == null)
+            {
+                StatusMessage = Strings.StatusAudioBurnNoAudioTracksFoundOnInserted;
+                return;
+            }
+
+            var http = httpClient ?? (ownedHttp = new HttpClient { Timeout = TimeSpan.FromSeconds(15) });
+            var mbClient = new MusicBrainzClient(http, MusicBrainzClient.DefaultUserAgent);
+            var releases = await mbClient.LookupDiscIdAsync(ids.MusicBrainzId, ct);
+            if (generation != _releaseLookupGeneration)
+            {
+                return; // a newer lookup is running; drop this answer
+            }
+
+            if (releases.Count == 0)
+            {
+                ClearReleaseChoices();
+                StatusMessage = $"MusicBrainz knows no edition of the disc {ids.MusicBrainzId}.";
+                return;
+            }
+
+            SetReleaseChoices(ids.MusicBrainzId, releases);
+            StatusMessage = releases.Count == 1
+                ? "MusicBrainz lists one edition of this disc."
+                : ReleaseDifferenceNote == null
+                    ? $"MusicBrainz lists {releases.Count} editions of this disc; they name the tracks alike."
+                    : $"MusicBrainz lists {releases.Count} editions of this disc. Choose yours.";
+        }
+        catch (OperationCanceledException)
+        {
+            StatusMessage = "Edition lookup cancelled.";
+        }
+        catch (Exception ex)
+        {
+            StatusMessage = $"MusicBrainz lookup failed: {ex.Message}";
+        }
+        finally
+        {
+            ownedHttp?.Dispose();
+            if (generation == _releaseLookupGeneration)
+            {
+                IsBusy = false;
+            }
+        }
+    }
 
     /// <summary>
     /// Extracts Red Book audio tracks from the inserted CD into uncompressed WAV files and companion CUE sheet.
@@ -2533,24 +2992,33 @@ public class AudioBurnViewModel : ObservableObject, IDisposable
             ? outputFolder
             : (!string.IsNullOrWhiteSpace(RipOutputFolder) ? RipOutputFolder : Path.Combine(Path.GetTempPath(), "CdBurner_RippedAudio"));
 
-        // Check the output format before reading the disc, so a missing ffmpeg or a bad bitrate costs no rip time.
-        var transcoder = new AudioRipTranscoder(new MediaFoundationAacEncoder());
-        int bitrate = 0;
-        string? formatProblem = null;
-        if (!string.IsNullOrWhiteSpace(RipBitrateKbps))
+        // Check everything the export needs before reading the disc, so a missing ffmpeg, a bad bitrate or a bad
+        // naming template costs no rip time.
+        var exporter = new AudioLibraryExporter(new MediaFoundationAacEncoder());
+        var formats = CheckedRipFormats();
+        var targets = new List<AudioExportTarget>();
+        string? formatProblem = formats.Count == 0
+            ? "Choose at least one output format."
+            : AudioTargetChoices.BuildTargets(formats, SelectedMp3Quality, RipBitrateKbps, targets);
+        bool useLibrary = !string.IsNullOrWhiteSpace(RipLibraryFolder);
+        if (formatProblem == null && useLibrary)
         {
-            if (!int.TryParse(RipBitrateKbps.Trim(), System.Globalization.NumberStyles.None, System.Globalization.CultureInfo.InvariantCulture, out bitrate) || bitrate <= 0)
-            {
-                formatProblem = $"Invalid bitrate '{RipBitrateKbps}'. Enter kbit/s as a whole number or leave it empty.";
-            }
+            formatProblem = AudioNamingTemplate.Validate(RipNamingTemplate);
         }
+
         string? customFfmpeg = _settingsService?.CurrentSettings.FfmpegExecutablePath;
-        string? ffmpegPath = AudioRipFormats.RequiresFfmpeg(SelectedRipFormat)
+        string? ffmpegPath = targets.Any(t => AudioRipFormats.RequiresFfmpeg(t.Format))
             ? FfmpegLocator.FindFfmpegExecutable(string.IsNullOrWhiteSpace(customFfmpeg) ? null : customFfmpeg)
             : null;
-        var transcodeSettings = new AudioRipTranscodeSettings(
-            SelectedRipFormat, AudioRipFormats.UsesBitrate(SelectedRipFormat) ? bitrate : 0, ffmpegPath);
-        formatProblem ??= transcoder.CheckPrerequisites(transcodeSettings);
+        string exportRoot = useLibrary ? RipLibraryFolder.Trim() : targetFolder;
+        var exportCheck = new AudioExportOptions(
+            targets, exportRoot, useLibrary ? RipNamingTemplate : AudioNamingTemplate.Flat,
+            new AudioAlbumInfo(string.Empty, string.Empty, null), ffmpegPath,
+            KeepWav: false, WriteFolderImage: WriteFolderImage, Overwrite: OverwriteExistingFiles);
+        if (formatProblem == null)
+        {
+            formatProblem = exporter.CheckPrerequisites(exportCheck);
+        }
 
         // Read and check the cover now, so a missing or wrong file fails before the disc is read (same rule as rip-audio --cover).
         byte[]? coverBytes = null;
@@ -2604,6 +3072,10 @@ public class AudioBurnViewModel : ObservableObject, IDisposable
                 }
                 StatusMessage = $"{p.CurrentActionDescription} ({BurnProgress:F0}%)";
             });
+            var exportProgress = new ClosableProgress<string>(message =>
+            {
+                if (_isBusy) StatusMessage = message;
+            });
 
             DiscIdentifiers? ids = null;
             try
@@ -2616,19 +3088,28 @@ public class AudioBurnViewModel : ObservableObject, IDisposable
 
             string? warning = null;
             CdTextAlbumMetadata? metadataOverride = null;
+            MusicBrainzRelease? chosenRelease = null;
+
+            // Choices made for another disc are never applied to this one.
+            if (ids != null && _releaseDiscId != null && !string.Equals(_releaseDiscId, ids.MusicBrainzId, StringComparison.Ordinal))
+            {
+                ClearReleaseChoices();
+            }
 
             if (LookupMetadata && ids != null)
             {
+                IReadOnlyList<MusicBrainzRelease> releases = [];
                 HttpClient? ownedHttp = null;
                 try
                 {
                     var http = httpClient ?? (ownedHttp = new HttpClient { Timeout = TimeSpan.FromSeconds(15) });
                     var mbClient = new MusicBrainzClient(http, MusicBrainzClient.DefaultUserAgent);
-                    var releases = await mbClient.LookupDiscIdAsync(ids.MusicBrainzId, activeToken).ConfigureAwait(false);
-                    if (releases != null && releases.Count > 0)
-                    {
-                        metadataOverride = MusicBrainzClient.ToAlbumMetadata(releases[0], ids.MusicBrainzId);
-                    }
+                    // Resumes on the UI thread (no ConfigureAwait(false)): the edition list below is bound to the screen.
+                    releases = await mbClient.LookupDiscIdAsync(ids.MusicBrainzId, activeToken) ?? [];
+                }
+                catch (OperationCanceledException) when (activeToken.IsCancellationRequested)
+                {
+                    throw;
                 }
                 catch (HttpRequestException hre)
                 {
@@ -2645,6 +3126,27 @@ public class AudioBurnViewModel : ObservableObject, IDisposable
                 finally
                 {
                     ownedHttp?.Dispose();
+                }
+
+                if (releases.Count > 0)
+                {
+                    chosenRelease = PickRelease(releases, ids.MusicBrainzId);
+                    if (chosenRelease == null)
+                    {
+                        // Editions with different track names: stop before the disc is read and let the user choose.
+                        progress.Close();
+                        exportProgress.Close();
+                        SetReleaseChoices(ids.MusicBrainzId, releases);
+                        const string chooseMessage =
+                            "MusicBrainz lists several editions of this disc that name tracks differently. Choose yours, then start the rip again.";
+                        StatusMessage = chooseMessage;
+                        var stopped = AudioCdRipResult.Failed(chooseMessage);
+                        LastRipResult = stopped;
+                        RipReport = "Rip not started: " + chooseMessage + (ReleaseDifferenceNote == null ? string.Empty : "\n" + ReleaseDifferenceNote);
+                        return stopped;
+                    }
+
+                    metadataOverride = MusicBrainzClient.ToAlbumMetadata(chosenRelease, ids.MusicBrainzId);
                 }
             }
 
@@ -2800,36 +3302,90 @@ public class AudioBurnViewModel : ObservableObject, IDisposable
                 }
             }
 
-            // Convert only after verification and any CTDB repair, which work on the ripped WAV files.
-            string? conversionNote = null;
-            if (ripResult.Success && SelectedRipFormat != AudioRipFormat.Wav)
+            // Cover art and export come after verification and any CTDB repair, which work on the ripped WAV files.
+            string? coverSource = coverBytes != null ? "file" : null;
+            if (ripResult.Success && coverBytes == null && FetchCoverArt && chosenRelease != null)
             {
-                StatusMessage = $"Converting tracks to {AudioRipFormats.DisplayName(SelectedRipFormat)}...";
+                StatusMessage = "Fetching the front cover from the Cover Art Archive...";
+                HttpClient? ownedHttp = null;
                 try
                 {
-                    var converted = await transcoder.TranscodeAsync(ripResult, transcodeSettings, coverBytes, coverMime, activeToken);
-                    ripResult = AudioRipResultWithFiles(ripResult, converted.Files);
-                    if (converted.Warnings.Count > 0)
+                    var http = httpClient ?? (ownedHttp = new HttpClient { Timeout = TimeSpan.FromSeconds(15) });
+                    var image = await CoverArtArchiveClient.FetchFrontAsync(http, chosenRelease.ReleaseId, MusicBrainzClient.DefaultUserAgent, cancellationToken: activeToken).ConfigureAwait(false);
+                    if (image != null)
                     {
-                        conversionNote = string.Join(" ", converted.Warnings);
+                        coverBytes = image.Bytes;
+                        coverMime = image.MimeType;
+                        coverSource = "coverartarchive";
+                    }
+                    else
+                    {
+                        warning = (warning == null ? "" : warning + "\n") + "The Cover Art Archive has no usable front cover for this release.";
                     }
                 }
-                catch (Exception ex) when (ex is InvalidOperationException or IOException or System.Runtime.InteropServices.COMException)
+                catch (OperationCanceledException) when (activeToken.IsCancellationRequested)
                 {
-                    conversionNote = $"Converting to {AudioRipFormats.DisplayName(SelectedRipFormat)} failed: {ex.Message} The WAV files were kept.";
+                    throw;
                 }
-                LastRipResult = ripResult;
+                catch (Exception ex)
+                {
+                    warning = (warning == null ? "" : warning + "\n") + $"Cover art lookup failed: {ex.Message}";
+                }
+                finally
+                {
+                    ownedHttp?.Dispose();
+                }
+            }
+
+            string? exportNote = null;
+            AudioExportResult? exported = null;
+            if (ripResult.Success)
+            {
+                StatusMessage = "Writing the album files...";
+                var album = new AudioAlbumInfo(
+                    ripResult.CdText?.AlbumPerformer ?? string.Empty,
+                    ripResult.CdText?.AlbumTitle ?? string.Empty,
+                    chosenRelease == null ? null : MusicBrainzReleaseChoice.Year(chosenRelease),
+                    chosenRelease?.ReleaseId,
+                    coverBytes,
+                    coverMime);
+                try
+                {
+                    exported = await exporter.ExportAsync(ripResult, exportCheck with { Album = album }, exportProgress, activeToken);
+                    if (exported.Warnings.Count > 0)
+                    {
+                        warning = (warning == null ? "" : warning + "\n") + string.Join("\n", exported.Warnings);
+                    }
+
+                    ripResult = WithExportedFiles(ripResult, exported, targets[0].Format);
+                    LastRipResult = ripResult;
+                }
+                catch (Exception ex) when (ex is InvalidOperationException or IOException or UnauthorizedAccessException or System.Runtime.InteropServices.COMException)
+                {
+                    // The WAV files stay in place, so the rip is not lost when only the export fails.
+                    exportNote = $"The disc was read, but writing the files failed: {ex.Message} The WAV files are kept in '{Path.GetFullPath(targetFolder)}'.";
+                }
+                finally
+                {
+                    exportProgress.Close();
+                }
             }
 
             var sb = new StringBuilder();
             if (ripResult.Success)
             {
-                StatusMessage = $"Rip completed: {ripResult.TracksRipped} track(s) extracted to '{targetFolder}' ({ripResult.TotalTime}).";
+                StatusMessage = exportNote != null
+                    ? $"Rip completed, but writing the files failed: {exportNote}"
+                    : $"Rip completed: {ripResult.TracksRipped} track(s) saved to '{exportRoot}' ({ripResult.TotalTime}).";
                 BurnProgress = 100.0;
 
                 sb.AppendLine("Audio rip completed successfully:");
                 sb.AppendLine($"  Drive:            {recorder.UniqueId}");
                 sb.AppendLine($"  Output Folder:    {Path.GetFullPath(targetFolder)}");
+                if (useLibrary)
+                {
+                    sb.AppendLine($"  Library Folder:   {Path.GetFullPath(exportRoot)}");
+                }
                 sb.AppendLine($"  Tracks Ripped:    {ripResult.TracksRipped}");
                 sb.AppendLine($"  Sectors Read:     {ripResult.TotalSectorsRead:N0}");
                 sb.AppendLine($"  Duration:         {ripResult.TotalTime}");
@@ -2902,19 +3458,55 @@ public class AudioBurnViewModel : ObservableObject, IDisposable
                 {
                     sb.AppendLine($"  Warning:          {warning}");
                 }
-                sb.AppendLine($"  Format:           {AudioRipFormats.DisplayName(SelectedRipFormat)}");
-                if (!string.IsNullOrEmpty(conversionNote))
+                sb.AppendLine($"  Formats:          {string.Join(", ", targets.Select(t => AudioRipFormats.DisplayName(t.Format)))}");
+                if (chosenRelease != null)
                 {
-                    sb.AppendLine($"  Conversion:       {conversionNote}");
+                    var details = new[] { chosenRelease.Country, MusicBrainzReleaseChoice.Year(chosenRelease) }.Where(d => !string.IsNullOrWhiteSpace(d));
+                    string detailText = string.Join(", ", details);
+                    sb.AppendLine($"  Edition:          {(detailText.Length > 0 ? detailText + " " : string.Empty)}(MusicBrainz {chosenRelease.ReleaseId})");
                 }
-                sb.AppendLine("  Files:");
-                foreach (var file in ripResult.RippedFilePaths)
+                if (coverSource == "coverartarchive")
                 {
-                    sb.AppendLine($"    {Path.GetFullPath(file)}");
+                    sb.AppendLine("  Cover:            Cover Art Archive");
                 }
-                if (!string.IsNullOrEmpty(ripResult.CueSheetPath) && File.Exists(ripResult.CueSheetPath))
+                else if (coverSource == "file")
                 {
-                    sb.AppendLine($"  CUE Sheet:        {Path.GetFullPath(ripResult.CueSheetPath)}");
+                    sb.AppendLine($"  Cover:            {RipCoverArtPath.Trim()}");
+                }
+                if (!string.IsNullOrEmpty(exportNote))
+                {
+                    sb.AppendLine($"  Export:           {exportNote}");
+                }
+                if (exported != null)
+                {
+                    foreach (var group in exported.Files.GroupBy(f => f.Format))
+                    {
+                        sb.AppendLine($"  Files ({AudioRipFormats.DisplayName(group.Key)}):");
+                        foreach (var file in group.OrderBy(f => f.TrackNumber))
+                        {
+                            sb.AppendLine($"    {Path.GetFullPath(file.Path)}");
+                        }
+                    }
+                    foreach (string cue in exported.CueSheets)
+                    {
+                        sb.AppendLine($"  CUE Sheet:        {Path.GetFullPath(cue)}");
+                    }
+                    foreach (string image in exported.FolderImages)
+                    {
+                        sb.AppendLine($"  Folder Image:     {Path.GetFullPath(image)}");
+                    }
+                }
+                else
+                {
+                    sb.AppendLine("  Files:");
+                    foreach (var file in ripResult.RippedFilePaths)
+                    {
+                        sb.AppendLine($"    {Path.GetFullPath(file)}");
+                    }
+                    if (!string.IsNullOrEmpty(ripResult.CueSheetPath) && File.Exists(ripResult.CueSheetPath))
+                    {
+                        sb.AppendLine($"  CUE Sheet:        {Path.GetFullPath(ripResult.CueSheetPath)}");
+                    }
                 }
             }
             else

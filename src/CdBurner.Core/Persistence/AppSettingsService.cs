@@ -110,6 +110,27 @@ public class AppSettings
     public bool VerifyCtdbByDefault { get; set; } = false;
 
     /// <summary>
+    /// Output formats chosen on the Audio CD Ripper screen, as a comma list ("wav", "flac", "mp3", "opus", "aac").
+    /// Files saved before this setting existed have no value and read as "wav".
+    /// </summary>
+    public string RipFormats { get; set; } = "wav";
+
+    /// <summary>MP3 quality chosen on the ripper and convert screens, for example "320 kbit/s" or "VBR V0 (about 245 kbit/s)".</summary>
+    public string Mp3Quality { get; set; } = "320 kbit/s";
+
+    /// <summary>Library folder for ripped albums. Empty saves the files in the rip output folder with flat names.</summary>
+    public string RipLibraryFolder { get; set; } = string.Empty;
+
+    /// <summary>File naming template used when a library folder is set (see AudioNamingTemplate for the tokens).</summary>
+    public string RipNamingTemplate { get; set; } = CdBurner.Core.Audio.AudioNamingTemplate.Default;
+
+    /// <summary>Whether to download the front cover from the Cover Art Archive when a MusicBrainz edition is known and no cover file is chosen.</summary>
+    public bool FetchCoverArtByDefault { get; set; } = true;
+
+    /// <summary>Whether to save folder.jpg (or .png) next to ripped albums that have a cover.</summary>
+    public bool WriteFolderImage { get; set; } = true;
+
+    /// <summary>
     /// Whether to automatically check for application updates on startup against GitHub Releases.
     /// Strictly opt-in (default is false).
     /// </summary>
@@ -172,6 +193,12 @@ public class AppSettings
             LookupMusicBrainzByDefault = LookupMusicBrainzByDefault,
             VerifyAccurateRipByDefault = VerifyAccurateRipByDefault,
             VerifyCtdbByDefault = VerifyCtdbByDefault,
+            RipFormats = RipFormats,
+            Mp3Quality = Mp3Quality,
+            RipLibraryFolder = RipLibraryFolder,
+            RipNamingTemplate = RipNamingTemplate,
+            FetchCoverArtByDefault = FetchCoverArtByDefault,
+            WriteFolderImage = WriteFolderImage,
             CheckForUpdatesOnStartup = CheckForUpdatesOnStartup,
             SettingsVersion = SettingsVersion
         };
