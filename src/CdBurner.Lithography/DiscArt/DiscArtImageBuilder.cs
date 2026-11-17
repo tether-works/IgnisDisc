@@ -11,6 +11,7 @@ using CdBurner.Lithography.Dvd;
 using CdBurner.Lithography.Dvd.Encoding;
 using CdBurner.Lithography.Dvd.Solver;
 using CdBurner.Lithography.Imaging;
+using CdBurner.Lithography.Rosetta;
 
 namespace CdBurner.Lithography.DiscArt;
 
@@ -37,7 +38,8 @@ public sealed record DiscArtRequest(
     IsoBuildOptions? FilesIsoOptions = null,  // the file systems for FilesRoot (null: ISO 9660 + Joliet + UDF, VolumeLabel)
     DiscArtTransform? Transform = null,       // scale, move, rotate, fit; null or the default draws the picture as before
     double? ArtInnerRadiusMm = null,          // DVD/BD: draw only from this radius outward (null: from the files' gap or LBA 0)
-    double? ArtOuterRadiusMm = null);         // DVD/BD: draw only up to this radius; the image ends there (null: to the disc end)
+    double? ArtOuterRadiusMm = null,          // DVD/BD: draw only up to this radius; the image ends there (null: to the disc end)
+    DiscArtTitleRingRequest? TitleRing = null); // DVD: title and date in large letters in the outer edge of the drawn area
 
 /// <summary>Sector plan of the image, computed without generating any picture bytes (fast).</summary>
 public sealed record DiscArtPlan(
@@ -49,7 +51,8 @@ public sealed record DiscArtPlan(
     double PictureOuterRadiusMm,
     PictureDiscLayout? FilesLayout,     // DVD/BD with files; null otherwise
     long? BaseCueSectors,               // CD with a base CUE: sectors the existing tracks take (incl. 150-sector pre-gap)
-    DiscArtBand? Band = null);          // DVD/BD drawn in a band only; null when the picture fills the rest of the disc
+    DiscArtBand? Band = null,           // DVD/BD drawn in a band only; null when the picture fills the rest of the disc
+    DiscArtTitleRingPlan? TitleRing = null); // DVD with a title ring: its sectors are the last of the drawn area
 
 /// <summary>
 /// A picture drawn only between two radii. The sectors before the band are zero (after the files and their gap when
@@ -76,6 +79,46 @@ public sealed record DiscArtBand(
     long FullImageSectors,
     long SavedSectors,
     double SavedSecondsAt1x);
+
+/// <summary>
+/// A ring of text (title and date) that can be read without a microscope, drawn in the outer
+/// <paramref name="HeightMm"/> millimetres of the drawn area (the art band's outer edge, or the end of the picture zone).
+/// The picture stops where the ring starts. DVD only so far.
+/// </summary>
+/// <param name="Title">The title; shown in capitals, cut short when the ring has no room for all of it.</param>
+/// <param name="Date">The date shown after the title (yyyy-MM-dd); null shows the title alone.</param>
+/// <param name="HeightMm">Radial height of the ring, edges included.</param>
+public sealed record DiscArtTitleRingRequest(string Title, DateOnly? Date, double HeightMm = DiscArtTitleRingRequest.DefaultHeightMm)
+{
+    public const double DefaultHeightMm = 3.0;
+    public const double MinimumHeightMm = 2.0;
+    public const double MaximumHeightMm = 10.0;
+}
+
+/// <summary>Where the title ring lies and what it says.</summary>
+/// <param name="Text">What the ring shows: the title in capitals (possibly cut short), two spaces and the date.</param>
+/// <param name="RequestedHeightMm">Ring height asked for.</param>
+/// <param name="StartLba">First sector of the ring (aligned to a 16-sector ECC block); the picture ends before it.</param>
+/// <param name="EndLba">End of the ring, exclusive: the end of the drawn area.</param>
+/// <param name="InnerRadiusMm">Radius of <paramref name="StartLba"/>.</param>
+/// <param name="OuterRadiusMm">Radius of <paramref name="EndLba"/>.</param>
+/// <param name="CapitalHeightMm">Height of a capital letter or digit.</param>
+/// <param name="GlyphPixelMm">Side of one font pixel: the stroke width.</param>
+/// <param name="TextStartAngleDegrees">Clockwise angle (read side, before the start angle) where the text begins.</param>
+/// <param name="TextSpanDegrees">Angle the text covers.</param>
+/// <param name="WithPicture">False for a ring alone: the sectors before the ring are zero.</param>
+public sealed record DiscArtTitleRingPlan(
+    string Text,
+    double RequestedHeightMm,
+    long StartLba,
+    long EndLba,
+    double InnerRadiusMm,
+    double OuterRadiusMm,
+    double CapitalHeightMm,
+    double GlyphPixelMm,
+    double TextStartAngleDegrees,
+    double TextSpanDegrees,
+    bool WithPicture);
 
 /// <summary>Plan of a picture disc and the radius its picture is mapped across (the encoder's sampling radius).</summary>
 public sealed record DiscArtPlacement(DiscArtPlan Plan, double PictureRadiusMm);
@@ -128,7 +171,8 @@ public static class DiscArtImageBuilder
     {
         Prepared p = Prepare(request);
         cancellationToken.ThrowIfCancellationRequested();
-        BgraRaster picture = LoadPicture(p.PicturePath);
+        // A title ring alone has no picture to load.
+        BgraRaster? picture = p.HasPicture ? LoadPicture(p.PicturePath) : null;
         Stopwatch stopwatch = Stopwatch.StartNew();
         string partial = p.OutputPath + ".partial";
         string temp = p.OutputPath + ".picture.tmp";
@@ -141,7 +185,7 @@ public static class DiscArtImageBuilder
             Directory.CreateDirectory(Path.GetDirectoryName(p.OutputPath)!);
             Report(progress, stopwatch, "prepare", "Preparing the picture disc image…", 0);
             string encoderPicture = p.PicturePath;
-            if (!p.Transform.IsIdentity)
+            if (picture is not null && !p.Transform.IsIdentity)
             {
                 // The encoders have no placement of their own: draw the placed picture on a disc-sized canvas first.
                 picture = DiscArtCanvas.Render(picture, p.Transform, p.PictureRadiusMm, p.Plan.PictureOuterRadiusMm,
@@ -156,7 +200,7 @@ public static class DiscArtImageBuilder
             switch (request.Medium)
             {
                 case DiscArtMedium.Cd:
-                    WriteCdImage(p, picture, partial, progress, stopwatch, cancellationToken);
+                    WriteCdImage(p, picture!, partial, progress, stopwatch, cancellationToken);
                     break;
                 default:
                     WriteIsoImage(p, picture, encoderPicture, partial, temp, progress, stopwatch, cancellationToken);
@@ -307,7 +351,12 @@ public static class DiscArtImageBuilder
         IsoBuildOptions? IsoOptions,
         string? CombinedCuePath,
         DiscArtTransform Transform,
-        double PictureRadiusMm);   // radius the picture is mapped across (the encoder's sampling radius)
+        double PictureRadiusMm,    // radius the picture is mapped across (the encoder's sampling radius)
+        RosettaTitleRing? Ring = null)
+    {
+        /// <summary>False for a title ring alone: the sectors before the ring are zero.</summary>
+        public bool HasPicture => PicturePath.Length > 0;
+    }
 
     private static Prepared Prepare(DiscArtRequest request)
     {
@@ -326,9 +375,32 @@ public static class DiscArtImageBuilder
                 $"The disc parameters are for {KindName(request.Disc.Kind)}, but this picture disc is {MediumName(request.Medium)}.");
         }
 
-        if (string.IsNullOrWhiteSpace(request.PicturePath) || !File.Exists(request.PicturePath))
+        bool hasPicture = !string.IsNullOrWhiteSpace(request.PicturePath);
+        if (hasPicture ? !File.Exists(request.PicturePath) : request.TitleRing is null)
         {
             throw new ArgumentException($"The picture was not found: {request.PicturePath}");
+        }
+
+        if (!hasPicture && request.Transform is { IsIdentity: false })
+        {
+            throw new ArgumentException("Scale, move, rotate and fit place a picture; there is no picture to place.");
+        }
+
+        if (request.TitleRing is { } titleRing)
+        {
+            if (request.Medium != DiscArtMedium.Dvd)
+            {
+                throw new ArgumentException("A title ring is drawn on DVD picture discs only so far.");
+            }
+
+            ArgumentNullException.ThrowIfNull(titleRing.Title);
+            if (!double.IsFinite(titleRing.HeightMm)
+                || titleRing.HeightMm < DiscArtTitleRingRequest.MinimumHeightMm
+                || titleRing.HeightMm > DiscArtTitleRingRequest.MaximumHeightMm)
+            {
+                throw new ArgumentException(string.Create(CultureInfo.InvariantCulture,
+                    $"The title ring height must be {DiscArtTitleRingRequest.MinimumHeightMm:0.#} to {DiscArtTitleRingRequest.MaximumHeightMm:0.#} mm."));
+            }
         }
 
         if (string.IsNullOrWhiteSpace(request.OutputPath))
@@ -336,9 +408,9 @@ public static class DiscArtImageBuilder
             throw new ArgumentException("Give an output file.");
         }
 
-        string picture = Path.GetFullPath(request.PicturePath);
+        string picture = hasPicture ? Path.GetFullPath(request.PicturePath) : string.Empty;
         string output = Path.GetFullPath(request.OutputPath);
-        if (string.Equals(picture, output, StringComparison.OrdinalIgnoreCase))
+        if (hasPicture && string.Equals(picture, output, StringComparison.OrdinalIgnoreCase))
         {
             throw new ArgumentException("The output file must not be the picture itself.");
         }
@@ -599,12 +671,30 @@ public static class DiscArtImageBuilder
             }
         }
 
+        RosettaTitleRing? ring = null;
+        DiscArtTitleRingPlan? ringPlan = null;
+        if (request.TitleRing is { } titleRing)
+        {
+            (ring, ringPlan) = PlanTitleRing(titleRing, radiusAt, request.Disc.Sectors, align, start, end, picture.Length > 0);
+            if (picture.Length == 0 && layout is not { Placement: PictureDiscFilesPlacement.OuterFiles })
+            {
+                // A ring alone: zeros up to the ring (after the files and their gap, which grows), then the ring. The
+                // outer-files layout keeps its picture zone from LBA 0, so there the sectors before the ring are zero.
+                start = ringPlan.StartLba;
+                if (layout is not null)
+                {
+                    layout = layout with { PictureStartLba = checked((int)start) };
+                }
+            }
+        }
+
         var plan = new DiscArtPlan(request.Medium, total, start, end,
-            radiusAt(start), radiusAt(end), layout, null, band);
+            radiusAt(start), radiusAt(end), layout, null, band, ringPlan);
         return new Prepared(request, plan, output, picture, tone, request.DvdReadCompatibility || request.Disc.DvdReadCompatibility,
             root, isoOptions, null, request.Transform ?? DiscArtTransform.Default,
             dvd ? DvdOptions(request.Disc, tone, request.StartAngleDegrees, false).SamplingImageOuterRadiusMm
-                : BdParameters(request.Disc, request.StartAngleDegrees).OutputOuterRadiusMm);
+                : BdParameters(request.Disc, request.StartAngleDegrees).OutputOuterRadiusMm,
+            ring);
     }
 
     private static Prepared PrepareCd(DiscArtRequest request, string output, string picture, ToneProfile tone, string? combinedCue)
@@ -736,6 +826,37 @@ public static class DiscArtImageBuilder
             radiusAt(bandStart), radiusAt(bandEnd), pictureEnd, saved, saved * (double)SectorBytes / bytesPerSecondAt1x);
     }
 
+    /// <summary>
+    /// The title ring's sectors: from the first whole ECC block at or beyond (outer edge - height) to the end of the drawn
+    /// area. The ring's inner edge rounds outward, so the ring never reaches into the picture, the files or their gap.
+    /// </summary>
+    private static (RosettaTitleRing Ring, DiscArtTitleRingPlan Plan) PlanTitleRing(DiscArtTitleRingRequest request,
+        Func<long, double> radiusAt, long sectors, int align, long drawStart, long drawEnd, bool hasPicture)
+    {
+        CultureInfo c = CultureInfo.InvariantCulture;
+        double outer = radiusAt(drawEnd);
+        double askedInner = outer - request.HeightMm;
+        long ringStart = AlignUp(FirstLbaAtOrBeyond(radiusAt, sectors, askedInner), align);
+        if (ringStart < drawStart || (hasPicture && ringStart == drawStart))
+        {
+            string what = hasPicture ? "leaves no room for the picture, which" : "would reach below the drawn area, which";
+            throw new ArgumentException(string.Create(c,
+                $"The title ring (r = {askedInner:0.###} to {outer:0.###} mm) {what} starts at r = {radiusAt(drawStart):0.###} mm "
+                + $"(sector {drawStart:N0}); make the ring lower or the art band wider."));
+        }
+
+        if (drawEnd - ringStart < align)
+        {
+            throw new ArgumentException(string.Create(c,
+                $"The title ring (r = {askedInner:0.###} to {outer:0.###} mm) is narrower than one 16-sector ECC block on this disc; make it higher."));
+        }
+
+        double inner = radiusAt(ringStart);
+        RosettaTitleRing ring = new(request.Title, request.Date, inner, outer);
+        return (ring, new DiscArtTitleRingPlan(ring.Text, request.HeightMm, ringStart, drawEnd, inner, outer,
+            ring.CapitalHeightMm, ring.GlyphPixelMm, ring.TextStartAngleDegrees, ring.TextSpanDegrees, hasPicture));
+    }
+
     /// <summary>Smallest LBA in [0, sectors] whose radius is at least <paramref name="radiusMm"/> (radius grows with LBA).</summary>
     private static long FirstLbaAtOrBeyond(Func<long, double> radiusAt, long sectors, double radiusMm)
     {
@@ -823,19 +944,45 @@ public static class DiscArtImageBuilder
 
     private delegate void PictureWriter(Stream output, long startLba, long sectorCount, Action<double> fraction, CancellationToken ct);
 
-    private static void WriteIsoImage(Prepared p, BgraRaster picture, string encoderPicture, string partial, string temp,
+    private static void WriteIsoImage(Prepared p, BgraRaster? picture, string encoderPicture, string partial, string temp,
         IProgress<DiscJobProgress>? progress, Stopwatch stopwatch, CancellationToken ct)
     {
         DiscArtRequest r = p.Request;
-        PictureWriter writer = r.Medium == DiscArtMedium.Dvd
-            ? DvdPictureWriter(p, encoderPicture)
+        PictureWriter? writer = picture is null ? null
+            : r.Medium == DiscArtMedium.Dvd ? DvdPictureWriter(p, encoderPicture)
             : BdPictureWriter(p, picture);
         long start = p.Plan.PictureStartLba;
-        long count = p.Plan.PictureEndLba - start;
+        long end = p.Plan.PictureEndLba;
+        long count = end - start;
+        // The picture stops where the title ring starts; the ring has its own writer over its own sectors.
+        long ringStart = p.Plan.TitleRing?.StartLba ?? end;
         bool withFiles = p.Plan.FilesLayout is not null;
         // With files the picture zone is made first (the whole zone is the larger part of the work), then merged.
         double pictureShare = withFiles ? 0.95 : 1.0;
         void Fraction(double f) => Report(progress, stopwatch, "generate", "Drawing the picture…", f * pictureShare);
+
+        void WriteDrawnZone(Stream stream)
+        {
+            long pictureSectors = ringStart - start;
+            if (pictureSectors > 0)
+            {
+                if (writer is null)
+                {
+                    WriteZeroSectors(stream, pictureSectors);
+                }
+                else
+                {
+                    writer(stream, start, pictureSectors, f => Fraction(f * pictureSectors / count), ct);
+                }
+            }
+
+            if (p.Ring is not null)
+            {
+                long ringSectors = end - ringStart;
+                DvdTitleRingWriter(p)(stream, ringStart, ringSectors,
+                    f => Fraction((pictureSectors + (f * ringSectors)) / count), ct);
+            }
+        }
 
         using var output = new FileStream(partial, FileMode.Create, FileAccess.Write, FileShare.None,
             bufferSize: 1024 * 1024, FileOptions.SequentialScan);
@@ -843,7 +990,7 @@ public static class DiscArtImageBuilder
         {
             // An art band without files: zero sectors from LBA 0 up to the band.
             WriteZeroSectors(output, start);
-            writer(output, start, count, Fraction, ct);
+            WriteDrawnZone(output);
             output.Flush();
             return;
         }
@@ -852,7 +999,7 @@ public static class DiscArtImageBuilder
         int blockBytes = layout.AlignmentSectors * SectorBytes;
         using var zone = new FileStream(temp, FileMode.Create, FileAccess.ReadWrite, FileShare.None,
             bufferSize: 1024 * 1024, FileOptions.DeleteOnClose | FileOptions.SequentialScan);
-        writer(zone, start, count, Fraction, ct);
+        WriteDrawnZone(zone);
         zone.Flush();
         if (zone.Length != count * SectorBytes)
         {
@@ -888,6 +1035,28 @@ public static class DiscArtImageBuilder
             RandomSeed = unchecked(solve.RandomSeed + (int)(startLba / DvdEccBlockEncoder.SectorCount) * 1_000_003),
         };
         FastDispersionImageWriter.WriteStream(picturePath, output, solve, value =>
+        {
+            if (value.CompletedBlocks == 1 || value.CompletedBlocks % 64 == 0 || value.CompletedBlocks == value.TotalBlocks)
+            {
+                fraction(value.Fraction);
+            }
+        }, ct);
+    };
+
+    /// <summary>
+    /// The title ring: strict two-level strokes (no dither, whatever the picture's tone) from the ring's analytic
+    /// sampler, on the same track model, start angle and read-compatibility recipe as the picture.
+    /// </summary>
+    private static PictureWriter DvdTitleRingWriter(Prepared p) => (output, startLba, sectorCount, fraction, ct) =>
+    {
+        DiscArtRequest r = p.Request;
+        DvdStreamingOptions options = DvdOptions(r.Disc, ToneProfile.LegacyBinary, r.StartAngleDegrees, p.DvdReadCompat);
+        MultiBlockSolveOptions solve = DvdStreamingGenerator.CreateSolveOptions(options, checked((uint)startLba), checked((uint)sectorCount));
+        solve = solve with
+        {
+            RandomSeed = unchecked(solve.RandomSeed + (int)(startLba / DvdEccBlockEncoder.SectorCount) * 1_000_003),
+        };
+        FastDispersionImageWriter.WritePatternStream(p.Ring!.CreateReadSideSampler(), output, solve, value =>
         {
             if (value.CompletedBlocks == 1 || value.CompletedBlocks % 64 == 0 || value.CompletedBlocks == value.TotalBlocks)
             {

@@ -19,7 +19,7 @@ public static partial class CliCommandRunner
     private const string DiscArtGenerateUsage =
         "Usage: ignisdisc-cli disc-art generate --media cd|dvd|bd --picture <file.png> --output <file> "
         + "[--files <folder> [--files-outer]] [--append-to <base.cue>] [--label <text>] [--tone photo|binary] "
-        + "[--start-angle <deg>] [--scale <x>] [--offset-x-mm <mm>] [--offset-y-mm <mm>] [--rotate <deg>] [--fit ring|disc] [--art-inner-radius-mm <mm>] [--art-outer-radius-mm <mm>] [--read-compat] [--no-interleave] [--plan-only] [--overwrite] [--json]";
+        + "[--start-angle <deg>] [--scale <x>] [--offset-x-mm <mm>] [--offset-y-mm <mm>] [--rotate <deg>] [--fit ring|disc] [--art-inner-radius-mm <mm>] [--art-outer-radius-mm <mm>] [--title-ring <text> [--title-ring-height-mm <mm>] [--title-ring-date yyyy-MM-dd|none]] [--read-compat] [--no-interleave] [--plan-only] [--overwrite] [--json]";
 
     private const string DiscArtPreviewUsage =
         "Usage: ignisdisc-cli disc-art preview --image <file.iso|.wav|.raw> --output <file.png> [--size <px>] [--json]";
@@ -30,7 +30,15 @@ public static partial class CliCommandRunner
     private static int HandleDiscArtGenerate(CommandLineArgs cmd, TextWriter stdout, TextWriter stderr)
     {
         CalibrationDiscKind kind = ParseCalibrationMedia(cmd.GetRequiredOption("media", "--media cd|dvd|bd"));
-        string picture = cmd.GetRequiredOption("picture", "--picture <file.png>");
+        DiscArtTitleRingRequest? titleRing = ParseTitleRing(cmd);
+        // A title ring may stand alone; otherwise a picture is required.
+        string picture = titleRing is null
+            ? cmd.GetRequiredOption("picture", "--picture <file.png>")
+            : cmd.GetOption("picture") ?? string.Empty;
+        if (titleRing is not null && cmd.GetOption("picture") is { } givenPicture && string.IsNullOrWhiteSpace(givenPicture))
+        {
+            throw new CommandLineException("--picture needs a file: --picture <file.png>");
+        }
         string rawOutput = cmd.GetOption("output") ?? cmd.GetOption("out") ?? string.Empty;
         if (string.IsNullOrWhiteSpace(rawOutput))
         {
@@ -84,7 +92,7 @@ public static partial class CliCommandRunner
                 CalibrationDiscKind.Dvd => DiscArtMedium.Dvd,
                 _ => DiscArtMedium.BluRay,
             },
-            Path.GetFullPath(picture),
+            picture.Length == 0 ? string.Empty : Path.GetFullPath(picture),
             parameters,
             Path.GetFullPath(rawOutput),
             tone,
@@ -98,7 +106,8 @@ public static partial class CliCommandRunner
             Overwrite: cmd.HasFlag("overwrite"),
             Transform: transform,
             ArtInnerRadiusMm: OptionalDouble(cmd, "art-inner-radius-mm"),
-            ArtOuterRadiusMm: OptionalDouble(cmd, "art-outer-radius-mm"));
+            ArtOuterRadiusMm: OptionalDouble(cmd, "art-outer-radius-mm"),
+            TitleRing: titleRing);
 
         string media = MediaName(kind);
         try
@@ -381,7 +390,66 @@ public static partial class CliCommandRunner
             savedSectors = band.SavedSectors,
             savedSecondsAt1x = band.SavedSecondsAt1x,
         },
+        titleRing = plan.TitleRing is not { } ring ? null : new
+        {
+            text = ring.Text,
+            requestedHeightMm = ring.RequestedHeightMm,
+            startLba = ring.StartLba,
+            endLba = ring.EndLba,
+            innerRadiusMm = ring.InnerRadiusMm,
+            outerRadiusMm = ring.OuterRadiusMm,
+            capitalHeightMm = ring.CapitalHeightMm,
+            glyphPixelMm = ring.GlyphPixelMm,
+            textStartAngleDegrees = ring.TextStartAngleDegrees,
+            textSpanDegrees = ring.TextSpanDegrees,
+            withPicture = ring.WithPicture,
+        },
     };
+
+    /// <summary>
+    /// --title-ring &lt;text&gt; [--title-ring-height-mm &lt;mm&gt;] [--title-ring-date yyyy-MM-dd|none]. The date
+    /// defaults to today on this computer; null when there is no --title-ring.
+    /// </summary>
+    private static DiscArtTitleRingRequest? ParseTitleRing(CommandLineArgs cmd)
+    {
+        string? text = cmd.GetOption("title-ring");
+        double? height = OptionalDouble(cmd, "title-ring-height-mm");
+        string? rawDate = cmd.GetOption("title-ring-date");
+        if (text is null)
+        {
+            if (height is not null || rawDate is not null)
+            {
+                throw new CommandLineException("--title-ring-height-mm and --title-ring-date need --title-ring <text>.");
+            }
+
+            return null;
+        }
+
+        if (string.IsNullOrWhiteSpace(text))
+        {
+            throw new CommandLineException("--title-ring needs text: --title-ring <text>");
+        }
+
+        DateOnly? date;
+        if (rawDate is null)
+        {
+            date = DateOnly.FromDateTime(DateTime.Now);
+        }
+        else if (string.Equals(rawDate, "none", StringComparison.OrdinalIgnoreCase))
+        {
+            date = null;
+        }
+        else if (DateOnly.TryParseExact(rawDate, "yyyy-MM-dd", CultureInfo.InvariantCulture, DateTimeStyles.None, out DateOnly parsed))
+        {
+            date = parsed;
+        }
+        else
+        {
+            throw new CommandLineException($"Invalid --title-ring-date value '{rawDate}'. Expected yyyy-MM-dd or none.");
+        }
+
+        return new DiscArtTitleRingRequest(text, date, height ?? DiscArtTitleRingRequest.DefaultHeightMm);
+    }
 
     private static void WriteDiscArtPlanLines(TextWriter stdout, DiscArtPlan plan)
     {
@@ -415,6 +483,15 @@ public static partial class CliCommandRunner
                 $"  Art band    : drawn from r = {band.InnerRadiusMm:0.###} to {band.OuterRadiusMm:0.###} mm (asked {(band.RequestedInnerRadiusMm is { } i ? i.ToString("0.###", CultureInfo.InvariantCulture) : "start")} to {(band.RequestedOuterRadiusMm is { } o ? o.ToString("0.###", CultureInfo.InvariantCulture) : "end")} mm); sectors before it are zero"));
             stdout.WriteLine(string.Create(CultureInfo.InvariantCulture,
                 $"  Burn saved  : {band.SavedSectors:N0} of {band.FullImageSectors:N0} sectors not written, {band.SavedSecondsAt1x / 60:0.0} min at 1x; the rest of the disc stays blank"));
+        }
+
+        if (plan.TitleRing is { } ring)
+        {
+            stdout.WriteLine(string.Create(CultureInfo.InvariantCulture,
+                $"  Title ring  : \"{ring.Text}\" in sectors {ring.StartLba:N0} to {ring.EndLba - 1:N0}, r = {ring.InnerRadiusMm:0.###} to {ring.OuterRadiusMm:0.###} mm; capitals {ring.CapitalHeightMm:0.##} mm tall, strokes {ring.GlyphPixelMm:0.###} mm"));
+            stdout.WriteLine(ring.WithPicture
+                ? "                the picture stops where the ring starts"
+                : "                no picture: the sectors before the ring are zero");
         }
 
         stdout.WriteLine($"  Image size  : {plan.TotalSectors:N0} sectors");

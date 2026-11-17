@@ -338,6 +338,14 @@ one assembly with a clear provenance boundary. Nothing in it touches a drive.
   channel bit length and pitch terms from a saved DVD calibration, which the ticks need to land on their angles.
   Drawn through the DVD encoder only; so far checked in simulation (encoder, then `IsoReadbackRenderer`), not on a
   burned disc.
+  `RosettaTitleRing` is the picture disc's title ring (`disc-art generate --title-ring <text>`, DVD only): the title in
+  Spleen capitals and the date (yyyy-MM-dd) in the outer `--title-ring-height-mm` (default 3, 2 to 10) of the drawn
+  area (the art band's outer edge or the end of the picture zone), 0.25 mm blank at each edge and the 8 font rows
+  filling the rest with square font pixels (3 mm: 0.31 mm strokes, capitals 1.9 mm), centred on the top of the disc
+  (270° clockwise from the read side), reading clockwise. `DiscArtImageBuilder` rounds the ring's inner edge outward
+  to an ECC block; the picture writer covers the sectors before it and a separate two-level pattern writer the ring
+  sectors (no dither), so the two never share a sector. `IsInk` works from the font, with no stored bitmap. Without
+  `--picture` the sectors before the ring are zero (inner files keep their volume and the gap grows).
   `RosettaHybridDisc` (command line `rosetta build` / `rosetta burn`, DVD-R only) makes a hybrid disc: the archive
   vault (`ROSETTA/TEXT/` with the text as hashed, `ROSETTA/PAGE-INDEX.TXT` and `.JSON` naming the page and `Rnn-Smm`
   tile of every page, optional extra files, then `ArchiveStager`'s manifests and PAR2 data) is an ISO 9660 + Joliet +

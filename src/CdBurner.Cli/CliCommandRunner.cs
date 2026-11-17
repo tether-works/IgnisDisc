@@ -3680,7 +3680,7 @@ public static partial class CliCommandRunner
         stdout.WriteLine("      Makes a hybrid Rosetta DVD-R image: the text, a page index and optional files with PAR2 recovery data inside r = 38 mm, a 2 MiB zero gap, then the text as microscope-readable pages and the rim header.");
         stdout.WriteLine("  rosetta burn --drive <id> --image <file.iso> [any burn-iso option] [--json]");
         stdout.WriteLine("      Burns an image made by 'rosetta build' (forwards to burn-iso).");
-        stdout.WriteLine("  disc-art generate --media cd|dvd|bd --picture <file.png> --output <file> [--files <folder> [--files-outer]] [--append-to <base.cue>] [--label <text>] [--tone photo|binary] [--start-angle <deg>] [--scale <x>] [--offset-x-mm <mm>] [--offset-y-mm <mm>] [--rotate <deg>] [--fit ring|disc] [--art-inner-radius-mm <mm>] [--art-outer-radius-mm <mm>] [--read-compat] [--no-interleave] [--plan-only] [--overwrite] [--disc-preset <id>] [--drive-model <text> --media-id <text>] [--json]");
+        stdout.WriteLine("  disc-art generate --media cd|dvd|bd --picture <file.png> --output <file> [--files <folder> [--files-outer]] [--append-to <base.cue>] [--label <text>] [--tone photo|binary] [--start-angle <deg>] [--scale <x>] [--offset-x-mm <mm>] [--offset-y-mm <mm>] [--rotate <deg>] [--fit ring|disc] [--art-inner-radius-mm <mm>] [--art-outer-radius-mm <mm>] [--title-ring <text> [--title-ring-height-mm <mm>] [--title-ring-date yyyy-MM-dd|none]] [--read-compat] [--no-interleave] [--plan-only] [--overwrite] [--disc-preset <id>] [--drive-model <text> --media-id <text>] [--json]");
         stdout.WriteLine("      Draws a picture in the data sectors of a DVD or BD image (optionally with files on the same disc) or makes a CD picture track, with its description file for the preview.");
         stdout.WriteLine("  disc-art preview --image <file.iso|.wav|.raw> --output <file.png> [--size <px>] [--json]");
         stdout.WriteLine("      Renders what a drive would show from an image made by 'disc-art generate' (DVD and CD; not yet BD).");
@@ -3874,6 +3874,9 @@ public static partial class CliCommandRunner
             stdout.WriteLine("      --fit disc|ring            disc (default): size against the whole disc. ring: size so the picture's edges touch the outer radius of the ring that is drawn.");
             stdout.WriteLine("      --art-inner-radius-mm <mm> DVD/BD: draw the picture only from this radius outward; the sectors before it stay zero.");
             stdout.WriteLine("      --art-outer-radius-mm <mm> DVD/BD: draw only up to this radius; the image ends there, so the burn is shorter and the rest of the disc stays blank.");
+            stdout.WriteLine("      --title-ring <text>        DVD: write this title and the date in capitals around the outer edge of the drawn area, large enough to read without a microscope; the picture stops where the ring starts. --picture may be left out for a ring alone.");
+            stdout.WriteLine("      --title-ring-height-mm <mm> Height of the title ring (default 3, 2 to 10 mm; letters scale with it).");
+            stdout.WriteLine("      --title-ring-date <date>   Date on the ring as yyyy-MM-dd (default today), or none.");
             stdout.WriteLine("      --read-compat              DVD: use the read-compatibility recipe (periodic-9b-16-v1).");
             stdout.WriteLine("      --no-interleave            CD only: write the track without the CD-DA delay interleave.");
             stdout.WriteLine("      --plan-only               Print the sector plan and write nothing.");
