@@ -1,6 +1,7 @@
 using System.Diagnostics;
 using System.Globalization;
 using CdBurner.Core.Audio;
+using CdBurner.Core.Burning;
 using CdBurner.Core.Compilation;
 using CdBurner.Core.Iso;
 using CdBurner.Lithography.BluRay;
@@ -202,6 +203,32 @@ public static class DiscArtImageBuilder
             }
 
             throw;
+        }
+    }
+
+    /// <summary>
+    /// The files layout of a DVD or BD image made with the files at the outer edge, read from its description file
+    /// (<c>&lt;image&gt;.disc-art.json</c>). Null when there is no description, it cannot be read, or the image has
+    /// another layout: such an image is burned in one pass like any other.
+    /// </summary>
+    public static PictureDiscLayout? ReadOuterFilesLayout(string imagePath)
+    {
+        ArgumentException.ThrowIfNullOrWhiteSpace(imagePath);
+        if (!File.Exists(DiscArtSidecar.PathFor(imagePath)))
+        {
+            return null;
+        }
+
+        try
+        {
+            return DiscArtSidecar.Read(imagePath).Plan.FilesLayout is { Placement: PictureDiscFilesPlacement.OuterFiles } layout
+                ? layout
+                : null;
+        }
+        catch (ArgumentException)
+        {
+            // An unreadable description changes nothing about how the image is burned.
+            return null;
         }
     }
 
@@ -531,8 +558,11 @@ public static class DiscArtImageBuilder
                 IncludeUdf: request.FilesPlacement == PictureDiscFilesPlacement.InnerFiles);
             try
             {
+                // Outer files on a DVD are burned as a second session: keep room for the drive's gap between the
+                // picture session and the files session (DVD-R's, the larger one measured).
                 layout = PictureDiscLayoutPlanner.Plan(root, isoOptions, request.FilesPlacement,
-                    dvd ? PictureDiscMedium.Dvd : PictureDiscMedium.BluRay, (int)capacity);
+                    dvd ? PictureDiscMedium.Dvd : PictureDiscMedium.BluRay, (int)capacity,
+                    dvd ? PictureDiscTwoSessionBurner.DvdFilesSessionReserveSectors : PictureDiscLayoutPlanner.MinimumGapSectors);
             }
             catch (InvalidOperationException ex)
             {

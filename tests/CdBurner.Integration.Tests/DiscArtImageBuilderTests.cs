@@ -31,6 +31,11 @@ public sealed class DiscArtImageBuilderTests : IDisposable
         CalibrationParameters.BluRayChannelBitLengthNm);
     private static readonly CalibrationParameters TinyCd = new(CalibrationDiscKind.Cd, 24.5, 56.8, 6000, 1200);
 
+    // Outer files keep room for the gap a DVD-R drive leaves between the picture session and the files session
+    // (28,688 sectors on the GP60NB50), so they need a disc larger than the tiny one.
+    private static readonly CalibrationParameters SmallDvd = new(CalibrationDiscKind.Dvd, 24, 58, 32_768, 133.3);
+    private const int DvdMinusRSessionGap = 28_688;
+
     public DiscArtImageBuilderTests() => Directory.CreateDirectory(_dir);
 
     public void Dispose()
@@ -185,7 +190,7 @@ public sealed class DiscArtImageBuilderTests : IDisposable
     public void Dvd_OuterFiles_SessionAtEndAndPictureFromZero()
     {
         string iso = Path_("outer.iso");
-        DiscArtResult result = DiscArtImageBuilder.Generate(Request(DiscArtMedium.Dvd, iso, files: WriteFilesFolder(),
+        DiscArtResult result = DiscArtImageBuilder.Generate(Request(DiscArtMedium.Dvd, iso, SmallDvd, files: WriteFilesFolder(),
             placement: PictureDiscFilesPlacement.OuterFiles));
 
         PictureDiscLayout layout = result.Plan.FilesLayout!;
@@ -193,7 +198,9 @@ public sealed class DiscArtImageBuilderTests : IDisposable
         Assert.Equal(0, result.Plan.PictureStartLba);
         Assert.Equal(layout.PictureEndLba, result.Plan.PictureEndLba);
         Assert.Equal(0, layout.FilesSessionStartLba % 16);
-        Assert.True(layout.FilesSessionStartLba >= layout.PictureEndLba + 1024);
+        Assert.True(layout.FilesSessionStartLba >= layout.PictureEndLba + DvdMinusRSessionGap);
+        Assert.True(layout.FilesSessionStartLba < layout.PictureEndLba + DvdMinusRSessionGap + 16, "no more room than the gap needs");
+        Assert.Equal(layout, DiscArtImageBuilder.ReadOuterFilesLayout(iso)); // what 'disc-art burn' reads back
         byte[] image = File.ReadAllBytes(iso);
         Assert.Equal((long)layout.TotalSectors * Sector, image.Length);
 

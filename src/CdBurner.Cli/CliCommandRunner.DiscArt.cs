@@ -1,6 +1,8 @@
 using System.Globalization;
 using CdBurner.Core.Abstractions;
+using CdBurner.Core.Burning;
 using CdBurner.Core.Iso;
+using CdBurner.Hardware.NativeWriting;
 using CdBurner.Lithography;
 using CdBurner.Lithography.Calibration;
 using CdBurner.Lithography.DiscArt;
@@ -213,34 +215,98 @@ public static partial class CliCommandRunner
 
     /// <summary>
     /// An outer-files image keeps its file system in a second session near the end of the disc. Burned in one pass, the
-    /// drive reports one session starting at LBA 0, so a computer looks for the files at the start of the disc, finds
-    /// the picture, and shows no files. Until a two-session burn exists (picture session, then a files session built
-    /// for the drive's next writable address), such an image is refused here.
+    /// drive would report one session starting at LBA 0 and a computer would find the picture there and no files. So it
+    /// is burned in two sessions with direct drive commands (<see cref="PictureDiscTwoSessionBurner"/>): the picture
+    /// zone left open, then the files laid out again for the drive's next writable address, closing the disc.
     /// </summary>
-    private static void RefuseOuterFilesBurn(string image)
+    private static async Task<int> HandleDiscArtTwoSessionBurnAsync(CommandLineArgs cmd, string image, PictureDiscLayout layout,
+        TextWriter stdout, TextWriter stderr, IDiscDeviceService deviceService, IBurnEngineBackend burnEngine)
     {
-        string sidecar = image + ".disc-art.json";
-        if (!File.Exists(sidecar))
+        foreach (string flag in new[] { "windows-writer", "test-write", "test-first", "no-close", "overwrite" })
         {
-            return;
-        }
-
-        try
-        {
-            using var doc = System.Text.Json.JsonDocument.Parse(File.ReadAllText(sidecar));
-            if (doc.RootElement.TryGetProperty("filesPlacement", out var placement)
-                && string.Equals(placement.GetString(), "OuterFiles", StringComparison.OrdinalIgnoreCase))
+            if (cmd.HasFlag(flag))
             {
                 throw new CommandLineException(
-                    "This image has the picture inside and the files at the outer edge. Burning it needs two sessions "
-                    + "(picture first, then the files), which IgnisDisc cannot write yet; in one pass the files would not "
-                    + "show up on a computer. Generate it again without --files-outer (files inside, picture outside).");
+                    $"--{flag} does not apply to this image: the picture inside and the files at the outer edge are burned as two "
+                    + "sessions with direct drive commands on a blank DVD-R or DVD+R, and the second session closes the disc.");
             }
         }
-        catch (System.Text.Json.JsonException)
+
+        if (cmd.GetOption("layer-break") is not null)
         {
-            // An unreadable description changes nothing about how the image is burned.
+            throw new CommandLineException("--layer-break does not apply to this image: it is burned as two sessions on a single-layer DVD-R or DVD+R.");
         }
+
+        if (layout.Medium != PictureDiscMedium.Dvd)
+        {
+            throw new CommandLineException(
+                "This BD image has the files at the outer edge. Burning it needs two sessions, and direct drive commands add "
+                + "sessions to DVD-R and DVD+R only so far; in one pass the files would not show up on a computer. "
+                + "Generate it again without --files-outer (files inside, picture outside).");
+        }
+
+        string driveId = cmd.GetRequiredOption("drive", "--drive <id>");
+        var recorder = FindRecorder(deviceService, driveId);
+        var engine = new NativeDataBurnEngine(burnEngine, cmd.GetOption("log-dir"));
+        var status = recorder.QueryMediaStatus();
+        var options = new DataBurnOptions
+        {
+            Speed = ParseSpeed(cmd.GetOption("speed"), recorder, status.MediaType),
+            StrictVerify = cmd.HasFlag("strict-verify"),
+            DisableBufferUnderrunFree = cmd.HasFlag("no-burnfree"),
+        };
+        var postAction = ParsePostBurnAction(cmd);
+
+        if (!cmd.IsJson)
+        {
+            stdout.WriteLine("Burning in two sessions: the picture first (left open), then the files at the drive's next writable address.");
+        }
+
+        var burner = new PictureDiscTwoSessionBurner(new DataBurnService(engine));
+        PictureDiscTwoSessionResult result = await burner.BurnAsync(recorder, image, layout, options).ConfigureAwait(false);
+        ExecutePostBurnActionIfSucceeded(postAction, result.Success, recorder);
+
+        string? error = result.Success ? null
+            : result.NothingWritten && !result.ErrorMessage!.Contains("Nothing was written", StringComparison.Ordinal)
+                ? result.ErrorMessage + " Nothing was written to the disc."
+                : result.ErrorMessage;
+        if (cmd.IsJson)
+        {
+            WriteJsonResult(stdout, new
+            {
+                success = result.Success,
+                driveId = recorder.UniqueId,
+                isoPath = image,
+                twoSessions = true,
+                nothingWritten = result.NothingWritten,
+                pictureSectors = result.PictureSectors,
+                predictedFilesSessionStartLba = result.PredictedFilesSessionStartLba,
+                filesSessionStartLba = result.FilesSessionStartLba,
+                filesSessionSectors = result.FilesSessionSectors,
+                capacitySectors = result.CapacitySectors,
+                pictureVerified = result.PictureSession?.Verified ?? false,
+                filesVerified = result.FilesSession?.Verified ?? false,
+                warning = result.Warning,
+                directWrite = NativeDataJson(engine),
+                error,
+            });
+            return result.Success ? 0 : 1;
+        }
+
+        if (result.Success)
+        {
+            stdout.WriteLine("Two-session picture disc burned:");
+            stdout.WriteLine($"  Drive:          {recorder.UniqueId}");
+            stdout.WriteLine($"  Picture:        session 1, sectors 0 to {result.PictureSectors - 1:N0}, read back: {(result.PictureSession!.Verified ? "passed" : "no")}");
+            stdout.WriteLine($"  Files:          session 2, sectors {result.FilesSessionStartLba:N0} to {result.FilesSessionStartLba + result.FilesSessionSectors - 1:N0}, read back: {(result.FilesSession!.Verified ? "passed" : "no")}");
+            if (result.Warning != null) stdout.WriteLine($"  Note:           {result.Warning}");
+            WriteNativeDataSummary(stdout, engine);
+            return 0;
+        }
+
+        stderr.WriteLine($"Burn failed: {error}");
+        WriteNativeDataSummary(stderr, engine);
+        return 1;
     }
 
     private static Task<int> HandleDiscArtBurnAsync(
@@ -258,7 +324,11 @@ public static partial class CliCommandRunner
         switch (extension)
         {
             case ".iso":
-                RefuseOuterFilesBurn(image);
+                if (DiscArtImageBuilder.ReadOuterFilesLayout(image) is { } outer)
+                {
+                    return HandleDiscArtTwoSessionBurnAsync(cmd, image, outer, stdout, stderr, deviceService, burnEngine);
+                }
+
                 forwarded.Subcommand = "burn-iso";
                 forwarded.Options["iso"] = image;
                 return HandleBurnIsoAsync(forwarded, stdout, stderr, deviceService, burnEngine);
@@ -327,10 +397,15 @@ public static partial class CliCommandRunner
             stdout.WriteLine(layout.Placement == PictureDiscFilesPlacement.InnerFiles
                 ? $"  Files       : sectors 0 to {layout.VolumeEndLba - 1:N0} (inner), then {layout.GapSectorCount:N0} empty sectors"
                 : $"  Files       : sectors {layout.FilesSessionStartLba:N0} to {layout.VolumeEndLba - 1:N0} (outer session), after {layout.GapSectorCount:N0} empty sectors");
-            if (layout.Placement == PictureDiscFilesPlacement.OuterFiles)
+            if (layout.Placement == PictureDiscFilesPlacement.OuterFiles && layout.Medium != PictureDiscMedium.Dvd)
             {
-                stdout.WriteLine("  Note        : files at the outer edge need a two-session burn, which is not available yet;");
+                stdout.WriteLine("  Note        : files at the outer edge need two sessions, which are written on DVD-R and DVD+R only so far;");
                 stdout.WriteLine("                'disc-art burn' refuses this image. Leave out --files-outer to burn it now.");
+            }
+            else if (layout.Placement == PictureDiscFilesPlacement.OuterFiles)
+            {
+                stdout.WriteLine("  Note        : 'disc-art burn' writes this as two sessions with direct drive commands on a blank DVD-R");
+                stdout.WriteLine("                or DVD+R: the picture (left open), then the files at the drive's next writable address.");
             }
         }
 

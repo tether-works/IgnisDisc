@@ -357,6 +357,14 @@ one assembly with a clear provenance boundary. Nothing in it touches a drive.
   appended session at the end of the disc (ISO 9660 + Joliet only, as for every appended session; the volume space
   size then counts from LBA 0 as usual for a multisession disc, but no descriptor, directory or file extent lies
   below the session start). The picture comes in through a block callback, so any encoder can fill it.
+- Burning outer files: `CdBurner.Core.Burning.PictureDiscTwoSessionBurner` (used by `disc-art burn` when the image's
+  description says outer files). A computer reads the last session, so the picture zone (LBA 0 to its end) is written
+  as session 1 and left open, then the files are read out of the image's own session, laid out again with
+  `IsoUdfImageBuilder` (ISO 9660 + Joliet, no UDF) for the drive's next writable address and written as session 2,
+  which closes the disc; both are read back. Direct drive commands, blank single-layer DVD-R and DVD+R only. Before
+  the first WRITE the next address is predicted from the gaps measured on the GP60NB50 (DVD-R: first session at least
+  65,264 sectors, then 28,688; DVD+R: 2,048) and an image whose files would no longer fit is refused. `disc-art
+  generate` keeps 28,688 sectors between the picture and outer files on DVD for this reason.
 - Upstream's own audit (`docs/PHYSICAL_MODEL_AUDIT.md` at the pinned commit), fixed after the goldens were
   reproduced:
   - The `cd-80` preset (and the starting user preset) used 359,849 sectors over 24.5-56.8 mm at 1,200 mm/s, a

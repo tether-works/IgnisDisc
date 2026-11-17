@@ -54,6 +54,8 @@ public sealed class DiscArtViewTests : IDisposable
               ],
               "dvdPresets": [
                 { "id": "tiny-dvd", "displayName": "Tiny DVD", "description": "test", "totalSectors": 4096,
+                  "innerRadiusMm": 24, "outerRadiusMm": 58, "channelBitLengthNm": 133.3 },
+                { "id": "small-dvd", "displayName": "Small DVD", "description": "test", "totalSectors": 32768,
                   "innerRadiusMm": 24, "outerRadiusMm": 58, "channelBitLengthNm": 133.3 }
               ],
               "bluRayPresets": [
@@ -235,17 +237,20 @@ public sealed class DiscArtViewTests : IDisposable
         Assert.Equal(result.OutputPath, burned);
         Assert.True(studio.IsChecksumMatch, studio.VerificationStatusText);
 
-        // Files at the outer edge need a two-session burn: refused before any drive is touched.
+        // Files at the outer edge need a two-session burn, which the command line does: refused here before any drive
+        // is touched. (A disc larger than the tiny one: outer files keep room for the drive's gap between sessions.)
         string files = P("files");
         Directory.CreateDirectory(files);
         File.WriteAllText(Path.Combine(files, "README.TXT"), "picture disc with files");
+        Assert.True(page.SelectPreset("small-dvd"));
         page.FilesFolder = files;
         page.FilesOuter = true;
-        await GenerateFromPage(page, P("outer.iso"));
+        DiscArtResult outerImage = await GenerateFromPage(page, P("outer.iso"));
         burned = null;
         BurnOperationResult outer = await page.BurnAsync();
         Assert.False(outer.Success);
         Assert.Contains("two sessions", page.StatusMessage);
+        Assert.Contains($"disc-art burn --drive <id> --image \"{outerImage.OutputPath}\"", page.StatusMessage);
         Assert.Null(burned);
 
         // A CD picture track goes through the direct writer on the command line.

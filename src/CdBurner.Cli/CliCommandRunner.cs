@@ -3862,7 +3862,7 @@ public static partial class CliCommandRunner
             stdout.WriteLine("      --media cd|dvd|bd          Disc type. CD output is .wav (with a CUE sheet) or .raw; DVD and BD output is .iso.");
             stdout.WriteLine("      --picture <file.png>       The picture, mapped over the whole disc radius.");
             stdout.WriteLine("      --files <folder>           DVD/BD: put these files on the same disc (ISO 9660 + Joliet + UDF), then 2 MiB of empty sectors, then the picture.");
-            stdout.WriteLine("      --files-outer              Put the files at the outer end instead (second session, ISO 9660 + Joliet) and the picture from the start.");
+            stdout.WriteLine("      --files-outer              Put the files at the outer end instead (second session, ISO 9660 + Joliet) and the picture from the start; DVD keeps room for the drive's gap between sessions.");
             stdout.WriteLine("      --append-to <base.cue>     CD: add the picture as the last track of this audio or mixed-mode CUE (needs .wav output; at least one minute must remain).");
             stdout.WriteLine("      --label <text>             Volume label of the files (default DISC_ART).");
             stdout.WriteLine("      --tone photo|binary        Photo (default) dithers midtones; binary is plain black and white.");
@@ -3886,6 +3886,8 @@ public static partial class CliCommandRunner
             stdout.WriteLine();
             stdout.WriteLine("  disc-art burn --drive <id> --image <file.iso|.cue> [any burn-iso or burn-audio option] [--json]");
             stdout.WriteLine("      Burns the finished image. An .iso goes to burn-iso (its direct-writer default applies); a .cue (a CD picture track) goes to burn-audio --dao --native.");
+            stdout.WriteLine("      A DVD .iso with --files-outer is burned in two sessions with direct drive commands on a blank DVD-R or DVD+R: the picture, left open,");
+            stdout.WriteLine("      then the files laid out again for the drive's next writable address (closes the disc). Refused before writing when they no longer fit.");
             stdout.WriteLine();
             stdout.WriteLine("  disc-art calibrate target --media cd|dvd|bd --stage coarse|boundary|fine --output <file> [options] [--json]");
             stdout.WriteLine("      Writes a calibration target to burn and, next to it, its calibration record (<name>.calibration.json).");

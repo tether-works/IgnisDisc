@@ -85,6 +85,9 @@ public static class PictureDiscLayoutPlanner
     /// Lays out <paramref name="root"/> and a picture zone that fills the rest of a disc of
     /// <paramref name="discCapacitySectors"/> sectors.
     /// </summary>
+    /// <param name="outerFilesGapSectors">Outer files only: zero sectors kept between the picture and the files session,
+    /// at least <see cref="MinimumGapSectors"/>. A two-session burn needs room for the drive's own gap between sessions
+    /// (see <c>PictureDiscTwoSessionBurner.DvdFilesSessionReserveSectors</c>).</param>
     /// <exception cref="ArgumentException">The files contain sectors imported from an earlier session.</exception>
     /// <exception cref="InvalidOperationException">The files, the gap and at least one aligned picture block do not
     /// fit on the disc.</exception>
@@ -93,11 +96,13 @@ public static class PictureDiscLayoutPlanner
         IsoBuildOptions options,
         PictureDiscFilesPlacement placement,
         PictureDiscMedium medium,
-        int discCapacitySectors)
+        int discCapacitySectors,
+        int outerFilesGapSectors = MinimumGapSectors)
     {
         ArgumentNullException.ThrowIfNull(root);
         ArgumentNullException.ThrowIfNull(options);
         ArgumentOutOfRangeException.ThrowIfNegativeOrZero(discCapacitySectors);
+        ArgumentOutOfRangeException.ThrowIfLessThan(outerFilesGapSectors, MinimumGapSectors);
         if (HasImportedFiles(root))
         {
             throw new ArgumentException(
@@ -109,7 +114,7 @@ public static class PictureDiscLayoutPlanner
         return placement switch
         {
             PictureDiscFilesPlacement.InnerFiles => PlanInner(root, options, medium, align, discCapacitySectors),
-            PictureDiscFilesPlacement.OuterFiles => PlanOuter(root, options, medium, align, discCapacitySectors),
+            PictureDiscFilesPlacement.OuterFiles => PlanOuter(root, options, medium, align, discCapacitySectors, outerFilesGapSectors),
             _ => throw new ArgumentOutOfRangeException(nameof(placement), placement, "Unknown files placement."),
         };
     }
@@ -189,7 +194,7 @@ public static class PictureDiscLayoutPlanner
     }
 
     private static PictureDiscLayout PlanOuter(
-        CompilationDirectory root, IsoBuildOptions options, PictureDiscMedium medium, int align, int capacity)
+        CompilationDirectory root, IsoBuildOptions options, PictureDiscMedium medium, int align, int capacity, int gap)
     {
         // The session's size does not depend on where it starts, but confirm it at the chosen start: step back one
         // aligned block at a time until the session ends inside the disc.
@@ -201,11 +206,11 @@ public static class PictureDiscLayoutPlanner
             sessionStart -= align;
         }
 
-        int pictureEnd = AlignDown(sessionStart - MinimumGapSectors, align);
+        int pictureEnd = AlignDown(sessionStart - gap, align);
         if (sessionStart <= 0 || pictureEnd < align)
         {
             throw new InvalidOperationException(
-                $"The files take {sessionSectors:N0} sectors; with the {MinimumGapSectors:N0}-sector gap no aligned " +
+                $"The files take {sessionSectors:N0} sectors; with the {gap:N0}-sector gap no aligned " +
                 $"picture block fits on a disc of {capacity:N0} sectors.");
         }
 

@@ -783,8 +783,9 @@ public sealed class DiscArtViewModel : ObservableObject
 
         if (result.Plan.FilesLayout?.Placement == PictureDiscFilesPlacement.OuterFiles)
         {
-            return Refuse("This image has the files at the outer edge. Burning it needs two sessions, which IgnisDisc "
-                + "cannot write yet; in one pass the files would not show up on a computer. Generate it again with the files inside.");
+            return Refuse("This image has the files at the outer edge. Burning it needs two sessions (the picture, then the files), "
+                + "which this page cannot write yet; in one pass the files would not show up on a computer. Burn it on a blank DVD-R "
+                + $"or DVD+R with: ignisdisc-cli disc-art burn --drive <id> --image \"{result.OutputPath}\", or generate it again with the files inside.");
         }
 
         IsBusy = true;

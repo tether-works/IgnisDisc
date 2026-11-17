@@ -2,6 +2,8 @@ using System.IO;
 using System.Text.Json;
 using CdBurner.Cli;
 using CdBurner.Core.Abstractions;
+using CdBurner.Core.Iso;
+using CdBurner.Core.Primitives;
 using CdBurner.Hardware.Simulation;
 using CdBurner.Lithography.Imaging;
 using Xunit;
@@ -47,6 +49,8 @@ public sealed class DiscArtCliTests : IDisposable
               ],
               "dvdPresets": [
                 { "id": "tiny-dvd", "displayName": "Tiny DVD", "description": "test", "totalSectors": 4096,
+                  "innerRadiusMm": 24, "outerRadiusMm": 58, "channelBitLengthNm": 133.3 },
+                { "id": "small-dvd", "displayName": "Small DVD", "description": "test", "totalSectors": 32768,
                   "innerRadiusMm": 24, "outerRadiusMm": 58, "channelBitLengthNm": 133.3 }
               ],
               "bluRayPresets": [
@@ -216,19 +220,125 @@ public sealed class DiscArtCliTests : IDisposable
         // The text form prints the burn command for the person to copy.
         string second = P("art2.iso");
         (int textCode, string text, string textErr) = await RunAsync("disc-art", "generate", "--media", "dvd", "--picture", WritePicture(),
-            "--output", second, "--disc-presets-file", presets, "--disc-preset", "tiny-dvd", "--files", WriteFiles(), "--files-outer");
+            "--output", second, "--disc-presets-file", presets, "--disc-preset", "small-dvd", "--files", WriteFiles(), "--files-outer");
         Assert.True(textCode == 0, textErr + text);
         Assert.Contains($"Burn with: ignisdisc-cli disc-art burn --drive <id> --image \"{second}\"", text);
         Assert.Contains("(outer session)", text);
-        Assert.Contains("two-session burn", text);
+        Assert.Contains("two sessions", text);
 
-        // Burned in one pass the files would sit in no session a computer reads, so the burn is refused before any
-        // drive is touched.
+        // Burned in one pass the files would sit in no session a computer reads. The two-session burn covers DVD-R and
+        // DVD+R only, so a DVD-RW is refused before anything is written.
         using var medium = VirtualDiscMedium.CreateBlankDvdRw47();
         _recorder.InsertMedia(medium);
-        (int burnCode, string burnOut, string burnErr) = await RunAsync("disc-art", "burn", "--drive", "VDRV-01", "--image", second);
+        (int burnCode, string burnOut, string burnErr) = await RunAsync("disc-art", "burn", "--drive", "VDRV-01", "--image", second,
+            "--log-dir", P("logs"));
         Assert.True(burnCode == 1, burnErr + burnOut);
         Assert.Contains("two sessions", burnErr);
+        Assert.Contains("DVD-R and DVD+R", burnErr);
+        Assert.Contains("Nothing was written", burnErr);
+        Assert.True(medium.IsBlank);
+    }
+
+    /// <summary>
+    /// Generates an outer-files image (picture from sector 0, files at the end) and burns it on a simulated blank disc
+    /// through <c>disc-art burn</c>; returns the exit code, the JSON output, the generate plan and the image path.
+    /// </summary>
+    private async Task<(int Code, JsonDocument Burn, JsonElement Plan, string Image, string Error)> BurnOuterFilesAsync(
+        VirtualDiscMedium medium)
+    {
+        string iso = P($"outer-{Guid.NewGuid():N}.iso");
+        (int made, string madeOut, string madeErr) = await RunAsync("disc-art", "generate", "--media", "dvd", "--picture", WritePicture(),
+            "--output", iso, "--disc-presets-file", WritePresets(), "--disc-preset", "small-dvd", "--files", WriteFiles(), "--files-outer",
+            "--label", "OUTER_ART", "--json");
+        Assert.True(made == 0, madeErr + madeOut);
+        JsonElement plan;
+        using (JsonDocument generated = JsonDocument.Parse(madeOut))
+        {
+            plan = generated.RootElement.GetProperty("plan").Clone();
+        }
+
+        _recorder.InsertMedia(medium);
+        (int code, string output, string error) = await RunAsync(
+            "disc-art", "burn", "--drive", "VDRV-01", "--image", iso, "--log-dir", P("logs"), "--json");
+        return (code, JsonDocument.Parse(output), plan, iso, error);
+    }
+
+    [Fact]
+    public async Task Burn_OuterFiles_OnDvdPlusR_WritesTwoSessions_FilesReadFromTheSecond_PictureUntouched()
+    {
+        using var medium = new VirtualDiscMedium(DiscMediaType.DvdPlusR, 32_768);
+        var (code, burn, plan, iso, error) = await BurnOuterFilesAsync(medium);
+        using JsonDocument document = burn;
+        JsonElement root = document.RootElement;
+        Assert.True(code == 0, error + root);
+        Assert.True(root.GetProperty("success").GetBoolean());
+        Assert.True(root.GetProperty("twoSessions").GetBoolean());
+        Assert.True(root.GetProperty("pictureVerified").GetBoolean());
+        Assert.True(root.GetProperty("filesVerified").GetBoolean());
+
+        // DVD+R on the GP60NB50: the next session starts 2,048 sectors after the last one ends (measured 2026-11-13).
+        int pictureEnd = plan.GetProperty("pictureEndLba").GetInt32();
+        int start = root.GetProperty("filesSessionStartLba").GetInt32();
+        Assert.Equal(pictureEnd, root.GetProperty("pictureSectors").GetInt32());
+        Assert.Equal(pictureEnd + 2_048, start);
+        Assert.True(start < plan.GetProperty("files").GetProperty("filesSessionStartLba").GetInt32(),
+            "a DVD+R needs less room between the sessions than the image keeps");
+
+        Assert.Equal(2, medium.Sessions.Count);
+        Assert.Equal(start, medium.Sessions[1].StartLba);
+        Assert.True(medium.IsFinalized);
+        using (var reader = IsoImageReader.FromStream(medium.CreateReadStream(), sessionStartLba: start))
+        {
+            Assert.Equal("OUTER_ART", reader.VolumeLabel);
+            Assert.Equal(File.ReadAllBytes(Path.Combine(P("files"), "README.TXT")), reader.ReadFileBytes("/README.TXT"));
+            Assert.Equal(File.ReadAllBytes(Path.Combine(P("files"), "DATA.BIN")), reader.ReadFileBytes("/DATA.BIN"));
+        }
+
+        byte[] image = new byte[pictureEnd * 2048];
+        using (var source = File.OpenRead(iso))
+        {
+            source.ReadExactly(image);
+        }
+
+        byte[] disc = new byte[image.Length];
+        medium.ReadSectors(0, pictureEnd, disc, 2048);
+        Assert.True(image.AsSpan().SequenceEqual(disc), "the picture sectors on the disc differ from the image");
+    }
+
+    [Fact]
+    public async Task Burn_OuterFiles_OnASmallDvdMinusR_IsRefusedBeforeWriting()
+    {
+        // The image fits a DVD+R of this size, but a DVD-R starts the second session at 65,264 + 28,688 at the earliest.
+        using var medium = new VirtualDiscMedium(DiscMediaType.DvdMinusR, 32_768);
+        var (code, burn, _, _, _) = await BurnOuterFilesAsync(medium);
+        using JsonDocument document = burn;
+        JsonElement root = document.RootElement;
+        Assert.Equal(1, code);
+        Assert.False(root.GetProperty("success").GetBoolean());
+        Assert.True(root.GetProperty("nothingWritten").GetBoolean());
+        Assert.Equal(93_952, root.GetProperty("predictedFilesSessionStartLba").GetInt32());
+        Assert.Contains("no longer fit", root.GetProperty("error").GetString());
+        Assert.True(medium.IsBlank);
+        Assert.Empty(medium.Sessions);
+    }
+
+    [Fact]
+    public async Task Burn_OuterFiles_RefusesOptionsThatDoNotApply()
+    {
+        using var medium = new VirtualDiscMedium(DiscMediaType.DvdPlusR, 32_768);
+        string iso = P("outer-options.iso");
+        (int made, string madeOut, string madeErr) = await RunAsync("disc-art", "generate", "--media", "dvd", "--picture", WritePicture(),
+            "--output", iso, "--disc-presets-file", WritePresets(), "--disc-preset", "small-dvd", "--files", WriteFiles(), "--files-outer");
+        Assert.True(made == 0, madeErr + madeOut);
+        _recorder.InsertMedia(medium);
+        foreach (string flag in new[] { "--windows-writer", "--test-write", "--no-close" })
+        {
+            (int code, _, string error) = await RunAsync("disc-art", "burn", "--drive", "VDRV-01", "--image", iso, flag);
+            Assert.True(code == 1, flag);
+            Assert.Contains("two sessions", error);
+        }
+
+        Assert.True(medium.IsBlank);
     }
 
     [Fact]
