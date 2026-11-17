@@ -323,6 +323,41 @@ public sealed class AudioRipOptionsViewModelTests : IDisposable
         Assert.Contains("accurate", vm.RipReport);
     }
 
+    [Fact]
+    public async Task Rip_WithVerifyCtdb_RepairsUnreadableSectorsAndConfirmsWithAccurateRip()
+    {
+        var vm = await CreateAndBurnVirtualAudioCdAsync();
+        vm.LookupMetadata = false;
+        vm.VerifyAccurateRip = false;
+        vm.VerifyCtdb = false;
+        var baseline = await vm.RipAudioCdAsync("VDRV-01", Path.Combine(_tempDir, "Rip_RepairBase"));
+        Assert.True(baseline.Success, baseline.ErrorMessage);
+        byte[] cleanPcm = baseline.TrackInfos.OrderBy(t => t.AudioTrackIndex)
+            .SelectMany(t => WavFileCodec.DecodeToRedBookPcm(t.FilePath)).ToArray();
+        var server = new FakeCtdbServer(
+            cleanPcm,
+            baseline.CtdbDiscCrc!.Value.ToString("x8"),
+            baseline.TrackInfos.OrderBy(t => t.AudioTrackIndex).Select(t => t.AccurateRipV2).ToList());
+        using var client = new HttpClient(server);
+
+        // Two unreadable sectors in track 2 (LBA 75..224), zero-filled because "continue on unreadable" is on.
+        var medium = _deviceManager.GetVirtualRecorders().Single(r => r.UniqueId == "VDRV-01").CurrentMedium!;
+        medium.SimulatedBadLbas.Add(133);
+        medium.SimulatedBadLbas.Add(134);
+        vm.ContinueOnUnreadable = true;
+        vm.VerifyCtdb = true;
+        var rip = await vm.RipAudioCdAsync("VDRV-01", Path.Combine(_tempDir, "Rip_Repaired"), httpClient: client);
+
+        Assert.True(rip.Success, rip.ErrorMessage);
+        Assert.Equal(2, rip.BadSectorLbas.Count);
+        Assert.Contains("CTDB Repair:      repaired", vm.RipReport);
+        Assert.Contains("AccurateRip was contacted only to confirm this repair.", vm.RipReport);
+        Assert.Equal(cleanPcm, rip.TrackInfos.OrderBy(t => t.AudioTrackIndex)
+            .SelectMany(t => WavFileCodec.DecodeToRedBookPcm(t.FilePath)).ToArray());
+        Assert.Equal(baseline.CtdbDiscCrc, rip.CtdbDiscCrc);
+        Assert.Contains(server.Requests, u => u.Host == "p.cuetools.net");
+    }
+
     private sealed class SpyHttpHandler(Func<HttpRequestMessage, HttpResponseMessage> respond) : HttpMessageHandler
     {
         public List<Uri> Requests { get; } = [];

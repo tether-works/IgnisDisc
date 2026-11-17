@@ -408,6 +408,168 @@ public static class CueToolsDatabase
     }
 
     /// <summary>
+    /// Decodes an entry's inline <c>syndrome</c> attribute: the syndromes of symbol column 0 as little-endian
+    /// 16-bit values (at most <see cref="CtdbParityLayout.MaxNpar"/> are used). Returns null when the entry has none.
+    /// </summary>
+    public static ushort[]? DecodeEntrySyndrome(CtdbEntry entry)
+    {
+        ArgumentNullException.ThrowIfNull(entry);
+        if (string.IsNullOrWhiteSpace(entry.SyndromeBase64))
+        {
+            return null;
+        }
+
+        byte[] bytes;
+        try
+        {
+            bytes = Convert.FromBase64String(entry.SyndromeBase64.Trim());
+        }
+        catch (FormatException ex)
+        {
+            throw new InvalidDataException("CTDB entry has an invalid syndrome attribute.", ex);
+        }
+
+        int count = Math.Min(bytes.Length / 2, CtdbParityLayout.MaxNpar);
+        if (count < 2)
+        {
+            return null;
+        }
+
+        count -= count % 2;
+        var syndromes = new ushort[count];
+        for (int i = 0; i < count; i++)
+        {
+            syndromes[i] = (ushort)(bytes[2 * i] | (bytes[2 * i + 1] << 8));
+        }
+
+        return syndromes;
+    }
+
+    /// <summary>
+    /// Resolves an entry's <c>hasparity</c> value to the download address of its parity file. Relative paths are
+    /// resolved against <paramref name="baseUrl"/>; absolute addresses must be http(s) on a cuetools.net host.
+    /// Returns null when the address is missing or points anywhere else.
+    /// </summary>
+    public static Uri? ResolveParityUri(CtdbEntry entry, string baseUrl = DefaultBaseUrl)
+    {
+        ArgumentNullException.ThrowIfNull(entry);
+        string? raw = entry.HasParity?.Trim();
+        if (string.IsNullOrEmpty(raw))
+        {
+            return null;
+        }
+
+        Uri? uri;
+        if (raw.StartsWith('/'))
+        {
+            if (!Uri.TryCreate(baseUrl.TrimEnd('/') + raw, UriKind.Absolute, out uri))
+            {
+                return null;
+            }
+        }
+        else if (!Uri.TryCreate(raw, UriKind.Absolute, out uri))
+        {
+            return null;
+        }
+
+        bool httpScheme = uri.Scheme == Uri.UriSchemeHttp || uri.Scheme == Uri.UriSchemeHttps;
+        string host = uri.Host.ToLowerInvariant();
+        bool trustedHost = host == "cuetools.net" || host.EndsWith(".cuetools.net", StringComparison.Ordinal);
+        bool sameHostAsBase = Uri.TryCreate(baseUrl, UriKind.Absolute, out var baseUri) &&
+            string.Equals(baseUri.Host, uri.Host, StringComparison.OrdinalIgnoreCase);
+        return httpScheme && (trustedHost || sameHostAsBase) ? uri : null;
+    }
+
+    /// <summary>
+    /// Downloads the first <paramref name="npar"/> syndromes of every symbol column from an entry's parity file.
+    /// The file holds the syndromes index-major (all 11,760 columns of syndrome 0, then syndrome 1, ...), so a
+    /// range request for the first <c>npar × 11,760 × 2</c> bytes returns exactly that many syndromes per column.
+    /// The result is laid out <c>[column * npar + i]</c> and its column 0 is checked against the entry's inline
+    /// syndrome.
+    /// </summary>
+    /// <exception cref="InvalidDataException">The file is missing, the wrong size, or disagrees with the entry.</exception>
+    public static async Task<ushort[]> FetchParitySyndromesAsync(
+        HttpClient httpClient,
+        CtdbEntry entry,
+        int npar,
+        string? userAgent = null,
+        string baseUrl = DefaultBaseUrl,
+        CancellationToken cancellationToken = default)
+    {
+        ArgumentNullException.ThrowIfNull(httpClient);
+        ArgumentNullException.ThrowIfNull(entry);
+        if (npar is < 2 or > CtdbParityLayout.MaxNpar || npar % 2 != 0)
+        {
+            throw new ArgumentOutOfRangeException(nameof(npar));
+        }
+
+        var uri = ResolveParityUri(entry, baseUrl)
+            ?? throw new InvalidDataException("The CTDB entry has no parity file on a cuetools.net address.");
+        ushort[] inline = DecodeEntrySyndrome(entry)
+            ?? throw new InvalidDataException("The CTDB entry has no inline syndrome to check the parity file against.");
+
+        const int stride = CtdbParityLayout.Stride;
+        int expectedBytes = npar * stride * 2;
+
+        using var request = new HttpRequestMessage(HttpMethod.Get, uri);
+        request.Headers.TryAddWithoutValidation(
+            "User-Agent",
+            string.IsNullOrWhiteSpace(userAgent) ? MusicBrainzClient.DefaultUserAgent : userAgent);
+        request.Headers.Range = new RangeHeaderValue(0, expectedBytes - 1);
+
+        using var response = await httpClient
+            .SendAsync(request, HttpCompletionOption.ResponseHeadersRead, cancellationToken)
+            .ConfigureAwait(false);
+        if (response.StatusCode != HttpStatusCode.OK && response.StatusCode != HttpStatusCode.PartialContent)
+        {
+            throw new InvalidDataException($"CTDB parity download failed: HTTP {(int)response.StatusCode}.");
+        }
+
+        // A server that ignores the range sends the whole file (npar up to 32 = 752,640 bytes); read only what is needed.
+        long? declared = response.Content.Headers.ContentLength;
+        if (declared is long len && (len < expectedBytes || len > 32L * stride * 2))
+        {
+            throw new InvalidDataException($"CTDB parity file has an unexpected size ({len} bytes).");
+        }
+
+        var buffer = new byte[expectedBytes];
+        await using (var stream = await response.Content.ReadAsStreamAsync(cancellationToken).ConfigureAwait(false))
+        {
+            int read = 0;
+            while (read < expectedBytes)
+            {
+                int n = await stream.ReadAsync(buffer.AsMemory(read, expectedBytes - read), cancellationToken).ConfigureAwait(false);
+                if (n == 0)
+                {
+                    throw new InvalidDataException($"CTDB parity file ended after {read} of {expectedBytes} bytes.");
+                }
+
+                read += n;
+            }
+        }
+
+        var syndromes = new ushort[stride * npar];
+        for (int i = 0; i < npar; i++)
+        {
+            for (int column = 0; column < stride; column++)
+            {
+                int b = 2 * (i * stride + column);
+                syndromes[column * npar + i] = (ushort)(buffer[b] | (buffer[b + 1] << 8));
+            }
+        }
+
+        for (int i = 0; i < Math.Min(npar, inline.Length); i++)
+        {
+            if (syndromes[i] != inline[i])
+            {
+                throw new InvalidDataException("CTDB parity file does not match the entry it belongs to.");
+            }
+        }
+
+        return syndromes;
+    }
+
+    /// <summary>
     /// Fetches and parses CTDB entries for <paramref name="ids"/>. Returns an empty list on HTTP 404.
     /// </summary>
     public static async Task<IReadOnlyList<CtdbEntry>> FetchAsync(

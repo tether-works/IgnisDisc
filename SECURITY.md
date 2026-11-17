@@ -45,7 +45,10 @@ it:
 - **CUETools Database (CTDB) check** (audio CD ripping; *off by default*, only when you turn on *Verify with CTDB*
   in the rip options or Settings, or pass `--verify-ctdb` on the command line): the disc's table of contents
   (track start positions and lead-out) is sent to `db.cuetools.net` (`lookup2.php`) to download matching track and disc
-  CRC-32 entries. No audio or personal data is sent.
+  CRC-32 entries. No audio or personal data is sent. When the rip differs from the database, IgnisDisc downloads that
+  entry's repair data (at most 376 KB, from the `cuetools.net` address the entry names, usually `p.cuetools.net`) and,
+  if it found a fix, looks the disc up in AccurateRip as described above to confirm it, even when the AccurateRip check
+  is off. `--no-ctdb-repair` skips both.
 - **Optional tool downloads** (only when you click *Install FFmpeg (1-Click)* or *Install par2 (1-Click)*): the
   program is downloaded from its project's GitHub releases. The par2cmdline-turbo archive's SHA-256 is pinned in
   IgnisDisc and any other download is refused before it is unpacked; ffmpeg comes from BtbN's rolling `latest` LGPL

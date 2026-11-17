@@ -49,7 +49,7 @@ public static partial class CliCommandRunner
     private static readonly HashSet<string> KnownFlags = new(StringComparer.OrdinalIgnoreCase)
     {
         "json", "udf", "joliet", "verify", "close", "no-close", "raw", "full", "dao", "help", "h", "version", "v",
-        "lookup", "keep-wav", "continue-on-error", "verify-accuraterip", "verify-ctdb", "secure", "plan-only",
+        "lookup", "keep-wav", "continue-on-error", "verify-accuraterip", "verify-ctdb", "no-ctdb-repair", "secure", "plan-only",
         "overwrite", "strict-verify", "no-verify", "no-secure", "allow-damaged", "no-fill", "keep-folders",
         "generate-subtitles", "no-menu", "dual-layer", "fit-to-disc", "no-ffmpeg", "no-cd-text", "normalize", "peak-normalize", "rms-level",
         "no-burnfree", "append", "delete-backups", "confirm-shutdown", "windows-writer", "no-interleave"
@@ -2071,6 +2071,7 @@ public static partial class CliCommandRunner
         // AccurateRip: checksums were computed on the PCM during the rip, so this is independent of the output format.
         string? accurateRipStatus = null;
         var accurateRipTracks = new List<(AudioTrackRipInfo Info, AccurateRipTrackVerdict? Verdict)>();
+        IReadOnlyList<AccurateRipPressing>? accurateRipPressings = null;
         if (cmd.HasFlag("verify-accuraterip"))
         {
             if (ids == null)
@@ -2084,6 +2085,7 @@ public static partial class CliCommandRunner
                 {
                     var http = customHttpClient ?? (ownedHttp = new HttpClient { Timeout = TimeSpan.FromSeconds(15) });
                     var pressings = await AccurateRipDatabase.FetchAsync(http, ids).ConfigureAwait(false);
+                    accurateRipPressings = pressings;
                     accurateRipStatus = pressings.Count == 0 ? "not-in-database" : "checked";
                     foreach (var info in result.TrackInfos)
                     {
@@ -2113,6 +2115,7 @@ public static partial class CliCommandRunner
         string? ctdbStatus = null;
         (bool Matched, int Confidence, int TotalSubmissions)? ctdbDiscMatch = null;
         var ctdbTracks = new List<(AudioTrackRipInfo Info, CtdbTrackVerdict? Verdict)>();
+        CtdbRepairResult? ctdbRepair = null;
         if (cmd.HasFlag("verify-ctdb"))
         {
             if (ids == null || string.IsNullOrWhiteSpace(ids.CtdbToc))
@@ -2131,6 +2134,34 @@ public static partial class CliCommandRunner
                     {
                         ctdbDiscMatch = CueToolsDatabase.MatchDisc(entries, result.CtdbDiscCrc);
                     }
+
+                    // A rip that differs from CTDB is repaired from the entry's parity (unless --no-ctdb-repair).
+                    // AccurateRip is contacted to confirm only when a correction was found, and the WAV files are
+                    // only changed when AccurateRip then matches every corrected track.
+                    if (ctdbDiscMatch is { Matched: false } && result.CtdbDiscCrc != null && !cmd.HasFlag("no-ctdb-repair"))
+                    {
+                        var knownPressings = accurateRipPressings;
+                        ctdbRepair = await CtdbRepairService.RepairAsync(
+                            http,
+                            result,
+                            entries,
+                            ids.CtdbToc,
+                            knownPressings != null
+                                ? _ => Task.FromResult(knownPressings)
+                                : ct => AccurateRipDatabase.FetchAsync(http, ids, cancellationToken: ct)).ConfigureAwait(false);
+                        if (ctdbRepair.UpdatedRip is { } repairedRip)
+                        {
+                            result = repairedRip;
+                            ctdbDiscMatch = CueToolsDatabase.MatchDisc(entries, result.CtdbDiscCrc);
+                            if (accurateRipPressings is { Count: > 0 } arPressings)
+                            {
+                                accurateRipTracks = result.TrackInfos
+                                    .Select(i => (i, (AccurateRipTrackVerdict?)AccurateRipDatabase.Match(arPressings, i.AudioTrackIndex, i.AccurateRipV1, i.AccurateRipV2)))
+                                    .ToList();
+                            }
+                        }
+                    }
+
                     foreach (var info in result.TrackInfos)
                     {
                         ctdbTracks.Add((info, entries.Count == 0
@@ -2182,7 +2213,9 @@ public static partial class CliCommandRunner
             ? result.TrackInfos.Sum(t => t.UnreadableSectors)
             : Math.Max(result.TrackInfos.Sum(t => t.UnreadableSectors), result.BadSectorLbas.Count);
         bool repairFailed = repairFromRecovery && result.RecoveryRepair is { RecoverySessionFound: true, AllTracksVerified: false };
-        bool complete = !repairFailed && suspectTotal + unreadableTotal == 0;
+        // A CTDB repair confirmed by AccurateRip replaced every wrong sample, so the rip is clean.
+        bool ctdbRepaired = ctdbRepair?.Status == CtdbRepairStatus.Repaired;
+        bool complete = ctdbRepaired || (!repairFailed && suspectTotal + unreadableTotal == 0);
         int exitCode = complete ? 0 : 2;
 
         if (cmd.IsJson)
@@ -2260,6 +2293,24 @@ public static partial class CliCommandRunner
                         totalSubmissions = t.Verdict?.TotalSubmissions
                     }).ToList()
                 },
+                ctdbRepair = ctdbRepair == null ? null : new
+                {
+                    status = ctdbRepair.StatusCode,
+                    message = ctdbRepair.Message,
+                    entryId = ctdbRepair.EntryId,
+                    offsetSamples = ctdbRepair.OffsetSamples,
+                    correctedSamples = ctdbRepair.CorrectedSamples,
+                    correctedFolder = ctdbRepair.CorrectedFolder,
+                    accurateRipContacted = ctdbRepair.AccurateRipContacted,
+                    tracks = ctdbRepair.CorrectedTracks.Select(t => new
+                    {
+                        trackNumber = t.TrackNumber,
+                        correctedSamples = t.CorrectedSamples,
+                        path = t.CorrectedPath,
+                        accurateRipAccurate = t.AccurateRip?.IsAccurate,
+                        accurateRipConfidence = t.AccurateRip?.Confidence
+                    }).ToList()
+                },
                 error = (string?)null
             };
 
@@ -2327,6 +2378,18 @@ public static partial class CliCommandRunner
                         ? $"accurate (confidence {verdict.Confidence}/{verdict.TotalSubmissions})"
                         : $"NOT accurate (0/{verdict.TotalSubmissions} submissions match)";
                 stdout.WriteLine($"    Track {info.TrackNumber:D2}: {line}  [ctdb {info.CtdbTrackCrc:x8}]");
+            }
+        }
+        if (ctdbRepair != null)
+        {
+            stdout.WriteLine($"  CTDB Repair:      {ctdbRepair.StatusCode} - {ctdbRepair.Message}");
+            foreach (string line in ctdbRepair.DescribeTracks())
+            {
+                stdout.WriteLine($"    {line}");
+            }
+            if (ctdbRepair.AccurateRipContacted && !cmd.HasFlag("verify-accuraterip"))
+            {
+                stdout.WriteLine("    AccurateRip was contacted only to confirm this repair.");
             }
         }
         if (!string.IsNullOrEmpty(warning))
@@ -3330,7 +3393,7 @@ public static partial class CliCommandRunner
         stdout.WriteLine("      Makes machine-generated subtitles for a movie (FFmpeg + whisper.cpp). Fast on an NVIDIA GPU, much slower on the processor; names are often misheard.");
         stdout.WriteLine("  rip --drive <id> --output <file.iso|file.bin> [--raw] [--json]");
         stdout.WriteLine("      Rips optical disc to an ISO or raw BIN+CUE image.");
-        stdout.WriteLine("  rip-audio --drive <id> --output <folder> [--format wav|flac|mp3|opus|aac] [--bitrate <kbps>] [--tracks 1,3,5] [--lookup] [--keep-wav] [--continue-on-error] [--read-offset <samples>] [--verify-accuraterip] [--verify-ctdb] [--no-secure] [--repair] [--json]");
+        stdout.WriteLine("  rip-audio --drive <id> --output <folder> [--format wav|flac|mp3|opus|aac] [--bitrate <kbps>] [--tracks 1,3,5] [--lookup] [--keep-wav] [--continue-on-error] [--read-offset <samples>] [--verify-accuraterip] [--verify-ctdb] [--no-ctdb-repair] [--no-secure] [--repair] [--json]");
         stdout.WriteLine("      Rips Red Book Audio CD to WAV, FLAC, MP3, Opus or AAC (FLAC, MP3, Opus need the optional ffmpeg; AAC uses the Windows encoder) with CD-Text and optional MusicBrainz lookup. Exit code 2 when sectors may be wrong (still suspect or unreadable).");
         stdout.WriteLine("  copy-disc --source <id> [--target <id>] [--copies <n>] [--speed <X|max>] [--raw] [--native [--log-dir <folder>]] [--allow-suspect] [--keep-image <folder>] [--wait-minutes <n>] [--json]");
         stdout.WriteLine("      Copies a disc, with one drive or two. With one drive (or for each further copy) the tray opens and the copy waits for a blank disc.");
@@ -3435,7 +3498,7 @@ public static partial class CliCommandRunner
         {
             stdout.WriteLine(LegalBanner.VersionNotice);
             stdout.WriteLine();
-            stdout.WriteLine("  rip-audio --drive <id> --output <folder> [--format wav|flac|mp3|opus|aac] [--bitrate <kbps>] [--tracks 1,3,5] [--lookup] [--keep-wav] [--continue-on-error] [--read-offset <samples>] [--verify-accuraterip] [--verify-ctdb] [--no-secure] [--repair] [--cover <image>] [--no-replaygain] [--json]");
+            stdout.WriteLine("  rip-audio --drive <id> --output <folder> [--format wav|flac|mp3|opus|aac] [--bitrate <kbps>] [--tracks 1,3,5] [--lookup] [--keep-wav] [--continue-on-error] [--read-offset <samples>] [--verify-accuraterip] [--verify-ctdb] [--no-ctdb-repair] [--no-secure] [--repair] [--cover <image>] [--no-replaygain] [--json]");
             stdout.WriteLine("      Rips Red Book Audio CD to WAV, FLAC, MP3, Opus or AAC (FLAC, MP3, Opus need the optional ffmpeg; AAC uses the Windows encoder) with CD-Text and optional MusicBrainz lookup. Exit code 2 when sectors may be wrong (still suspect or unreadable).");
             stdout.WriteLine("      --repair checks and repairs damaged samples from session 2 PAR2 recovery data on Enhanced CDs.");
             stdout.WriteLine("      FLAC files get ReplayGain 2.0 tags (unless --no-replaygain) and, with --cover, embedded front cover art.");

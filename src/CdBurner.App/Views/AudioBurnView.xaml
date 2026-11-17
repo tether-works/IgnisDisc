@@ -723,7 +723,7 @@
                                           IsChecked="{Binding VerifyCtdb}"
                                           Foreground="{DynamicResource TextPrimaryBrush}"
                                           Margin="0,2,20,2"
-                                          ToolTip="Opt-in: cross-reference extracted track and disc CRCs with the online CUETools Database (db.cuetools.net)." />
+                                          ToolTip="Opt-in: checks the ripped tracks against the online CUETools Database (db.cuetools.net). If the rip differs, IgnisDisc downloads the entry's repair data and keeps the fix only when AccurateRip confirms it." />
                                 <CheckBox Content="Continue past unreadable sectors"
                                           AutomationProperties.Name="Continue past unreadable sectors"
                                           IsChecked="{Binding ContinueOnUnreadable}"

@@ -113,7 +113,11 @@ IgnisDisc bundles two bitmap fonts as embedded resources in `CdBurner.Lithograph
 The CUETools Database (`CTDB`) TOCID, sample-window CRC-32 calculation, and `lookup2.php` v3 XML client in
 `src/CdBurner.Core/Audio/CueToolsDatabase.cs` and `src/CdBurner.Core/Audio/DiscIdCalculator.cs` are clean-room
 reimplementations of the algorithms and wire protocol from [CUETools](https://github.com/gchudov/cuetools.net)
-(Copyright (C) 2008–2025 Grigory Chudov, licensed under `GPL-2.0-or-later`).
+(Copyright (C) 2008–2025 Grigory Chudov, licensed under `GPL-2.0-or-later`). The CTDB parity layout used for repair
+in `src/CdBurner.Core/Audio/CtdbParity.cs` and `src/CdBurner.Core/Audio/CtdbRepairService.cs` (GF(2^16) with
+polynomial 0x1100B, 11,760-sample columns, the syndrome file format) follows the same project's `CUETools.Parity`,
+`CUETools.AccurateRip` and `CUETools.CTDB` sources; the Reed-Solomon decoder itself is a standard
+Berlekamp-Massey and Forney implementation written for IgnisDisc.
 
 ## Online services (optional, 1-click lookup & configurable defaults)
 

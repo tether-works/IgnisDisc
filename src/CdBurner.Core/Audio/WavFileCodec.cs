@@ -188,6 +188,32 @@ public static class WavFileCodec
     }
 
     /// <summary>
+    /// Returns the byte offset and length of the PCM data chunk of a WAVE file that is already in
+    /// Red Book format (44,100 Hz, 16-bit integer PCM, 2 channels). Used to read or patch samples in place.
+    /// </summary>
+    /// <exception cref="InvalidDataException">The file is not a Red Book PCM WAVE file.</exception>
+    public static (long Offset, long Length) LocateRedBookPcmData(Stream stream)
+    {
+        ArgumentNullException.ThrowIfNull(stream);
+        if (!stream.CanSeek)
+        {
+            throw new ArgumentException("The stream must be seekable.", nameof(stream));
+        }
+
+        stream.Position = 0;
+        using var reader = new BinaryReader(stream, Encoding.UTF8, leaveOpen: true);
+        var parsed = ParseWavHeader(reader, stream);
+        if (parsed.IsFloat || parsed.BitsPerSample != 16 || parsed.Channels != 2 || parsed.SampleRate != 44100)
+        {
+            throw new InvalidDataException(
+                $"Expected 44,100 Hz 16-bit stereo PCM, found {parsed.SampleRate} Hz {parsed.BitsPerSample}-bit {parsed.Channels}-channel.");
+        }
+
+        long length = Math.Min(parsed.DataSize, Math.Max(0, stream.Length - parsed.DataOffset));
+        return (parsed.DataOffset, length - (length % 4));
+    }
+
+    /// <summary>
     /// Decodes a RIFF WAVE file into canonical Red Book PCM bytes.
     /// </summary>
     public static byte[] DecodeToRedBookPcm(string filePath)

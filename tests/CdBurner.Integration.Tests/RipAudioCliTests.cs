@@ -679,6 +679,56 @@ public sealed class RipAudioCliTests : IAsyncLifetime, IDisposable
         Assert.Equal(7, ctdbObj.GetProperty("discConfidence").GetInt32());
     }
 
+    [Fact]
+    public async Task RipAudio_RepairsUnreadableSectorsFromCtdbParity_AndConfirmsWithAccurateRip()
+    {
+        // 1. Clean reference rip, no network.
+        string outClean = Path.Combine(_tempDir, "cli-ctdb-clean");
+        using var offline = new HttpClient(new SpyHttpHandler(_ => new HttpResponseMessage(HttpStatusCode.NotFound)));
+        var (stdoutClean, stderrClean) = CreateStringWriters();
+        Assert.Equal(0, await CliCommandRunner.RunAsync(
+            ["rip-audio", "--drive", "VDRV-01", "--output", outClean, "--json"],
+            stdoutClean, stderrClean, _deviceService, _burnEngine, offline));
+        using var cleanDoc = ParseJsonOutput(stdoutClean);
+        var clean = cleanDoc.RootElement;
+        string discCrc = clean.GetProperty("ctdbDiscCrc").GetString()!.ToLowerInvariant();
+        byte[] cleanPcm = TrackWavs(clean).SelectMany(WavFileCodec.DecodeToRedBookPcm).ToArray();
+        var arV2 = clean.GetProperty("trackChecksums").EnumerateArray()
+            .Select(t => Convert.ToUInt32(t.GetProperty("accurateRipV2").GetString(), 16))
+            .ToArray();
+
+        // 2. A CTDB entry with parity for the clean audio, and an AccurateRip pressing that matches it.
+        var spy = new FakeCtdbServer(cleanPcm, discCrc, arV2);
+        using var online = new HttpClient(spy);
+
+        // 3. Two unreadable sectors in track 2 (LBA 50..124), zero-filled by --continue-on-error.
+        _medium.SimulatedBadLbas.Add(83);
+        _medium.SimulatedBadLbas.Add(84);
+        string outDamaged = Path.Combine(_tempDir, "cli-ctdb-damaged");
+        var (stdout, stderr) = CreateStringWriters();
+        int exit = await CliCommandRunner.RunAsync(
+            ["rip-audio", "--drive", "VDRV-01", "--output", outDamaged, "--continue-on-error", "--verify-ctdb", "--json"],
+            stdout, stderr, _deviceService, _burnEngine, online);
+
+        using var doc = ParseJsonOutput(stdout);
+        var root = doc.RootElement;
+        Assert.Equal(2, root.GetProperty("badSectors").GetArrayLength());
+        var repair = root.GetProperty("ctdbRepair");
+        Assert.Equal("repaired", repair.GetProperty("status").GetString());
+        Assert.True(repair.GetProperty("accurateRipContacted").GetBoolean());
+        Assert.Equal(2, repair.GetProperty("tracks")[0].GetProperty("trackNumber").GetInt32());
+        Assert.True(root.GetProperty("ctdb").GetProperty("discAccurate").GetBoolean());
+        Assert.Equal(0, exit); // a confirmed repair is a clean rip
+        Assert.Equal(cleanPcm, TrackWavs(root).SelectMany(WavFileCodec.DecodeToRedBookPcm).ToArray());
+        Assert.Contains(spy.Requests, u => u.Host == "www.accuraterip.com");
+        Assert.False(Directory.Exists(Path.Combine(outDamaged, CtdbRepairService.CorrectedFolderName)));
+
+        static IEnumerable<string> TrackWavs(JsonElement json) => json.GetProperty("files").EnumerateArray()
+            .Select(f => f.GetString()!)
+            .Where(f => f.EndsWith(".wav", StringComparison.OrdinalIgnoreCase) && !Path.GetFileName(f).StartsWith("00", StringComparison.Ordinal))
+            .OrderBy(f => f, StringComparer.Ordinal);
+    }
+
     private sealed class SpyHttpHandler(Func<HttpRequestMessage, HttpResponseMessage> respond) : HttpMessageHandler
     {
         public List<Uri> Requests { get; } = [];

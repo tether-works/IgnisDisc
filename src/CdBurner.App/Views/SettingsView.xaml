@@ -317,7 +317,7 @@
                     <CheckBox Content="Verify ripped Audio CD tracks against CUETools Database (CTDB) by default (strictly opt-in)"
                               AutomationProperties.Name="Verify ripped Audio CD tracks against CUETools Database by default"
                               IsChecked="{Binding VerifyCtdbByDefault}"
-                              ToolTip="Opt-in: sends the disc's table of contents to db.cuetools.net to verify extracted track and disc CRCs."
+                              ToolTip="Opt-in: sends the disc's table of contents to db.cuetools.net to verify extracted track and disc CRCs. A rip that differs is repaired from the database's repair data and confirmed with AccurateRip."
                               Margin="0,0,0,12" />
 
                     <!-- Opt-in Checkbox -->

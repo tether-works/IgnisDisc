@@ -2666,32 +2666,13 @@ public class AudioBurnViewModel : ObservableObject, IDisposable
             progress.Close(); // a late progress report must not overwrite the final status line
             LastRipResult = ripResult;
 
-            string? conversionNote = null;
-            if (ripResult.Success && SelectedRipFormat != AudioRipFormat.Wav)
-            {
-                StatusMessage = $"Converting tracks to {AudioRipFormats.DisplayName(SelectedRipFormat)}...";
-                try
-                {
-                    var converted = await transcoder.TranscodeAsync(ripResult, transcodeSettings, coverBytes, coverMime, activeToken);
-                    ripResult = AudioRipResultWithFiles(ripResult, converted.Files);
-                    if (converted.Warnings.Count > 0)
-                    {
-                        conversionNote = string.Join(" ", converted.Warnings);
-                    }
-                }
-                catch (Exception ex) when (ex is InvalidOperationException or IOException or System.Runtime.InteropServices.COMException)
-                {
-                    conversionNote = $"Converting to {AudioRipFormats.DisplayName(SelectedRipFormat)} failed: {ex.Message} The WAV files were kept.";
-                }
-                LastRipResult = ripResult;
-            }
-
             string metadataSource = metadataOverride != null
                 ? "musicbrainz"
                 : (ripResult.CdText != null ? "cd-text" : "none");
 
             string? accurateRipStatus = null;
             var accurateRipTracks = new List<(AudioTrackRipInfo Info, AccurateRipTrackVerdict? Verdict)>();
+            IReadOnlyList<AccurateRipPressing>? accurateRipPressings = null;
 
             if (ripResult.Success && VerifyAccurateRip)
             {
@@ -2706,6 +2687,7 @@ public class AudioBurnViewModel : ObservableObject, IDisposable
                     {
                         var http = httpClient ?? (ownedHttp = new HttpClient { Timeout = TimeSpan.FromSeconds(15) });
                         var pressings = await AccurateRipDatabase.FetchAsync(http, ids, cancellationToken: activeToken).ConfigureAwait(false);
+                        accurateRipPressings = pressings;
                         accurateRipStatus = pressings.Count == 0 ? "not-in-database" : "checked";
                         foreach (var info in ripResult.TrackInfos)
                         {
@@ -2740,6 +2722,7 @@ public class AudioBurnViewModel : ObservableObject, IDisposable
             string? ctdbStatus = null;
             (bool Matched, int Confidence, int TotalSubmissions)? ctdbDiscMatch = null;
             var ctdbTracks = new List<(AudioTrackRipInfo Info, CtdbTrackVerdict? Verdict)>();
+            CtdbRepairResult? ctdbRepair = null;
 
             if (ripResult.Success && VerifyCtdb)
             {
@@ -2759,12 +2742,46 @@ public class AudioBurnViewModel : ObservableObject, IDisposable
                         {
                             ctdbDiscMatch = CueToolsDatabase.MatchDisc(entries, ripResult.CtdbDiscCrc);
                         }
+
+                        // A rip that differs from CTDB is repaired from the entry's parity; AccurateRip is contacted to
+                        // confirm only when a correction was found, and the rip is only changed when it then matches.
+                        if (ctdbDiscMatch is { Matched: false } && ripResult.CtdbDiscCrc != null)
+                        {
+                            StatusMessage = "The rip differs from the CUETools database; trying to repair it from CTDB parity...";
+                            var knownPressings = accurateRipPressings;
+                            ctdbRepair = await CtdbRepairService.RepairAsync(
+                                http,
+                                ripResult,
+                                entries,
+                                ids.CtdbToc,
+                                knownPressings != null
+                                    ? _ => Task.FromResult(knownPressings)
+                                    : ct => AccurateRipDatabase.FetchAsync(http, ids, cancellationToken: ct),
+                                cancellationToken: activeToken).ConfigureAwait(false);
+                            if (ctdbRepair.UpdatedRip is { } repairedRip)
+                            {
+                                ripResult = repairedRip;
+                                LastRipResult = ripResult;
+                                ctdbDiscMatch = CueToolsDatabase.MatchDisc(entries, ripResult.CtdbDiscCrc);
+                                if (accurateRipPressings is { Count: > 0 } arPressings)
+                                {
+                                    accurateRipTracks = ripResult.TrackInfos
+                                        .Select(i => (i, (AccurateRipTrackVerdict?)AccurateRipDatabase.Match(arPressings, i.AudioTrackIndex, i.AccurateRipV1, i.AccurateRipV2)))
+                                        .ToList();
+                                }
+                            }
+                        }
+
                         foreach (var info in ripResult.TrackInfos)
                         {
                             ctdbTracks.Add((info, entries.Count == 0
                                 ? null
                                 : CueToolsDatabase.MatchTrack(entries, info.AudioTrackIndex, info.CtdbTrackCrc, ripResult.CtdbDiscCrc)));
                         }
+                    }
+                    catch (OperationCanceledException) when (activeToken.IsCancellationRequested)
+                    {
+                        throw;
                     }
                     catch (Exception ex) when (ex is HttpRequestException or TaskCanceledException or InvalidDataException)
                     {
@@ -2781,6 +2798,27 @@ public class AudioBurnViewModel : ObservableObject, IDisposable
                         ownedHttp?.Dispose();
                     }
                 }
+            }
+
+            // Convert only after verification and any CTDB repair, which work on the ripped WAV files.
+            string? conversionNote = null;
+            if (ripResult.Success && SelectedRipFormat != AudioRipFormat.Wav)
+            {
+                StatusMessage = $"Converting tracks to {AudioRipFormats.DisplayName(SelectedRipFormat)}...";
+                try
+                {
+                    var converted = await transcoder.TranscodeAsync(ripResult, transcodeSettings, coverBytes, coverMime, activeToken);
+                    ripResult = AudioRipResultWithFiles(ripResult, converted.Files);
+                    if (converted.Warnings.Count > 0)
+                    {
+                        conversionNote = string.Join(" ", converted.Warnings);
+                    }
+                }
+                catch (Exception ex) when (ex is InvalidOperationException or IOException or System.Runtime.InteropServices.COMException)
+                {
+                    conversionNote = $"Converting to {AudioRipFormats.DisplayName(SelectedRipFormat)} failed: {ex.Message} The WAV files were kept.";
+                }
+                LastRipResult = ripResult;
             }
 
             var sb = new StringBuilder();
@@ -2846,6 +2884,18 @@ public class AudioBurnViewModel : ObservableObject, IDisposable
                                 ? $"accurate (confidence {verdict.Confidence}/{verdict.TotalSubmissions})"
                                 : $"NOT accurate (0/{verdict.TotalSubmissions} submissions match)";
                         sb.AppendLine($"    Track {info.TrackNumber:D2}: {line}  [ctdb {info.CtdbTrackCrc:x8}]");
+                    }
+                }
+                if (ctdbRepair != null)
+                {
+                    sb.AppendLine($"  CTDB Repair:      {ctdbRepair.StatusCode} - {ctdbRepair.Message}");
+                    foreach (string line in ctdbRepair.DescribeTracks())
+                    {
+                        sb.AppendLine($"    {line}");
+                    }
+                    if (ctdbRepair.AccurateRipContacted && !VerifyAccurateRip)
+                    {
+                        sb.AppendLine("    AccurateRip was contacted only to confirm this repair.");
                     }
                 }
                 if (!string.IsNullOrEmpty(warning))
