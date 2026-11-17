@@ -53,7 +53,7 @@ public static partial class CliCommandRunner
         "overwrite", "strict-verify", "no-verify", "no-secure", "allow-damaged", "no-fill", "keep-folders",
         "generate-subtitles", "no-menu", "dual-layer", "fit-to-disc", "no-ffmpeg", "no-cd-text", "normalize", "peak-normalize", "rms-level",
         "no-burnfree", "append", "delete-backups", "confirm-shutdown", "windows-writer", "no-interleave",
-        "no-cover-lookup", "no-folder-image", "recursive"
+        "no-cover-lookup", "no-folder-image", "recursive", "no-rim"
     };
 
     private static void WriteJsonResult(TextWriter stdout, object payload)
@@ -232,7 +232,7 @@ public static partial class CliCommandRunner
             "burn-queue" or "burnqueue" => await HandleBurnQueueAsync(cmd, stdout, stderr, deviceService, burnEngine).ConfigureAwait(false),
             "book-type" or "booktype" => HandleBookTypeCommand(cmd, stdout, stderr, deviceService),
             "repair-par2" or "repairpar2" => await HandleRepairPar2Async(cmd, stdout, stderr).ConfigureAwait(false),
-            "rosetta" or "rosetta-ladder" or "rosettaladder" => HandleRosettaCommand(cmd, stdout, stderr),
+            "rosetta" or "rosetta-ladder" or "rosettaladder" => await HandleRosettaCommandAsync(cmd, stdout, stderr, deviceService, burnEngine).ConfigureAwait(false),
             "disc-art" or "discart" => await HandleDiscArtCommandAsync(cmd, stdout, stderr, deviceService, burnEngine).ConfigureAwait(false),
             _ => throw new CommandLineException($"Unknown command '{cmd.Subcommand}'. Use --help for usage information.")
         };
@@ -3586,6 +3586,10 @@ public static partial class CliCommandRunner
         stdout.WriteLine("      Verifies and repairs a folder in place from its PAR2 recovery set (keeps backup files unless --delete-backups).");
         stdout.WriteLine("  rosetta ladder --media dvd --output <file.iso> [--json-output <file.json>] [--disc-preset <id>] [--start-angle <deg>] [--plan-only] [--json]");
         stdout.WriteLine("      Generates a DVD-R optical resolution-ladder image (250x375 down to 13x17 um across inner, middle, and outer radii) plus a JSON manifest of rung positions.");
+        stdout.WriteLine("  rosetta build --text <folder> --output <file.iso> [--title <text>] [--date yyyy-mm-dd] [--files <folder>] [--cells hobbyist|high-density|<rung id>] [--pages-radius <mm>] [--redundancy <0-100>] [--no-fill] [--no-rim] [--disc-preset <id>] [--plan-only] [--overwrite] [--json]");
+        stdout.WriteLine("      Makes a hybrid Rosetta DVD-R image: the text, a page index and optional files with PAR2 recovery data inside r = 38 mm, a 2 MiB zero gap, then the text as microscope-readable pages and the rim header.");
+        stdout.WriteLine("  rosetta burn --drive <id> --image <file.iso> [any burn-iso option] [--json]");
+        stdout.WriteLine("      Burns an image made by 'rosetta build' (forwards to burn-iso).");
         stdout.WriteLine("  disc-art generate --media cd|dvd|bd --picture <file.png> --output <file> [--files <folder> [--files-outer]] [--append-to <base.cue>] [--label <text>] [--tone photo|binary] [--start-angle <deg>] [--read-compat] [--no-interleave] [--plan-only] [--overwrite] [--disc-preset <id>] [--drive-model <text> --media-id <text>] [--json]");
         stdout.WriteLine("      Draws a picture in the data sectors of a DVD or BD image (optionally with files on the same disc) or makes a CD picture track, with its description file for the preview.");
         stdout.WriteLine("  disc-art preview --image <file.iso|.wav|.raw> --output <file.png> [--size <px>] [--json]");
@@ -3827,6 +3831,28 @@ public static partial class CliCommandRunner
             stdout.WriteLine("      --disc-presets-file <p>  Optional user presets JSON file to merge.");
             stdout.WriteLine("      --start-angle <deg>      Optional angular offset in degrees (default 0).");
             stdout.WriteLine("      --plan-only              Write only the JSON manifest without writing the .iso.");
+            stdout.WriteLine();
+            stdout.WriteLine("  rosetta build --text <folder> --output <file.iso> [options] [--json]");
+            stdout.WriteLine("      Makes a hybrid Rosetta DVD-R image. Inside the pages' inner radius: an archive volume (ISO 9660 + Joliet + UDF)");
+            stdout.WriteLine("      with the text files, a page index (which page and tile holds which document), optional files, checksum");
+            stdout.WriteLine("      manifests and PAR2 recovery data. Then at least 2 MiB of zero sectors, then the same text as pages to read");
+            stdout.WriteLine("      with a microscope, and the rim header (title, date, SHA-256 prefix). A computer sees only the archive volume.");
+            stdout.WriteLine("      --text <folder>          The .txt and .md files (UTF-8) at the top of the folder, in name order.");
+            stdout.WriteLine("      --output, --out <path>   Destination .iso (a <path>.rosetta.json description is written next to it).");
+            stdout.WriteLine("      --title <text>           Archive title (default: the text folder's name).");
+            stdout.WriteLine("      --date yyyy-mm-dd        Archive date (default: today, UTC).");
+            stdout.WriteLine("      --files <folder>         Extra files for the archive volume, kept under their own paths.");
+            stdout.WriteLine("      --cells <id>             Glyph cell preset: hobbyist (100x150 um, default), high-density (26x34 um) or a ladder rung id.");
+            stdout.WriteLine("      --pages-radius <mm>      Radius where the pages begin (default 38); the archive and its gap end before it.");
+            stdout.WriteLine("      --redundancy <0-100>     Minimum PAR2 recovery data in percent (default 10; needs par2). 0: manifests only.");
+            stdout.WriteLine("      --no-fill                Do not grow the recovery data to fill the room inside the pages' radius.");
+            stdout.WriteLine("      --no-rim                 Leave out the rim header.");
+            stdout.WriteLine("      --disc-preset <id>       DVD geometry preset (default dvd-5-120mm), or --drive-model/--media-id for a saved calibration.");
+            stdout.WriteLine("      --plan-only              Print the layout and capacities without writing anything.");
+            stdout.WriteLine("      CD-R hybrid discs come later (after the CD picture port, with cells of at least 50x75 um).");
+            stdout.WriteLine();
+            stdout.WriteLine("  rosetta burn --drive <id> --image <file.iso> [any burn-iso option] [--json]");
+            stdout.WriteLine("      Burns an image made by 'rosetta build' with burn-iso. Check the disc later with 'recover --drive <id> --out <folder>'.");
             return;
         }
 

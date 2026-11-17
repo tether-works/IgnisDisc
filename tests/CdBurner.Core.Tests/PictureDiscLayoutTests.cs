@@ -346,6 +346,69 @@ public class PictureDiscLayoutTests
         Assert.True(dvdPlusR - outer.VolumeEndLba < 16, "the files session should sit at the end of the disc");
     }
 
+    // ---- picture zone pinned to a chosen start sector (a radius on the disc) ------------------------------------------
+
+    [Fact]
+    public void PinnedStart_KeepsTheStart_AndFillsEverythingBetweenTheFilesAndItWithZeros()
+    {
+        var root = Compile(SourceFiles());
+        const int start = 4_096; // aligned; far past the files plus 2 MiB
+        var layout = PictureDiscLayoutPlanner.PlanInnerBefore(root, Options, PictureDiscMedium.Dvd, start, DiscCapacity);
+
+        Assert.Equal(start, layout.PictureStartLba);
+        Assert.Equal(DiscCapacity / 16 * 16, layout.PictureEndLba);
+        Assert.Equal(layout.VolumeEndLba, layout.GapStartLba);
+        Assert.True(layout.GapSectorCount > 1024);
+
+        using var output = new MemoryStream();
+        PictureDiscImageComposer.Compose(root, Options, layout, zone =>
+        {
+            var block = new byte[16 * Sector];
+            for (long lba = layout.PictureStartLba; lba < layout.PictureEndLba; lba += 16)
+            {
+                PictureBlock(lba, block);
+                zone.Write(block);
+            }
+        }, output);
+        byte[] image = output.ToArray();
+
+        Assert.Equal((long)layout.TotalSectors * Sector, image.Length);
+        // ECMA-119 8.4.8: volume space size at byte 80 of the Primary Volume Descriptor (sector 16).
+        Assert.Equal((uint)layout.VolumeEndLba, BinaryPrimitives.ReadUInt32LittleEndian(SectorAt(image, 16)[80..]));
+        for (long lba = layout.GapStartLba; lba < layout.GapEndLba; lba++)
+        {
+            Assert.True(SectorAt(image, lba).IndexOfAnyExcept((byte)0) < 0, $"gap sector {lba} is not zero");
+        }
+
+        Assert.Equal(start, BinaryPrimitives.ReadInt64LittleEndian(SectorAt(image, start)));
+        Assert.Equal(layout.PictureEndLba - 1, BinaryPrimitives.ReadInt64LittleEndian(SectorAt(image, layout.PictureEndLba - 1)));
+    }
+
+    [Fact]
+    public void PinnedStart_RefusesFilesThatReachIntoTheGap_AndAMisalignedStart()
+    {
+        var root = Compile(SourceFiles());
+        int volume = IsoUdfImageBuilder.CalculateTotalSectors(root, Options, sessionStartLba: 0);
+        int tooEarly = AlignUp(volume + 1024, 16) - 16; // one block short of files + 2 MiB
+
+        Assert.Throws<InvalidOperationException>(() =>
+            PictureDiscLayoutPlanner.PlanInnerBefore(root, Options, PictureDiscMedium.Dvd, tooEarly, DiscCapacity));
+        Assert.Throws<ArgumentException>(() =>
+            PictureDiscLayoutPlanner.PlanInnerBefore(root, Options, PictureDiscMedium.Dvd, 4_100, DiscCapacity));
+        var exact = PictureDiscLayoutPlanner.PlanInnerBefore(root, Options, PictureDiscMedium.Dvd, AlignUp(volume + 1024, 16), DiscCapacity);
+        Assert.True(exact.GapSectorCount >= 1024);
+    }
+
+    [Fact]
+    public void StreamedZone_OfTheWrongSize_IsRefused()
+    {
+        var root = Compile(SourceFiles());
+        var layout = PictureDiscLayoutPlanner.PlanInnerBefore(root, Options, PictureDiscMedium.Dvd, 4_096, DiscCapacity);
+
+        Assert.Throws<InvalidOperationException>(() => PictureDiscImageComposer.Compose(root, Options, layout,
+            zone => zone.Write(new byte[16 * Sector]), new MemoryStream()));
+    }
+
     private static int AlignUp(int value, int align) => (value + align - 1) / align * align;
 
     /// <summary>

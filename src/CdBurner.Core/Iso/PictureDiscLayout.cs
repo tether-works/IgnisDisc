@@ -114,6 +114,61 @@ public static class PictureDiscLayoutPlanner
         };
     }
 
+    /// <summary>
+    /// Lays out <paramref name="root"/> from LBA 0 with the picture zone starting at a fixed
+    /// <paramref name="pictureStartLba"/> (for example the sector at a chosen radius) and running to the end of a disc
+    /// of <paramref name="discCapacitySectors"/> sectors. Everything between the end of the file system and the picture
+    /// is zero; that gap must be at least <see cref="MinimumGapSectors"/>.
+    /// </summary>
+    /// <exception cref="ArgumentException">The files contain sectors imported from an earlier session, or the start
+    /// is not aligned.</exception>
+    /// <exception cref="InvalidOperationException">The files and the gap do not end before
+    /// <paramref name="pictureStartLba"/>, or no aligned picture block fits after it.</exception>
+    public static PictureDiscLayout PlanInnerBefore(
+        CompilationDirectory root,
+        IsoBuildOptions options,
+        PictureDiscMedium medium,
+        int pictureStartLba,
+        int discCapacitySectors)
+    {
+        ArgumentNullException.ThrowIfNull(root);
+        ArgumentNullException.ThrowIfNull(options);
+        ArgumentOutOfRangeException.ThrowIfNegativeOrZero(discCapacitySectors);
+        ArgumentOutOfRangeException.ThrowIfNegativeOrZero(pictureStartLba);
+        if (HasImportedFiles(root))
+        {
+            throw new ArgumentException(
+                "A picture disc is written in one pass; the compilation must not reference files from an earlier session.",
+                nameof(root));
+        }
+
+        int align = AlignmentFor(medium);
+        if (pictureStartLba % align != 0)
+        {
+            throw new ArgumentException($"The picture must start on a {align}-sector boundary.", nameof(pictureStartLba));
+        }
+
+        int volumeEnd = IsoUdfImageBuilder.CalculateTotalSectors(root, options, sessionStartLba: 0);
+        if ((long)volumeEnd + MinimumGapSectors > pictureStartLba)
+        {
+            throw new InvalidOperationException(
+                $"The files take {volumeEnd:N0} sectors; with the {MinimumGapSectors:N0}-sector gap they must end by " +
+                $"sector {pictureStartLba:N0}, which leaves room for {Math.Max(0, pictureStartLba - MinimumGapSectors):N0}.");
+        }
+
+        int pictureEnd = AlignDown(discCapacitySectors, align);
+        if (pictureEnd - pictureStartLba < align)
+        {
+            throw new InvalidOperationException(
+                $"No aligned picture block fits between sector {pictureStartLba:N0} and the end of a disc of {discCapacitySectors:N0} sectors.");
+        }
+
+        return new PictureDiscLayout(
+            PictureDiscFilesPlacement.InnerFiles, medium, align,
+            FilesSessionStartLba: 0, VolumeEndLba: volumeEnd,
+            PictureStartLba: pictureStartLba, PictureEndLba: pictureEnd, TotalSectors: pictureEnd);
+    }
+
     private static PictureDiscLayout PlanInner(
         CompilationDirectory root, IsoBuildOptions options, PictureDiscMedium medium, int align, int capacity)
     {
@@ -220,6 +275,59 @@ public static class PictureDiscImageComposer
         }
 
         output.Flush();
+    }
+
+    /// <summary>
+    /// Like <see cref="Compose(CompilationDirectory, IsoBuildOptions, PictureDiscLayout, PictureBlockWriter, Stream)"/>,
+    /// but the whole picture zone is written by one call that streams straight into <paramref name="output"/> (no
+    /// temporary copy of a zone that can take gigabytes). The zone writer must write exactly
+    /// <see cref="PictureDiscLayout.PictureSectorCount"/> sectors.
+    /// </summary>
+    /// <exception cref="InvalidOperationException">The file system or the picture zone did not take the sectors the
+    /// plan says.</exception>
+    public static void Compose(
+        CompilationDirectory root,
+        IsoBuildOptions options,
+        PictureDiscLayout layout,
+        Action<Stream> writePictureZone,
+        Stream output)
+    {
+        ArgumentNullException.ThrowIfNull(root);
+        ArgumentNullException.ThrowIfNull(options);
+        ArgumentNullException.ThrowIfNull(layout);
+        ArgumentNullException.ThrowIfNull(writePictureZone);
+        ArgumentNullException.ThrowIfNull(output);
+        if (!output.CanWrite)
+        {
+            throw new ArgumentException("The output stream must be writable.", nameof(output));
+        }
+
+        if (layout.Placement == PictureDiscFilesPlacement.InnerFiles)
+        {
+            WriteFiles(root, options, layout, output);
+            WriteZeros(output, layout.GapSectorCount);
+            WritePictureZone(layout, writePictureZone, output);
+        }
+        else
+        {
+            WritePictureZone(layout, writePictureZone, output);
+            WriteZeros(output, layout.GapSectorCount);
+            WriteFiles(root, options, layout, output);
+        }
+
+        output.Flush();
+    }
+
+    private static void WritePictureZone(PictureDiscLayout layout, Action<Stream> writePictureZone, Stream output)
+    {
+        var counter = new CountingStream(output);
+        writePictureZone(counter);
+        long expected = (long)layout.PictureSectorCount * IsoUdfImageBuilder.SectorSize;
+        if (counter.BytesWritten != expected)
+        {
+            throw new InvalidOperationException(
+                $"The picture zone took {counter.BytesWritten:N0} bytes but the layout planned {expected:N0}.");
+        }
     }
 
     private static void WriteFiles(CompilationDirectory root, IsoBuildOptions options, PictureDiscLayout layout, Stream output)

@@ -320,6 +320,14 @@ one assembly with a clear provenance boundary. Nothing in it touches a drive.
   channel bit length and pitch terms from a saved DVD calibration, which the ticks need to land on their angles.
   Drawn through the DVD encoder only; so far checked in simulation (encoder, then `IsoReadbackRenderer`), not on a
   burned disc.
+  `RosettaHybridDisc` (command line `rosetta build` / `rosetta burn`, DVD-R only) makes a hybrid disc: the archive
+  vault (`ROSETTA/TEXT/` with the text as hashed, `ROSETTA/PAGE-INDEX.TXT` and `.JSON` naming the page and `Rnn-Smm`
+  tile of every page, optional extra files, then `ArchiveStager`'s manifests and PAR2 data) is an ISO 9660 + Joliet +
+  UDF volume from LBA 0 whose ceiling is the 16-sector block holding the pages' inner radius (38 mm by default, found
+  on the encoder's own `DvdTrackGeometry`) minus the 2 MiB gap (`PictureDiscLayoutPlanner.PlanInnerBefore`); the
+  pages (Hobbyist cells by default) and the rim header follow, streamed straight into the image
+  (`PictureDiscImageComposer.Compose` with a zone writer). `recover` works on it like on any archive disc. Capacities
+  printed come from this layout (vault sectors, page tiles), not from the Rosetta report. Checked in simulation only.
 - Burning: `CdBurner.Core.Images.PictureTrackCue` adds the picture WAV as the last audio track of an audio or
   mixed-mode CUE sheet, which then goes through the direct Session-at-Once writer (`burn-audio --tracks <cue> --dao
   --native`) and `verify --cue` like any other CUE. Core does not reference this project.

@@ -371,6 +371,42 @@ public sealed class RosettaBook
             allPages);
     }
 
+    /// <summary>
+    /// The tile a page is drawn on: its ring counted over all bands (outward from the centre) and its sector in that
+    /// ring. Pages fill each band ring by ring, sector by sector, in page order.
+    /// </summary>
+    /// <param name="pageNumber">1-based page number, as printed in the page header.</param>
+    public (int GlobalRing, int Sector) GetTile(int pageNumber)
+    {
+        if (pageNumber < 1 || pageNumber > TotalPages)
+        {
+            throw new ArgumentOutOfRangeException(nameof(pageNumber), pageNumber, $"Pages are numbered 1 to {TotalPages}.");
+        }
+
+        int pageIndex = pageNumber - 1;
+        foreach (RosettaBand band in Bands)
+        {
+            if (pageIndex < band.FirstPageIndex || pageIndex >= band.FirstPageIndex + band.PageCount)
+            {
+                continue;
+            }
+
+            int local = pageIndex - band.FirstPageIndex;
+            for (int ring = 0; ring < band.Layout.RingCount; ring++)
+            {
+                int sectors = band.Layout.SectorsInRing(ring);
+                if (local < sectors)
+                {
+                    return (band.RingOffset + ring, local);
+                }
+
+                local -= sectors;
+            }
+        }
+
+        throw new InvalidOperationException($"Page {pageNumber} is not placed on any tile.");
+    }
+
     /// <summary>Computes the lowercase SHA-256 hex digest of the canonical UTF-8 document stream.</summary>
     public static string ComputeTextSha256Hex(IReadOnlyList<RosettaDocument> documents)
     {

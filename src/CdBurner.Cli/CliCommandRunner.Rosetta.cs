@@ -1,4 +1,5 @@
 using System.Globalization;
+using CdBurner.Core.Abstractions;
 using CdBurner.Lithography.Dvd.Solver;
 using CdBurner.Lithography.Presets;
 using CdBurner.Lithography.Rosetta;
@@ -7,18 +8,30 @@ namespace CdBurner.Cli;
 
 public static partial class CliCommandRunner
 {
-    private static int HandleRosettaCommand(CommandLineArgs cmd, TextWriter stdout, TextWriter stderr)
+    private const string RosettaUsage =
+        "Usage: ignisdisc-cli rosetta ladder|build|burn [options] (see 'ignisdisc-cli rosetta --help')";
+
+    private static async Task<int> HandleRosettaCommandAsync(
+        CommandLineArgs cmd, TextWriter stdout, TextWriter stderr, IDiscDeviceService deviceService, IBurnEngineBackend burnEngine)
     {
-        if (string.Equals(cmd.Subcommand, "rosetta", StringComparison.OrdinalIgnoreCase))
+        // 'rosetta-ladder' is the older single-purpose name and takes no verb.
+        if (!string.Equals(cmd.Subcommand, "rosetta", StringComparison.OrdinalIgnoreCase))
         {
-            if (cmd.Positionals.Count < 1
-                || !string.Equals(cmd.Positionals[0], "ladder", StringComparison.OrdinalIgnoreCase))
-            {
-                throw new CommandLineException(
-                    "Usage: ignisdisc-cli rosetta ladder --media dvd --output <file.iso> [--json-output <file.json>] [--disc-preset <id>] [--disc-presets-file <path>] [--start-angle <deg>] [--plan-only] [--json]");
-            }
+            return HandleRosettaLadder(cmd, stdout);
         }
 
+        string verb = cmd.Positionals.Count > 0 ? cmd.Positionals[0].ToLowerInvariant() : string.Empty;
+        return verb switch
+        {
+            "ladder" => HandleRosettaLadder(cmd, stdout),
+            "build" => await HandleRosettaBuildAsync(cmd, stdout, stderr).ConfigureAwait(false),
+            "burn" => await HandleRosettaBurnAsync(cmd, stdout, stderr, deviceService, burnEngine).ConfigureAwait(false),
+            _ => throw new CommandLineException(RosettaUsage),
+        };
+    }
+
+    private static int HandleRosettaLadder(CommandLineArgs cmd, TextWriter stdout)
+    {
         string media = cmd.GetOption("media") ?? "dvd";
         if (!string.Equals(media, "dvd", StringComparison.OrdinalIgnoreCase)
             && !string.Equals(media, "dvd-r", StringComparison.OrdinalIgnoreCase))
