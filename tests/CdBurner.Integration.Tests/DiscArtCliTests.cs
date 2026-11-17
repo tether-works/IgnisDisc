@@ -95,6 +95,42 @@ public sealed class DiscArtCliTests : IDisposable
         return (code, stdout.ToString(), stderr.ToString());
     }
 
+    private static string Sha(string path) => Convert.ToHexString(System.Security.Cryptography.SHA256.HashData(File.ReadAllBytes(path)));
+
+    [Fact]
+    public async Task Generate_placement_options_default_to_the_unplaced_image_and_otherwise_change_it()
+    {
+        string presets = WritePresets();
+        string[] common = ["disc-art", "generate", "--media", "dvd", "--picture", WritePicture(),
+            "--disc-presets-file", presets, "--disc-preset", "tiny-dvd"];
+
+        (int c1, string o1, string e1) = await RunAsync([.. common, "--output", P("a.iso")]);
+        (int c2, string o2, string e2) = await RunAsync([.. common, "--output", P("b.iso"),
+            "--scale", "1", "--offset-x-mm", "0", "--offset-y-mm", "0", "--rotate", "0", "--fit", "disc"]);
+        (int c3, string o3, string e3) = await RunAsync([.. common, "--output", P("c.iso"), "--rotate", "90", "--fit", "ring"]);
+
+        Assert.True(c1 == 0 && c2 == 0 && c3 == 0, e1 + o1 + e2 + o2 + e3 + o3);
+        Assert.Equal(Sha(P("a.iso")), Sha(P("b.iso")));
+        Assert.NotEqual(Sha(P("a.iso")), Sha(P("c.iso")));
+        Assert.Contains("\"rotationDegrees\": 90", File.ReadAllText(P("c.iso.disc-art.json")));
+    }
+
+    [Theory]
+    [InlineData("--fit", "square")]
+    [InlineData("--scale", "abc")]
+    [InlineData("--scale", "0")]
+    [InlineData("--offset-x-mm", "9999")]
+    [InlineData("--rotate", "x")]
+    public async Task Generate_bad_placement_values_are_refused(string option, string value)
+    {
+        (int code, string output, string error) = await RunAsync("disc-art", "generate", "--media", "dvd",
+            "--picture", WritePicture(), "--output", P("bad.iso"), "--disc-presets-file", WritePresets(),
+            "--disc-preset", "tiny-dvd", "--plan-only", option, value);
+
+        Assert.NotEqual(0, code);
+        Assert.False(File.Exists(P("bad.iso")));
+    }
+
     // 11 -----------------------------------------------------------------------------------------------------------
 
     [Fact]

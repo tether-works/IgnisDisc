@@ -17,7 +17,7 @@ public static partial class CliCommandRunner
     private const string DiscArtGenerateUsage =
         "Usage: ignisdisc-cli disc-art generate --media cd|dvd|bd --picture <file.png> --output <file> "
         + "[--files <folder> [--files-outer]] [--append-to <base.cue>] [--label <text>] [--tone photo|binary] "
-        + "[--start-angle <deg>] [--read-compat] [--no-interleave] [--plan-only] [--overwrite] [--json]";
+        + "[--start-angle <deg>] [--scale <x>] [--offset-x-mm <mm>] [--offset-y-mm <mm>] [--rotate <deg>] [--fit ring|disc] [--read-compat] [--no-interleave] [--plan-only] [--overwrite] [--json]";
 
     private const string DiscArtPreviewUsage =
         "Usage: ignisdisc-cli disc-art preview --image <file.iso|.wav|.raw> --output <file.png> [--size <px>] [--json]";
@@ -63,6 +63,18 @@ public static partial class CliCommandRunner
             throw new CommandLineException("--append-to needs a CUE sheet: --append-to <base.cue>");
         }
 
+        DiscArtTransform transform = new(
+            OptionalDouble(cmd, "scale") ?? 1,
+            OptionalDouble(cmd, "offset-x-mm") ?? 0,
+            OptionalDouble(cmd, "offset-y-mm") ?? 0,
+            OptionalDouble(cmd, "rotate") ?? 0,
+            (cmd.GetOption("fit") ?? "disc").ToLowerInvariant() switch
+            {
+                "disc" => DiscArtFit.Disc,
+                "ring" => DiscArtFit.Ring,
+                string other => throw new CommandLineException($"Unknown --fit '{other}'. Use ring or disc."),
+            });
+
         var request = new DiscArtRequest(
             kind switch
             {
@@ -81,7 +93,8 @@ public static partial class CliCommandRunner
             baseCue is null ? null : Path.GetFullPath(baseCue),
             CdInterleave: !cmd.HasFlag("no-interleave"),
             DvdReadCompatibility: cmd.HasFlag("read-compat"),
-            Overwrite: cmd.HasFlag("overwrite"));
+            Overwrite: cmd.HasFlag("overwrite"),
+            Transform: transform);
 
         string media = MediaName(kind);
         try

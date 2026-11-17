@@ -20,7 +20,8 @@ internal sealed record DiscArtSidecar(
     string? FilesPlacement,
     string? VolumeLabel,
     DiscArtPlan Plan,
-    DateTimeOffset CreatedUtc)
+    DateTimeOffset CreatedUtc,
+    [property: JsonIgnore(Condition = JsonIgnoreCondition.WhenWritingNull)] DiscArtTransform? Transform = null)
 {
     public const string FormatId = "ignisdisc-disc-art-v1";
     public const string Suffix = ".disc-art.json";

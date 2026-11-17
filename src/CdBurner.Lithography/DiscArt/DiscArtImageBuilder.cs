@@ -32,7 +32,8 @@ public sealed record DiscArtRequest(
     bool DvdReadCompatibility = false,  // periodic-9b-16-v1 recipe (DvdReadCompatibilityModes.Current)
     bool Overwrite = false,
     CompilationDirectory? FilesRoot = null,  // DVD/BD: a ready compilation (a burn screen's files) instead of FilesFolder; inner only
-    IsoBuildOptions? FilesIsoOptions = null); // the file systems for FilesRoot (null: ISO 9660 + Joliet + UDF, VolumeLabel)
+    IsoBuildOptions? FilesIsoOptions = null,  // the file systems for FilesRoot (null: ISO 9660 + Joliet + UDF, VolumeLabel)
+    DiscArtTransform? Transform = null);      // scale, move, rotate, fit; null or the default draws the picture as before
 
 /// <summary>Sector plan of the image, computed without generating any picture bytes (fast).</summary>
 public sealed record DiscArtPlan(
@@ -83,6 +84,7 @@ public static class DiscArtImageBuilder
         Stopwatch stopwatch = Stopwatch.StartNew();
         string partial = p.OutputPath + ".partial";
         string temp = p.OutputPath + ".picture.tmp";
+        string canvasPath = p.OutputPath + ".canvas.png";
         string sidecarPath = DiscArtSidecar.PathFor(p.OutputPath);
         var created = new List<string>();
         string? cuePath = null;
@@ -90,13 +92,26 @@ public static class DiscArtImageBuilder
         {
             Directory.CreateDirectory(Path.GetDirectoryName(p.OutputPath)!);
             Report(progress, stopwatch, "prepare", "Preparing the picture disc image…", 0);
+            string encoderPicture = p.PicturePath;
+            if (!p.Transform.IsIdentity)
+            {
+                // The encoders have no placement of their own: draw the placed picture on a disc-sized canvas first.
+                picture = DiscArtCanvas.Render(picture, p.Transform, p.PictureRadiusMm, p.Plan.PictureOuterRadiusMm,
+                    cancellationToken: cancellationToken);
+                if (request.Medium == DiscArtMedium.Dvd)
+                {
+                    PngRaster.SaveBgra32(canvasPath, picture);
+                    encoderPicture = canvasPath;
+                }
+            }
+
             switch (request.Medium)
             {
                 case DiscArtMedium.Cd:
                     WriteCdImage(p, picture, partial, progress, stopwatch, cancellationToken);
                     break;
                 default:
-                    WriteIsoImage(p, picture, partial, temp, progress, stopwatch, cancellationToken);
+                    WriteIsoImage(p, picture, encoderPicture, partial, temp, progress, stopwatch, cancellationToken);
                     break;
             }
 
@@ -122,18 +137,19 @@ public static class DiscArtImageBuilder
                 DiscArtSidecar.FormatId, request.Medium, p.PicturePath, request.Disc, p.Tone, request.StartAngleDegrees,
                 request.Medium == DiscArtMedium.Dvd && p.DvdReadCompat, request.CdInterleave,
                 p.Plan.FilesLayout?.Placement.ToString(), p.Plan.FilesLayout is null ? null : p.IsoOptions?.VolumeLabel ?? request.VolumeLabel,
-                p.Plan, DateTimeOffset.UtcNow);
+                p.Plan, DateTimeOffset.UtcNow, p.Transform.IsIdentity ? null : p.Transform);
             DiscArtSidecar.Write(sidecarPath, sidecar);
             created.Add(sidecarPath);
 
             long bytes = new FileInfo(p.OutputPath).Length;
+            TryDelete(canvasPath);
             Report(progress, stopwatch, "complete", "Picture disc image completed.", 1);
             return new DiscArtResult(p.Plan, p.OutputPath, cuePath, sidecarPath, bytes, stopwatch.Elapsed);
         }
         catch
         {
             // A half-written image must never sit under the final name, and a leftover temp file wastes gigabytes.
-            foreach (string leftover in new[] { partial, temp }.Concat(created))
+            foreach (string leftover in new[] { partial, temp, canvasPath }.Concat(created))
             {
                 TryDelete(leftover);
             }
@@ -215,7 +231,9 @@ public static class DiscArtImageBuilder
         bool DvdReadCompat,
         CompilationDirectory? Root,
         IsoBuildOptions? IsoOptions,
-        string? CombinedCuePath);
+        string? CombinedCuePath,
+        DiscArtTransform Transform,
+        double PictureRadiusMm);   // radius the picture is mapped across (the encoder's sampling radius)
 
     private static Prepared Prepare(DiscArtRequest request)
     {
@@ -284,6 +302,7 @@ public static class DiscArtImageBuilder
             }
 
             CalibrationTargetFile.ValidateOutputParameters(request.Disc);
+            request.Transform?.Validate();
         }
         catch (ArgumentException ex)
         {
@@ -457,7 +476,9 @@ public static class DiscArtImageBuilder
         var plan = new DiscArtPlan(request.Medium, total, start, end,
             RadiusAt(request, tone, start), RadiusAt(request, tone, end), layout, null);
         return new Prepared(request, plan, output, picture, tone, request.DvdReadCompatibility || request.Disc.DvdReadCompatibility,
-            root, isoOptions, null);
+            root, isoOptions, null, request.Transform ?? DiscArtTransform.Default,
+            dvd ? DvdOptions(request.Disc, tone, request.StartAngleDegrees, false).SamplingImageOuterRadiusMm
+                : BdParameters(request.Disc, request.StartAngleDegrees).OutputOuterRadiusMm);
     }
 
     private static Prepared PrepareCd(DiscArtRequest request, string output, string picture, ToneProfile tone, string? combinedCue)
@@ -486,7 +507,8 @@ public static class DiscArtImageBuilder
 
         var plan = new DiscArtPlan(DiscArtMedium.Cd, outputSectors - start, start, outputSectors,
             full.RadiusFromByte(start * CdSectorBytes), full.OutputOuterRadiusMm, null, baseSectors);
-        return new Prepared(request, plan, output, picture, tone, false, null, null, combinedCue);
+        return new Prepared(request, plan, output, picture, tone, false, null, null, combinedCue,
+            request.Transform ?? DiscArtTransform.Default, full.SamplingImageOuterRadiusMm);
     }
 
     /// <summary>Sectors the tracks of a CUE sheet take on the disc, with the 150-sector pre-gap of the first track.</summary>
@@ -604,12 +626,12 @@ public static class DiscArtImageBuilder
 
     private delegate void PictureWriter(Stream output, long startLba, long sectorCount, Action<double> fraction, CancellationToken ct);
 
-    private static void WriteIsoImage(Prepared p, BgraRaster picture, string partial, string temp,
+    private static void WriteIsoImage(Prepared p, BgraRaster picture, string encoderPicture, string partial, string temp,
         IProgress<DiscJobProgress>? progress, Stopwatch stopwatch, CancellationToken ct)
     {
         DiscArtRequest r = p.Request;
         PictureWriter writer = r.Medium == DiscArtMedium.Dvd
-            ? DvdPictureWriter(p, p.PicturePath)
+            ? DvdPictureWriter(p, encoderPicture)
             : BdPictureWriter(p, picture);
         long start = p.Plan.PictureStartLba;
         long count = p.Plan.PictureEndLba - start;

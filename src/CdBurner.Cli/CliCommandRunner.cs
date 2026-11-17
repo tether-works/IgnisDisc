@@ -3680,7 +3680,7 @@ public static partial class CliCommandRunner
         stdout.WriteLine("      Makes a hybrid Rosetta DVD-R image: the text, a page index and optional files with PAR2 recovery data inside r = 38 mm, a 2 MiB zero gap, then the text as microscope-readable pages and the rim header.");
         stdout.WriteLine("  rosetta burn --drive <id> --image <file.iso> [any burn-iso option] [--json]");
         stdout.WriteLine("      Burns an image made by 'rosetta build' (forwards to burn-iso).");
-        stdout.WriteLine("  disc-art generate --media cd|dvd|bd --picture <file.png> --output <file> [--files <folder> [--files-outer]] [--append-to <base.cue>] [--label <text>] [--tone photo|binary] [--start-angle <deg>] [--read-compat] [--no-interleave] [--plan-only] [--overwrite] [--disc-preset <id>] [--drive-model <text> --media-id <text>] [--json]");
+        stdout.WriteLine("  disc-art generate --media cd|dvd|bd --picture <file.png> --output <file> [--files <folder> [--files-outer]] [--append-to <base.cue>] [--label <text>] [--tone photo|binary] [--start-angle <deg>] [--scale <x>] [--offset-x-mm <mm>] [--offset-y-mm <mm>] [--rotate <deg>] [--fit ring|disc] [--read-compat] [--no-interleave] [--plan-only] [--overwrite] [--disc-preset <id>] [--drive-model <text> --media-id <text>] [--json]");
         stdout.WriteLine("      Draws a picture in the data sectors of a DVD or BD image (optionally with files on the same disc) or makes a CD picture track, with its description file for the preview.");
         stdout.WriteLine("  disc-art preview --image <file.iso|.wav|.raw> --output <file.png> [--size <px>] [--json]");
         stdout.WriteLine("      Renders what a drive would show from an image made by 'disc-art generate' (DVD and CD; not yet BD).");
@@ -3867,9 +3867,14 @@ public static partial class CliCommandRunner
             stdout.WriteLine("      --label <text>             Volume label of the files (default DISC_ART).");
             stdout.WriteLine("      --tone photo|binary        Photo (default) dithers midtones; binary is plain black and white.");
             stdout.WriteLine("      --start-angle <deg>        Rotate the picture on the disc.");
+            stdout.WriteLine("      --scale <x>                Make the picture x times larger (default 1: its shorter side spans the disc diameter).");
+            stdout.WriteLine("      --offset-x-mm <mm>         Move the picture right (negative: left) from the disc centre, as seen on the disc.");
+            stdout.WriteLine("      --offset-y-mm <mm>         Move the picture down (negative: up) from the disc centre.");
+            stdout.WriteLine("      --rotate <deg>             Turn the picture clockwise about its own centre, before it is moved.");
+            stdout.WriteLine("      --fit disc|ring            disc (default): size against the whole disc. ring: size so the picture's edges touch the outer radius of the ring that is drawn.");
             stdout.WriteLine("      --read-compat              DVD: use the read-compatibility recipe (periodic-9b-16-v1).");
             stdout.WriteLine("      --no-interleave            CD only: write the track without the CD-DA delay interleave.");
-            stdout.WriteLine("      --plan-only                Print the sector plan and write nothing.");
+            stdout.WriteLine("      --plan-only               Print the sector plan and write nothing.");
             stdout.WriteLine("      --overwrite                Replace existing output files.");
             stdout.WriteLine("      --disc-preset, --disc-presets-file, --drive-model, --media-id, --store, --inner-radius-mm, --outer-radius-mm, --sectors, --pitch-*");
             stdout.WriteLine("                                 Disc geometry, as for 'disc-art calibrate target' (a saved calibration for the drive and disc is used automatically).");
