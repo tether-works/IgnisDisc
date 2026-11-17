@@ -18,7 +18,7 @@ public static partial class CliCommandRunner
 {
     private const string DiscArtGenerateUsage =
         "Usage: ignisdisc-cli disc-art generate --media cd|dvd|bd --picture <file.png> --output <file> "
-        + "[--files <folder> [--files-outer]] [--append-to <base.cue>] [--label <text>] [--tone photo|binary] "
+        + "[--files <folder> [--files-outer]] [--append-to <base.cue> | --pregap-art <base.cue> [--pregap-seconds <s>]] [--label <text>] [--tone photo|binary] "
         + "[--start-angle <deg>] [--scale <x>] [--offset-x-mm <mm>] [--offset-y-mm <mm>] [--rotate <deg>] [--fit ring|disc] [--art-inner-radius-mm <mm>] [--art-outer-radius-mm <mm>] [--title-ring <text> [--title-ring-height-mm <mm>] [--title-ring-date yyyy-MM-dd|none]] [--read-compat] [--no-interleave] [--plan-only] [--overwrite] [--json]";
 
     private const string DiscArtPreviewUsage =
@@ -73,12 +73,53 @@ public static partial class CliCommandRunner
             throw new CommandLineException("--append-to needs a CUE sheet: --append-to <base.cue>");
         }
 
+        // Experimental, off unless --pregap-art is given: the picture fills track 1's hidden pre-gap of the base CUE.
+        string? preGapCue = cmd.GetOption("pregap-art");
+        if (preGapCue is not null && string.IsNullOrWhiteSpace(preGapCue))
+        {
+            throw new CommandLineException("--pregap-art needs the CUE sheet of the music: --pregap-art <base.cue>");
+        }
+
+        int? preGapSeconds = null;
+        if (preGapCue is not null)
+        {
+            if (kind != CalibrationDiscKind.Cd)
+            {
+                throw new CommandLineException("--pregap-art is for audio CDs (--media cd).");
+            }
+
+            if (baseCue is not null)
+            {
+                throw new CommandLineException("Use either --append-to (picture as the last track) or --pregap-art (picture before track 1), not both.");
+            }
+
+            preGapSeconds = DiscArtImageBuilder.CdPreGapDefaultSeconds;
+            if (cmd.GetOption("pregap-seconds") is { } rawSeconds)
+            {
+                if (!int.TryParse(rawSeconds, NumberStyles.None, CultureInfo.InvariantCulture, out int seconds)
+                    || seconds is < DiscArtImageBuilder.CdPreGapMinimumSeconds or > DiscArtImageBuilder.CdPreGapMaximumSeconds)
+                {
+                    throw new CommandLineException(
+                        $"Invalid --pregap-seconds value '{rawSeconds}'. Expected whole seconds from {DiscArtImageBuilder.CdPreGapMinimumSeconds} to {DiscArtImageBuilder.CdPreGapMaximumSeconds}.");
+                }
+
+                preGapSeconds = seconds;
+            }
+
+            baseCue = preGapCue;
+        }
+        else if (cmd.GetOption("pregap-seconds") is not null)
+        {
+            throw new CommandLineException("--pregap-seconds sets the length of --pregap-art; give --pregap-art <base.cue> too.");
+        }
+
         DiscArtTransform transform = new(
             OptionalDouble(cmd, "scale") ?? 1,
             OptionalDouble(cmd, "offset-x-mm") ?? 0,
             OptionalDouble(cmd, "offset-y-mm") ?? 0,
             OptionalDouble(cmd, "rotate") ?? 0,
-            (cmd.GetOption("fit") ?? "disc").ToLowerInvariant() switch
+            // A pre-gap picture covers a few millimetres at the inner edge: by default it is sized to that ring.
+            (cmd.GetOption("fit") ?? (preGapSeconds is null ? "disc" : "ring")).ToLowerInvariant() switch
             {
                 "disc" => DiscArtFit.Disc,
                 "ring" => DiscArtFit.Ring,
@@ -107,7 +148,8 @@ public static partial class CliCommandRunner
             Transform: transform,
             ArtInnerRadiusMm: OptionalDouble(cmd, "art-inner-radius-mm"),
             ArtOuterRadiusMm: OptionalDouble(cmd, "art-outer-radius-mm"),
-            TitleRing: titleRing);
+            TitleRing: titleRing,
+            CdPreGapSeconds: preGapSeconds);
 
         string media = MediaName(kind);
         try
@@ -344,6 +386,12 @@ public static partial class CliCommandRunner
             case ".cue":
                 // The picture is the last track of a Session-at-Once disc; only the direct writer can place it, so it is
                 // the default unless the person chose an engine.
+                if (cmd.HasFlag("windows-writer") && HasPictureInTrackOnePreGap(image))
+                {
+                    throw new CommandLineException(
+                        "This CUE sheet holds a picture in track 1's pre-gap. The Windows writer writes every pre-gap as silence and would leave it out; burn it without --windows-writer (direct drive commands).");
+                }
+
                 forwarded.Subcommand = "burn-audio";
                 forwarded.Options["tracks"] = image;
                 forwarded.Flags.Add("dao");
@@ -362,6 +410,20 @@ public static partial class CliCommandRunner
         }
     }
 
+    /// <summary>True when track 1 of the CUE sheet has its INDEX 00 in a file of its own (as --pregap-art writes it).</summary>
+    private static bool HasPictureInTrackOnePreGap(string cuePath)
+    {
+        try
+        {
+            CdBurner.Core.Images.CueSheet sheet = CdBurner.Core.Images.CueSheetParser.ParseFile(cuePath);
+            return sheet.Tracks.Count > 0 && sheet.Tracks[0].SplitIndex00 is { DedicatedFileName: not null };
+        }
+        catch (Exception ex) when (ex is IOException or UnauthorizedAccessException or FormatException or InvalidDataException)
+        {
+            return false; // burn-audio reports an unreadable sheet itself
+        }
+    }
+
     private static object PlanDto(DiscArtPlan plan) => new
     {
         totalSectors = plan.TotalSectors,
@@ -370,6 +432,13 @@ public static partial class CliCommandRunner
         pictureInnerRadiusMm = plan.PictureInnerRadiusMm,
         pictureOuterRadiusMm = plan.PictureOuterRadiusMm,
         baseCueSectors = plan.BaseCueSectors,
+        preGap = plan.CdPreGapSectors is not { } preGapSectors ? null : new
+        {
+            experimental = true,
+            sectors = preGapSectors,
+            track1Index01Lba = preGapSectors,
+            warning = DiscArtImageBuilder.CdPreGapWarning,
+        },
         files = plan.FilesLayout is not { } layout ? null : new
         {
             placement = layout.Placement == PictureDiscFilesPlacement.InnerFiles ? "inner" : "outer",
@@ -455,7 +524,13 @@ public static partial class CliCommandRunner
     {
         stdout.WriteLine(string.Create(CultureInfo.InvariantCulture,
             $"  Picture     : sectors {plan.PictureStartLba:N0} to {plan.PictureEndLba - 1:N0} ({plan.PictureEndLba - plan.PictureStartLba:N0} sectors), radius {plan.PictureInnerRadiusMm:0.###} to {plan.PictureOuterRadiusMm:0.###} mm"));
-        if (plan.BaseCueSectors is { } baseSectors)
+        if (plan.CdPreGapSectors is { } preGapSectors)
+        {
+            stdout.WriteLine($"  Pre-gap     : track 1's INDEX 00 holds the picture (LBA 0 to {preGapSectors - 1:N0}); track 1 starts at LBA {preGapSectors:N0}");
+            stdout.WriteLine($"  Base CUE    : the existing tracks take {plan.BaseCueSectors ?? 0:N0} sectors and move out by {preGapSectors:N0}");
+            stdout.WriteLine($"  Warning     : {DiscArtImageBuilder.CdPreGapWarning}");
+        }
+        else if (plan.BaseCueSectors is { } baseSectors)
         {
             stdout.WriteLine($"  Base CUE    : the existing tracks take {baseSectors:N0} sectors; the picture is the last track");
         }

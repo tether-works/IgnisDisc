@@ -3680,8 +3680,9 @@ public static partial class CliCommandRunner
         stdout.WriteLine("      Makes a hybrid Rosetta DVD-R image: the text, a page index and optional files with PAR2 recovery data inside r = 38 mm, a 2 MiB zero gap, then the text as microscope-readable pages and the rim header.");
         stdout.WriteLine("  rosetta burn --drive <id> --image <file.iso> [any burn-iso option] [--json]");
         stdout.WriteLine("      Burns an image made by 'rosetta build' (forwards to burn-iso).");
-        stdout.WriteLine("  disc-art generate --media cd|dvd|bd --picture <file.png> --output <file> [--files <folder> [--files-outer]] [--append-to <base.cue>] [--label <text>] [--tone photo|binary] [--start-angle <deg>] [--scale <x>] [--offset-x-mm <mm>] [--offset-y-mm <mm>] [--rotate <deg>] [--fit ring|disc] [--art-inner-radius-mm <mm>] [--art-outer-radius-mm <mm>] [--title-ring <text> [--title-ring-height-mm <mm>] [--title-ring-date yyyy-MM-dd|none]] [--read-compat] [--no-interleave] [--plan-only] [--overwrite] [--disc-preset <id>] [--drive-model <text> --media-id <text>] [--json]");
+        stdout.WriteLine("  disc-art generate --media cd|dvd|bd --picture <file.png> --output <file> [--files <folder> [--files-outer]] [--append-to <base.cue> | --pregap-art <base.cue> [--pregap-seconds <s>]] [--label <text>] [--tone photo|binary] [--start-angle <deg>] [--scale <x>] [--offset-x-mm <mm>] [--offset-y-mm <mm>] [--rotate <deg>] [--fit ring|disc] [--art-inner-radius-mm <mm>] [--art-outer-radius-mm <mm>] [--title-ring <text> [--title-ring-height-mm <mm>] [--title-ring-date yyyy-MM-dd|none]] [--read-compat] [--no-interleave] [--plan-only] [--overwrite] [--disc-preset <id>] [--drive-model <text> --media-id <text>] [--json]");
         stdout.WriteLine("      Draws a picture in the data sectors of a DVD or BD image (optionally with files on the same disc) or makes a CD picture track, with its description file for the preview.");
+        stdout.WriteLine("      --pregap-art (experimental, off by default) hides a CD picture in track 1's pre-gap instead; some players and rippers can play it as noise.");
         stdout.WriteLine("  disc-art preview --image <file.iso|.wav|.raw> --output <file.png> [--size <px>] [--json]");
         stdout.WriteLine("      Renders what a drive would show from an image made by 'disc-art generate' (DVD and CD; not yet BD).");
         stdout.WriteLine("  disc-art burn --drive <id> --image <file.iso|.cue> [any burn-iso or burn-audio option] [--json]");
@@ -3864,6 +3865,11 @@ public static partial class CliCommandRunner
             stdout.WriteLine("      --files <folder>           DVD/BD: put these files on the same disc (ISO 9660 + Joliet + UDF), then 2 MiB of empty sectors, then the picture.");
             stdout.WriteLine("      --files-outer              Put the files at the outer end instead (second session, ISO 9660 + Joliet) and the picture from the start; DVD keeps room for the drive's gap between sessions.");
             stdout.WriteLine("      --append-to <base.cue>     CD: add the picture as the last track of this audio or mixed-mode CUE (needs .wav output; at least one minute must remain).");
+            stdout.WriteLine("      --pregap-art <base.cue>    CD, EXPERIMENTAL, off by default: put the picture in the hidden pre-gap before track 1 (INDEX 00) of this");
+            stdout.WriteLine("                                 audio CUE, so it sits at the inner edge and players start at track 1. Writes <base>-with-pregap-picture.cue");
+            stdout.WriteLine("                                 for 'disc-art burn' (Session-at-Once, direct drive commands). WARNING: some players and rippers can rewind");
+            stdout.WriteLine("                                 into the pre-gap, or rip it as a hidden track, and play the picture as loud noise. --fit defaults to ring.");
+            stdout.WriteLine($"      --pregap-seconds <s>       Length of the pre-gap picture (default {DiscArtImageBuilder.CdPreGapDefaultSeconds}, {DiscArtImageBuilder.CdPreGapMinimumSeconds} to {DiscArtImageBuilder.CdPreGapMaximumSeconds}); the music moves out by that much.");
             stdout.WriteLine("      --label <text>             Volume label of the files (default DISC_ART).");
             stdout.WriteLine("      --tone photo|binary        Photo (default) dithers midtones; binary is plain black and white.");
             stdout.WriteLine("      --start-angle <deg>        Rotate the picture on the disc.");

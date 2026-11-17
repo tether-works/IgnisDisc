@@ -794,23 +794,7 @@ public class AudioCdCompilation
                 Func<Stream>? hiddenFactory = null;
                 if (trackNum == 1 && trk.SplitIndex00 is { DedicatedFileName: not null } htoa)
                 {
-                    string htoaPath = Path.IsPathRooted(htoa.DedicatedFileName)
-                        ? htoa.DedicatedFileName
-                        : Path.Combine(cueDirectory, htoa.DedicatedFileName);
-                    if (File.Exists(htoaPath))
-                    {
-                        string htoaType = htoa.DedicatedFileType ?? "WAVE";
-                        bool rawHtoa = RawCdAudioFile.IsRawType(htoaType);
-                        int htoaTotal = ProbeAudioFrames(htoaPath, htoaType, audioDecoder);
-                        int htoaStart = htoa.Position.ToFrameCount();
-                        hiddenFrames = Math.Max(0, htoaTotal - htoaStart);
-                        if (hiddenFrames > 0)
-                        {
-                            hiddenFactory = rawHtoa
-                                ? RawCdAudioFile.CreateSliceFactory(htoaPath, htoaStart, hiddenFrames, string.Equals(htoaType, "MOTOROLA", StringComparison.OrdinalIgnoreCase))
-                                : new SingleFileAlbumSource(htoaPath, audioDecoder).CreateSliceFactory(htoaStart, hiddenFrames);
-                        }
-                    }
+                    (hiddenFrames, hiddenFactory) = ReadDedicatedHiddenAudio(htoa, cueDirectory, audioDecoder);
                 }
                 else if (_tracks.Count > 0 && !_tracks[^1].IsDataTrack && trk.SplitIndex00 is { DedicatedFileName: null } prevSplit)
                 {
@@ -887,14 +871,21 @@ public class AudioCdCompilation
                     // first track of the file it is audio in front of INDEX 01 that no slice covers.
                     int index00Lead = 0;
                     int hiddenFrames = 0;
+                    Func<Stream>? hiddenFactory = null;
                     if (k > 0 && GetIndex00Frames(trk) is int index00 && index00 < startFrame)
                     {
                         int previousStart = GetIndex01Frames(audioTracks[k - 1]) ?? 0;
                         index00Lead = Math.Max(0, startFrame - Math.Max(index00, previousStart));
                     }
+                    else if (k == 0 && trackNum == 1 && trk.SplitIndex00 is { DedicatedFileName: not null } htoa)
+                    {
+                        // Hidden audio in its own file in front of a single-file album (EAC's layout).
+                        (hiddenFrames, hiddenFactory) = ReadDedicatedHiddenAudio(htoa, cueDirectory, audioDecoder);
+                    }
                     else if (k == 0 && trackNum == 1 && startFrame > 0)
                     {
                         hiddenFrames = startFrame;
+                        hiddenFactory = Slice(0, hiddenFrames);
                     }
 
                     AddTrack(new AudioCdTrackItem(
@@ -915,7 +906,7 @@ public class AudioCdCompilation
                         RawFileType = rawFile ? file.FileType.ToUpperInvariant() : null,
                         Index00LeadFrames = index00Lead,
                         HiddenAudioFrames = hiddenFrames,
-                        HiddenAudioPcmStreamFactory = hiddenFrames > 0 ? Slice(0, hiddenFrames) : null,
+                        HiddenAudioPcmStreamFactory = hiddenFrames > 0 ? hiddenFactory : null,
                         PreEmphasis = trk.Flags.Contains("PRE"),
                         CopyPermitted = trk.Flags.Contains("DCP")
                     });
@@ -925,6 +916,34 @@ public class AudioCdCompilation
         }
 
         return added;
+    }
+
+    /// <summary>Audio before track 1 held in its own FILE (a CUE's dedicated INDEX 00 file): its length in frames from
+    /// the INDEX 00 position to the end of the file, and a reader for it. (0, null) when the file is missing or empty.</summary>
+    private static (int Frames, Func<Stream>? Factory) ReadDedicatedHiddenAudio(CueSplitIndex00 htoa, string cueDirectory,
+        IAudioDecoder? audioDecoder)
+    {
+        string htoaPath = Path.IsPathRooted(htoa.DedicatedFileName!)
+            ? htoa.DedicatedFileName!
+            : Path.Combine(cueDirectory, htoa.DedicatedFileName!);
+        if (!File.Exists(htoaPath))
+        {
+            return (0, null);
+        }
+
+        string htoaType = htoa.DedicatedFileType ?? "WAVE";
+        bool rawHtoa = RawCdAudioFile.IsRawType(htoaType);
+        int htoaTotal = ProbeAudioFrames(htoaPath, htoaType, audioDecoder);
+        int htoaStart = htoa.Position.ToFrameCount();
+        int frames = Math.Max(0, htoaTotal - htoaStart);
+        if (frames == 0)
+        {
+            return (0, null);
+        }
+
+        return (frames, rawHtoa
+            ? RawCdAudioFile.CreateSliceFactory(htoaPath, htoaStart, frames, string.Equals(htoaType, "MOTOROLA", StringComparison.OrdinalIgnoreCase))
+            : new SingleFileAlbumSource(htoaPath, audioDecoder).CreateSliceFactory(htoaStart, frames));
     }
 
     private static int ProbeAudioFrames(string path, string fileType, IAudioDecoder? decoder)

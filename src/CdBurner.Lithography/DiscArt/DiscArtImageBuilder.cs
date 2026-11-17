@@ -39,7 +39,9 @@ public sealed record DiscArtRequest(
     DiscArtTransform? Transform = null,       // scale, move, rotate, fit; null or the default draws the picture as before
     double? ArtInnerRadiusMm = null,          // DVD/BD: draw only from this radius outward (null: from the files' gap or LBA 0)
     double? ArtOuterRadiusMm = null,          // DVD/BD: draw only up to this radius; the image ends there (null: to the disc end)
-    DiscArtTitleRingRequest? TitleRing = null); // DVD: title and date in large letters in the outer edge of the drawn area
+    DiscArtTitleRingRequest? TitleRing = null, // DVD: title and date in large letters in the outer edge of the drawn area
+    int? CdPreGapSeconds = null);              // CD with BaseCuePath, experimental: the picture fills track 1's pre-gap
+                                               // (INDEX 00) for this many seconds instead of becoming the last track
 
 /// <summary>Sector plan of the image, computed without generating any picture bytes (fast).</summary>
 public sealed record DiscArtPlan(
@@ -52,7 +54,8 @@ public sealed record DiscArtPlan(
     PictureDiscLayout? FilesLayout,     // DVD/BD with files; null otherwise
     long? BaseCueSectors,               // CD with a base CUE: sectors the existing tracks take (incl. 150-sector pre-gap)
     DiscArtBand? Band = null,           // DVD/BD drawn in a band only; null when the picture fills the rest of the disc
-    DiscArtTitleRingPlan? TitleRing = null); // DVD with a title ring: its sectors are the last of the drawn area
+    DiscArtTitleRingPlan? TitleRing = null, // DVD with a title ring: its sectors are the last of the drawn area
+    long? CdPreGapSectors = null);      // CD picture in track 1's pre-gap: its sectors, from LBA 0 to track 1's INDEX 01
 
 /// <summary>
 /// A picture drawn only between two radii. The sectors before the band are zero (after the files and their gap when
@@ -147,6 +150,20 @@ public static class DiscArtImageBuilder
     private const int CdSectorBytes = CdDiscParameters.BytesPerSector;
     private const int CdLeadInSectors = 150;
     private const int CdMinimumPictureSectors = 4_500; // one minute
+
+    /// <summary>Default length of a picture in track 1's pre-gap (five minutes: about 3 mm of the inner edge).</summary>
+    public const int CdPreGapDefaultSeconds = 300;
+
+    /// <summary>Shortest picture in track 1's pre-gap (one minute, as for a picture track).</summary>
+    public const int CdPreGapMinimumSeconds = 60;
+
+    /// <summary>Longest picture in track 1's pre-gap (20 minutes, about 12 mm of the inner edge).</summary>
+    public const int CdPreGapMaximumSeconds = 1200;
+
+    /// <summary>Printed with every picture placed in track 1's pre-gap.</summary>
+    public const string CdPreGapWarning =
+        "Experimental: the picture is hidden audio in front of track 1. Players start at track 1, but some players and "
+        + "rippers can rewind into the pre-gap (or rip it as a hidden track) and play the picture as loud noise.";
     private const uint DvdPsnOffset = 0x30000;
     private const double DvdBytesPerSecondAt1x = 1_385_000;  // ECMA-267: 11.08 Mbit/s user data
     private const double BdBytesPerSecondAt1x = 4_495_500;   // BD 1x as drives report it (MMC write speed descriptor, kB/s)
@@ -212,7 +229,13 @@ public static class DiscArtImageBuilder
             created.Add(p.OutputPath);
             if (request.Medium == DiscArtMedium.Cd)
             {
-                if (p.CombinedCuePath is { } combined)
+                if (p.CombinedCuePath is { } preGapCue && p.Plan.CdPreGapSectors is not null)
+                {
+                    CdBurner.Core.Images.PictureTrackCue.WriteWithPictureInPreGap(request.BaseCuePath!, p.OutputPath, preGapCue);
+                    cuePath = preGapCue;
+                    created.Add(preGapCue);
+                }
+                else if (p.CombinedCuePath is { } combined)
                 {
                     CdBurner.Core.Images.PictureTrackCue.WriteWithPictureLast(request.BaseCuePath!, p.OutputPath, combined);
                     cuePath = combined;
@@ -323,7 +346,7 @@ public static class DiscArtImageBuilder
 
             default:
             {
-                (_, CdDiscParameters track) = CdParameters(sidecar.Parameters, sidecar.StartAngleDegrees, sidecar.Plan.BaseCueSectors);
+                (_, CdDiscParameters track) = CdParameters(sidecar.Parameters, sidecar.StartAngleDegrees, sidecar.Plan);
                 long total = track.TotalBytes;
                 // Step through the bytes so a full disc renders in seconds; an odd step cannot lock onto one interleave lane.
                 int step = (int)Math.Clamp(total / (32L * size * size), 1, 63) | 1;
@@ -462,6 +485,21 @@ public static class DiscArtImageBuilder
             throw new ArgumentException("A base CUE sheet is only for a CD picture track.");
         }
 
+        bool preGap = request.CdPreGapSeconds is not null;
+        if (preGap)
+        {
+            if (request.Medium != DiscArtMedium.Cd || string.IsNullOrWhiteSpace(request.BaseCuePath))
+            {
+                throw new ArgumentException("A picture in track 1's pre-gap needs a CD and the CUE sheet of its music.");
+            }
+
+            if (request.CdPreGapSeconds is not (>= CdPreGapMinimumSeconds and <= CdPreGapMaximumSeconds))
+            {
+                throw new ArgumentException(
+                    $"The pre-gap picture must be {CdPreGapMinimumSeconds} to {CdPreGapMaximumSeconds} seconds long.");
+            }
+        }
+
         ToneProfile tone = request.Tone ?? ToneProfile.Photo;
         try
         {
@@ -498,7 +536,7 @@ public static class DiscArtImageBuilder
             }
 
             combinedCue = Path.Combine(Path.GetDirectoryName(output)!,
-                Path.GetFileNameWithoutExtension(request.BaseCuePath) + "-with-picture.cue");
+                Path.GetFileNameWithoutExtension(request.BaseCuePath) + (preGap ? "-with-pregap-picture.cue" : "-with-picture.cue"));
             if (string.Equals(combinedCue, Path.GetFullPath(request.BaseCuePath), StringComparison.OrdinalIgnoreCase))
             {
                 throw new ArgumentException("The new CUE sheet would replace the base CUE sheet; write the picture track to another folder.");
@@ -699,7 +737,7 @@ public static class DiscArtImageBuilder
 
     private static Prepared PrepareCd(DiscArtRequest request, string output, string picture, ToneProfile tone, string? combinedCue)
     {
-        (CdDiscParameters full, _) = CdParameters(request.Disc, request.StartAngleDegrees, null);
+        (CdDiscParameters full, _) = CdParameters(request.Disc, request.StartAngleDegrees, (long?)null);
         long outputSectors = request.Disc.OutputSectors;
         long start = 0;
         long? baseSectors = null;
@@ -712,6 +750,11 @@ public static class DiscArtImageBuilder
             }
 
             baseSectors = CountCueSectors(request.BaseCuePath);
+            if (request.CdPreGapSeconds is { } seconds)
+            {
+                return PrepareCdPreGap(request, output, picture, tone, combinedCue, full, baseSectors.Value, seconds);
+            }
+
             start = baseSectors.Value;
             if (outputSectors - start < CdMinimumPictureSectors)
             {
@@ -723,6 +766,41 @@ public static class DiscArtImageBuilder
 
         var plan = new DiscArtPlan(DiscArtMedium.Cd, outputSectors - start, start, outputSectors,
             full.RadiusFromByte(start * CdSectorBytes), full.OutputOuterRadiusMm, null, baseSectors);
+        return new Prepared(request, plan, output, picture, tone, false, null, null, combinedCue,
+            request.Transform ?? DiscArtTransform.Default, full.SamplingImageOuterRadiusMm);
+    }
+
+    /// <summary>
+    /// The picture in track 1's pre-gap: the writer keeps the first 150 sectors (LBA -150 to -1) silent, so the picture
+    /// runs from LBA 0 to track 1's INDEX 01 and every existing track moves out by its length. The picture is drawn for
+    /// the radius where LBA 0 lies on the whole-disc spiral.
+    /// </summary>
+    private static Prepared PrepareCdPreGap(DiscArtRequest request, string output, string picture, ToneProfile tone,
+        string? combinedCue, CdDiscParameters full, long baseSectors, int seconds)
+    {
+        try
+        {
+            // Refuse a track 1 that cannot take the picture before anything is drawn.
+            _ = CdBurner.Core.Images.PictureTrackCue.PlaceInTrackOnePreGap(
+                CdBurner.Core.Images.CueSheetParser.ParseFile(Path.GetFullPath(request.BaseCuePath!)), "picture.wav");
+        }
+        catch (Exception ex) when (ex is IOException or InvalidDataException or FormatException or UnauthorizedAccessException)
+        {
+            throw new ArgumentException($"The base CUE sheet could not be read: {ex.Message}");
+        }
+
+        long sectors = (long)seconds * 75;
+        long outputSectors = request.Disc.OutputSectors;
+        if (baseSectors + sectors > outputSectors)
+        {
+            throw new ArgumentException(
+                $"The base CUE sheet takes {baseSectors:N0} sectors; a {seconds}-second pre-gap picture needs {sectors:N0} more, "
+                + $"and the disc holds {outputSectors:N0}. Choose a shorter pre-gap.");
+        }
+
+        (_, CdDiscParameters track) = CdParameters(request.Disc, request.StartAngleDegrees, CdLeadInSectors, sectors);
+        var plan = new DiscArtPlan(DiscArtMedium.Cd, sectors, 0, sectors,
+            track.InnerRadiusMm, track.OutputOuterRadiusMm, null, baseSectors, CdPreGapSectors: sectors);
         return new Prepared(request, plan, output, picture, tone, false, null, null, combinedCue,
             request.Transform ?? DiscArtTransform.Default, full.SamplingImageOuterRadiusMm);
     }
@@ -913,7 +991,14 @@ public static class DiscArtImageBuilder
     /// whole-disc spiral, so the picture lies exactly where it would on a disc made of the picture alone.
     /// </summary>
     private static (CdDiscParameters Full, CdDiscParameters Track) CdParameters(
-        CalibrationParameters d, double startAngleDegrees, long? baseSectors)
+        CalibrationParameters d, double startAngleDegrees, DiscArtPlan plan)
+        => plan.CdPreGapSectors is { } preGap
+            ? CdParameters(d, startAngleDegrees, CdLeadInSectors, preGap)
+            : CdParameters(d, startAngleDegrees, plan.BaseCueSectors);
+
+    /// <param name="trackSectors">Sectors of the picture track; null runs it to the end of the disc.</param>
+    private static (CdDiscParameters Full, CdDiscParameters Track) CdParameters(
+        CalibrationParameters d, double startAngleDegrees, long? baseSectors, long? trackSectors = null)
     {
         var full = new CdDiscParameters(
             d.InnerRadiusMm, d.OuterRadiusMm, d.Sectors, d.LinearDensity,
@@ -932,7 +1017,7 @@ public static class DiscArtImageBuilder
             radius, d.OuterRadiusMm, d.Sectors - skipped, d.LinearDensity,
             StartAngleRadians: full.ThetaFromRadius(radius),
             ImageOuterRadiusMm: full.ImageOuterRadiusMm,
-            UsableSectors: d.UsableSectors is { } usable ? usable - skipped : null,
+            UsableSectors: trackSectors ?? (d.UsableSectors is { } usable ? usable - skipped : null),
             SourceImageOuterRadiusMm: full.SamplingImageOuterRadiusMm);
         track.Validate();
         return (full, track);
@@ -1084,7 +1169,7 @@ public static class DiscArtImageBuilder
         IProgress<DiscJobProgress>? progress, Stopwatch stopwatch, CancellationToken ct)
     {
         DiscArtRequest r = p.Request;
-        (_, CdDiscParameters track) = CdParameters(r.Disc, r.StartAngleDegrees, p.Plan.BaseCueSectors);
+        (_, CdDiscParameters track) = CdParameters(r.Disc, r.StartAngleDegrees, p.Plan);
         bool wave = p.OutputPath.EndsWith(".wav", StringComparison.OrdinalIgnoreCase);
         using var file = new FileStream(partial, FileMode.Create, FileAccess.Write, FileShare.None,
             bufferSize: 1024 * 1024, FileOptions.SequentialScan);

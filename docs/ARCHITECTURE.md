@@ -346,6 +346,18 @@ one assembly with a clear provenance boundary. Nothing in it touches a drive.
   to an ECC block; the picture writer covers the sectors before it and a separate two-level pattern writer the ring
   sectors (no dither), so the two never share a sector. `IsInk` works from the font, with no stored bitmap. Without
   `--picture` the sectors before the ring are zero (inner files keep their volume and the gap grows).
+  Experimental, off unless asked (`disc-art generate --media cd --pregap-art <base.cue> [--pregap-seconds <s>]`,
+  default 300, 60 to 1200): the CD picture goes into track 1's pre-gap instead of a last track.
+  `DiscArtImageBuilder` draws it from LBA 0 (absolute time 00:02:00; the writer keeps LBA -150 to -1 silent) for the
+  given length on the whole-disc spiral, refuses a track 1 that is data or already has a pre-gap or audio in front,
+  and `PictureTrackCue.WriteWithPictureInPreGap` writes `<base>-with-pregap-picture.cue` in EAC's hidden-track-one
+  layout (TRACK 01 opens in the picture's own FILE with INDEX 00 00:00:00; INDEX 01 follows the FILE of its music).
+  `AudioCdCompilation.ImportCueSheet` reads that file as track 1's hidden audio, also in front of a single-file album,
+  so `disc-art burn` (burn-audio `--dao --native`) writes it Session-at-Once and `verify --cue` compares it; track 1's
+  INDEX 01 lands right after the picture and the music moves out by its length. `--fit` defaults to ring there.
+  Players start at track 1, but some players and rippers can rewind into the pre-gap or rip it as a hidden track and
+  play the picture as noise; the plan, `--json` and help say so. `disc-art burn --windows-writer` is refused for such
+  a sheet (the Windows writer writes pre-gaps as silence).
   `RosettaHybridDisc` (command line `rosetta build` / `rosetta burn`, DVD-R only) makes a hybrid disc: the archive
   vault (`ROSETTA/TEXT/` with the text as hashed, `ROSETTA/PAGE-INDEX.TXT` and `.JSON` naming the page and `Rnn-Smm`
   tile of every page, optional extra files, then `ArchiveStager`'s manifests and PAR2 data) is an ISO 9660 + Joliet +
