@@ -14,6 +14,8 @@ using CdBurner.Core.Subtitles;
 using CdBurner.Core.Utilities;
 using CdBurner.Hardware.Devices;
 using CdBurner.Hardware.Simulation;
+using CdBurner.Lithography.Calibration;
+using CdBurner.Lithography.DiscArt;
 
 namespace CdBurner.App.ViewModels;
 
@@ -611,6 +613,48 @@ public class DvdVideoViewModel : ObservableObject
     }
 
     /// <summary>
+    /// Fill the empty part of a single-layer DVD with a picture (<see cref="DiscFillPicture"/>): the DVD-Video stays on
+    /// the inner part, the whole disc is written (longer burn) and it is closed. Off by default.
+    /// </summary>
+    public bool FillWithPicture
+    {
+        get => _fillWithPicture;
+        set => SetProperty(ref _fillWithPicture, value);
+    }
+
+    private bool _fillWithPicture;
+
+    /// <summary>
+    /// The picture is a frame of the main movie, taken with FFmpeg (skipped, with a message, when FFmpeg is not
+    /// installed); otherwise <see cref="FillPicturePath"/>.
+    /// </summary>
+    public bool FillPictureFromMovie
+    {
+        get => _fillPictureFromMovie;
+        set => SetProperty(ref _fillPictureFromMovie, value);
+    }
+
+    private bool _fillPictureFromMovie = true;
+
+    /// <summary>The PNG drawn on the empty part of the disc when <see cref="FillPictureFromMovie"/> is off.</summary>
+    public string? FillPicturePath
+    {
+        get => _fillPicturePath;
+        set => SetProperty(ref _fillPicturePath, value);
+    }
+
+    private string? _fillPicturePath;
+
+    /// <summary>
+    /// Disc geometry for the picture fill; null uses the built-in single-layer preset for the disc in the drive
+    /// (dvd-5-120mm or bd-r-sl-25gb), cut to the disc's size.
+    /// </summary>
+    public CdBurner.Lithography.Calibration.CalibrationParameters? FillDiscGeometry { get; set; }
+
+    /// <summary>What the picture fill does to the burn (longer, closed disc), shown under the option.</summary>
+    public string FillPictureNote => DiscFillPicture.ScreenNote;
+
+    /// <summary>
     /// Whether to perform post-burn sector read verification.
     /// </summary>
     public bool VerifyAfterBurn
@@ -1007,6 +1051,7 @@ public class DvdVideoViewModel : ObservableObject
     #region Commands
 
     public RelayCommand AddMovieFilesCommand { get; }
+    public RelayCommand BrowseFillPictureCommand { get; }
 
     /// <summary>Opens a file dialog to pick the .srt for one movie (parameter: its <see cref="DvdSubtitleChoiceRow"/>).</summary>
     public RelayCommand ChooseSubtitleFileCommand { get; }
@@ -1036,6 +1081,7 @@ public class DvdVideoViewModel : ObservableObject
         _burnEngine = burnEngine ?? new VirtualBurnEngine();
 
         AddMovieFilesCommand = new RelayCommand(ExecuteAddMovieFiles);
+        BrowseFillPictureCommand = new RelayCommand(ExecuteBrowseFillPicture);
         ChooseSubtitleFileCommand = new RelayCommand(p => { if (p is DvdSubtitleChoiceRow row) PickSubtitleFile(row); }, _ => !IsBusy);
         ClearSubtitleFileCommand = new RelayCommand(p => { if (p is DvdSubtitleChoiceRow row) ChooseSubtitleFile(row.MoviePath, null); }, _ => !IsBusy);
         SourceMediaFiles.CollectionChanged += (_, _) => RefreshSubtitleRows();
@@ -2049,9 +2095,24 @@ public class DvdVideoViewModel : ObservableObject
 
         IsBusy = true;
         BurnProgress = 1.0;
+        FillPlan? fill = null;
+        string? fillSkipped = null;
 
         try
         {
+            if (FillWithPicture)
+            {
+                try
+                {
+                    (fill, fillSkipped) = await PrepareFillAsync(targetRecorder, cts.Token);
+                }
+                catch (InvalidOperationException ex)
+                {
+                    StatusMessage = ex.Message;
+                    return DataBurnResult.Failed(ex.Message);
+                }
+            }
+
             if (RequiresAutoAuthoring && (string.IsNullOrEmpty(LastAuthoredVideoTsPath) || !Directory.Exists(LastAuthoredVideoTsPath)))
             {
                 StatusMessage = Strings.StatusDvdVideoTranscodingAuthoringDvdVideoStructure;
@@ -2116,9 +2177,34 @@ public class DvdVideoViewModel : ObservableObject
                 }
             });
 
-            var result = directEngine != null && IsDualLayerRequired
-                ? await BurnDualLayerOnCellBoundaryAsync(burnService, targetRecorder, root, burnOptions, buildOptions, progressHandler, cts.Token)
-                : await burnService.BurnCompilationAsync(targetRecorder, root, burnOptions, buildOptions, progressHandler, cts.Token);
+            DataBurnResult result;
+            if (fill is not null)
+            {
+                StatusMessage = "Drawing the picture on the rest of the disc (the whole disc is written and closed)...";
+                var drawProgress = new ClosableProgress<CdBurner.Lithography.DiscJobProgress>(p =>
+                {
+                    if (p.Fraction is { } f) StatusMessage = $"{p.Message} ({f * 100:F0}%)";
+                });
+                try
+                {
+                    (result, _) = await DiscFillPicture.BurnAsync(burnService, targetRecorder, root, buildOptions, burnOptions,
+                        fill.Picture, fill.Medium, fill.Disc, drawProgress, progressHandler, null, cts.Token);
+                }
+                catch (ArgumentException ex)
+                {
+                    drawProgress.Close();
+                    StatusMessage = $"Nothing was written: {ex.Message}";
+                    return DataBurnResult.Failed(StatusMessage);
+                }
+
+                drawProgress.Close();
+            }
+            else
+            {
+                result = directEngine != null && IsDualLayerRequired
+                    ? await BurnDualLayerOnCellBoundaryAsync(burnService, targetRecorder, root, burnOptions, buildOptions, progressHandler, cts.Token)
+                    : await burnService.BurnCompilationAsync(targetRecorder, root, burnOptions, buildOptions, progressHandler, cts.Token);
+            }
             progressHandler.Close(); // a late progress report must not overwrite the final status line
             if (result.Success)
             {
@@ -2126,7 +2212,9 @@ public class DvdVideoViewModel : ObservableObject
                 StatusMessage = $"DVD-Video burn completed successfully ({result.SectorsWritten:N0} sectors written to {targetRecorder.VolumePath})."
                     + (LastLayerBreak is { } brk ? $" Layer break: {brk}." : "")
                     + (directEngine?.LastSummary is { } how ? " " + how : "")
-                    + (string.IsNullOrWhiteSpace(result.VerificationNote) ? "" : " " + result.VerificationNote);
+                    + (string.IsNullOrWhiteSpace(result.VerificationNote) ? "" : " " + result.VerificationNote)
+                    + (fill is not null ? " The rest of the disc carries the picture; the disc is closed." : "")
+                    + (fillSkipped is not null ? " " + fillSkipped : "");
             }
             else
             {
@@ -2149,6 +2237,11 @@ public class DvdVideoViewModel : ObservableObject
         finally
         {
             CleanupTempAuthoredDirectory();
+            if (fill?.TempFrame is { } frame)
+            {
+                try { File.Delete(frame); } catch (IOException) { } catch (UnauthorizedAccessException) { }
+            }
+
             _activeCts = null;
             IsBusy = false;
         }
@@ -2400,6 +2493,81 @@ public class DvdVideoViewModel : ObservableObject
                    : TotalSectors <= DvdLayerBreakCalculator.MaxDvd9Sectors
                    ? "Put in a dual-layer DVD (DVD+R DL, 8.5 GB), or remove a movie and burn it on another disc."
                    : "Remove a movie and burn it on another disc.");
+    }
+
+    private void ExecuteBrowseFillPicture(object? parameter)
+    {
+        if (parameter is string path && !string.IsNullOrWhiteSpace(path))
+        {
+            FillPicturePath = path;
+            FillPictureFromMovie = false;
+            return;
+        }
+
+        var dlg = new Microsoft.Win32.OpenFileDialog
+        {
+            Title = "Select the picture for the empty part of the disc",
+            Filter = "PNG pictures (*.png)|*.png"
+        };
+
+        if (dlg.ShowDialog() == true && !string.IsNullOrWhiteSpace(dlg.FileName))
+        {
+            FillPicturePath = dlg.FileName;
+            FillPictureFromMovie = false;
+            FillWithPicture = true;
+        }
+    }
+
+    /// <summary>A checked picture fill: what to draw and on which disc geometry.</summary>
+    private sealed record FillPlan(string Picture, DiscArtMedium Medium, CalibrationParameters Disc, string? TempFrame);
+
+    /// <summary>
+    /// Checks a picture-fill burn before anything is converted or drawn. Returns the fill, or null with
+    /// <c>Skipped</c> set when the movie frame could not be taken (the disc is then burned without the picture). Throws
+    /// <see cref="InvalidOperationException"/> with a plain message when the disc or the choices refuse it.
+    /// </summary>
+    private async Task<(FillPlan? Fill, string? Skipped)> PrepareFillAsync(IDiscRecorderBackend recorder, CancellationToken cancellationToken)
+    {
+        MediaStatusDto status = recorder.QueryMediaStatus();
+        if (DiscFillPicture.Refusal(status, closeDisc: true, appendSession: false) is { } refusal)
+        {
+            throw new InvalidOperationException(refusal);
+        }
+
+        DiscArtMedium medium = DiscFillPicture.MediumFor(status.MediaType)!.Value;
+        long discSectors = status.IsBlank && status.FreeSectors > 0 ? status.FreeSectors : status.TotalSectors;
+        CalibrationParameters disc;
+        try
+        {
+            disc = DiscFillPicture.FitToDisc(FillDiscGeometry ?? DiscFillPicture.PresetDisc(medium), discSectors);
+        }
+        catch (ArgumentException ex)
+        {
+            throw new InvalidOperationException(ex.Message);
+        }
+
+        if (!FillPictureFromMovie)
+        {
+            if (string.IsNullOrWhiteSpace(FillPicturePath) || !File.Exists(FillPicturePath))
+            {
+                throw new InvalidOperationException("Choose the PNG picture for the empty part of the disc, or use a frame of the movie.");
+            }
+
+            return (new FillPlan(FillPicturePath, medium, disc, null), null);
+        }
+
+        string? ffmpeg = FfmpegLocator.FindFfmpegExecutable(string.IsNullOrWhiteSpace(CustomFfmpegPath) ? null : CustomFfmpegPath);
+        string frame = Path.Combine(Path.GetTempPath(), $"ignisdisc_fill_frame_{Guid.NewGuid():N}.png");
+        StatusMessage = "Taking a frame of the movie for the picture...";
+        (string? grabbed, string? skipped) = await DiscFillPicture.GrabMovieFrameAsync(
+            ffmpeg, DiscFillPicture.FindMainMovie(VideoTsFolderPath), frame, cancellationToken);
+        if (grabbed is null)
+        {
+            try { File.Delete(frame); } catch (IOException) { } catch (UnauthorizedAccessException) { }
+            return (null, skipped);
+        }
+
+        return (new FillPlan(grabbed, medium, disc, grabbed), null);
     }
 
     private void ExecuteAddMovieFiles(object? parameter)

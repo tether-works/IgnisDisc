@@ -10,6 +10,7 @@ using CdBurner.Core.Iso;
 using CdBurner.Core.Primitives;
 using CdBurner.Hardware.Devices;
 using CdBurner.Hardware.Simulation;
+using CdBurner.Lithography.DiscArt;
 
 namespace CdBurner.App.ViewModels;
 
@@ -98,6 +99,36 @@ public class DataBurnViewModel : ObservableObject
         get => _closeDisc;
         set => SetProperty(ref _closeDisc, value);
     }
+
+    /// <summary>
+    /// Fill the empty part of a single-layer DVD or BD with <see cref="FillPicturePath"/> (<see cref="DiscFillPicture"/>):
+    /// the files stay on the inner part and the whole disc is written and closed. Off by default.
+    /// </summary>
+    public bool FillWithPicture
+    {
+        get => _fillWithPicture;
+        set => SetProperty(ref _fillWithPicture, value);
+    }
+
+    private bool _fillWithPicture;
+
+    /// <summary>The PNG drawn on the empty part of the disc when <see cref="FillWithPicture"/> is on.</summary>
+    public string? FillPicturePath
+    {
+        get => _fillPicturePath;
+        set => SetProperty(ref _fillPicturePath, value);
+    }
+
+    private string? _fillPicturePath;
+
+    /// <summary>
+    /// Disc geometry for the picture fill; null uses the built-in single-layer preset for the disc in the drive
+    /// (dvd-5-120mm or bd-r-sl-25gb), cut to the disc's size.
+    /// </summary>
+    public CdBurner.Lithography.Calibration.CalibrationParameters? FillDiscGeometry { get; set; }
+
+    /// <summary>What the picture fill does to the burn (longer, closed disc), shown under the option.</summary>
+    public string FillPictureNote => DiscFillPicture.ScreenNote;
 
     /// <summary>
     /// Whether to perform post-burn sector read verification.
@@ -422,6 +453,7 @@ public class DataBurnViewModel : ObservableObject
     public RelayCommand NavigateUpFolderCommand { get; }
     public RelayCommand BrowseBiosBootImageCommand { get; }
     public RelayCommand BrowseUefiBootImageCommand { get; }
+    public RelayCommand BrowseFillPictureCommand { get; }
     public AsyncRelayCommand ImportPreviousSessionCommand { get; }
     public AsyncRelayCommand ExportIsoCommand { get; }
     public AsyncRelayCommand StartDataBurnCommand { get; }
@@ -446,6 +478,7 @@ public class DataBurnViewModel : ObservableObject
         NavigateUpFolderCommand = new RelayCommand(_ => NavigateUp(), _ => CanNavigateUp);
         BrowseBiosBootImageCommand = new RelayCommand(ExecuteBrowseBiosBootImage);
         BrowseUefiBootImageCommand = new RelayCommand(ExecuteBrowseUefiBootImage);
+        BrowseFillPictureCommand = new RelayCommand(ExecuteBrowseFillPicture);
         ImportPreviousSessionCommand = new AsyncRelayCommand(async param => await ImportPreviousSessionAsync(param));
         ExportIsoCommand = new AsyncRelayCommand(async param =>
         {
@@ -835,7 +868,7 @@ public class DataBurnViewModel : ObservableObject
             if (!mediaStatus.MediaPresent || (!mediaStatus.IsBlank && !mediaStatus.IsAppendable && !mediaStatus.IsRewritable))
             {
                 long bytes = Capacity.TotalBytes;
-                if (bytes > 700 * 1024 * 1024)
+                if (bytes > 700 * 1024 * 1024 || FillWithPicture) // a picture fills DVD and BD only
                 {
                     vRec.InsertMedia(VirtualDiscMedium.CreateBlankDvdR47());
                 }
@@ -893,7 +926,37 @@ public class DataBurnViewModel : ObservableObject
                 }
             });
 
-            var result = await burnService.BurnCompilationAsync(targetRecorder, Compilation.Root, burnOptions, buildOptions, progressHandler, activeToken);
+            DataBurnResult result;
+            if (FillWithPicture)
+            {
+                if (PrepareFill(targetRecorder) is not { } fill)
+                {
+                    return DataBurnResult.Failed(StatusMessage);
+                }
+
+                StatusMessage = "Drawing the picture on the rest of the disc (the whole disc is written and closed)...";
+                var drawProgress = new ClosableProgress<CdBurner.Lithography.DiscJobProgress>(p =>
+                {
+                    if (_isBusy && p.Fraction is { } f) StatusMessage = $"{p.Message} ({f * 100:F0}%)";
+                });
+                try
+                {
+                    (result, _) = await DiscFillPicture.BurnAsync(burnService, targetRecorder, Compilation.Root, buildOptions, burnOptions,
+                        FillPicturePath!, fill.Medium, fill.Disc, drawProgress, progressHandler, null, activeToken);
+                }
+                catch (ArgumentException ex)
+                {
+                    drawProgress.Close();
+                    StatusMessage = $"Nothing was written: {ex.Message}";
+                    return DataBurnResult.Failed(StatusMessage);
+                }
+
+                drawProgress.Close();
+            }
+            else
+            {
+                result = await burnService.BurnCompilationAsync(targetRecorder, Compilation.Root, burnOptions, buildOptions, progressHandler, activeToken);
+            }
             progressHandler.Close(); // a late progress report must not overwrite the final status line
             if (result.Success)
             {
@@ -933,6 +996,40 @@ public class DataBurnViewModel : ObservableObject
             _activeBurnCts = null;
             IsBusy = false;
             CancelBurnCommand.RaiseCanExecuteChanged();
+        }
+    }
+
+    /// <summary>
+    /// Checks a picture-fill burn before anything is drawn: a picture chosen, the disc closed, a blank single-layer DVD or
+    /// BD. Returns the picture family and the disc geometry (built-in preset, cut to
+    /// the disc's size), or null with the reason in <see cref="StatusMessage"/>.
+    /// </summary>
+    private (DiscArtMedium Medium, CdBurner.Lithography.Calibration.CalibrationParameters Disc)? PrepareFill(IDiscRecorderBackend recorder)
+    {
+        if (string.IsNullOrWhiteSpace(FillPicturePath) || !File.Exists(FillPicturePath))
+        {
+            StatusMessage = "Choose the PNG picture for the empty part of the disc, or turn off the picture fill.";
+            return null;
+        }
+
+        // Files imported from an earlier session are refused by the layout planner before anything is drawn.
+        MediaStatusDto status = recorder.QueryMediaStatus();
+        if (DiscFillPicture.Refusal(status, CloseDisc, appendSession: false) is { } refusal)
+        {
+            StatusMessage = refusal;
+            return null;
+        }
+
+        DiscArtMedium medium = DiscFillPicture.MediumFor(status.MediaType)!.Value;
+        long discSectors = status.IsBlank && status.FreeSectors > 0 ? status.FreeSectors : status.TotalSectors;
+        try
+        {
+            return (medium, DiscFillPicture.FitToDisc(FillDiscGeometry ?? DiscFillPicture.PresetDisc(medium), discSectors));
+        }
+        catch (ArgumentException ex)
+        {
+            StatusMessage = ex.Message;
+            return null;
         }
     }
 
@@ -1227,6 +1324,27 @@ public class DataBurnViewModel : ObservableObject
         if (dlg.ShowDialog() == true && !string.IsNullOrWhiteSpace(dlg.FileName))
         {
             BiosBootImagePath = dlg.FileName;
+        }
+    }
+
+    private void ExecuteBrowseFillPicture(object? parameter)
+    {
+        if (parameter is string path && !string.IsNullOrWhiteSpace(path))
+        {
+            FillPicturePath = path;
+            return;
+        }
+
+        var dlg = new Microsoft.Win32.OpenFileDialog
+        {
+            Title = "Select the picture for the empty part of the disc",
+            Filter = "PNG pictures (*.png)|*.png"
+        };
+
+        if (dlg.ShowDialog() == true && !string.IsNullOrWhiteSpace(dlg.FileName))
+        {
+            FillPicturePath = dlg.FileName;
+            FillWithPicture = true;
         }
     }
 

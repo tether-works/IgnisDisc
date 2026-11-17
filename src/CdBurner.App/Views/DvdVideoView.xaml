@@ -670,6 +670,36 @@
                             ToolTip="Cancel ongoing DVD authoring or burn"
                             Visibility="{Binding IsBusy, Converter={StaticResource BoolToVis}}"
                             Margin="0,0,10,0" />
+                    <StackPanel Orientation="Vertical" Margin="0,0,12,0">
+                        <StackPanel Orientation="Horizontal">
+                            <CheckBox Content="Fill empty space with a picture"
+                                      AutomationProperties.Name="Fill empty space with a picture"
+                                      IsChecked="{Binding FillWithPicture}"
+                                      ToolTip="{Binding FillPictureNote}"
+                                      VerticalAlignment="Center"
+                                      Margin="0,0,8,0" />
+                            <CheckBox Content="Frame of the movie"
+                                      AutomationProperties.Name="Use a frame of the movie as the fill picture"
+                                      IsChecked="{Binding FillPictureFromMovie}"
+                                      Visibility="{Binding FillWithPicture, Converter={StaticResource BoolToVis}}"
+                                      ToolTip="Takes one frame of the main movie with FFmpeg. Without FFmpeg the disc is burned without the picture, and the status line says so."
+                                      VerticalAlignment="Center"
+                                      Margin="0,0,8,0" />
+                            <Button Content="Picture..."
+                                    AutomationProperties.Name="Choose the fill picture"
+                                    Command="{Binding BrowseFillPictureCommand}"
+                                    Visibility="{Binding FillWithPicture, Converter={StaticResource BoolToVis}}"
+                                    ToolTip="{Binding FillPicturePath}" />
+                        </StackPanel>
+                        <TextBlock Text="{Binding FillPictureNote}"
+                                   Visibility="{Binding FillWithPicture, Converter={StaticResource BoolToVis}}"
+                                   TextWrapping="Wrap"
+                                   MaxWidth="520"
+                                   HorizontalAlignment="Left"
+                                   FontSize="11"
+                                   Foreground="{DynamicResource TextSecondaryBrush}"
+                                   Margin="0,4,0,0" />
+                    </StackPanel>
                     <CheckBox Content="Direct drive commands (experimental)"
                               AutomationProperties.Name="Direct drive commands (experimental)"
                               IsChecked="{Binding UseDirectDriveCommands}"

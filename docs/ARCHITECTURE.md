@@ -299,6 +299,14 @@ one assembly with a clear provenance boundary. Nothing in it touches a drive.
   list. It saves the record (which `disc-art calibrate fit` reads) and the store entry. Not done: reading the angle
   marks of a coarse target from the photo's pixels, so a coarse record gives the wide-band radii only. No
   calibration target has been burned from IgnisDisc yet.
+- `DiscArt/DiscFillPicture.cs`: "fill empty space with a picture" for data DVD/BD and DVD-Video burns (off by default;
+  `burn-data`/`burn-dvd --fill-picture`, and the option on the Data Disc and DVD-Video screens). The burn's own
+  compilation tree and file-system options go to `DiscArtImageBuilder` (`FilesRoot`, inner files only), which plans the
+  volume, the 2 MiB zero gap and an ECC-block-aligned picture zone with `PictureDiscLayoutPlanner`; the image is built in
+  the temporary folder, burned closed through `DataBurnService.BurnIsoFileAsync` and deleted. `Refusal` stops appended,
+  open, used, CD and dual-layer burns before anything is drawn; `FitToDisc` cuts the preset at the blank disc's size
+  without moving any sector. The `auto` picture is one frame of the main movie (largest title set) taken by FFmpeg at a
+  third of its running time; without FFmpeg the burn goes ahead without the picture and says so.
 - `Imaging/PngRaster.cs` + `Imaging/WicPngDecoder.cs`: IgnisDisc's PNG framing/CRC-32 validator and Windows Imaging
   Component (`windowscodecs.dll`) decoder producing straight `32bppBGRA` `BgraRaster` buffers (plus 8-bit RGBA PNG writer)
   for picture input and read-back previews without a WPF dependency.

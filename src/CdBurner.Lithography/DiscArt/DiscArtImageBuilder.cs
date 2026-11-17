@@ -30,7 +30,9 @@ public sealed record DiscArtRequest(
     string? BaseCuePath = null,         // CD only: audio or mixed-mode CUE; the picture becomes its last track
     bool CdInterleave = true,
     bool DvdReadCompatibility = false,  // periodic-9b-16-v1 recipe (DvdReadCompatibilityModes.Current)
-    bool Overwrite = false);
+    bool Overwrite = false,
+    CompilationDirectory? FilesRoot = null,  // DVD/BD: a ready compilation (a burn screen's files) instead of FilesFolder; inner only
+    IsoBuildOptions? FilesIsoOptions = null); // the file systems for FilesRoot (null: ISO 9660 + Joliet + UDF, VolumeLabel)
 
 /// <summary>Sector plan of the image, computed without generating any picture bytes (fast).</summary>
 public sealed record DiscArtPlan(
@@ -119,7 +121,7 @@ public static class DiscArtImageBuilder
             var sidecar = new DiscArtSidecar(
                 DiscArtSidecar.FormatId, request.Medium, p.PicturePath, request.Disc, p.Tone, request.StartAngleDegrees,
                 request.Medium == DiscArtMedium.Dvd && p.DvdReadCompat, request.CdInterleave,
-                p.Plan.FilesLayout?.Placement.ToString(), p.Plan.FilesLayout is null ? null : request.VolumeLabel,
+                p.Plan.FilesLayout?.Placement.ToString(), p.Plan.FilesLayout is null ? null : p.IsoOptions?.VolumeLabel ?? request.VolumeLabel,
                 p.Plan, DateTimeOffset.UtcNow);
             DiscArtSidecar.Write(sidecarPath, sidecar);
             created.Add(sidecarPath);
@@ -257,7 +259,7 @@ public static class DiscArtImageBuilder
                 : "A DVD or BD picture disc is written as .iso.");
         }
 
-        if (request.Medium == DiscArtMedium.Cd && !string.IsNullOrWhiteSpace(request.FilesFolder))
+        if (request.Medium == DiscArtMedium.Cd && (!string.IsNullOrWhiteSpace(request.FilesFolder) || request.FilesRoot is not null))
         {
             throw new ArgumentException("A CD picture track cannot carry files; add the picture to an audio or mixed-mode CUE with a base CUE instead.");
         }
@@ -356,7 +358,47 @@ public static class DiscArtImageBuilder
         long start;
         long end;
         long total;
-        if (string.IsNullOrWhiteSpace(request.FilesFolder))
+        if (request.FilesRoot is not null)
+        {
+            if (!string.IsNullOrWhiteSpace(request.FilesFolder))
+            {
+                throw new ArgumentException("Give the files either as a folder or as a compilation, not both.");
+            }
+
+            if (request.FilesPlacement != PictureDiscFilesPlacement.InnerFiles)
+            {
+                throw new ArgumentException("Files from a compilation go on the inner part of the disc only.");
+            }
+
+            if (!request.FilesRoot.GetAllFilesRecursive().Any())
+            {
+                throw new ArgumentException("The compilation holds no files.");
+            }
+
+            if (capacity > int.MaxValue)
+            {
+                throw new ArgumentException("The disc has more sectors than a files layout can address.");
+            }
+
+            root = request.FilesRoot;
+            isoOptions = request.FilesIsoOptions ?? new IsoBuildOptions(
+                VolumeLabel: string.IsNullOrWhiteSpace(request.VolumeLabel) ? "DISC_ART" : request.VolumeLabel.Trim(),
+                IncludeIso9660: true, IncludeJoliet: true, IncludeUdf: true);
+            try
+            {
+                layout = PictureDiscLayoutPlanner.Plan(root, isoOptions, PictureDiscFilesPlacement.InnerFiles,
+                    dvd ? PictureDiscMedium.Dvd : PictureDiscMedium.BluRay, (int)capacity);
+            }
+            catch (InvalidOperationException ex)
+            {
+                throw new ArgumentException(ex.Message);
+            }
+
+            start = layout.PictureStartLba;
+            end = layout.PictureEndLba;
+            total = layout.TotalSectors;
+        }
+        else if (string.IsNullOrWhiteSpace(request.FilesFolder))
         {
             start = 0;
             end = capacity / align * align;

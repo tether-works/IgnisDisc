@@ -128,7 +128,39 @@
                               AutomationProperties.Name="Add BLAKE3SUMS"
                               ToolTip="Adds a BLAKE3SUMS file to the disc root. 'b3sum -c BLAKE3SUMS' (the official BLAKE3 tool) can check every file later. Can be used together with SHA256SUMS."
                               IsChecked="{Binding WriteBlake3Manifest}"
-                              VerticalAlignment="Center" />
+                              VerticalAlignment="Center"
+                              Margin="0,0,16,0" />
+                    <StackPanel Orientation="Vertical" Margin="0,6,0,0">
+                        <StackPanel Orientation="Horizontal">
+                            <CheckBox Content="Fill empty space with a picture"
+                                      AutomationProperties.Name="Fill empty space with a picture"
+                                      IsChecked="{Binding FillWithPicture}"
+                                      ToolTip="{Binding FillPictureNote}"
+                                      VerticalAlignment="Center"
+                                      Margin="0,0,8,0" />
+                            <TextBox AutomationProperties.Name="Fill picture path"
+                                     Text="{Binding FillPicturePath, UpdateSourceTrigger=PropertyChanged}"
+                                     Visibility="{Binding FillWithPicture, Converter={StaticResource BoolToVis}}"
+                                     Width="260"
+                                     Padding="6,2"
+                                     Margin="0,0,8,0"
+                                     Background="{DynamicResource ControlBackgroundBrush}"
+                                     Foreground="{DynamicResource TextPrimaryBrush}"
+                                     BorderBrush="{DynamicResource ControlBorderBrush}" />
+                            <Button Content="Picture..."
+                                    AutomationProperties.Name="Choose the fill picture"
+                                    Command="{Binding BrowseFillPictureCommand}"
+                                    ToolTip="Choose the PNG picture drawn on the empty part of a DVD or BD" />
+                        </StackPanel>
+                        <TextBlock Text="{Binding FillPictureNote}"
+                                   Visibility="{Binding FillWithPicture, Converter={StaticResource BoolToVis}}"
+                                   TextWrapping="Wrap"
+                                   MaxWidth="560"
+                                   HorizontalAlignment="Left"
+                                   FontSize="11"
+                                   Foreground="{DynamicResource TextSecondaryBrush}"
+                                   Margin="0,4,0,0" />
+                    </StackPanel>
                 </WrapPanel>
             </Grid>
         </Border>

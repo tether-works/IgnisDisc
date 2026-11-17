@@ -22,6 +22,8 @@ using CdBurner.Hardware.Devices;
 using CdBurner.Hardware.NativeWriting;
 using CdBurner.Hardware.Scsi;
 using CdBurner.Hardware.Simulation;
+using CdBurner.Lithography.Calibration;
+using CdBurner.Lithography.DiscArt;
 
 namespace CdBurner.Cli;
 
@@ -822,6 +824,7 @@ public static partial class CliCommandRunner
         bool explicitAppend = cmd.HasFlag("append");
         bool disableBufe = cmd.HasFlag("no-burnfree");
         var postAction = ParsePostBurnAction(cmd);
+        string? fillPicture = ParseFillPicture(cmd, autoAllowed: false); // off unless --fill-picture is given
 
         if (!Directory.Exists(inputFolder))
         {
@@ -845,6 +848,10 @@ public static partial class CliCommandRunner
         verify |= nativeEngine != null && !testWrite; // a direct burn is always read back
         // As the writer that will burn sees the disc: direct writing finds an open DVD-RW that Windows calls overwrite-only.
         var mediaStatus = MediaStatusForWriting.Describe(nativeEngine ?? burnEngine, recorder, windowsStatus);
+        // A filled disc is written from the start in one pass and closed: refused for append, --no-close and used discs
+        // before anything is read or drawn.
+        var fill = fillPicture is null ? ((DiscArtMedium Medium, CalibrationParameters Disc, string Source)?)null
+            : PrepareFill(cmd, mediaStatus, closeDisc, explicitAppend);
         if (explicitAppend)
         {
             if (!mediaStatus.MediaPresent)
@@ -866,7 +873,7 @@ public static partial class CliCommandRunner
         var bootConfig = BuildBootConfiguration(bootBiosPath, bootUefiPath, effectiveLabel);
 
         var root = CompilationDirectory.CreateRoot();
-        if (!mediaStatus.IsBlank && mediaStatus.IsAppendable && !mediaStatus.IsOverwriteOnly)
+        if (fill is null && !mediaStatus.IsBlank && mediaStatus.IsAppendable && !mediaStatus.IsOverwriteOnly)
         {
             try
             {
@@ -913,7 +920,17 @@ public static partial class CliCommandRunner
 
         var phases = new PhaseTimingProgress(cmd.IsJson ? null : stdout);
         var burnService = new DataBurnService(nativeEngine ?? burnEngine);
-        var result = await burnService.BurnCompilationAsync(recorder, root, burnOptions, buildOptions, phases).ConfigureAwait(false);
+        DataBurnResult result;
+        FillOutcome? fillOutcome = null;
+        if (fill is { } f)
+        {
+            (result, fillOutcome) = await BurnFilledAsync(burnService, recorder, root, buildOptions, burnOptions, fillPicture!,
+                f.Medium, f.Disc, f.Source, cmd.IsJson ? null : stderr).ConfigureAwait(false);
+        }
+        else
+        {
+            result = await burnService.BurnCompilationAsync(recorder, root, burnOptions, buildOptions, phases).ConfigureAwait(false);
+        }
         phases.Complete();
         ExecutePostBurnActionIfSucceeded(postAction, result.Success, recorder);
 
@@ -932,6 +949,7 @@ public static partial class CliCommandRunner
                 verified = result.Verified,
                 verificationNote = result.VerificationNote,
                 warning = result.Warning,
+                fillPicture = FillJson(fillOutcome, null),
                 phases = phases.Phases.Select(p => new { phase = p.Name, seconds = Math.Round(p.Duration.TotalSeconds, 1) }),
                 directWrite = NativeDataJson(nativeEngine),
                 error = result.ErrorMessage
@@ -951,6 +969,7 @@ public static partial class CliCommandRunner
             stdout.WriteLine($"  Verified:       {(result.Verified ? "Passed" : "No")}");
             if (result.VerificationNote != null) stdout.WriteLine($"  Verify Note:    {result.VerificationNote}");
             if (result.Warning != null) stdout.WriteLine($"  Warning:        {result.Warning}");
+            WriteFillSummary(stdout, fillOutcome, null);
             WriteNativeDataSummary(stdout, nativeEngine);
             phases.WriteSummary(stdout);
             return 0;
@@ -1619,6 +1638,7 @@ public static partial class CliCommandRunner
         var (nativeEngine, testWrite) = ResolveNativeDataEngine(cmd, burnEngine);
         var dvdPostAction = ParsePostBurnAction(cmd);
         bool dvdDisableBufe = cmd.HasFlag("no-burnfree");
+        string? fillPicture = ParseFillPicture(cmd, autoAllowed: true); // off unless --fill-picture is given
 
         var pathTokens = videoTsInput.Split(new[] { ';', '|' }, StringSplitOptions.RemoveEmptyEntries | StringSplitOptions.TrimEntries);
         bool allTokensExist = pathTokens.Length > 0 && pathTokens.All(p => File.Exists(p) || Directory.Exists(p));
@@ -1644,6 +1664,30 @@ public static partial class CliCommandRunner
             throw new InvalidOperationException($"Input cannot be authored or burned to DVD-Video: {string.Join("; ", analysis.NormalizationNotes)}");
         }
 
+        // Checked before any conversion: a DVD-Video is always closed, so only the disc itself can refuse the fill.
+        var fill = fillPicture is null ? ((DiscArtMedium Medium, CalibrationParameters Disc, string Source)?)null
+            : PrepareFill(cmd, recorder.QueryMediaStatus(), closeDisc: true, append: false);
+        string? fillSkipped = null;
+        string? autoFrame = null;
+        if (fill is not null && string.Equals(fillPicture, DiscFillPicture.AutoSource, StringComparison.Ordinal))
+        {
+            // The automatic picture is a frame of the main movie; without FFmpeg the disc is burned without the picture.
+            string? ffmpeg = FindFillFfmpeg(cmd.GetOption("ffmpeg") is { Length: > 0 } custom ? custom : null);
+            autoFrame = Path.Combine(Path.GetTempPath(), $"ignisdisc_fill_frame_{Guid.NewGuid():N}.png");
+            (string? grabbed, fillSkipped) = await DiscFillPicture.GrabMovieFrameAsync(
+                ffmpeg, DiscFillPicture.FindMainMovie(videoTsInput), autoFrame).ConfigureAwait(false);
+            if (grabbed is null)
+            {
+                fill = null;
+                if (!cmd.IsJson) stderr.WriteLine(fillSkipped);
+            }
+            else
+            {
+                fillPicture = grabbed;
+            }
+        }
+
+        FillOutcome? fillOutcome = null;
         string sourceRootDirectory;
         string? tempAuthorDir = null;
         string effectiveLabel = !string.IsNullOrWhiteSpace(volumeLabel) ? volumeLabel : (analysis.SuggestedVolumeLabel ?? "DVD_VIDEO");
@@ -1695,7 +1739,12 @@ public static partial class CliCommandRunner
                 DisableBufferUnderrunFree = dvdDisableBufe
             };
             var dvdMedia = recorder.QueryMediaStatus().MediaType;
-            if (nativeEngine != null && dvdMedia is DiscMediaType.DvdPlusRDualLayer or DiscMediaType.DvdMinusRDualLayer)
+            if (fill is { } f)
+            {
+                (result, fillOutcome) = await BurnFilledAsync(burnService, recorder, root, buildOptions, dvdOptions, fillPicture!,
+                    f.Medium, f.Disc, f.Source, cmd.IsJson ? null : stderr).ConfigureAwait(false);
+            }
+            else if (nativeEngine != null && dvdMedia is DiscMediaType.DvdPlusRDualLayer or DiscMediaType.DvdMinusRDualLayer)
             {
                 // Dual-layer with the direct writer: build the image first so the break can go on a cell boundary.
                 (result, layerBreak) = await BurnDvdVideoDualLayerAsync(burnService, recorder, root, dvdOptions, buildOptions, stdout, cmd.IsJson).ConfigureAwait(false);
@@ -1710,6 +1759,11 @@ public static partial class CliCommandRunner
             if (tempAuthorDir != null && Directory.Exists(tempAuthorDir))
             {
                 try { Directory.Delete(tempAuthorDir, recursive: true); } catch { }
+            }
+
+            if (autoFrame != null)
+            {
+                try { File.Delete(autoFrame); } catch (IOException) { } catch (UnauthorizedAccessException) { }
             }
         }
 
@@ -1738,6 +1792,7 @@ public static partial class CliCommandRunner
                     cellId = layerBreak.Cell.CellId
                 },
                 directWrite = NativeDataJson(nativeEngine),
+                fillPicture = FillJson(fillOutcome, fillSkipped),
                 error = result.ErrorMessage
             };
 
@@ -1753,6 +1808,7 @@ public static partial class CliCommandRunner
             stdout.WriteLine($"  Sectors Burned: {result.SectorsWritten:N0}");
             stdout.WriteLine($"  Duration:       {result.TotalTime}");
             if (layerBreak != null) stdout.WriteLine($"  Layer break:    {layerBreak}");
+            WriteFillSummary(stdout, fillOutcome, fillSkipped);
             stdout.WriteLine($"  Verified:       {(result.Verified ? "yes" : "no")}{(string.IsNullOrEmpty(result.VerificationNote) ? "" : " - " + result.VerificationNote)}");
             if (nativeEngine?.LastLogPath != null)
             {
@@ -3514,11 +3570,11 @@ public static partial class CliCommandRunner
         stdout.WriteLine("      Compiles a folder into an ISO 9660 / Joliet / UDF filesystem image.");
         stdout.WriteLine("  burn-iso --drive <id> --iso <file.iso|.nrg|.cdi|.mdf|.mds|.ccd|.img> [--speed <X|max>] [--no-verify | --strict-verify] [--no-close] [--no-burnfree] [--overwrite] [--post-action none|eject|sound|eject-sound|shutdown] [--windows-writer | --native [--test-write | --test-first] [--layer-break <sectors>] [--log-dir <folder>]] [--json]");
         stdout.WriteLine("      Burns an ISO image directly to the target optical drive. --layer-break: sectors on the first layer of a DVD+R DL (multiple of 16). A DVD-RW is written with direct drive commands unless --windows-writer.");
-        stdout.WriteLine("  burn-data --drive <id> --input <folder> [--label <vol>] [--speed <X|max>] [--udf] [--udf-rev <1.02|1.50|2.00|2.01|2.50|2.60>] [--joliet] [--boot-bios <img>] [--boot-uefi <img>] [--no-verify | --strict-verify] [--no-close] [--append] [--no-burnfree] [--overwrite] [--post-action none|eject|sound|eject-sound|shutdown] [--fixed-time <unix|iso8601>] [--sha256sums] [--blake3sums] [--windows-writer | --native [--test-write | --test-first] [--layer-break <sectors>] [--log-dir <folder>]] [--json]");
+        stdout.WriteLine("  burn-data --drive <id> --input <folder> [--label <vol>] [--speed <X|max>] [--udf] [--udf-rev <1.02|1.50|2.00|2.01|2.50|2.60>] [--joliet] [--boot-bios <img>] [--boot-uefi <img>] [--no-verify | --strict-verify] [--no-close] [--append] [--no-burnfree] [--overwrite] [--post-action none|eject|sound|eject-sound|shutdown] [--fixed-time <unix|iso8601>] [--sha256sums] [--blake3sums] [--fill-picture <file.png> [--disc-preset <id>]] [--windows-writer | --native [--test-write | --test-first] [--layer-break <sectors>] [--log-dir <folder>]] [--json]");
         stdout.WriteLine("      Compiles a folder and burns it to optical media (--append merges and adds a session on an appendable disc). A DVD-RW is written with direct drive commands unless --windows-writer.");
         stdout.WriteLine("  burn-audio (--drive <id> | --plan-only) (--tracks <files|.cue|.m3u|.pls> | --tracks-file <file.json>) [--title <album>] [--artist <name>] [--songwriter <name>] [--upc <13digits>] [--speed <X|max>] [--dao] [--pregap <frames>] [--normalize] [--rms-level] [--loudness track|album|off] [--crossfade <sec>] [--no-cd-text] [--no-burnfree] [--post-action none|eject|sound|eject-sound|shutdown] [--allow-damaged] [--native [--test-write | --test-first] [--recovery-session | --data-folder <dir> [--data-label <label>] [--blue-book]] [--write-offset <samples|auto>] [--log-dir <folder>]] [--json]");
         stdout.WriteLine("      Burns Red Book Audio CD from WAV, FLAC, MP3, AAC/M4A, WMA, .cue, .m3u/.pls, or a JSON --tracks-file (--recovery-session adds session-2 PAR2 recovery; --data-folder burns an Enhanced CD data session; --blue-book writes it as CD-ROM XA Mode 2 with CDPLUS/INFO.CDP and PICTURES/; --plan-only previews without burning).");
-        stdout.WriteLine("  burn-dvd --drive <id> --video-ts <folder|movie> [--label <vol>] [--menu-title <title>] [--menu on|off | --no-menu] [--menu-autoplay <never|sec>] [--after-title next|menu] [--standard ntsc|pal] [--aspect 16:9|4:3] [--chapters <none|sec>] [--subtitles-default on|off] [--subtitle-size small|medium|large] [--video-bitrate <fit|kbps>] [--fit-to-disc] [--title-names <a;b;...>] [--dual-layer] [--generate-subtitles [--subtitle-language <code>]] [--speed <X|max>] [--no-verify] [--no-burnfree] [--overwrite] [--post-action none|eject|sound|eject-sound|shutdown] [--native [--test-write | --test-first] [--log-dir <folder>]] [--json]");
+        stdout.WriteLine("  burn-dvd --drive <id> --video-ts <folder|movie> [--label <vol>] [--menu-title <title>] [--menu on|off | --no-menu] [--menu-autoplay <never|sec>] [--after-title next|menu] [--standard ntsc|pal] [--aspect 16:9|4:3] [--chapters <none|sec>] [--subtitles-default on|off] [--subtitle-size small|medium|large] [--video-bitrate <fit|kbps>] [--fit-to-disc] [--title-names <a;b;...>] [--dual-layer] [--generate-subtitles [--subtitle-language <code>]] [--speed <X|max>] [--no-verify] [--no-burnfree] [--overwrite] [--fill-picture <file.png>|auto [--disc-preset <id>]] [--post-action none|eject|sound|eject-sound|shutdown] [--native [--test-write | --test-first] [--log-dir <folder>]] [--json]");
         stdout.WriteLine("      Validates, normalizes/authors, aligns, and burns a DVD-Video compliant disc from VIDEO_TS or movie files.");
         stdout.WriteLine("      --dual-layer authors movie files for a DVD-9 (longest title first). On a dual-layer disc, --native puts the layer break on a cell boundary.");
         stdout.WriteLine("      --generate-subtitles makes subtitles by speech recognition for movies with no .srt next to them (needs install-subtitle-tool);");
@@ -3719,8 +3775,11 @@ public static partial class CliCommandRunner
             stdout.WriteLine();
             stdout.WriteLine("  author-dvd --input <folder|movies> --output <folder|file.iso> [--label <vol>] [--menu-title <title>] [--menu on|off | --no-menu] [--menu-autoplay <never|sec>] [--after-title next|menu] [--standard ntsc|pal] [--aspect 16:9|4:3] [--chapters <none|sec>] [--subtitles-default on|off] [--subtitle-size small|medium|large] [--video-bitrate <fit|kbps>] [--fit-to-disc] [--title-names <a;b;...>] [--dual-layer] [--generate-subtitles [--subtitle-language <code|auto>]] [--ffmpeg <path>] [--no-ffmpeg] [--overwrite] [--json]");
             stdout.WriteLine("      Authors DVD-Video files into a VIDEO_TS folder or compliant ISO 9660 + UDF 1.02 image without burning.");
-            stdout.WriteLine("  burn-dvd --drive <id> --video-ts <folder|movie> [--label <vol>] [--menu-title <title>] [--menu on|off | --no-menu] [--menu-autoplay <never|sec>] [--after-title next|menu] [--standard ntsc|pal] [--aspect 16:9|4:3] [--chapters <none|sec>] [--subtitles-default on|off] [--subtitle-size small|medium|large] [--video-bitrate <fit|kbps>] [--fit-to-disc] [--title-names <a;b;...>] [--dual-layer] [--generate-subtitles [--subtitle-language <code|auto>]] [--ffmpeg <path>] [--speed <X|max>] [--no-verify] [--overwrite] [--native [--test-write | --test-first]] [--json]");
+            stdout.WriteLine("  burn-dvd --drive <id> --video-ts <folder|movie> [--label <vol>] [--menu-title <title>] [--menu on|off | --no-menu] [--menu-autoplay <never|sec>] [--after-title next|menu] [--standard ntsc|pal] [--aspect 16:9|4:3] [--chapters <none|sec>] [--subtitles-default on|off] [--subtitle-size small|medium|large] [--video-bitrate <fit|kbps>] [--fit-to-disc] [--title-names <a;b;...>] [--dual-layer] [--generate-subtitles [--subtitle-language <code|auto>]] [--ffmpeg <path>] [--speed <X|max>] [--no-verify] [--overwrite] [--fill-picture <file.png>|auto [--disc-preset <id>]] [--native [--test-write | --test-first]] [--json]");
             stdout.WriteLine("      Validates, authors, and burns a DVD-Video compliant disc from VIDEO_TS or movie files.");
+            stdout.WriteLine("      --fill-picture (off by default) draws a picture on the empty rest of a single-layer DVD or BD; 'auto' takes a");
+            stdout.WriteLine("      frame of the main movie with FFmpeg (skipped with a message when FFmpeg is not installed). The whole disc");
+            stdout.WriteLine("      is written (longer burn) and closed.");
             return;
         }
         if (string.Equals(subcommand, "jewel-cover", StringComparison.OrdinalIgnoreCase) ||

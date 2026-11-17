@@ -82,12 +82,12 @@ ignisdisc-cli <command> [options]
              [--native [--test-write | --test-first] [--layer-break <sectors>] [--log-dir <folder>]]
   burn-data  --drive <id> --input <folder> [--label <vol>] [--speed <X|max>] [--udf] [--joliet]
              [--boot-bios <img>] [--boot-uefi <img>] [--no-verify | --strict-verify] [--no-close] [--append] [--no-burnfree] [--overwrite] [--post-action none|eject|sound|eject-sound|shutdown] [--fixed-time <...>]
-             [--sha256sums] [--blake3sums] [--udf-rev <...>] [--native [--test-write | --test-first] [--layer-break <sectors>] [--log-dir <folder>]]
+             [--sha256sums] [--blake3sums] [--udf-rev <...>] [--fill-picture <file.png> [--disc-preset <id>]] [--native [--test-write | --test-first] [--layer-break <sectors>] [--log-dir <folder>]]
   burn-audio (--drive <id> | --plan-only) (--tracks <a.wav,b.flac,album.cue,list.m3u,...> | --tracks-file <file.json>) [--title <album>] [--artist <name>]
              [--songwriter <name>] [--upc <13digits>] [--speed <X|max>] [--dao] [--pregap <frames>] [--normalize] [--rms-level] [--loudness track|album|off] [--crossfade <sec>]
              [--no-cd-text] [--no-burnfree] [--post-action none|eject|sound|eject-sound|shutdown] [--allow-damaged] [--native [--test-write | --test-first] [--recovery-session] [--write-offset <n|auto>] [--log-dir <folder>]]
   burn-dvd   --drive <id> --video-ts <folder|movie> [--label <vol>] [--menu-title <title>] [--no-menu] [--standard ntsc|pal] [--aspect 16:9|4:3] [--chapters <sec>] [--dual-layer]
-             [--generate-subtitles [--subtitle-language <code|auto>]] [--speed <X|max>] [--no-verify] [--no-burnfree] [--overwrite] [--post-action none|eject|sound|eject-sound|shutdown]
+             [--generate-subtitles [--subtitle-language <code|auto>]] [--speed <X|max>] [--no-verify] [--no-burnfree] [--overwrite] [--fill-picture <file.png>|auto] [--post-action none|eject|sound|eject-sound|shutdown]
              [--native [--test-write | --test-first] [--log-dir <folder>]]
   burn-queue --drive <id> --images <f1.iso,f2.iso,...> [--speed <X|max>] [--no-verify | --strict-verify] [--no-close] [--no-burnfree] [--overwrite] [--continue-on-error] [--wait-minutes <n>] [--post-action none|eject|sound|eject-sound|shutdown]
   image-info --image <file.iso|.nrg|.mdf|.mds|.ccd|.img|.cdi|.bin|.cue>
@@ -258,6 +258,7 @@ on a Verbatim DVD+R DL with the break where the second film starts; an Xbox Seri
 through the end of the first film into the second crossed the layer change without a stop.
 An audio CD written this way can be left open for a second session, and a data session can be added after it (CD-Extra); copying an Enhanced CD whole (audio session, then data session) works the same way. The data session can optionally use the Blue Book layout (`--blue-book`, or "Blue Book layout" in the app; off by default): CD-ROM XA Mode 2 Form 1 with `CDPLUS/INFO.CDP` holding the album and track titles, and a `PICTURES` folder. These, and the optional recovery-data session on an audio CD, have run only in the built-in drive simulator, not on a real disc.
 The picture-disc and Rosetta commands (`disc-art generate/preview/burn`, `rosetta build/burn`, including the hybrid DVD-R with an archive inside and text pages outside, and the rim header) have been tested only on images and in the drive simulator: no disc has been burned from them on a real drive, and no result has been looked at under a microscope.
+The same holds for "Fill empty space with a picture" on the Data Disc and DVD-Video screens (`burn-data --fill-picture <file.png>`, `burn-dvd --fill-picture <file.png>|auto`; off by default): the files stay on the inner part of a single-layer DVD or BD and a picture is drawn on the rest, so the whole disc is written (a longer burn) and it is closed; appended or open burns refuse the option. `auto` on a DVD-Video takes one frame of the main movie with FFmpeg, and burns without the picture, saying so, when FFmpeg is not installed. In the simulator a filled DVD-R of each kind was read back with every file identical and no picture sector inside the file system.
 `--test-write` and
 `--test-first` work as for audio (DVD+R has no test write). On real hardware it has run on one drive so far; other
 drives are still to be tried.
