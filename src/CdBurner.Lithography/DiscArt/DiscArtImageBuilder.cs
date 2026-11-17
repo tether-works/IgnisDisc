@@ -1,4 +1,5 @@
 using System.Diagnostics;
+using System.Globalization;
 using CdBurner.Core.Audio;
 using CdBurner.Core.Compilation;
 using CdBurner.Core.Iso;
@@ -33,7 +34,9 @@ public sealed record DiscArtRequest(
     bool Overwrite = false,
     CompilationDirectory? FilesRoot = null,  // DVD/BD: a ready compilation (a burn screen's files) instead of FilesFolder; inner only
     IsoBuildOptions? FilesIsoOptions = null,  // the file systems for FilesRoot (null: ISO 9660 + Joliet + UDF, VolumeLabel)
-    DiscArtTransform? Transform = null);      // scale, move, rotate, fit; null or the default draws the picture as before
+    DiscArtTransform? Transform = null,       // scale, move, rotate, fit; null or the default draws the picture as before
+    double? ArtInnerRadiusMm = null,          // DVD/BD: draw only from this radius outward (null: from the files' gap or LBA 0)
+    double? ArtOuterRadiusMm = null);         // DVD/BD: draw only up to this radius; the image ends there (null: to the disc end)
 
 /// <summary>Sector plan of the image, computed without generating any picture bytes (fast).</summary>
 public sealed record DiscArtPlan(
@@ -44,7 +47,34 @@ public sealed record DiscArtPlan(
     double PictureInnerRadiusMm,
     double PictureOuterRadiusMm,
     PictureDiscLayout? FilesLayout,     // DVD/BD with files; null otherwise
-    long? BaseCueSectors);              // CD with a base CUE: sectors the existing tracks take (incl. 150-sector pre-gap)
+    long? BaseCueSectors,               // CD with a base CUE: sectors the existing tracks take (incl. 150-sector pre-gap)
+    DiscArtBand? Band = null);          // DVD/BD drawn in a band only; null when the picture fills the rest of the disc
+
+/// <summary>
+/// A picture drawn only between two radii. The sectors before the band are zero (after the files and their gap when
+/// there are files) and the image ends at the band's outer edge, so the burn is shorter and the rest of the disc stays
+/// blank. Radii are on the encoder's own track model; LBAs are rounded inward to whole ECC blocks (DVD, 16 sectors)
+/// or clusters (BD, 32 sectors), so the drawing never reaches outside the asked radii.
+/// </summary>
+/// <param name="RequestedInnerRadiusMm">Inner radius asked for (null: the band starts where the picture could).</param>
+/// <param name="RequestedOuterRadiusMm">Outer radius asked for (null: the band runs to the end of the disc).</param>
+/// <param name="StartLba">First sector of the band (aligned).</param>
+/// <param name="EndLba">End of the band, exclusive (aligned): the image's length in sectors.</param>
+/// <param name="InnerRadiusMm">Radius where <paramref name="StartLba"/> lies.</param>
+/// <param name="OuterRadiusMm">Radius where <paramref name="EndLba"/> lies.</param>
+/// <param name="FullImageSectors">Sectors the image would have with the picture to the end of the disc.</param>
+/// <param name="SavedSectors">Sectors not written because the image ends at the band.</param>
+/// <param name="SavedSecondsAt1x">Burn time those sectors take at 1x (DVD 1,385,000 bytes/s, BD 4,495,500 bytes/s).</param>
+public sealed record DiscArtBand(
+    double? RequestedInnerRadiusMm,
+    double? RequestedOuterRadiusMm,
+    long StartLba,
+    long EndLba,
+    double InnerRadiusMm,
+    double OuterRadiusMm,
+    long FullImageSectors,
+    long SavedSectors,
+    double SavedSecondsAt1x);
 
 public sealed record DiscArtResult(
     DiscArtPlan Plan,
@@ -71,6 +101,8 @@ public static class DiscArtImageBuilder
     private const int CdLeadInSectors = 150;
     private const int CdMinimumPictureSectors = 4_500; // one minute
     private const uint DvdPsnOffset = 0x30000;
+    private const double DvdBytesPerSecondAt1x = 1_385_000;  // ECMA-267: 11.08 Mbit/s user data
+    private const double BdBytesPerSecondAt1x = 4_495_500;   // BD 1x as drives report it (MMC write speed descriptor, kB/s)
 
     /// <summary>Sector plan of the image without generating any picture bytes.</summary>
     public static DiscArtPlan Plan(DiscArtRequest request) => Prepare(request).Plan;
@@ -282,6 +314,35 @@ public static class DiscArtImageBuilder
             throw new ArgumentException("A CD picture track cannot carry files; add the picture to an audio or mixed-mode CUE with a base CUE instead.");
         }
 
+        if (request.ArtInnerRadiusMm is not null || request.ArtOuterRadiusMm is not null)
+        {
+            if (request.Medium == DiscArtMedium.Cd)
+            {
+                throw new ArgumentException("An art band (inner and outer art radius) is for DVD and BD picture discs only.");
+            }
+
+            if (request.FilesPlacement == PictureDiscFilesPlacement.OuterFiles
+                && (!string.IsNullOrWhiteSpace(request.FilesFolder) || request.FilesRoot is not null))
+            {
+                throw new ArgumentException(
+                    "An art band ends the image at its outer edge, which would leave out files placed at the outer end; put the files on the inner part of the disc.");
+            }
+
+            foreach (double? radius in new[] { request.ArtInnerRadiusMm, request.ArtOuterRadiusMm })
+            {
+                if (radius is { } r && (!double.IsFinite(r) || r < request.Disc.InnerRadiusMm || r > request.Disc.OuterRadiusMm))
+                {
+                    throw new ArgumentException(string.Create(CultureInfo.InvariantCulture,
+                        $"The art band's radii must lie on the drawn disc, from {request.Disc.InnerRadiusMm:0.###} to {request.Disc.OuterRadiusMm:0.###} mm."));
+                }
+            }
+
+            if (request.ArtInnerRadiusMm is { } inner && request.ArtOuterRadiusMm is { } outer && inner >= outer)
+            {
+                throw new ArgumentException("The art band's inner radius must be smaller than its outer radius.");
+            }
+        }
+
         if (request.Medium != DiscArtMedium.Cd && !string.IsNullOrWhiteSpace(request.BaseCuePath))
         {
             throw new ArgumentException("A base CUE sheet is only for a CD picture track.");
@@ -473,8 +534,28 @@ public static class DiscArtImageBuilder
             throw new ArgumentException("The disc is too small for a picture.");
         }
 
+        Func<long, double> radiusAt = RadiusModel(request, tone);
+        DiscArtBand? band = null;
+        if (request.ArtInnerRadiusMm is not null || request.ArtOuterRadiusMm is not null)
+        {
+            band = PlanBand(request, radiusAt, align, start, end, layout is not null, dvd ? DvdBytesPerSecondAt1x : BdBytesPerSecondAt1x);
+            start = band.StartLba;
+            end = band.EndLba;
+            total = band.EndLba;
+            if (layout is not null)
+            {
+                // Files, then zeros up to the band (the gap grows), then the band; nothing after it.
+                layout = layout with
+                {
+                    PictureStartLba = checked((int)start),
+                    PictureEndLba = checked((int)end),
+                    TotalSectors = checked((int)end),
+                };
+            }
+        }
+
         var plan = new DiscArtPlan(request.Medium, total, start, end,
-            RadiusAt(request, tone, start), RadiusAt(request, tone, end), layout, null);
+            radiusAt(start), radiusAt(end), layout, null, band);
         return new Prepared(request, plan, output, picture, tone, request.DvdReadCompatibility || request.Disc.DvdReadCompatibility,
             root, isoOptions, null, request.Transform ?? DiscArtTransform.Default,
             dvd ? DvdOptions(request.Disc, tone, request.StartAngleDegrees, false).SamplingImageOuterRadiusMm
@@ -541,33 +622,104 @@ public static class DiscArtImageBuilder
         public const int Bd = BluRayDiscParameters.SectorsPerCluster;
     }
 
-    private static double RadiusAt(DiscArtRequest request, ToneProfile tone, long lba)
+    /// <summary>
+    /// Radius of an LBA on the encoder's own track model (the one geometry the picture is drawn with). The model is built
+    /// once, so the band search can ask it many times.
+    /// </summary>
+    private static Func<long, double> RadiusModel(DiscArtRequest request, ToneProfile tone)
     {
         CalibrationParameters d = request.Disc;
-        if (lba <= 0)
-        {
-            return d.InnerRadiusMm;
-        }
-
         if (request.Medium == DiscArtMedium.Dvd)
         {
-            if (lba >= d.Sectors)
-            {
-                return d.OuterRadiusMm;
-            }
-
             DvdStreamingOptions options = DvdOptions(d, tone, request.StartAngleDegrees, false);
+            double sectorMm = DvdEccBlockEncoder.ChannelBitsPerSector * options.ChannelBitLengthNm * 1e-6;
             DvdTrackGeometry geometry = DvdTrackGeometry.Create(
-                options.InnerRadiusMm, options.OuterRadiusMm,
-                options.TotalSectors * (double)DvdEccBlockEncoder.ChannelBitsPerSector * options.ChannelBitLengthNm * 1e-6,
+                options.InnerRadiusMm, options.OuterRadiusMm, options.TotalSectors * sectorMm,
                 options.PitchLinear, options.PitchQuadratic, options.PitchCubic);
-            return geometry.RadiusAtArcLength(
-                lba * (double)DvdEccBlockEncoder.ChannelBitsPerSector * options.ChannelBitLengthNm * 1e-6);
+            return lba => lba <= 0 ? d.InnerRadiusMm
+                : lba >= d.Sectors ? d.OuterRadiusMm
+                : geometry.RadiusAtArcLength(lba * sectorMm);
         }
 
         BluRayDiscParameters disc = BdParameters(d, request.StartAngleDegrees);
-        return lba >= disc.TotalSectors ? d.OuterRadiusMm : new BluRayTrackGeometry(disc).AtSector(lba).RadiusMm;
+        var track = new BluRayTrackGeometry(disc);
+        return lba => lba <= 0 ? d.InnerRadiusMm
+            : lba >= disc.TotalSectors ? d.OuterRadiusMm
+            : track.AtSector(lba).RadiusMm;
     }
+
+    /// <summary>
+    /// The band's aligned sectors. The inner edge rounds up and the outer edge rounds down to whole blocks, so no drawn
+    /// sector lies outside the asked radii. <paramref name="pictureStart"/> is the first sector the picture may use (after
+    /// the files and the 2 MiB gap) and <paramref name="pictureEnd"/> the aligned end of the disc.
+    /// </summary>
+    private static DiscArtBand PlanBand(DiscArtRequest request, Func<long, double> radiusAt, int align,
+        long pictureStart, long pictureEnd, bool withFiles, double bytesPerSecondAt1x)
+    {
+        CultureInfo c = CultureInfo.InvariantCulture;
+        long sectors = request.Disc.Sectors;
+        long bandStart = pictureStart;
+        long bandEnd = pictureEnd;
+        if (request.ArtInnerRadiusMm is { } inner)
+        {
+            bandStart = AlignUp(FirstLbaAtOrBeyond(radiusAt, sectors, inner), align);
+        }
+
+        if (request.ArtOuterRadiusMm is { } outer)
+        {
+            bandEnd = Math.Min(pictureEnd, LastLbaWithin(radiusAt, sectors, outer) / align * align);
+        }
+
+        string asked = string.Create(c,
+            $"r = {request.ArtInnerRadiusMm ?? radiusAt(pictureStart):0.###} to {request.ArtOuterRadiusMm ?? radiusAt(pictureEnd):0.###} mm");
+        if (withFiles && (bandStart < pictureStart || bandEnd <= pictureStart))
+        {
+            throw new ArgumentException(string.Create(c,
+                $"The art band ({asked}) overlaps the files and the 2 MiB gap after them, which reach r = {radiusAt(pictureStart):0.###} mm "
+                + $"(sector {pictureStart:N0}); move the band outward or put fewer files on the disc."));
+        }
+
+        if (bandEnd - bandStart < align)
+        {
+            string block = request.Medium == DiscArtMedium.Dvd ? "16-sector ECC block" : "32-sector cluster";
+            throw new ArgumentException(string.Create(c,
+                $"The art band ({asked}) is narrower than one {block}, the smallest part of the disc that can be drawn; widen it."));
+        }
+
+        long saved = pictureEnd - bandEnd;
+        return new DiscArtBand(request.ArtInnerRadiusMm, request.ArtOuterRadiusMm, bandStart, bandEnd,
+            radiusAt(bandStart), radiusAt(bandEnd), pictureEnd, saved, saved * (double)SectorBytes / bytesPerSecondAt1x);
+    }
+
+    /// <summary>Smallest LBA in [0, sectors] whose radius is at least <paramref name="radiusMm"/> (radius grows with LBA).</summary>
+    private static long FirstLbaAtOrBeyond(Func<long, double> radiusAt, long sectors, double radiusMm)
+    {
+        long lo = 0;
+        long hi = sectors;
+        while (lo < hi)
+        {
+            long mid = lo + (hi - lo) / 2;
+            if (radiusAt(mid) >= radiusMm) hi = mid; else lo = mid + 1;
+        }
+
+        return lo;
+    }
+
+    /// <summary>Largest LBA in [0, sectors] whose radius is at most <paramref name="radiusMm"/>.</summary>
+    private static long LastLbaWithin(Func<long, double> radiusAt, long sectors, double radiusMm)
+    {
+        long lo = 0;
+        long hi = sectors;
+        while (lo < hi)
+        {
+            long mid = lo + (hi - lo + 1) / 2;
+            if (radiusAt(mid) <= radiusMm) lo = mid; else hi = mid - 1;
+        }
+
+        return lo;
+    }
+
+    private static long AlignUp(long value, int align) => (value + align - 1) / align * align;
 
     private static DvdStreamingOptions DvdOptions(CalibrationParameters d, ToneProfile tone, double startAngleDegrees, bool readCompatibility)
     {
@@ -644,6 +796,8 @@ public static class DiscArtImageBuilder
             bufferSize: 1024 * 1024, FileOptions.SequentialScan);
         if (!withFiles)
         {
+            // An art band without files: zero sectors from LBA 0 up to the band.
+            WriteZeroSectors(output, start);
             writer(output, start, count, Fraction, ct);
             output.Flush();
             return;
@@ -745,6 +899,17 @@ public static class DiscArtImageBuilder
     // ----------------------------------------------------------------------------------------------------------------
     // Helpers
     // ----------------------------------------------------------------------------------------------------------------
+
+    private static void WriteZeroSectors(Stream output, long sectors)
+    {
+        byte[] zeros = new byte[64 * SectorBytes];
+        for (long left = sectors; left > 0;)
+        {
+            int n = (int)Math.Min(left, 64);
+            output.Write(zeros, 0, n * SectorBytes);
+            left -= n;
+        }
+    }
 
     private static BgraRaster LoadPicture(string path)
     {

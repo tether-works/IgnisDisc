@@ -17,7 +17,7 @@ public static partial class CliCommandRunner
     private const string DiscArtGenerateUsage =
         "Usage: ignisdisc-cli disc-art generate --media cd|dvd|bd --picture <file.png> --output <file> "
         + "[--files <folder> [--files-outer]] [--append-to <base.cue>] [--label <text>] [--tone photo|binary] "
-        + "[--start-angle <deg>] [--scale <x>] [--offset-x-mm <mm>] [--offset-y-mm <mm>] [--rotate <deg>] [--fit ring|disc] [--read-compat] [--no-interleave] [--plan-only] [--overwrite] [--json]";
+        + "[--start-angle <deg>] [--scale <x>] [--offset-x-mm <mm>] [--offset-y-mm <mm>] [--rotate <deg>] [--fit ring|disc] [--art-inner-radius-mm <mm>] [--art-outer-radius-mm <mm>] [--read-compat] [--no-interleave] [--plan-only] [--overwrite] [--json]";
 
     private const string DiscArtPreviewUsage =
         "Usage: ignisdisc-cli disc-art preview --image <file.iso|.wav|.raw> --output <file.png> [--size <px>] [--json]";
@@ -94,7 +94,9 @@ public static partial class CliCommandRunner
             CdInterleave: !cmd.HasFlag("no-interleave"),
             DvdReadCompatibility: cmd.HasFlag("read-compat"),
             Overwrite: cmd.HasFlag("overwrite"),
-            Transform: transform);
+            Transform: transform,
+            ArtInnerRadiusMm: OptionalDouble(cmd, "art-inner-radius-mm"),
+            ArtOuterRadiusMm: OptionalDouble(cmd, "art-outer-radius-mm"));
 
         string media = MediaName(kind);
         try
@@ -297,6 +299,18 @@ public static partial class CliCommandRunner
             gapStartLba = layout.GapStartLba,
             gapEndLba = layout.GapEndLba,
         },
+        band = plan.Band is not { } band ? null : new
+        {
+            requestedInnerRadiusMm = band.RequestedInnerRadiusMm,
+            requestedOuterRadiusMm = band.RequestedOuterRadiusMm,
+            startLba = band.StartLba,
+            endLba = band.EndLba,
+            innerRadiusMm = band.InnerRadiusMm,
+            outerRadiusMm = band.OuterRadiusMm,
+            fullImageSectors = band.FullImageSectors,
+            savedSectors = band.SavedSectors,
+            savedSecondsAt1x = band.SavedSecondsAt1x,
+        },
     };
 
     private static void WriteDiscArtPlanLines(TextWriter stdout, DiscArtPlan plan)
@@ -318,6 +332,14 @@ public static partial class CliCommandRunner
                 stdout.WriteLine("  Note        : files at the outer edge need a two-session burn, which is not available yet;");
                 stdout.WriteLine("                'disc-art burn' refuses this image. Leave out --files-outer to burn it now.");
             }
+        }
+
+        if (plan.Band is { } band)
+        {
+            stdout.WriteLine(string.Create(CultureInfo.InvariantCulture,
+                $"  Art band    : drawn from r = {band.InnerRadiusMm:0.###} to {band.OuterRadiusMm:0.###} mm (asked {(band.RequestedInnerRadiusMm is { } i ? i.ToString("0.###", CultureInfo.InvariantCulture) : "start")} to {(band.RequestedOuterRadiusMm is { } o ? o.ToString("0.###", CultureInfo.InvariantCulture) : "end")} mm); sectors before it are zero"));
+            stdout.WriteLine(string.Create(CultureInfo.InvariantCulture,
+                $"  Burn saved  : {band.SavedSectors:N0} of {band.FullImageSectors:N0} sectors not written, {band.SavedSecondsAt1x / 60:0.0} min at 1x; the rest of the disc stays blank"));
         }
 
         stdout.WriteLine($"  Image size  : {plan.TotalSectors:N0} sectors");
