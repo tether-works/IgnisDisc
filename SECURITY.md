@@ -38,7 +38,9 @@ it:
 
 - **MusicBrainz lookup** (audio CD ripping; *on by default* in the app's rip options, off unless you pass `--lookup`
   on the command line): the disc's table of contents (track start positions) is sent to `musicbrainz.org` to fetch
-  album and track titles.
+  album and track titles. When a release was found and no cover file was chosen, the release's MusicBrainz ID is
+  sent to `coverartarchive.org` (which redirects to `archive.org`) to download its front cover; turn off *Fetch
+  cover art* or pass `--no-cover-lookup` to skip it.
 - **AccurateRip check** (audio CD ripping; *on by default* in the app's rip options, off unless you pass
   `--verify-accuraterip` or run `detect-offset` on the command line): IDs computed from the disc's table of contents
   are used to download the matching checksum file from `accuraterip.com`.
