@@ -467,11 +467,49 @@ public sealed class ProcessToolRunnerTests
     public async Task CancellationEndsTheTool()
     {
         string ping = Path.Combine(Environment.SystemDirectory, "ping.exe");
-        using var cts = new CancellationTokenSource(TimeSpan.FromMilliseconds(300));
+        using var cts = new CancellationTokenSource();
+        var started = new TaskCompletionSource(TaskCreationOptions.RunContinuationsAsynchronously);
         var watch = System.Diagnostics.Stopwatch.StartNew();
 
-        await Assert.ThrowsAnyAsync<OperationCanceledException>(() => new ProcessToolRunner().RunAsync(
-            ping, ["-n", "60", "127.0.0.1"], Path.GetTempPath(), null, cts.Token));
+        Task<int> runTask = new ProcessToolRunner().RunAsync(
+            ping,
+            ["-n", "60", "127.0.0.1"],
+            Path.GetTempPath(),
+            line =>
+            {
+                if (!string.IsNullOrEmpty(line))
+                {
+                    started.TrySetResult();
+                }
+            },
+            cts.Token);
+
+        try
+        {
+            // Wait until the child process has started and written output before cancelling.
+            Task first = await Task.WhenAny(started.Task, runTask).WaitAsync(TimeSpan.FromSeconds(15));
+            if (first == runTask)
+            {
+                int exitCode = await runTask;
+                Assert.Fail($"Tool exited with code {exitCode} before emitting output.");
+            }
+
+            cts.Cancel();
+            await Assert.ThrowsAnyAsync<OperationCanceledException>(() => runTask);
+        }
+        catch
+        {
+            cts.Cancel();
+            try
+            {
+                await runTask;
+            }
+            catch
+            {
+            }
+
+            throw;
+        }
 
         Assert.True(watch.Elapsed < TimeSpan.FromSeconds(20), $"took {watch.Elapsed}");
     }
