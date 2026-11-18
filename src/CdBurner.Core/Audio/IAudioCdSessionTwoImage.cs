@@ -16,6 +16,13 @@ public interface IAudioCdSessionTwoImage
     long MinimumSectors { get; }
 
     /// <summary>
+    /// Checks before any audio is written whether the session can be built for a session starting at
+    /// <paramref name="startLba"/> with <paramref name="sectorsAvailable"/> sectors (for example, that the disc
+    /// geometry fits and the temporary folder has room). Returns a plain refusal message, or null when ready.
+    /// </summary>
+    string? PreflightError(int startLba, long sectorsAvailable) => null;
+
+    /// <summary>
     /// Builds the session's 2,048-byte Mode 1 sectors for a session starting at <paramref name="startLba"/>, using at
     /// most <paramref name="sectorsAvailable"/> sectors. Returns a readable, seekable stream positioned at 0; the caller
     /// disposes it (a temporary file is deleted on dispose).

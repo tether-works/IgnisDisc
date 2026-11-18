@@ -532,6 +532,9 @@ public class AudioBurnViewModel : ObservableObject, IDisposable
     /// <summary>HTTP client for the online cover lookup; null makes a new one per burn (tests set a fake).</summary>
     public HttpClient? FillPictureHttpClient { get; set; }
 
+    /// <summary>Calibration store read for the picture geometry; <c>%APPDATA%\IgnisDisc\disc-calibrations.json</c> by default.</summary>
+    public string CalibrationStorePath { get; set; } = CdBurner.Lithography.Calibration.CalibrationStore.GetDefaultPath();
+
     /// <summary>Opens a file picker for the fill picture.</summary>
     public RelayCommand BrowseFillPictureCommand { get; }
 
@@ -2011,7 +2014,7 @@ public class AudioBurnViewModel : ObservableObject, IDisposable
     /// <see cref="ArgumentException"/> when the chosen picture cannot be read.
     /// </summary>
     internal async Task<(CdBurner.Lithography.DiscArt.AudioCdPictureSession? Session, string? Note)> PrepareFillPictureAsync(
-        AudioCdCompilation compilation, CancellationToken ct)
+        AudioCdCompilation compilation, CancellationToken ct, IDiscRecorderBackend? recorder = null)
     {
         CdBurner.Lithography.DiscArt.AudioCdPicture? picture;
         string? note = null;
@@ -2035,9 +2038,23 @@ public class AudioBurnViewModel : ObservableObject, IDisposable
                 owned?.Dispose();
             }
         }
-        return picture == null
-            ? (null, note)
-            : (new CdBurner.Lithography.DiscArt.AudioCdPictureSession(picture, BlueBookDiscInfo.From(compilation)), null);
+        if (picture == null)
+        {
+            return (null, note);
+        }
+
+        CdBurner.Lithography.Cd.CdDiscParameters? disc = null;
+        string? discFrom = null;
+        if ((recorder ?? SelectedRecorder) is { } targetRecorder)
+        {
+            MediaStatusDto media = targetRecorder.WithManufacturerId(targetRecorder.QueryMediaStatus());
+            disc = CdBurner.Lithography.DiscArt.AudioCdFillPicture.ResolveDisc(
+                CdBurner.Lithography.DiscArt.AudioCdFillPicture.DriveModelName(targetRecorder),
+                media.MediaManufacturerId, CalibrationStorePath, out discFrom);
+        }
+
+        return (new CdBurner.Lithography.DiscArt.AudioCdPictureSession(
+            picture, BlueBookDiscInfo.From(compilation), disc: disc, discFrom: discFrom), null);
     }
 
     private void UpdateRecoveryEstimate(long audioFrames, long capacityFrames)
@@ -2529,9 +2546,9 @@ public class AudioBurnViewModel : ObservableObject, IDisposable
                 try
                 {
                     StatusMessage = "Finding the picture for the empty disc space...";
-                    (pictureSession, pictureNote) = await PrepareFillPictureAsync(compilation, activeToken);
+                    (pictureSession, pictureNote) = await PrepareFillPictureAsync(compilation, activeToken, recorder);
                 }
-                catch (ArgumentException ex)
+                catch (Exception ex) when (ex is ArgumentException or InvalidDataException or IOException or UnauthorizedAccessException)
                 {
                     StatusMessage = $"Burn not started: {ex.Message}";
                     var refused = BurnOperationResult.Failed(StatusMessage);

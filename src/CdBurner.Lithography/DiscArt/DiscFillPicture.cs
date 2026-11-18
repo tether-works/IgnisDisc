@@ -172,6 +172,12 @@ public static class DiscFillPicture
     }
 
     /// <summary>
+    /// Overrides available free space (in bytes) per drive root for tests; per async flow so parallel tests stay
+    /// isolated. Returning null falls back to <see cref="DriveInfo"/>.
+    /// </summary>
+    internal static readonly AsyncLocal<Func<string, long?>?> AvailableFreeSpaceOverride = new();
+
+    /// <summary>
     /// A message when the folder of <paramref name="imagePath"/> has less free space than an image of
     /// <paramref name="imageSectors"/> sectors needs; null when it fits or the free space cannot be read.
     /// </summary>
@@ -186,11 +192,15 @@ public static class DiscFillPicture
             }
 
             long needed = imageSectors * IsoUdfImageBuilder.SectorSize + 64L * 1024 * 1024;
-            long free = new DriveInfo(root).AvailableFreeSpace;
-            return free >= needed
-                ? null
-                : string.Create(CultureInfo.InvariantCulture,
-                    $"The disc image needs {needed / 1048576.0:N0} MB on {root}, which has {free / 1048576.0:N0} MB free. Free some space and try again.");
+            long free = AvailableFreeSpaceOverride.Value?.Invoke(root) ?? new DriveInfo(root).AvailableFreeSpace;
+            if (free >= needed)
+            {
+                return null;
+            }
+
+            long missingMb = Math.Max(1, (needed - free + 1048575L) / 1048576L);
+            return string.Create(CultureInfo.InvariantCulture,
+                $"The disc image needs {needed / 1048576.0:N0} MB on {root}, which has {free / 1048576.0:N0} MB free ({missingMb:N0} MB missing). Free at least {missingMb:N0} MB and try again.");
         }
         catch (Exception ex) when (ex is IOException or UnauthorizedAccessException or ArgumentException)
         {

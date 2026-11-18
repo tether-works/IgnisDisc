@@ -691,14 +691,31 @@ public class AudioCdBurnService
                 }
             }
 
+            bool useDao = compilation.RecordingMode == AudioRecordingMode.DiscAtOnceGapless;
             if (hasSessionTwoImage)
             {
-                long needed = (long)totalRequiredFrames + RecoverySessionBudget.FixedSessionSectors + options.SessionTwoImage!.MinimumSectors
+                int taoExtra = useDao
+                    ? 0
+                    : audioTrackSources.Skip(1).Sum(t => t.IsDataTrack
+                        ? 0
+                        : Math.Max(0, OpticalConstants.CdLeadInFrames - Math.Max(0, t.PreGapFrames)));
+                long audioSessionFrames = (long)totalRequiredFrames + taoExtra;
+                long needed = audioSessionFrames + RecoverySessionBudget.FixedSessionSectors + options.SessionTwoImage!.MinimumSectors
                     + SessionTwoRunOutSectors;
                 if (needed > discCapacitySectors)
                 {
                     return BurnOperationResult.Failed(
-                        $"Audio ({totalRequiredFrames:N0} sectors), session gap ({RecoverySessionBudget.FixedSessionSectors:N0} sectors) and the smallest picture session ({options.SessionTwoImage.MinimumSectors:N0} sectors) need {needed:N0} sectors, more than the disc holds ({discCapacitySectors:N0}). Turn the picture off or remove a track. Nothing was written to the disc.");
+                        $"Audio ({audioSessionFrames:N0} sectors), session gap ({RecoverySessionBudget.FixedSessionSectors:N0} sectors) and the smallest picture session ({options.SessionTwoImage.MinimumSectors:N0} sectors) need {needed:N0} sectors, more than the disc holds ({discCapacitySectors:N0}). Turn the picture off or remove a track. Nothing was written to the disc.");
+                }
+
+                int predictedNwa = checked((int)(audioSessionFrames + RecoverySessionBudget.FixedSessionSectors));
+                long effectiveCapacity = mediaStatus.FreeSectors > 0
+                    ? Math.Min(discCapacitySectors, mediaStatus.FreeSectors)
+                    : discCapacitySectors;
+                long predictedAvailable = SessionTwoSectorsAvailable(predictedNwa, effectiveCapacity, freeSectors: 0);
+                if (options.SessionTwoImage.PreflightError(predictedNwa, predictedAvailable) is { } preflightError)
+                {
+                    return BurnOperationResult.Failed($"{preflightError} Nothing was written to the disc.");
                 }
             }
 
@@ -714,7 +731,7 @@ public class AudioCdBurnService
                 EjectWhenDone = options.EjectWhenDone && !leaveOpenForSession2,
                 PerformNormalization = false, // Already performed
                 WriteCdText = includeCdText,
-                UseDiscAtOnce = compilation.RecordingMode == AudioRecordingMode.DiscAtOnceGapless,
+                UseDiscAtOnce = useDao,
                 PreGapFrames = options.PreGapFrames > 0 ? options.PreGapFrames : compilation.DefaultPreGapFrames,
                 CdTextBytes = cdTextPayload,
                 MediaCatalogNumber = options.MediaCatalogNumber ?? compilation.UpcEan,

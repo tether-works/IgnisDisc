@@ -32,6 +32,7 @@
   <ItemGroup>
     <!-- The ported encoders are internal; their tests check tables and sector layouts directly. -->
     <InternalsVisibleTo Include="CdBurner.Lithography.Tests" />
+    <InternalsVisibleTo Include="CdBurner.Integration.Tests" />
   </ItemGroup>
 
 </Project>

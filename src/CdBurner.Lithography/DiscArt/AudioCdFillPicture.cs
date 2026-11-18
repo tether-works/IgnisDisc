@@ -5,6 +5,7 @@ using CdBurner.Core.Abstractions;
 using CdBurner.Core.Audio;
 using CdBurner.Core.Compilation;
 using CdBurner.Core.Iso;
+using CdBurner.Lithography.Calibration;
 using CdBurner.Lithography.Cd;
 using CdBurner.Lithography.Imaging;
 using CdBurner.Lithography.Presets;
@@ -86,6 +87,98 @@ public static class AudioCdFillPicture
             preset.LinearVelocityMmPerSecond, ImageOuterRadiusMm: preset.OuterRadiusMm, UsableSectors: preset.UsableSectors);
         disc.Validate();
         return disc;
+    }
+
+    /// <summary>Converts a saved CD calibration to the geometry parameters used to draw session 2.</summary>
+    public static CdDiscParameters ToCdDiscParameters(CalibrationParameters parameters)
+    {
+        ArgumentNullException.ThrowIfNull(parameters);
+        if (parameters.Kind != CalibrationDiscKind.Cd)
+        {
+            throw new ArgumentException("Expected a CD calibration.", nameof(parameters));
+        }
+
+        var disc = new CdDiscParameters(
+            parameters.InnerRadiusMm,
+            parameters.OuterRadiusMm,
+            parameters.Sectors,
+            parameters.LinearDensity,
+            ImageOuterRadiusMm: parameters.OuterRadiusMm,
+            PitchLinear: parameters.PitchLinear,
+            PitchQuadratic: parameters.PitchQuadratic,
+            PitchCubic: parameters.PitchCubic,
+            UsableSectors: parameters.UsableSectors);
+        disc.Validate();
+        return disc;
+    }
+
+    /// <summary>Drive model string as saved in <see cref="CalibrationStore"/> for <paramref name="recorder"/>.</summary>
+    public static string DriveModelName(IDiscRecorderBackend recorder)
+    {
+        ArgumentNullException.ThrowIfNull(recorder);
+        return $"{recorder.VendorId} {recorder.ProductId}".Trim();
+    }
+
+    /// <summary>
+    /// Picks the CD drawing geometry for a drive and disc: a calibration saved for <paramref name="driveModel"/> and
+    /// <paramref name="mediaId"/> in <paramref name="calibrationStorePath"/> (default store when null) if one exists,
+    /// otherwise the built-in 80-minute preset (<see cref="DefaultDisc"/>).
+    /// </summary>
+    public static CdDiscParameters ResolveDisc(
+        string? driveModel,
+        string? mediaId,
+        string? calibrationStorePath,
+        out string? calibrationSource)
+    {
+        calibrationSource = null;
+        if (IsValidStoreKey(driveModel) && IsValidStoreKey(mediaId))
+        {
+            string path = Path.GetFullPath(string.IsNullOrWhiteSpace(calibrationStorePath)
+                ? CalibrationStore.GetDefaultPath()
+                : calibrationStorePath);
+            CalibrationStoreDocument document = CalibrationStore.Load(path);
+            CalibrationStoreEntry? entry = FindCalibration(document, driveModel!, mediaId!);
+            if (entry is not null)
+            {
+                calibrationSource = $"saved calibration for drive '{entry.DriveModel}' and media '{entry.MediaId}'";
+                return ToCdDiscParameters(entry.Parameters);
+            }
+        }
+
+        return DefaultDisc();
+    }
+
+    private static CalibrationStoreEntry? FindCalibration(CalibrationStoreDocument document, string driveModel, string mediaId)
+    {
+        CalibrationStoreEntry? exact = CalibrationStore.Find(document, driveModel, mediaId, CalibrationDiscKind.Cd);
+        if (exact is not null)
+        {
+            return exact;
+        }
+
+        // Media info displays e.g. "97m26s00f (FORNET - Long Strategy ...)"; a user may have saved just the raw ATIP code.
+        int paren = mediaId.IndexOf(" (", StringComparison.Ordinal);
+        if (paren > 0)
+        {
+            string rawCode = mediaId[..paren].Trim();
+            if (IsValidStoreKey(rawCode))
+            {
+                return CalibrationStore.Find(document, driveModel, rawCode, CalibrationDiscKind.Cd);
+            }
+        }
+
+        return null;
+    }
+
+    private static bool IsValidStoreKey(string? value)
+    {
+        if (string.IsNullOrWhiteSpace(value))
+        {
+            return false;
+        }
+
+        string trimmed = value.Trim();
+        return trimmed.Length <= CalibrationStore.MaxKeyLength && !trimmed.Any(char.IsControl);
     }
 
     /// <summary>A picture file the user chose. Throws <see cref="ArgumentException"/> when it is missing, too large or not a picture.</summary>
@@ -314,8 +407,9 @@ public sealed class AudioCdPictureSession : IAudioCdSessionTwoImage
     /// <param name="volumeLabel">Volume label of the session (ISO 9660 d-characters are enforced by the image builder).</param>
     /// <param name="disc">Disc geometry for the drawing; null for the nominal 80-minute CD.</param>
     /// <param name="tempFolder">Folder for the temporary image; null for the system temporary folder.</param>
+    /// <param name="discFrom">Plain description of where <paramref name="disc"/> came from (null uses default/custom).</param>
     public AudioCdPictureSession(AudioCdPicture picture, BlueBookDiscInfo info, string? volumeLabel = null,
-        CdDiscParameters? disc = null, string? tempFolder = null)
+        CdDiscParameters? disc = null, string? tempFolder = null, string? discFrom = null)
     {
         _picture = picture ?? throw new ArgumentNullException(nameof(picture));
         _info = info ?? throw new ArgumentNullException(nameof(info));
@@ -324,6 +418,9 @@ public sealed class AudioCdPictureSession : IAudioCdSessionTwoImage
         _disc = disc ?? AudioCdFillPicture.DefaultDisc();
         _disc.Validate();
         _tempFolder = tempFolder ?? Path.GetTempPath();
+        DiscFrom = !string.IsNullOrWhiteSpace(discFrom)
+            ? discFrom
+            : disc is null || disc == AudioCdFillPicture.DefaultDisc() ? "disc preset 'cd-80'" : "custom disc geometry";
         CompilationDirectory root = BuildTree(out IsoBuildOptions options);
         MinimumSectors = IsoUdfImageBuilder.CalculateTotalSectors(root, options, 0) + AudioCdFillPicture.GapSectors
             + AudioCdFillPicture.MinimumPictureSectors + AudioCdFillPicture.EndMarginSectors;
@@ -331,6 +428,9 @@ public sealed class AudioCdPictureSession : IAudioCdSessionTwoImage
 
     /// <summary>The picture drawn.</summary>
     public AudioCdPicture Picture => _picture;
+
+    /// <summary>Where the disc drawing geometry came from (for example the built-in preset or a saved calibration).</summary>
+    public string DiscFrom { get; }
 
     public long MinimumSectors { get; }
 
@@ -362,10 +462,15 @@ public sealed class AudioCdPictureSession : IAudioCdSessionTwoImage
         return root;
     }
 
-    public Task<Stream> BuildAsync(int startLba, long sectorsAvailable, IProgress<BurnProgressSnapshot>? progress, CancellationToken cancellationToken)
-        => Task.Run(() => Build(startLba, sectorsAvailable, progress, cancellationToken), cancellationToken);
+    private readonly record struct SessionLayout(
+        CompilationDirectory Root,
+        IsoBuildOptions Options,
+        int VolumeSectors,
+        long PictureStartLba,
+        long PictureEndLba,
+        long ImageSectors);
 
-    private Stream Build(int startLba, long sectorsAvailable, IProgress<BurnProgressSnapshot>? progress, CancellationToken cancellationToken)
+    private SessionLayout PlanLayout(int startLba, long sectorsAvailable)
     {
         if (startLba <= 0)
         {
@@ -373,8 +478,7 @@ public sealed class AudioCdPictureSession : IAudioCdSessionTwoImage
         }
 
         CompilationDirectory root = BuildTree(out IsoBuildOptions options);
-        using MemoryStream volume = IsoUdfImageBuilder.BuildToMemoryStream(root, options, startLba);
-        int volumeSectors = checked((int)(volume.Length / IsoUdfImageBuilder.SectorSize));
+        int volumeSectors = IsoUdfImageBuilder.CalculateTotalSectors(root, options, startLba) - startLba;
         long pictureStart = (long)startLba + volumeSectors + AudioCdFillPicture.GapSectors;
         long pictureEnd = Math.Min((long)startLba + sectorsAvailable - AudioCdFillPicture.EndMarginSectors,
             _disc.OutputSectors - AudioCdFillPicture.GeometryLbaOffset);
@@ -385,12 +489,39 @@ public sealed class AudioCdPictureSession : IAudioCdSessionTwoImage
         }
 
         long imageSectors = pictureEnd - startLba;
-        string path = Path.Combine(_tempFolder, $"ignisdisc_cdfill_{Guid.NewGuid():N}.iso");
-        if (DiscFillPicture.NotEnoughSpaceMessage(path, imageSectors) is { } space)
+        return new SessionLayout(root, options, volumeSectors, pictureStart, pictureEnd, imageSectors);
+    }
+
+    private string TempImagePath() => Path.Combine(_tempFolder, $"ignisdisc_cdfill_{Guid.NewGuid():N}.iso");
+
+    public string? PreflightError(int startLba, long sectorsAvailable)
+    {
+        SessionLayout layout;
+        try
+        {
+            layout = PlanLayout(startLba, sectorsAvailable);
+        }
+        catch (ArgumentException ex)
+        {
+            return ex.Message;
+        }
+
+        return DiscFillPicture.NotEnoughSpaceMessage(TempImagePath(), layout.ImageSectors);
+    }
+
+    public Task<Stream> BuildAsync(int startLba, long sectorsAvailable, IProgress<BurnProgressSnapshot>? progress, CancellationToken cancellationToken)
+        => Task.Run(() => Build(startLba, sectorsAvailable, progress, cancellationToken), cancellationToken);
+
+    private Stream Build(int startLba, long sectorsAvailable, IProgress<BurnProgressSnapshot>? progress, CancellationToken cancellationToken)
+    {
+        SessionLayout layout = PlanLayout(startLba, sectorsAvailable);
+        string path = TempImagePath();
+        if (DiscFillPicture.NotEnoughSpaceMessage(path, layout.ImageSectors) is { } space)
         {
             throw new IOException(space);
         }
 
+        using MemoryStream volume = IsoUdfImageBuilder.BuildToMemoryStream(layout.Root, layout.Options, startLba);
         var file = new FileStream(path, FileMode.CreateNew, FileAccess.ReadWrite, FileShare.None, 1024 * 1024,
             FileOptions.DeleteOnClose | FileOptions.SequentialScan);
         try
@@ -399,7 +530,8 @@ public sealed class AudioCdPictureSession : IAudioCdSessionTwoImage
             volume.CopyTo(file);
             file.Write(new byte[AudioCdFillPicture.GapSectors * IsoUdfImageBuilder.SectorSize]);
             CdMode1Drawing.WriteSectors(_raster, file, _disc,
-                pictureStart + AudioCdFillPicture.GeometryLbaOffset, pictureEnd + AudioCdFillPicture.GeometryLbaOffset,
+                layout.PictureStartLba + AudioCdFillPicture.GeometryLbaOffset,
+                layout.PictureEndLba + AudioCdFillPicture.GeometryLbaOffset,
                 p => progress?.Report(new BurnProgressSnapshot
                 {
                     CurrentActionDescription = "Drawing the picture",
@@ -418,10 +550,10 @@ public sealed class AudioCdPictureSession : IAudioCdSessionTwoImage
         }
 
         StartLba = startLba;
-        VolumeSectors = volumeSectors;
-        PictureStartLba = pictureStart;
-        PictureEndLba = pictureEnd;
-        ImageSectors = imageSectors;
+        VolumeSectors = layout.VolumeSectors;
+        PictureStartLba = layout.PictureStartLba;
+        PictureEndLba = layout.PictureEndLba;
+        ImageSectors = layout.ImageSectors;
         return file;
     }
 }

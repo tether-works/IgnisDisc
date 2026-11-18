@@ -1248,7 +1248,8 @@ public static partial class CliCommandRunner
             stderr.WriteLine(loadNote);
         }
 
-        var (pictureSession, pictureNote) = await PrepareAudioFillPictureAsync(cmd, compilation, mfDecoder, customHttpClient, dataLabel)
+        var (pictureSession, pictureNote) = await PrepareAudioFillPictureAsync(
+                cmd, compilation, recorder, mediaStatus, mfDecoder, customHttpClient, dataLabel)
             .ConfigureAwait(false);
         if (pictureNote != null && !cmd.IsJson)
         {
@@ -1307,6 +1308,7 @@ public static partial class CliCommandRunner
                     {
                         source = pictureSession.Picture.Source,
                         origin = pictureSession.Picture.Origin,
+                        discFrom = pictureSession.DiscFrom,
                         sessionStartLba = pictureSessionStart,
                         volumeSectors = pictureSession.VolumeSectors,
                         pictureStartLba = pictureSession.PictureStartLba,
@@ -1407,7 +1409,7 @@ public static partial class CliCommandRunner
                     stdout.WriteLine($"  Data Session:   session 2 written at LBA {audioBurnService.LastDataSessionStartLba:N0} ({audioBurnService.LastDataSessionSectors:N0} sectors)");
                     if (pictureSession?.StartLba != null)
                     {
-                        stdout.WriteLine($"  Picture:        drawn on LBA {pictureSession.PictureStartLba:N0} to {pictureSession.PictureEndLba - 1:N0} ({pictureSession.Picture.Source}: {pictureSession.Picture.Origin})");
+                        stdout.WriteLine($"  Picture:        drawn on LBA {pictureSession.PictureStartLba:N0} to {pictureSession.PictureEndLba - 1:N0} ({pictureSession.Picture.Source}: {pictureSession.Picture.Origin}, {pictureSession.DiscFrom})");
                     }
                     if (!string.IsNullOrWhiteSpace(result.WarningMessage))
                     {

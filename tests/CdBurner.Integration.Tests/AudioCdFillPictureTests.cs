@@ -10,6 +10,7 @@ using CdBurner.Core.Audio;
 using CdBurner.Core.Iso;
 using CdBurner.Core.Primitives;
 using CdBurner.Hardware.Simulation;
+using CdBurner.Lithography.Calibration;
 using CdBurner.Lithography.Cd;
 using CdBurner.Lithography.DiscArt;
 using CdBurner.Lithography.Imaging;
@@ -418,6 +419,205 @@ public sealed class AudioCdFillPictureTests : IDisposable
         Assert.Equal(2, medium.Sessions.Count);
         Assert.True(medium.IsFinalized);
         Assert.All(medium.Sessions[0].Tracks, t => Assert.True(t.IsAudio));
+    }
+
+    [Fact]
+    public async Task Temp_space_is_checked_from_the_real_layout_before_any_write_and_names_missing_megabytes()
+    {
+        string cue = WriteAlbum();
+        string dir = Path.GetDirectoryName(cue)!;
+        byte[] png = HalfPng();
+        string picture = WritePicture("picture.png", png);
+        string tempRoot = Path.GetPathRoot(Path.GetFullPath(Path.GetTempPath()))!;
+
+        // Measure the exact session-2 image sectors from a real layout on this disc (far below 700 MB).
+        var compilation = new AudioCdCompilation { AlbumTitle = "Picture Album", AlbumPerformer = "Studio Band" };
+        compilation.ImportCueSheet(cue);
+        var session = new AudioCdPictureSession(AudioCdFillPicture.LoadChosen(picture), BlueBookDiscInfo.From(compilation),
+            tempFolder: _tempDir);
+        int predictedNwa = 620 + (int)CdBurner.Core.Archival.RecoverySessionBudget.FixedSessionSectors;
+        long predictedAvailable = AudioCdBurnService.SessionTwoSectorsAvailable(predictedNwa, DiscSectors, 0);
+        Assert.Null(session.PreflightError(predictedNwa, predictedAvailable));
+
+        // Build once into an isolated medium to know the exact session-2 image size.
+        long exactImageSectors;
+        using (var probe = new VirtualDiscMedium(DiscMediaType.CdR, DiscSectors))
+        {
+            _recorder.InsertMedia(probe);
+            var probeBurn = await Cli("burn-audio", "--drive", "VDRV-01", "--tracks", cue, "--dao", "--native",
+                "--fill-picture", picture, "--json");
+            Assert.True(probeBurn.Exit == 0, probeBurn.Out + probeBurn.Err);
+            using JsonDocument doc = JsonDocument.Parse(probeBurn.Out.Trim());
+            JsonElement fill = doc.RootElement.GetProperty("fillPicture");
+            exactImageSectors = fill.GetProperty("pictureEndLba").GetInt64() - fill.GetProperty("sessionStartLba").GetInt64();
+        }
+        long exactNeededBytes = exactImageSectors * IsoUdfImageBuilder.SectorSize + 64L * 1024 * 1024;
+        Assert.True(exactNeededBytes < 120L * 1024 * 1024);
+
+        try
+        {
+            // 10 MB short of the real layout size: refused before anything is written on CLI and screen, naming drive + missing MB.
+            DiscFillPicture.AvailableFreeSpaceOverride.Value = _ => exactNeededBytes - 10L * 1048576L;
+
+            using (var untouched = new VirtualDiscMedium(DiscMediaType.CdR, DiscSectors))
+            {
+                _recorder.InsertMedia(untouched);
+                var refused = await Cli("burn-audio", "--drive", "VDRV-01", "--tracks", cue, "--dao", "--native",
+                    "--fill-picture", picture, "--json");
+                Assert.NotEqual(0, refused.Exit);
+                Assert.True(untouched.IsBlank);
+                Assert.Empty(untouched.Sessions);
+                Assert.Equal(0, untouched.UsedSectors);
+                Assert.Contains(tempRoot, refused.Out);
+                Assert.Contains("10 MB missing", refused.Out);
+                Assert.Contains("Nothing was written", refused.Out);
+            }
+
+            using (var vmMedium = new VirtualDiscMedium(DiscMediaType.CdR, DiscSectors))
+            {
+                _recorder.InsertMedia(vmMedium);
+                var vm = new CdBurner.App.ViewModels.AudioBurnViewModel(_deviceService, _burnEngine)
+                {
+                    SelectedRecorder = _recorder,
+                    AlbumTitle = "Picture Album",
+                    AlbumPerformer = "Studio Band",
+                    FillWithPicture = true,
+                    FillPicturePath = picture,
+                    CalibrationStorePath = Path.Combine(_tempDir, "missing-store.json")
+                };
+                vm.AddAudioFiles(new[] { Path.Combine(dir, "01.wav"), Path.Combine(dir, "02.wav") });
+                var vmResult = await vm.StartAudioBurnAsync("VDRV-01");
+                Assert.False(vmResult.Success);
+                Assert.True(vmMedium.IsBlank);
+                Assert.Empty(vmMedium.Sessions);
+                Assert.Contains(tempRoot, vm.StatusMessage);
+                Assert.Contains("10 MB missing", vm.StatusMessage);
+                Assert.Contains("Nothing was written", vm.StatusMessage);
+            }
+
+            // Exact free space for the real layout (~80 MB, well under 700 MB): accepted and written cleanly.
+            DiscFillPicture.AvailableFreeSpaceOverride.Value = _ => exactNeededBytes;
+            using (var fits = new VirtualDiscMedium(DiscMediaType.CdR, DiscSectors))
+            {
+                _recorder.InsertMedia(fits);
+                var ok = await Cli("burn-audio", "--drive", "VDRV-01", "--tracks", cue, "--dao", "--native",
+                    "--fill-picture", picture, "--json");
+                Assert.True(ok.Exit == 0, ok.Out + ok.Err);
+                Assert.Equal(2, fits.Sessions.Count);
+                Assert.True(fits.IsFinalized);
+            }
+        }
+        finally
+        {
+            DiscFillPicture.AvailableFreeSpaceOverride.Value = null;
+        }
+    }
+
+    [Fact]
+    public async Task Saved_calibration_is_used_for_the_picture_session_and_defaults_stay_unchanged_without_one()
+    {
+        string cue = WriteAlbum();
+        string dir = Path.GetDirectoryName(cue)!;
+        string picture = WritePicture("picture.png", HalfPng());
+        string store = Path.Combine(_tempDir, "store", CalibrationStore.FileName);
+
+        // Without a saved calibration, the default cd-80 preset is used and matches a direct default session byte-for-byte.
+        byte[] defaultPictureSectors;
+        long pictureStart, pictureEnd;
+        using (var uncalibrated = new VirtualDiscMedium(DiscMediaType.CdR, DiscSectors))
+        {
+            _recorder.InsertMedia(uncalibrated);
+            var burn = await Cli("burn-audio", "--drive", "VDRV-01", "--tracks", cue, "--dao", "--native",
+                "--fill-picture", picture, "--store", store, "--json");
+            Assert.True(burn.Exit == 0, burn.Out + burn.Err);
+            using JsonDocument doc = JsonDocument.Parse(burn.Out.Trim());
+            JsonElement fill = doc.RootElement.GetProperty("fillPicture");
+            Assert.Equal("disc preset 'cd-80'", fill.GetProperty("discFrom").GetString());
+            pictureStart = fill.GetProperty("pictureStartLba").GetInt64();
+            pictureEnd = fill.GetProperty("pictureEndLba").GetInt64();
+            defaultPictureSectors = ReadSectors(uncalibrated, pictureStart, pictureEnd - pictureStart);
+        }
+
+        // Save a CD calibration for this drive and media with shifted radii and non-zero pitch.
+        var calibrated = new CalibrationParameters(CalibrationDiscKind.Cd, 25.5, 56.5, 360_000, 1200.0, PitchLinear: 0.002);
+        CalibrationStore.Save(store, new CalibrationStoreEntry(
+            "IGNIS VIRTUAL DVD/CD-RW", "VIRTUAL-OPTICAL-01", calibrated, DateTimeOffset.UnixEpoch, "target-cd", "fine", 0.04));
+
+        byte[] cliCalibratedSectors;
+        using (var medium = new VirtualDiscMedium(DiscMediaType.CdR, DiscSectors))
+        {
+            _recorder.InsertMedia(medium);
+            var burn = await Cli("burn-audio", "--drive", "VDRV-01", "--tracks", cue, "--dao", "--native",
+                "--fill-picture", picture, "--store", store, "--json");
+            Assert.True(burn.Exit == 0, burn.Out + burn.Err);
+            using JsonDocument doc = JsonDocument.Parse(burn.Out.Trim());
+            JsonElement fill = doc.RootElement.GetProperty("fillPicture");
+            Assert.Contains("saved calibration", fill.GetProperty("discFrom").GetString());
+            Assert.Equal(pictureStart, fill.GetProperty("pictureStartLba").GetInt64());
+            Assert.Equal(pictureEnd, fill.GetProperty("pictureEndLba").GetInt64());
+            cliCalibratedSectors = ReadSectors(medium, pictureStart, pictureEnd - pictureStart);
+        }
+
+        Assert.False(defaultPictureSectors.AsSpan().SequenceEqual(cliCalibratedSectors));
+
+        // Read the calibrated sectors back with the calibrated geometry: the half-black / half-white picture matches.
+        CdDiscParameters calibratedCd = AudioCdFillPicture.ToCdDiscParameters(calibrated);
+        const int render = 1024;
+        byte[] pixels = CdMode1Drawing.RenderSectors(new MemoryStream(cliCalibratedSectors),
+            pictureStart + AudioCdFillPicture.GeometryLbaOffset, pictureEnd + AudioCdFillPicture.GeometryLbaOffset,
+            calibratedCd, render, byteStep: 1);
+        double inner = calibratedCd.RadiusFromByte((pictureStart + AudioCdFillPicture.GeometryLbaOffset) * CdDiscParameters.BytesPerSector);
+        double outer = calibratedCd.RadiusFromByte((pictureEnd + AudioCdFillPicture.GeometryLbaOffset) * CdDiscParameters.BytesPerSector);
+        double mmPerPixel = calibratedCd.PreviewImageOuterRadiusMm / (render / 2.0);
+        int checkedPixels = 0;
+        for (int y = 0; y < render; y++)
+            for (int x = 0; x < render; x++)
+            {
+                double dx = x - render / 2.0, dy = y - render / 2.0;
+                double r = Math.Sqrt(dx * dx + dy * dy) * mmPerPixel;
+                if (r < inner + 2 * mmPerPixel || r > outer - 2 * mmPerPixel || Math.Abs(dx) < 2.0 * render / Size) continue;
+                Assert.Equal(dx < 0 ? 0 : 255, pixels[(y * render + x) * 4]);
+                checkedPixels++;
+            }
+        Assert.True(checkedPixels > 1000, $"only {checkedPixels} pixels checked");
+
+        // Audio CD screen uses the same saved calibration for the drive and media and writes the exact same bytes.
+        using (var vmMedium = new VirtualDiscMedium(DiscMediaType.CdR, DiscSectors))
+        {
+            _recorder.InsertMedia(vmMedium);
+            var vm = new CdBurner.App.ViewModels.AudioBurnViewModel(_deviceService, _burnEngine)
+            {
+                SelectedRecorder = _recorder,
+                AlbumTitle = "Picture Album",
+                AlbumPerformer = "Studio Band",
+                FillWithPicture = true,
+                FillPicturePath = picture,
+                CalibrationStorePath = store
+            };
+            vm.AddAudioFiles(new[] { Path.Combine(dir, "01.wav"), Path.Combine(dir, "02.wav") });
+            var result = await vm.StartAudioBurnAsync("VDRV-01");
+            Assert.True(result.Success, result.ErrorMessage + " / " + vm.StatusMessage);
+            byte[] vmSectors = ReadSectors(vmMedium, pictureStart, pictureEnd - pictureStart);
+            Assert.Equal(cliCalibratedSectors, vmSectors);
+        }
+
+        // Raw ATIP prefix fallback (as media-info appends the manufacturer name) and non-CD filtering.
+        var rawAtipCalibrated = new CalibrationParameters(CalibrationDiscKind.Cd, 25.0, 57.0, 360_000, 1200.0);
+        CalibrationStore.Save(store, new CalibrationStoreEntry(
+            "HL-DT-ST DVDRAM GP60NB50", "97m26s00f", rawAtipCalibrated, DateTimeOffset.UnixEpoch, "target-atip", "coarse", 0.1));
+        CalibrationStore.Save(store, new CalibrationStoreEntry(
+            "HL-DT-ST DVDRAM GP60NB50", "MCC 03RG20", new CalibrationParameters(CalibrationDiscKind.Dvd, 24.0, 58.0, 2_295_104, 133.3),
+            DateTimeOffset.UnixEpoch, "target-dvd", "coarse", 0.1));
+
+        CdDiscParameters resolvedAtip = AudioCdFillPicture.ResolveDisc(
+            "HL-DT-ST DVDRAM GP60NB50", "97m26s00f (FORNET - Long Strategy (Cyanine / AZO))", store, out string? atipSource);
+        Assert.Contains("97m26s00f", atipSource);
+        Assert.Equal(25.0, resolvedAtip.InnerRadiusMm);
+
+        CdDiscParameters ignoredDvd = AudioCdFillPicture.ResolveDisc(
+            "HL-DT-ST DVDRAM GP60NB50", "MCC 03RG20", store, out string? dvdSource);
+        Assert.Null(dvdSource);
+        Assert.Equal(AudioCdFillPicture.DefaultDisc(), ignoredDvd);
     }
 
     /// <summary>Answers a MusicBrainz release search with one release and the Cover Art Archive with a PNG.</summary>
