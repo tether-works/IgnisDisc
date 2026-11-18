@@ -12,22 +12,76 @@ namespace CdBurner.Lithography.Tests.Calibration;
 
 public static class CalibrationUpstreamBoundaryFitterTests
 {
+    // The upstream Run method is split into independent facts so xUnit can run the slow parts side by side;
+    // together they make exactly the calls Run made.
+    public static class CdSegments
+    {
+        [Fact]
+        public static void Run() => LocalSegmentsOfDiscKind(CalibrationDiscKind.Cd);
+    }
+
+    public static class DvdSegments
+    {
+        [Fact]
+        public static void Run() => LocalSegmentsOfDiscKind(CalibrationDiscKind.Dvd);
+    }
+
+    public static class BluRaySegments
+    {
+        [Fact]
+        public static void Run() => LocalSegmentsOfDiscKind(CalibrationDiscKind.BluRay);
+    }
+
+    private static void LocalSegmentsOfDiscKind(CalibrationDiscKind kind)
+    {
+        foreach (var offsets in new[] { (.005, .005), (-.005, -.005), (.005, -.005), (-.005, .005), (0d, 0d) })
+            CheckLocalSegments(kind, offsets.Item1, offsets.Item2);
+    }
+
+    public static class ContinuityAndOrder
+    {
+        [Fact]
+        public static void Run()
+        {
+            CheckContinuousBoundaries();
+            CheckDrawingOrderIndependence();
+        }
+    }
+
+    public static class WidePieces
+    {
+        [Fact]
+        public static void Run()
+        {
+            CheckWideAnglePieces();
+            CheckWideNearCircularPieces();
+        }
+    }
+
+    public static class WavyBoundaries
+    {
+        [Fact]
+        public static void Run()
+        {
+            CheckWavyBoundaryWindows();
+            CheckWavyBoundaryNoise();
+        }
+    }
+
+    public static class DvdNoiseAndGuards
+    {
+        [Fact]
+        public static void Run()
+        {
+            CheckNativeDvdNoiseAndDuplication();
+            CheckInputGuards();
+        }
+    }
+
     [Fact]
     public static void Run()
     {
-        foreach (var kind in Enum.GetValues<CalibrationDiscKind>())
-        {
-            foreach (var offsets in new[] { (.005, .005), (-.005, -.005), (.005, -.005), (-.005, .005), (0d, 0d) })
-                CheckLocalSegments(kind, offsets.Item1, offsets.Item2);
-        }
-        CheckContinuousBoundaries();
-        CheckDrawingOrderIndependence();
-        CheckWideAnglePieces();
-        CheckWideNearCircularPieces();
-        CheckWavyBoundaryWindows();
-        CheckWavyBoundaryNoise();
-        CheckNativeDvdNoiseAndDuplication();
-        CheckInputGuards();
+        Assert.Equal(3, Enum.GetValues<CalibrationDiscKind>().Length);
         Console.WriteLine("half-disc boundary fitting: independent CD/DVD/BD spirals, separated 40-degree pieces, sign reversals, straight edges and draft guards passed");
     }
 

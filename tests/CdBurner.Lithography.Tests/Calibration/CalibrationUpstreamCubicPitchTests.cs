@@ -13,18 +13,41 @@ namespace CdBurner.Lithography.Tests.Calibration;
 
 public static class CalibrationUpstreamCubicPitchTests
 {
+    // The upstream Run method is split into independent facts so xUnit can run the slow parts side by side;
+    // together they make exactly the calls Run made.
+    public static class DvdRecovery
+    {
+        [Fact]
+        public static void Run() => CubicRecoveryAndPredictionForMedium(0);
+    }
+
+    public static class CdRecovery
+    {
+        [Fact]
+        public static void Run() => CubicRecoveryAndPredictionForMedium(1);
+    }
+
+    public static class BluRayRecovery
+    {
+        [Fact]
+        public static void Run() => CubicRecoveryAndPredictionForMedium(2);
+    }
+
+    private static void CubicRecoveryAndPredictionForMedium(int mediumIndex)
+    {
+        var parameters = MediaParameters().ElementAt(mediumIndex);
+        TestCubicRecoveryAndPrediction(parameters);
+        // Recalibration of a disc generated with an existing correction (#92)
+        // must recover absolute physical coefficients, not the residual correction.
+        TestCubicRecoveryAndPrediction(parameters with
+            { PitchLinear = .02, PitchQuadratic = -.03, PitchCubic = .025 });
+    }
+
     [Fact]
     public static void Run()
     {
+        Assert.Equal(3, MediaParameters().Count());
         TestIndependentForwardGeometry();
-        foreach (var parameters in MediaParameters())
-        {
-            TestCubicRecoveryAndPrediction(parameters);
-            // Recalibration of a disc generated with an existing correction (#92)
-            // must recover absolute physical coefficients, not the residual correction.
-            TestCubicRecoveryAndPrediction(parameters with
-                { PitchLinear = .02, PitchQuadratic = -.03, PitchCubic = .025 });
-        }
         TestSupportGuardsAndFixedCoefficients();
         TestPersistenceAndValidation();
         Console.WriteLine("calibration-cubic-pitch: CD/DVD/BD independent geometry, initial/repeated cubic recovery, prediction, support guards and persistence passed");

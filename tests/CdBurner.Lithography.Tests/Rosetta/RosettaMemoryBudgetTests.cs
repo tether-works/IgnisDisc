@@ -5,12 +5,9 @@ using CdBurner.Lithography.Rosetta.Fonts;
 using Xunit;
 using Xunit.Abstractions;
 
-// Disable test parallelization in this assembly so process-wide GC.GetTotalMemory peak checks
-// are not skewed by concurrent large-raster round-trip tests.
-[assembly: CollectionBehavior(DisableTestParallelization = true)]
-
 namespace CdBurner.Lithography.Tests.Rosetta;
 
+[Collection(HeapMeasurementCollection.Name)]
 public class RosettaMemoryBudgetTests
 {
     private const long MaxBudgetBytes = 32L * 1024 * 1024;

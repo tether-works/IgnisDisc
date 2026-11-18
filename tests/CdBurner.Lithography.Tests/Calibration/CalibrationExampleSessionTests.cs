@@ -78,30 +78,6 @@ public sealed class CalibrationExampleSessionTests
     }
 
     [Fact]
-    public void Boundary_record_first_candidate_is_the_published_radii_of_the_next_disc()
-    {
-        CalibrationSession session = Load("verbatim-azo-20261104--calibration-3f2ce8c2.calibration.json");
-        Assert.Equal(CalibrationStage.Boundary, CalibrationTargetFile.StageOf(session.Target));
-        Assert.Equal(13, session.Photo!.BoundarySegments!.Count);
-
-        CalibrationRecordFit fit = CalibrationRecordFitter.Fit(session);
-
-        Assert.Equal(CalibrationMeasurementKind.BoundarySegments, fit.Measurement);
-        Assert.Equal(154, fit.PointCount);
-        Assert.Equal(0.02, fit.RadiusRangeMm);
-        Assert.False(fit.RangeExpanded);
-        // Upstream's fitter flags these hand-placed points ("do not match a single disc model") and leaves the
-        // choice to the person, who applied the first candidate: its radii are the published ones.
-        Assert.NotEmpty(fit.Result.Candidates);
-        CalibrationParameters best = fit.Result.Candidates[0].Parameters;
-        Assert.Equal(23.990847220268247, best.InnerRadiusMm, RadiusToleranceMm);
-        Assert.Equal(57.96535646048506, best.OuterRadiusMm, RadiusToleranceMm);
-        Assert.Equal(session.Target.Parameters.PitchLinear, best.PitchLinear);
-        Assert.Equal(session.Target.Parameters.PitchQuadratic, best.PitchQuadratic);
-        Assert.Equal(session.Target.Parameters.PitchCubic, best.PitchCubic);
-    }
-
-    [Fact]
     public void Fine_record_refits_to_the_published_radii_and_pitch_coefficients()
     {
         CalibrationSession session = Load("verbatim-azo-20261104--calibration-14580aac.calibration.json");
@@ -121,25 +97,6 @@ public sealed class CalibrationExampleSessionTests
     }
 
     [Fact]
-    public void Supplementary_boundary_record_gives_candidates_inside_its_saved_search_range()
-    {
-        // The tutorial gives the points of this record (17 segments, 169 points, range 0.02 mm, no widening) but
-        // no fitted numbers, so this checks only what it states and that the answer stays inside the range.
-        CalibrationSession session = Load("verbatim-azo-20261104--calibration-2ba20083_2.calibration.json");
-        Assert.Equal(17, session.Photo!.BoundarySegments!.Count);
-
-        CalibrationRecordFit fit = CalibrationRecordFitter.Fit(session);
-
-        Assert.Equal(169, fit.PointCount);
-        Assert.Equal(0.02, fit.RadiusRangeMm);
-        Assert.NotEmpty(fit.Result.Candidates);
-        CalibrationParameters start = session.Target.Parameters;
-        CalibrationParameters best = fit.Result.Candidates[0].Parameters;
-        Assert.InRange(best.InnerRadiusMm, start.InnerRadiusMm - 0.02, start.InnerRadiusMm + 0.02);
-        Assert.InRange(best.OuterRadiusMm, start.OuterRadiusMm - 0.02, start.OuterRadiusMm + 0.02);
-    }
-
-    [Fact]
     public void Record_without_measurements_is_refused()
     {
         CalibrationSession session = Load("dvd-calibration--calibration-f2f851f7.calibration.json");
@@ -147,5 +104,58 @@ public sealed class CalibrationExampleSessionTests
         ArgumentException error = Assert.Throws<ArgumentException>(() => CalibrationRecordFitter.Fit(session));
 
         Assert.Contains("no measurements", error.Message);
+    }
+
+    /// <summary>Own class so xUnit runs it beside the other tests of this file.</summary>
+    public sealed class BoundaryRecord
+    {
+
+        [Fact]
+        public void Boundary_record_first_candidate_is_the_published_radii_of_the_next_disc()
+        {
+            CalibrationSession session = Load("verbatim-azo-20261104--calibration-3f2ce8c2.calibration.json");
+            Assert.Equal(CalibrationStage.Boundary, CalibrationTargetFile.StageOf(session.Target));
+            Assert.Equal(13, session.Photo!.BoundarySegments!.Count);
+
+            CalibrationRecordFit fit = CalibrationRecordFitter.Fit(session);
+
+            Assert.Equal(CalibrationMeasurementKind.BoundarySegments, fit.Measurement);
+            Assert.Equal(154, fit.PointCount);
+            Assert.Equal(0.02, fit.RadiusRangeMm);
+            Assert.False(fit.RangeExpanded);
+            // Upstream's fitter flags these hand-placed points ("do not match a single disc model") and leaves the
+            // choice to the person, who applied the first candidate: its radii are the published ones.
+            Assert.NotEmpty(fit.Result.Candidates);
+            CalibrationParameters best = fit.Result.Candidates[0].Parameters;
+            Assert.Equal(23.990847220268247, best.InnerRadiusMm, RadiusToleranceMm);
+            Assert.Equal(57.96535646048506, best.OuterRadiusMm, RadiusToleranceMm);
+            Assert.Equal(session.Target.Parameters.PitchLinear, best.PitchLinear);
+            Assert.Equal(session.Target.Parameters.PitchQuadratic, best.PitchQuadratic);
+            Assert.Equal(session.Target.Parameters.PitchCubic, best.PitchCubic);
+        }
+    }
+
+    /// <summary>Own class so xUnit runs it beside the other tests of this file.</summary>
+    public sealed class SupplementaryBoundaryRecord
+    {
+
+        [Fact]
+        public void Supplementary_boundary_record_gives_candidates_inside_its_saved_search_range()
+        {
+            // The tutorial gives the points of this record (17 segments, 169 points, range 0.02 mm, no widening) but
+            // no fitted numbers, so this checks only what it states and that the answer stays inside the range.
+            CalibrationSession session = Load("verbatim-azo-20261104--calibration-2ba20083_2.calibration.json");
+            Assert.Equal(17, session.Photo!.BoundarySegments!.Count);
+
+            CalibrationRecordFit fit = CalibrationRecordFitter.Fit(session);
+
+            Assert.Equal(169, fit.PointCount);
+            Assert.Equal(0.02, fit.RadiusRangeMm);
+            Assert.NotEmpty(fit.Result.Candidates);
+            CalibrationParameters start = session.Target.Parameters;
+            CalibrationParameters best = fit.Result.Candidates[0].Parameters;
+            Assert.InRange(best.InnerRadiusMm, start.InnerRadiusMm - 0.02, start.InnerRadiusMm + 0.02);
+            Assert.InRange(best.OuterRadiusMm, start.OuterRadiusMm - 0.02, start.OuterRadiusMm + 0.02);
+        }
     }
 }
