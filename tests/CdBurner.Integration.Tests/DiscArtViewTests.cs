@@ -1,16 +1,22 @@
 using System;
+using System.Collections.Generic;
 using System.IO;
 using System.Linq;
 using System.Security.Cryptography;
 using System.Threading;
 using System.Threading.Tasks;
 using System.Windows;
+using System.Windows.Controls;
 using System.Windows.Media;
 using System.Windows.Media.Imaging;
 using CdBurner.App.ViewModels;
 using CdBurner.App.Views;
 using CdBurner.Cli;
 using CdBurner.Core.Abstractions;
+using CdBurner.Core.Burning;
+using CdBurner.Core.Iso;
+using CdBurner.Core.Primitives;
+using CdBurner.Hardware.Burning;
 using CdBurner.Hardware.Devices;
 using CdBurner.Hardware.Simulation;
 using CdBurner.Lithography;
@@ -56,10 +62,14 @@ public sealed class DiscArtViewTests : IDisposable
                 { "id": "tiny-dvd", "displayName": "Tiny DVD", "description": "test", "totalSectors": 4096,
                   "innerRadiusMm": 24, "outerRadiusMm": 58, "channelBitLengthNm": 133.3 },
                 { "id": "small-dvd", "displayName": "Small DVD", "description": "test", "totalSectors": 32768,
+                  "innerRadiusMm": 24, "outerRadiusMm": 58, "channelBitLengthNm": 133.3 },
+                { "id": "medium-dvd", "displayName": "Medium DVD", "description": "test", "totalSectors": 96000,
                   "innerRadiusMm": 24, "outerRadiusMm": 58, "channelBitLengthNm": 133.3 }
               ],
               "bluRayPresets": [
                 { "id": "tiny-bd", "displayName": "Tiny BD", "description": "test", "totalSectors": 4096,
+                  "innerRadiusMm": 24, "outerRadiusMm": 58 },
+                { "id": "small-bd", "displayName": "Small BD", "description": "test", "totalSectors": 32768,
                   "innerRadiusMm": 24, "outerRadiusMm": 58 }
               ]
             }
@@ -237,29 +247,240 @@ public sealed class DiscArtViewTests : IDisposable
         Assert.Equal(result.OutputPath, burned);
         Assert.True(studio.IsChecksumMatch, studio.VerificationStatusText);
 
-        // Files at the outer edge need a two-session burn, which the command line does: refused here before any drive
-        // is touched. (A disc larger than the tiny one: outer files keep room for the drive's gap between sessions.)
-        string files = P("files");
-        Directory.CreateDirectory(files);
-        File.WriteAllText(Path.Combine(files, "README.TXT"), "picture disc with files");
-        Assert.True(page.SelectPreset("small-dvd"));
-        page.FilesFolder = files;
-        page.FilesOuter = true;
-        DiscArtResult outerImage = await GenerateFromPage(page, P("outer.iso"));
-        burned = null;
-        BurnOperationResult outer = await page.BurnAsync();
-        Assert.False(outer.Success);
-        Assert.Contains("two sessions", page.StatusMessage);
-        Assert.Contains($"disc-art burn --drive <id> --image \"{outerImage.OutputPath}\"", page.StatusMessage);
-        Assert.Null(burned);
-
         // A CD picture track goes through the direct writer on the command line.
+        burned = null;
         page.Medium = DiscArtMedium.Cd;
         Assert.True(page.SelectPreset("tiny-cd"));
         await GenerateFromPage(page, P("track.wav"));
         Assert.False((await page.BurnAsync()).Success);
         Assert.Contains("disc-art burn", page.StatusMessage);
         Assert.Null(burned);
+    }
+
+    private string WriteSampleFiles()
+    {
+        string files = P("files");
+        if (Directory.Exists(files)) return files;
+        Directory.CreateDirectory(files);
+        File.WriteAllText(Path.Combine(files, "README.TXT"), "picture disc with outer files");
+        File.WriteAllBytes(Path.Combine(files, "DATA.BIN"), Enumerable.Range(0, 8192).Select(i => (byte)(i * 31 + 7)).ToArray());
+        return files;
+    }
+
+    private DiscArtViewModel NewPageWithDrive(DiscDeviceManager devices, IBurnEngineBackend engine)
+        => new(null, WritePresets(), P("no-calibrations.json"),
+            deviceService: devices,
+            burnEngine: engine,
+            directBurnLogDirectory: P("logs"));
+
+    [Theory]
+    [InlineData(DiscMediaType.DvdPlusR, "small-dvd", 32_768, PictureDiscTwoSessionBurner.DvdPlusRSessionGapSectors)]
+    [InlineData(DiscMediaType.DvdMinusR, "medium-dvd", 96_000, PictureDiscTwoSessionBurner.DvdMinusRFirstSessionGapSectors)]
+    public async Task Outer_files_dvd_burns_two_sessions_verifies_both_and_reports_progress_for_both(
+        DiscMediaType mediaType, string presetId, int capacity, int expectedGap)
+    {
+        using var devices = new DiscDeviceManager(enablePhysicalEnumeration: false);
+        var recorder = Assert.IsType<VirtualDiscRecorder>(devices.GetRecorderById("VDRV-01"));
+        using var medium = new VirtualDiscMedium(mediaType, capacity);
+        recorder.InsertMedia(medium);
+
+        DiscArtViewModel page = NewPageWithDrive(devices, new VirtualBurnEngine());
+        var statuses = new List<string>();
+        page.PropertyChanged += (_, e) =>
+        {
+            if (e.PropertyName == nameof(DiscArtViewModel.StatusMessage) && !string.IsNullOrEmpty(page.StatusMessage))
+            {
+                statuses.Add(page.StatusMessage);
+            }
+        };
+
+        page.Medium = DiscArtMedium.Dvd;
+        Assert.True(page.SelectPreset(presetId));
+        Assert.True(page.OpenPicture(WritePicture()), page.StatusMessage);
+        string filesDir = WriteSampleFiles();
+        page.FilesFolder = filesDir;
+        page.FilesOuter = true;
+        page.VolumeLabel = "OUTER_UI";
+
+        await page.PlacementTask;
+        Assert.DoesNotContain("cannot be burned yet", page.PlanSummary, StringComparison.OrdinalIgnoreCase);
+
+        DiscArtResult outerImage = await GenerateFromPage(page, P($"outer-{mediaType}.iso"));
+        PictureDiscLayout layout = Assert.IsType<PictureDiscLayout>(outerImage.Plan.FilesLayout);
+        Assert.Equal(PictureDiscFilesPlacement.OuterFiles, layout.Placement);
+
+        BurnOperationResult burn = await page.BurnAsync();
+        Assert.True(burn.Success, burn.ErrorMessage + " / " + page.StatusMessage);
+        Assert.Equal(100, page.Progress);
+
+        PictureDiscTwoSessionResult twoSession = Assert.IsType<PictureDiscTwoSessionResult>(page.LastTwoSessionResult);
+        Assert.True(twoSession.Success, twoSession.ErrorMessage);
+        Assert.True(twoSession.PictureSession?.Verified);
+        Assert.True(twoSession.FilesSession?.Verified);
+
+        int expectedStart = layout.PictureEndLba + expectedGap;
+        Assert.Equal(expectedStart, twoSession.FilesSessionStartLba);
+        Assert.Equal(2, medium.Sessions.Count);
+        Assert.Equal(0, medium.Sessions[0].StartLba);
+        Assert.Equal(layout.PictureEndLba, medium.Sessions[0].SectorCount);
+        Assert.Equal(expectedStart, medium.Sessions[1].StartLba);
+        Assert.True(medium.IsFinalized);
+
+        // Progress updates named both sessions while burning and verifying.
+        Assert.Contains(statuses, s => s.Contains("Session 1 of 2 (picture)", StringComparison.Ordinal));
+        Assert.Contains(statuses, s => s.Contains("Session 2 of 2 (files)", StringComparison.Ordinal));
+        if (mediaType == DiscMediaType.DvdMinusR)
+        {
+            Assert.Contains(DataBurnService.AddedSessionHint, page.StatusMessage);
+        }
+
+        // Session 2 holds the files intact and Session 1 holds the exact picture bytes.
+        using (var reader = IsoImageReader.FromStream(medium.CreateReadStream(), sessionStartLba: expectedStart))
+        {
+            Assert.Equal("OUTER_UI", reader.VolumeLabel);
+            Assert.Equal(File.ReadAllBytes(Path.Combine(filesDir, "README.TXT")), reader.ReadFileBytes("/README.TXT"));
+            Assert.Equal(File.ReadAllBytes(Path.Combine(filesDir, "DATA.BIN")), reader.ReadFileBytes("/DATA.BIN"));
+        }
+
+        byte[] expectedPicture = new byte[layout.PictureEndLba * OpticalConstants.DataSectorSize];
+        using (var source = File.OpenRead(outerImage.OutputPath))
+        {
+            source.ReadExactly(expectedPicture);
+        }
+        byte[] discPicture = new byte[expectedPicture.Length];
+        medium.ReadSectors(0, layout.PictureEndLba, discPicture, OpticalConstants.DataSectorSize);
+        Assert.True(expectedPicture.AsSpan().SequenceEqual(discPicture));
+    }
+
+    [Theory]
+    [InlineData(DiscMediaType.DvdMinusRw)]
+    [InlineData(DiscMediaType.DvdPlusRw)]
+    [InlineData(DiscMediaType.CdR)]
+    [InlineData(DiscMediaType.BdR)]
+    public async Task Outer_files_burn_refuses_unsupported_media_with_cli_reason_and_leaves_disc_blank(DiscMediaType mediaType)
+    {
+        using var devices = new DiscDeviceManager(enablePhysicalEnumeration: false);
+        var recorder = Assert.IsType<VirtualDiscRecorder>(devices.GetRecorderById("VDRV-01"));
+        using var medium = new VirtualDiscMedium(mediaType, 32_768);
+        recorder.InsertMedia(medium);
+
+        DiscArtViewModel page = NewPageWithDrive(devices, new VirtualBurnEngine());
+        page.Medium = DiscArtMedium.Dvd;
+        Assert.True(page.SelectPreset("small-dvd"));
+        Assert.True(page.OpenPicture(WritePicture()), page.StatusMessage);
+        page.FilesFolder = WriteSampleFiles();
+        page.FilesOuter = true;
+        await GenerateFromPage(page, P($"outer-refuse-{mediaType}.iso"));
+
+        BurnOperationResult burn = await page.BurnAsync();
+        Assert.False(burn.Success);
+        string expectedReason = PictureDiscTwoSessionBurner.WhyNotSupported(mediaType)!;
+        Assert.Contains(expectedReason, page.StatusMessage);
+        Assert.Contains("Nothing was written", page.StatusMessage);
+        Assert.True(medium.IsBlank);
+        Assert.Empty(medium.Sessions);
+    }
+
+    [Fact]
+    public async Task Outer_files_bd_image_is_refused_with_cli_reason_before_touching_drive()
+    {
+        using var devices = new DiscDeviceManager(enablePhysicalEnumeration: false);
+        var recorder = Assert.IsType<VirtualDiscRecorder>(devices.GetRecorderById("VDRV-01"));
+        using var medium = new VirtualDiscMedium(DiscMediaType.DvdPlusR, 32_768);
+        recorder.InsertMedia(medium);
+
+        DiscArtViewModel page = NewPageWithDrive(devices, new VirtualBurnEngine());
+        page.Medium = DiscArtMedium.BluRay;
+        Assert.True(page.SelectPreset("small-bd"));
+        Assert.True(page.OpenPicture(WritePicture()), page.StatusMessage);
+        page.FilesFolder = WriteSampleFiles();
+        page.FilesOuter = true;
+        DiscArtResult bdResult = await GenerateFromPage(page, P("outer-bd.iso"));
+
+        BurnOperationResult burn = await page.BurnAsync();
+        Assert.False(burn.Success);
+        Assert.Equal(PictureDiscTwoSessionService.WhyLayoutNotSupported(bdResult.Plan.FilesLayout!), page.StatusMessage);
+        Assert.Contains("BD image", page.StatusMessage);
+        Assert.True(medium.IsBlank);
+        Assert.Empty(medium.Sessions);
+    }
+
+    [Fact]
+    public async Task MainViewModel_disc_art_page_burns_outer_files_image_on_simulated_dvd_plus_r()
+    {
+        using var devices = new DiscDeviceManager(enablePhysicalEnumeration: false);
+        var recorder = Assert.IsType<VirtualDiscRecorder>(devices.GetRecorderById("VDRV-01"));
+        using var medium = new VirtualDiscMedium(DiscMediaType.DvdPlusR, 32_768);
+        recorder.InsertMedia(medium);
+
+        using var main = new MainViewModel(devices, new VirtualBurnEngine());
+        DiscArtViewModel page = new(
+            burnImage: null,
+            userPresetsPath: WritePresets(),
+            calibrationStorePath: P("no-calibrations.json"),
+            deviceService: devices,
+            burnEngine: new VirtualBurnEngine(),
+            getSelectedRecorder: () => main.SelectedRecorder,
+            directBurnLogDirectory: P("logs"));
+
+        // Smoke-check the MainViewModel-owned DiscArt instance too (without writing to %LOCALAPPDATA% presets).
+        Assert.True(main.DiscArt.BurnCommand.CanExecute(null));
+        Assert.Same(recorder, main.SelectedRecorder);
+
+        page.Medium = DiscArtMedium.Dvd;
+        Assert.True(page.SelectPreset("small-dvd"));
+        Assert.True(page.OpenPicture(WritePicture()), page.StatusMessage);
+        page.FilesFolder = WriteSampleFiles();
+        page.FilesOuter = true;
+        await GenerateFromPage(page, P("main-outer.iso"));
+
+        BurnOperationResult burn = await page.BurnAsync();
+        Assert.True(burn.Success, burn.ErrorMessage + " / " + page.StatusMessage);
+        Assert.Equal(2, medium.Sessions.Count);
+        Assert.True(medium.IsFinalized);
+    }
+
+    [Fact]
+    public void DiscArtView_checkbox_does_not_say_cannot_be_burned_yet()
+    {
+        Exception? failure = null;
+        var thread = new Thread(() =>
+        {
+            try
+            {
+                DiscArtViewModel page = NewPage();
+                var view = new DiscArtView { DataContext = page };
+                view.Measure(new Size(1400, 900));
+                view.Arrange(new Rect(0, 0, 1400, 900));
+                view.UpdateLayout();
+                var checkboxes = FindVisualChildren<CheckBox>(view).ToList();
+                var outerBox = Assert.Single(checkboxes, cb => string.Equals(
+                    System.Windows.Automation.AutomationProperties.GetName(cb),
+                    "Files at the outer edge",
+                    StringComparison.Ordinal));
+                string content = outerBox.Content?.ToString() ?? string.Empty;
+                Assert.DoesNotContain("cannot be burned yet", content, StringComparison.OrdinalIgnoreCase);
+            }
+            catch (Exception ex)
+            {
+                failure = ex;
+            }
+        });
+        thread.SetApartmentState(ApartmentState.STA);
+        thread.Start();
+        Assert.True(thread.Join(TimeSpan.FromSeconds(60)), "The view check did not finish.");
+        if (failure is not null) throw new InvalidOperationException("View check failed: " + failure, failure);
+    }
+
+    private static IEnumerable<T> FindVisualChildren<T>(DependencyObject root) where T : DependencyObject
+    {
+        int count = VisualTreeHelper.GetChildrenCount(root);
+        for (int i = 0; i < count; i++)
+        {
+            DependencyObject child = VisualTreeHelper.GetChild(root, i);
+            if (child is T match) yield return match;
+            foreach (T nested in FindVisualChildren<T>(child)) yield return nested;
+        }
     }
 
     [Fact]

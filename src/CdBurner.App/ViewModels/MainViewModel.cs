@@ -197,7 +197,8 @@ public class MainViewModel : ObservableObject, IDisposable
         (_dvdVideo?.IsBusy ?? false) ||
         (_imageStudio?.IsBusy ?? false) ||
         (_archive?.IsBusy ?? false) ||
-        (_driveUtilities?.IsBusy ?? false);
+        (_driveUtilities?.IsBusy ?? false) ||
+        (_discArt?.IsBusy ?? false);
 
     /// <summary>
     /// Safely cancels all running burns/scans and stops optical drives from spinning.
@@ -210,6 +211,7 @@ public class MainViewModel : ObservableObject, IDisposable
         try { _imageStudio?.CancelActiveOperation(); } catch { }
         try { _archive?.CancelActiveOperation(); } catch { }
         try { _driveUtilities?.CancelActiveOperation(); } catch { }
+        try { _discArt?.CancelActiveOperation(); } catch { }
 
         if (_selectedRecorder != null)
         {
@@ -468,7 +470,24 @@ public class MainViewModel : ObservableObject, IDisposable
         _driveUtilities = new DriveUtilitiesViewModel(_deviceService, _burnEngine);
         _virtualDrive = new VirtualDriveViewModel(_deviceService);
         _settings = new SettingsViewModel(settingsService, this);
-        _discArt = new DiscArtViewModel(BurnDiscArtImageAsync);
+        _discArt = new DiscArtViewModel(
+            burnImage: BurnDiscArtImageAsync,
+            deviceService: _deviceService,
+            burnEngine: _burnEngine,
+            getAvailableRecorders: () => AvailableRecorders,
+            getSelectedRecorder: () => SelectedRecorder,
+            setSelectedRecorder: r => SelectedRecorder = r,
+            getWriteSpeed: () => SelectedWriteSpeed,
+            getDisableBurnFree: () => !_settings.EnableBurnFreeByDefault,
+            getPostBurnAction: () => _settings.EjectAfterBurnByDefault ? CdBurner.Core.Burning.PostBurnAction.Eject : CdBurner.Core.Burning.PostBurnAction.None);
+
+        _discArt.PropertyChanged += (_, e) =>
+        {
+            if (e.PropertyName == nameof(DiscArtViewModel.IsBusy))
+            {
+                OnPropertyChanged(nameof(IsAnyBurnActive));
+            }
+        };
 
         _dataBurn.PropertyChanged += (_, e) =>
         {

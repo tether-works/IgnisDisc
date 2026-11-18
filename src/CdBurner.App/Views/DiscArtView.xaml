@@ -94,7 +94,7 @@
                     </StackPanel>
                     <TextBlock Text="{Binding FilesFolder}" TextWrapping="Wrap" Margin="0,4,0,0"
                                Foreground="{DynamicResource TextSecondaryBrush}" />
-                    <CheckBox Content="Files at the outer edge (cannot be burned yet)" IsChecked="{Binding FilesOuter}"
+                    <CheckBox Content="Files at the outer edge" IsChecked="{Binding FilesOuter}"
                               IsEnabled="{Binding HasFiles}" Margin="0,4,0,0"
                               AutomationProperties.Name="Files at the outer edge" />
                     <TextBlock Text="Volume label" Margin="0,6,0,2" />

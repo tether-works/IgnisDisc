@@ -7,7 +7,12 @@ using System.IO;
 using System.Windows.Input;
 using CdBurner.App.Mvvm;
 using CdBurner.Core.Abstractions;
+using CdBurner.Core.Burning;
 using CdBurner.Core.Iso;
+using CdBurner.Core.Primitives;
+using CdBurner.Hardware.Burning;
+using CdBurner.Hardware.NativeWriting;
+using CdBurner.Hardware.Simulation;
 using CdBurner.Lithography;
 using CdBurner.Lithography.Calibration;
 using CdBurner.Lithography.DiscArt;
@@ -47,6 +52,14 @@ public sealed class DiscArtViewModel : ObservableObject
     public static readonly uint OutsideColor = 0x00000000;     // around the disc and in the centre hole
 
     private readonly Func<string, Task<BurnOperationResult>>? _burnImage;
+    private readonly IDiscDeviceService? _deviceService;
+    private readonly IBurnEngineBackend? _burnEngine;
+    private readonly Func<IReadOnlyList<IDiscRecorderBackend>>? _getAvailableRecorders;
+    private readonly Func<IDiscRecorderBackend?>? _getSelectedRecorder;
+    private readonly Action<IDiscRecorderBackend>? _setSelectedRecorder;
+    private readonly Func<WriteSpeedDescriptor?>? _getWriteSpeed;
+    private readonly Func<bool>? _getDisableBurnFree;
+    private readonly Func<PostBurnAction>? _getPostBurnAction;
     private readonly string? _userPresetsPath;
     private readonly string _calibrationStorePath;
     private DiscPresetJsonDocument? _presets;
@@ -82,15 +95,34 @@ public sealed class DiscArtViewModel : ObservableObject
     private double _progress;
     private CancellationTokenSource? _cts;
 
-    /// <param name="burnImage">Burns a finished .iso (the app hands it to the Disc Image screen); null hides burning.</param>
+    /// <param name="burnImage">Burns a finished .iso (the app hands it to the Disc Image screen); null hides single-session burning.</param>
     /// <param name="userPresetsPath">Presets file merged over the built-in ones (null: the default file).</param>
     /// <param name="calibrationStorePath">Saved calibrations (null: the default file).</param>
+    /// <param name="deviceService">Optical device service for two-session outer-files burning.</param>
+    /// <param name="burnEngine">Fallback burn engine backend for two-session outer-files burning.</param>
     public DiscArtViewModel(Func<string, Task<BurnOperationResult>>? burnImage = null,
-        string? userPresetsPath = null, string? calibrationStorePath = null)
+        string? userPresetsPath = null, string? calibrationStorePath = null,
+        IDiscDeviceService? deviceService = null, IBurnEngineBackend? burnEngine = null,
+        Func<IReadOnlyList<IDiscRecorderBackend>>? getAvailableRecorders = null,
+        Func<IDiscRecorderBackend?>? getSelectedRecorder = null,
+        Action<IDiscRecorderBackend>? setSelectedRecorder = null,
+        Func<WriteSpeedDescriptor?>? getWriteSpeed = null,
+        Func<bool>? getDisableBurnFree = null,
+        Func<PostBurnAction>? getPostBurnAction = null,
+        string? directBurnLogDirectory = null)
     {
         _burnImage = burnImage;
         _userPresetsPath = userPresetsPath;
         _calibrationStorePath = calibrationStorePath ?? CalibrationStore.GetDefaultPath();
+        _deviceService = deviceService;
+        _burnEngine = burnEngine;
+        _getAvailableRecorders = getAvailableRecorders;
+        _getSelectedRecorder = getSelectedRecorder;
+        _setSelectedRecorder = setSelectedRecorder;
+        _getWriteSpeed = getWriteSpeed;
+        _getDisableBurnFree = getDisableBurnFree;
+        _getPostBurnAction = getPostBurnAction;
+        DirectBurnLogDirectory = directBurnLogDirectory;
 
         OpenPictureCommand = new RelayCommand(BrowsePicture, () => !IsBusy);
         ChooseFilesFolderCommand = new RelayCommand(BrowseFilesFolder, () => !IsBusy && CanCarryFiles);
@@ -100,10 +132,30 @@ public sealed class DiscArtViewModel : ObservableObject
         BinaryToneCommand = new RelayCommand(() => ApplyTone(ToneProfile.LegacyBinary));
         ResetPlacementCommand = new RelayCommand(ResetPlacement);
         GenerateCommand = new AsyncRelayCommand(GenerateAsync, () => !IsBusy);
-        BurnCommand = new AsyncRelayCommand(BurnAsync, () => !IsBusy && _burnImage is not null);
+        BurnCommand = new AsyncRelayCommand(() => BurnAsync(), () => !IsBusy && CanBurn);
         CancelCommand = new RelayCommand(() => _cts?.Cancel(), () => IsBusy);
 
         ReloadDiscChoices();
+    }
+
+    private bool CanBurn => _burnImage is not null || (_deviceService is not null && _burnEngine is not null);
+
+    /// <summary>Optional directory where direct-drive SCSI logs are saved during two-session burns.</summary>
+    public string? DirectBurnLogDirectory { get; set; }
+
+    /// <summary>Result of the most recent two-session outer-files burn, or null.</summary>
+    public PictureDiscTwoSessionResult? LastTwoSessionResult { get; private set; }
+
+    /// <summary>Cancels an active generation or two-session burn.</summary>
+    public void CancelActiveOperation()
+    {
+        try
+        {
+            _cts?.Cancel();
+        }
+        catch
+        {
+        }
     }
 
     public ICommand OpenPictureCommand { get; }
@@ -401,7 +453,7 @@ public sealed class DiscArtViewModel : ObservableObject
 
     public bool HasFiles => _filesFolder.Length > 0;
 
-    /// <summary>Files at the outer end of the disc (picture inside). Such an image cannot be burned yet.</summary>
+    /// <summary>Files at the outer end of the disc (picture inside). DVD-R and DVD+R burn in two sessions.</summary>
     public bool FilesOuter
     {
         get => _filesOuter;
@@ -679,7 +731,9 @@ public sealed class DiscArtViewModel : ObservableObject
         {
             text.Append(layout.Placement == PictureDiscFilesPlacement.InnerFiles
                 ? $" Files: sectors 0 to {layout.VolumeEndLba - 1:N0} (inside)."
-                : $" Files: sectors {layout.FilesSessionStartLba:N0} to {layout.VolumeEndLba - 1:N0} (outside; cannot be burned yet).");
+                : layout.Medium == PictureDiscMedium.Dvd
+                    ? $" Files: sectors {layout.FilesSessionStartLba:N0} to {layout.VolumeEndLba - 1:N0} (outside; two sessions on blank DVD-R / DVD+R)."
+                    : $" Files: sectors {layout.FilesSessionStartLba:N0} to {layout.VolumeEndLba - 1:N0} (outside; two sessions cover DVD-R and DVD+R only so far).");
         }
 
         if (plan.Band is { } band)
@@ -761,11 +815,14 @@ public sealed class DiscArtViewModel : ObservableObject
         }
     }
 
-    /// <summary>Burns the generated image. DVD and BD images go to the Disc Image screen's burn (target choice,
-    /// verify after burn). An image with the files at the outer end, and a CD picture track, are refused here.</summary>
-    public async Task<BurnOperationResult> BurnAsync()
+    /// <summary>Burns the generated image. Single-session DVD and BD images go to the Disc Image screen's burn (target
+    /// choice, verify after burn); DVD images with the files at the outer edge burn in two sessions through
+    /// <see cref="PictureDiscTwoSessionService"/>. A CD picture track and unsupported outer-files media are refused.</summary>
+    public Task<BurnOperationResult> BurnAsync() => BurnAsync(driveId: null);
+
+    public async Task<BurnOperationResult> BurnAsync(string? driveId)
     {
-        if (_burnImage is null)
+        if (!CanBurn)
         {
             return Refuse("Burning is not available here.");
         }
@@ -781,11 +838,14 @@ public sealed class DiscArtViewModel : ObservableObject
                 + $"ignisdisc-cli disc-art burn --drive <id> --image \"{result.CueSheetPath ?? result.OutputPath}\"");
         }
 
-        if (result.Plan.FilesLayout?.Placement == PictureDiscFilesPlacement.OuterFiles)
+        if (result.Plan.FilesLayout is { Placement: PictureDiscFilesPlacement.OuterFiles } outer)
         {
-            return Refuse("This image has the files at the outer edge. Burning it needs two sessions (the picture, then the files), "
-                + "which this page cannot write yet; in one pass the files would not show up on a computer. Burn it on a blank DVD-R "
-                + $"or DVD+R with: ignisdisc-cli disc-art burn --drive <id> --image \"{result.OutputPath}\", or generate it again with the files inside.");
+            return await BurnOuterFilesTwoSessionAsync(result.OutputPath, outer, driveId);
+        }
+
+        if (_burnImage is null)
+        {
+            return Refuse("Burning is not available here.");
         }
 
         IsBusy = true;
@@ -800,6 +860,165 @@ public sealed class DiscArtViewModel : ObservableObject
         {
             IsBusy = false;
         }
+    }
+
+    private async Task<BurnOperationResult> BurnOuterFilesTwoSessionAsync(string imagePath, PictureDiscLayout outer, string? driveId)
+    {
+        if (PictureDiscTwoSessionService.WhyLayoutNotSupported(outer) is { } layoutError)
+        {
+            return Refuse(layoutError);
+        }
+
+        if (_deviceService is null || _burnEngine is null)
+        {
+            return Refuse("Burning is not available here.");
+        }
+
+        IDiscRecorderBackend? recorder;
+        if (string.IsNullOrWhiteSpace(driveId) && Views.BurnTargetDialog.IsInteractiveSession)
+        {
+            var recorders = _getAvailableRecorders?.Invoke() ?? _deviceService.GetRecorders();
+            recorder = Views.BurnTargetDialog.ConfirmRecorderSelection(
+                _deviceService,
+                recorders,
+                _getSelectedRecorder?.Invoke(),
+                $"Burn Two-Session Picture Disc ({Path.GetFileName(imagePath)})",
+                new NativeDataBurnEngine(_burnEngine, DirectBurnLogDirectory));
+
+            if (recorder is null)
+            {
+                StatusMessage = "Burn cancelled.";
+                return BurnOperationResult.CancelledResult(StatusMessage);
+            }
+
+            _setSelectedRecorder?.Invoke(recorder);
+        }
+        else
+        {
+            recorder = ResolveRecorder(driveId);
+            if (recorder is null)
+            {
+                return Refuse("No optical recorder drive selected or available.");
+            }
+        }
+
+        if (recorder is VirtualDiscRecorder vRec && Views.BurnTargetDialog.IsInteractiveSession)
+        {
+            var status = vRec.QueryMediaStatus();
+            if (!status.MediaPresent)
+            {
+                vRec.InsertMedia(VirtualDiscMedium.CreateBlankDvdR47());
+            }
+        }
+
+        _cts?.Dispose();
+        _cts = new CancellationTokenSource();
+        CancellationToken token = _cts.Token;
+        IsBusy = true;
+        Progress = 0;
+        LastTwoSessionResult = null;
+        StatusMessage = "Burning in two sessions: the picture first (left open), then the files at the drive's next writable address...";
+
+        var progress = new ClosableProgress<BurnProgressSnapshot>(snap =>
+        {
+            if (!_isBusy) return;
+            if (snap.TotalLba > 0)
+            {
+                Progress = Math.Round(Math.Clamp((double)snap.CurrentLba / snap.TotalLba * 100.0, 0, 100), 1);
+                if (!string.IsNullOrWhiteSpace(snap.CurrentActionDescription))
+                {
+                    StatusMessage = $"{snap.CurrentActionDescription} ({Progress:F0}%)";
+                }
+            }
+            else if (!string.IsNullOrWhiteSpace(snap.CurrentActionDescription))
+            {
+                StatusMessage = snap.CurrentActionDescription;
+            }
+        });
+
+        try
+        {
+            var options = new DataBurnOptions
+            {
+                Speed = _getWriteSpeed?.Invoke(),
+                StrictVerify = VerifyPreferences.StrictByDefault,
+                DisableBufferUnderrunFree = _getDisableBurnFree?.Invoke() ?? false,
+            };
+            var service = new PictureDiscTwoSessionService(_burnEngine, DirectBurnLogDirectory);
+            PictureDiscTwoSessionResult twoSession = await service.BurnAsync(recorder, imagePath, outer, options, progress, token);
+            progress.Close();
+            LastTwoSessionResult = twoSession;
+
+            if (twoSession.Success)
+            {
+                Progress = 100;
+                string summary = $"Two-session picture disc burned and verified: picture (sectors 0 to {twoSession.PictureSectors - 1:N0}), "
+                    + $"files (session 2, sectors {twoSession.FilesSessionStartLba:N0} to {twoSession.FilesSessionStartLba + twoSession.FilesSessionSectors - 1:N0}).";
+                if (!string.IsNullOrWhiteSpace(twoSession.Warning))
+                {
+                    summary += " " + twoSession.Warning;
+                }
+
+                StatusMessage = summary;
+                PostBurnActionExecutor.Execute(_getPostBurnAction?.Invoke() ?? PostBurnAction.None, recorder);
+                CompletionNotice.Show("Two-session picture disc burned", StatusMessage, success: true);
+
+                int totalSectors = twoSession.PictureSectors + twoSession.FilesSessionSectors;
+                TimeSpan totalTime = (twoSession.PictureSession?.TotalTime ?? TimeSpan.Zero)
+                    + (twoSession.FilesSession?.TotalTime ?? TimeSpan.Zero);
+                return new BurnOperationResult
+                {
+                    Success = true,
+                    Status = BurnStatus.Succeeded,
+                    SectorsWritten = totalSectors,
+                    TotalTime = totalTime,
+                    WarningMessage = twoSession.Warning,
+                };
+            }
+
+            if (token.IsCancellationRequested
+                || twoSession.PictureSession?.Status == BurnStatus.Cancelled
+                || twoSession.FilesSession?.Status == BurnStatus.Cancelled)
+            {
+                StatusMessage = "Two-session burn was cancelled."
+                    + (twoSession.NothingWritten ? " Nothing was written to the disc." : " The picture session was already written; the disc stays open.");
+                CompletionNotice.Show("Two-session burn cancelled", StatusMessage, success: false);
+                return BurnOperationResult.CancelledResult(StatusMessage);
+            }
+
+            string error = PictureDiscTwoSessionService.FormatError(twoSession) ?? "Burn failed.";
+            StatusMessage = error;
+            CompletionNotice.Show("Two-session burn failed", StatusMessage, success: false);
+            return BurnOperationResult.Failed(error);
+        }
+        catch (OperationCanceledException)
+        {
+            progress.Close();
+            StatusMessage = "Two-session burn was cancelled.";
+            return BurnOperationResult.CancelledResult(StatusMessage);
+        }
+        finally
+        {
+            progress.Close();
+            IsBusy = false;
+        }
+    }
+
+    private IDiscRecorderBackend? ResolveRecorder(string? driveId)
+    {
+        if (_deviceService is null) return null;
+        if (!string.IsNullOrWhiteSpace(driveId))
+        {
+            return _deviceService.GetRecorderById(driveId);
+        }
+
+        if (_getSelectedRecorder?.Invoke() is { } selected)
+        {
+            return selected;
+        }
+
+        var recorders = _getAvailableRecorders?.Invoke() ?? _deviceService.GetRecorders();
+        return recorders.FirstOrDefault(r => !r.IsVirtual) ?? recorders.FirstOrDefault();
     }
 
     private BurnOperationResult Refuse(string message)

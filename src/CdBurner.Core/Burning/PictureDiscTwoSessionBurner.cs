@@ -208,7 +208,7 @@ public sealed class PictureDiscTwoSessionBurner
         using (var pictureStream = new FileRangeStream(imagePath, 0, (long)layout.PictureEndLba * Sector))
         {
             picture = await _service.BurnStreamAsync(recorder, pictureStream, SessionOptions(options, closeDisc: false),
-                progress, cancellationToken).ConfigureAwait(false);
+                SessionProgress(progress, "Session 1 of 2 (picture): "), cancellationToken).ConfigureAwait(false);
         }
 
         var partial = new PictureDiscTwoSessionResult
@@ -250,6 +250,12 @@ public sealed class PictureDiscTwoSessionBurner
             };
         }
 
+        progress?.Report(new BurnProgressSnapshot
+        {
+            CurrentActionDescription = "Session 2 of 2 (files): Building files session",
+            BufferLevelPercent = 100.0
+        });
+
         string temp = Path.Combine(Path.GetTempPath(), $"ignisdisc-files-session-{Guid.NewGuid():N}.tmp");
         DataBurnResult files;
         try
@@ -268,7 +274,7 @@ public sealed class PictureDiscTwoSessionBurner
 
             session.Position = 0;
             files = await _service.BurnStreamAsync(recorder, session, SessionOptions(options, closeDisc: true),
-                progress, cancellationToken).ConfigureAwait(false);
+                SessionProgress(progress, "Session 2 of 2 (files): "), cancellationToken).ConfigureAwait(false);
         }
         catch (Exception ex) when (ex is IOException or UnauthorizedAccessException)
         {
@@ -391,6 +397,29 @@ public sealed class PictureDiscTwoSessionBurner
     };
 
     private static int AlignUp(int value, int align) => checked((value + align - 1) / align * align);
+
+    private static IProgress<BurnProgressSnapshot>? SessionProgress(IProgress<BurnProgressSnapshot>? progress, string prefix) =>
+        progress == null
+            ? null
+            : new InlineProgress(snap => progress.Report(new BurnProgressSnapshot
+            {
+                ElapsedTime = snap.ElapsedTime,
+                RemainingTime = snap.RemainingTime,
+                CurrentLba = snap.CurrentLba,
+                TotalLba = snap.TotalLba,
+                BufferLevelPercent = snap.BufferLevelPercent,
+                CurrentSpeedMultiplier = snap.CurrentSpeedMultiplier,
+                CurrentBytesPerSecond = snap.CurrentBytesPerSecond,
+                CurrentActionDescription = string.IsNullOrWhiteSpace(snap.CurrentActionDescription)
+                    ? prefix.TrimEnd(' ', ':')
+                    : prefix + snap.CurrentActionDescription,
+            }));
+
+    /// <summary>Forwards on the caller's thread so snapshots keep their session order.</summary>
+    private sealed class InlineProgress(Action<BurnProgressSnapshot> report) : IProgress<BurnProgressSnapshot>
+    {
+        public void Report(BurnProgressSnapshot value) => report(value);
+    }
 
     /// <summary>A read-only, seekable window of a file; opens the file itself and closes it when disposed.</summary>
     private sealed class FileRangeStream : Stream

@@ -2,6 +2,7 @@ using System.Globalization;
 using CdBurner.Core.Abstractions;
 using CdBurner.Core.Burning;
 using CdBurner.Core.Iso;
+using CdBurner.Hardware.Burning;
 using CdBurner.Hardware.NativeWriting;
 using CdBurner.Lithography;
 using CdBurner.Lithography.Calibration;
@@ -288,17 +289,13 @@ public static partial class CliCommandRunner
             throw new CommandLineException("--layer-break does not apply to this image: it is burned as two sessions on a single-layer DVD-R or DVD+R.");
         }
 
-        if (layout.Medium != PictureDiscMedium.Dvd)
+        if (PictureDiscTwoSessionService.WhyLayoutNotSupported(layout) is { } layoutError)
         {
-            throw new CommandLineException(
-                "This BD image has the files at the outer edge. Burning it needs two sessions, and direct drive commands add "
-                + "sessions to DVD-R and DVD+R only so far; in one pass the files would not show up on a computer. "
-                + "Generate it again without --files-outer (files inside, picture outside).");
+            throw new CommandLineException(layoutError);
         }
 
         string driveId = cmd.GetRequiredOption("drive", "--drive <id>");
         var recorder = FindRecorder(deviceService, driveId);
-        var engine = new NativeDataBurnEngine(burnEngine, cmd.GetOption("log-dir"));
         var status = recorder.QueryMediaStatus();
         var options = new DataBurnOptions
         {
@@ -313,14 +310,12 @@ public static partial class CliCommandRunner
             stdout.WriteLine("Burning in two sessions: the picture first (left open), then the files at the drive's next writable address.");
         }
 
-        var burner = new PictureDiscTwoSessionBurner(new DataBurnService(engine));
-        PictureDiscTwoSessionResult result = await burner.BurnAsync(recorder, image, layout, options).ConfigureAwait(false);
+        var service = new PictureDiscTwoSessionService(burnEngine, cmd.GetOption("log-dir"));
+        PictureDiscTwoSessionResult result = await service.BurnAsync(recorder, image, layout, options).ConfigureAwait(false);
+        var engine = service.LastEngine;
         ExecutePostBurnActionIfSucceeded(postAction, result.Success, recorder);
 
-        string? error = result.Success ? null
-            : result.NothingWritten && !result.ErrorMessage!.Contains("Nothing was written", StringComparison.Ordinal)
-                ? result.ErrorMessage + " Nothing was written to the disc."
-                : result.ErrorMessage;
+        string? error = PictureDiscTwoSessionService.FormatError(result);
         if (cmd.IsJson)
         {
             WriteJsonResult(stdout, new
