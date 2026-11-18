@@ -41,7 +41,15 @@ public static class BluRayRecordingUnitEncoder
 
     public static BluRayRecordingUnitResult EncodeEccCluster(ReadOnlySpan<byte> eccCluster, uint firstPhysicalSectorNumber,
         bool appendGuard3 = true, byte initialChannelLevel = 0, long initialDigitalSum = 0,
-        CancellationToken cancellationToken = default)
+        CancellationToken cancellationToken = default) =>
+        EncodeEccCluster(eccCluster, firstPhysicalSectorNumber, appendGuard3, initialChannelLevel, initialDigitalSum,
+            cancellationToken, frameEncoded: null);
+
+    // frameEncoded is called after each of the 496 frames has been modulated. Tests use it to cancel at a known
+    // point in the encoding instead of racing a timer against it.
+    internal static BluRayRecordingUnitResult EncodeEccCluster(ReadOnlySpan<byte> eccCluster, uint firstPhysicalSectorNumber,
+        bool appendGuard3, byte initialChannelLevel, long initialDigitalSum,
+        CancellationToken cancellationToken, Action<int>? frameEncoded)
     {
         if (eccCluster.Length != BluRayEccEncoder.EccClusterBytes)
             throw new ArgumentException("An ECC cluster contains 496 rows of 155 bytes.", nameof(eccCluster));
@@ -78,6 +86,7 @@ public static class BluRayRecordingUnitEncoder
             encoded.DcControlBits.CopyTo(controls, frame * 28);
             Append(encoded.Frame.ModulationBits);
             previousTermination = encoded.Frame.UsedTermination;
+            frameEncoded?.Invoke(frame);
         }
         Append(BluRayRecordingFrameEncoder.CreateFrameSync(0, previousTermination));
         byte[] stopPattern = new byte[54];

@@ -317,14 +317,21 @@ public static class BluRayUpstreamEncodingTests
             throw new InvalidOperationException("Canceled RUB encoding did not stop.");
         }
         catch (OperationCanceledException) { }
+        // Cancel after frame 10 of 496 has been encoded: the encoder must stop before frame 11, not run to the end.
         using CancellationTokenSource duringEncoding = new();
-        duringEncoding.CancelAfter(TimeSpan.FromMilliseconds(1));
+        int lastFrameEncoded = -1;
         try
         {
-            BluRayRecordingUnitEncoder.EncodeEccCluster(ecc, 0x100000, cancellationToken: duringEncoding.Token);
+            BluRayRecordingUnitEncoder.EncodeEccCluster(ecc, 0x100000, appendGuard3: true, initialChannelLevel: 0,
+                initialDigitalSum: 0, duringEncoding.Token, frameEncoded: frame =>
+                {
+                    lastFrameEncoded = frame;
+                    if (frame == 10) duringEncoding.Cancel();
+                });
             throw new InvalidOperationException("RUB encoding ignored in-progress cancellation.");
         }
         catch (OperationCanceledException) { }
+        Require(lastFrameEncoded == 10, "RUB encoding stops at the first frame after cancellation");
 
         long FinalScore(BluRayRecordingFrameResult result, int control, int frameNumber, long startingSum)
         {

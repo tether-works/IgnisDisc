@@ -36,7 +36,10 @@ four on a DVD-R, every file of every session identical; a 60 s DVD-Video test di
 in full; and a dual-layer DVD+R with the layer break where IgnisDisc was told to put it (the Ubuntu 26.04 image, 6.5 GB,
 SHA-256 of the disc equal to the image). Also real: a two-film DVD-9 on a dual-layer DVD+R with the break on the second film's first cell, played on an Xbox Series X across the layer change. Real since 2026-11-15: DVD-RW closed (Disc-At-Once), left open (incremental) and in restricted overwrite mode (expanded with 13h). A second session added to a real DVD-RW the same day. Still simulator only: DVD-RAM, dual-layer DVD-R, Blu-ray, a Mode 2 / XA data track in a mixed-mode CD, the write-offset correction on a mixed-mode CD, the open audio session with a data
 session after it (CD-Extra) and copying an Enhanced CD whole, the Audio CD recovery session, CD picture tracks, the radial spread of archive recovery data, the archive
-`HEALTH.json` certificates, and the `eject` and `load` commands.
+`HEALTH.json` certificates, the `eject` and `load` commands, and every picture-disc write: `disc-art burn` (including
+the two-session burn of a picture with the files at the outer edge on DVD-R and DVD+R, and the experimental audio CD
+picture in the pre-gap before track 1), the picture fill on data, DVD-Video and audio CD burns, and the Rosetta hybrid
+DVD-R. No picture disc has been burned on a real drive.
 
 Phases 5–6 below are still plans.
 
@@ -418,7 +421,7 @@ Results:
 | 2026-11-15 | GP60NB50 | same disc, quick-erased | Data, `burn-data --native` closed (63 MB, 6 files incl. a 100-character name) | Disc-At-Once: 31.9 s writing, then **SYNCHRONIZE CACHE 376 s** (lead-out; 122 s for 372 MB on DVD-R), so the flush timeout went from 10 to 20 min. Status 2, one track of 31,024 sectors. UDF mount and rip: 6/6 identical. Any burn without an erase refused: "must be erased". |
 | 2026-11-15 | GP60NB50 | same disc, Windows' writer had formatted it to 65,264 blocks (restricted overwrite) | Data, `burn-data --native --overwrite` (230 MB, 13 files) | FORMAT UNIT 13h accepted, drive ready after 12.4 s; 118,071 sectors (+9 to a 32 KiB block) from LBA 0, 88.5 s; CLOSE SESSION accepted. Formatted size afterwards 118,080. 13/13 identical through Windows (UDF) and in a rip. |
 
-Media on hand: CD-RW, CD-R, DVD-R, DVD+RW, DVD+R and DVD-RW (Ritek). Ordered: DVD+R DL, BD-R, BD-RE and M-DISC BD-R, a Blu-ray writer (LG BP50NB40) and a second DVD writer (Lite-On iHAS124). No DVD-RAM, BD-R DL or BDXL yet.
+Media on hand: CD-RW, CD-R, DVD-R, DVD+RW, DVD+R, DVD-RW (Ritek) and DVD+R DL (Verbatim, used 2026-11-14). Ordered: BD-R, BD-RE and M-DISC BD-R, a Blu-ray writer (LG BP50NB40) and a second DVD writer (Lite-On iHAS124). No DVD-RAM, BD-R DL or BDXL yet.
 
 The GP60NB50 has a spring-loaded slim tray that cannot close itself: automated runs never eject it, and the owner
 swaps discs by hand. Drives added later get a row here with their probe result.
