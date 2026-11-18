@@ -18,6 +18,7 @@ using CdBurner.Lithography.Calibration;
 using CdBurner.Lithography.DiscArt;
 using CdBurner.Lithography.Imaging;
 using CdBurner.Lithography.Presets;
+using CdBurner.Lithography.Rosetta;
 
 namespace CdBurner.App.ViewModels;
 
@@ -73,6 +74,7 @@ public sealed class DiscArtViewModel : ObservableObject
     private double _offsetYMm;
     private double _rotationDegrees;
     private bool _fitToRing;
+    private bool _preGapSetFitToRing;
     private double _ditherStrength = ToneProfile.Photo.DitherStrength;
     private double _brightness = ToneProfile.Photo.Brightness;
     private bool _fourLevels;
@@ -82,6 +84,12 @@ public sealed class DiscArtViewModel : ObservableObject
     private string _artInnerRadiusText = string.Empty;
     private string _artOuterRadiusText = string.Empty;
     private string _volumeLabel = "DISC_ART";
+    private string _titleRingText = string.Empty;
+    private string _titleRingDateText = DateOnly.FromDateTime(DateTime.Now).ToString("yyyy-MM-dd", CultureInfo.InvariantCulture);
+    private string _titleRingHeightText = string.Empty;
+    private string _baseCuePath = string.Empty;
+    private bool _hidePictureInPreGap;
+    private string _preGapSecondsText = DiscArtImageBuilder.CdPreGapDefaultSeconds.ToString(CultureInfo.InvariantCulture);
     private string _outputPath = string.Empty;
     private string _planSummary = string.Empty;
     private string _statusMessage = "Open a PNG picture, choose the disc and place the picture.";
@@ -127,6 +135,8 @@ public sealed class DiscArtViewModel : ObservableObject
         OpenPictureCommand = new RelayCommand(BrowsePicture, () => !IsBusy);
         ChooseFilesFolderCommand = new RelayCommand(BrowseFilesFolder, () => !IsBusy && CanCarryFiles);
         ClearFilesFolderCommand = new RelayCommand(() => FilesFolder = string.Empty, () => !IsBusy);
+        ChooseBaseCueCommand = new RelayCommand(BrowseBaseCue, () => !IsBusy && IsCd);
+        ClearBaseCueCommand = new RelayCommand(() => BaseCuePath = string.Empty, () => !IsBusy);
         ChooseOutputCommand = new RelayCommand(BrowseOutput, () => !IsBusy);
         PhotoToneCommand = new RelayCommand(() => ApplyTone(ToneProfile.Photo));
         BinaryToneCommand = new RelayCommand(() => ApplyTone(ToneProfile.LegacyBinary));
@@ -161,6 +171,8 @@ public sealed class DiscArtViewModel : ObservableObject
     public ICommand OpenPictureCommand { get; }
     public ICommand ChooseFilesFolderCommand { get; }
     public ICommand ClearFilesFolderCommand { get; }
+    public ICommand ChooseBaseCueCommand { get; }
+    public ICommand ClearBaseCueCommand { get; }
     public ICommand ChooseOutputCommand { get; }
     public ICommand PhotoToneCommand { get; }
     public ICommand BinaryToneCommand { get; }
@@ -184,7 +196,12 @@ public sealed class DiscArtViewModel : ObservableObject
         set
         {
             if (!SetProperty(ref _medium, value)) return;
-            if (value != DiscArtMedium.Cd) FourLevels = false; // DVD and BD pictures have two levels
+            if (value != DiscArtMedium.Cd)
+            {
+                FourLevels = false; // DVD and BD pictures have two levels
+                HidePictureInPreGap = false;
+                BaseCuePath = string.Empty;
+            }
             if (value == DiscArtMedium.Cd)
             {
                 FilesFolder = string.Empty;
@@ -196,6 +213,11 @@ public sealed class DiscArtViewModel : ObservableObject
             OnPropertyChanged(nameof(IsDvd));
             OnPropertyChanged(nameof(IsBluRay));
             OnPropertyChanged(nameof(CanCarryFiles));
+            OnPropertyChanged(nameof(CanDrawTitleRing));
+            OnPropertyChanged(nameof(TitleRingUnavailableReason));
+            OnPropertyChanged(nameof(TitleRingToolTip));
+            OnPropertyChanged(nameof(CanUsePreGap));
+            OnPropertyChanged(nameof(CanEditPreGapSeconds));
             OnPropertyChanged(nameof(OutputHint));
             ReloadDiscChoices();
         }
@@ -207,6 +229,18 @@ public sealed class DiscArtViewModel : ObservableObject
 
     /// <summary>Files go on DVD and BD picture discs; a CD picture track carries none.</summary>
     public bool CanCarryFiles => _medium != DiscArtMedium.Cd;
+
+    /// <summary>A title ring is drawn on DVD picture discs only so far.</summary>
+    public bool CanDrawTitleRing => _medium == DiscArtMedium.Dvd;
+
+    /// <summary>Reason the title ring boxes are disabled on CD and BD; empty on DVD.</summary>
+    public string TitleRingUnavailableReason => _medium == DiscArtMedium.Dvd
+        ? string.Empty
+        : "A title ring is drawn on DVD picture discs only so far.";
+
+    public string TitleRingToolTip => _medium == DiscArtMedium.Dvd
+        ? "Title drawn in large letters around the outer edge of the picture zone (DVD only)."
+        : TitleRingUnavailableReason;
 
     public string OutputHint => _medium == DiscArtMedium.Cd
         ? "CD: a .wav picture track with its CUE sheet."
@@ -358,7 +392,14 @@ public sealed class DiscArtViewModel : ObservableObject
     public bool FitToRing
     {
         get => _fitToRing;
-        set { if (SetProperty(ref _fitToRing, value)) RefreshPreview(); }
+        set
+        {
+            if (SetProperty(ref _fitToRing, value))
+            {
+                _preGapSetFitToRing = false;
+                RefreshPreview();
+            }
+        }
     }
 
     /// <summary>Moves the picture by a drag on the preview, given in preview pixels.</summary>
@@ -480,6 +521,103 @@ public sealed class DiscArtViewModel : ObservableObject
         set => SetProperty(ref _volumeLabel, value ?? string.Empty);
     }
 
+    // ---------------------------------------------------------------------------------------------------------------
+    // Title ring (DVD only)
+    // ---------------------------------------------------------------------------------------------------------------
+
+    /// <summary>Title drawn in large letters in the outer edge of the picture zone (DVD only); empty omits the ring.</summary>
+    public string TitleRingText
+    {
+        get => _titleRingText;
+        set { if (SetProperty(ref _titleRingText, value ?? string.Empty)) InvalidatePlacement(); }
+    }
+
+    /// <summary>Date shown after the title (yyyy-MM-dd); empty or "none" omits the date. Defaults to today.</summary>
+    public string TitleRingDateText
+    {
+        get => _titleRingDateText;
+        set { if (SetProperty(ref _titleRingDateText, value ?? string.Empty)) InvalidatePlacement(); }
+    }
+
+    /// <summary>Radial height of the title ring in mm (2 to 10); empty uses the default 3 mm.</summary>
+    public string TitleRingHeightText
+    {
+        get => _titleRingHeightText;
+        set { if (SetProperty(ref _titleRingHeightText, value?.Trim() ?? string.Empty)) InvalidatePlacement(); }
+    }
+
+    // ---------------------------------------------------------------------------------------------------------------
+    // Audio CD CUE and pre-gap picture (CD only)
+    // ---------------------------------------------------------------------------------------------------------------
+
+    /// <summary>Audio or mixed-mode CUE sheet to combine with a CD picture track; empty builds a picture-only disc.</summary>
+    public string BaseCuePath
+    {
+        get => _baseCuePath;
+        set
+        {
+            string trimmed = value?.Trim() ?? string.Empty;
+            if (!SetProperty(ref _baseCuePath, trimmed)) return;
+            if (trimmed.Length == 0)
+            {
+                HidePictureInPreGap = false;
+            }
+
+            OnPropertyChanged(nameof(HasBaseCue));
+            OnPropertyChanged(nameof(CanUsePreGap));
+            OnPropertyChanged(nameof(CanEditPreGapSeconds));
+            InvalidatePlacement();
+        }
+    }
+
+    public bool HasBaseCue => _baseCuePath.Length > 0;
+
+    public bool CanUsePreGap => IsCd && HasBaseCue;
+
+    public bool CanEditPreGapSeconds => CanUsePreGap && _hidePictureInPreGap;
+
+    /// <summary>Experimental, off by default: hides the CD picture in track 1's pre-gap (INDEX 00) instead of appending it as the last track.</summary>
+    public bool HidePictureInPreGap
+    {
+        get => _hidePictureInPreGap;
+        set
+        {
+            if (!SetProperty(ref _hidePictureInPreGap, value)) return;
+            if (value)
+            {
+                // Match the CLI default (--fit ring when --pregap-art is set without --fit).
+                if (!_fitToRing)
+                {
+                    _fitToRing = true;
+                    _preGapSetFitToRing = true;
+                    OnPropertyChanged(nameof(FitToRing));
+                }
+            }
+            else if (_preGapSetFitToRing)
+            {
+                _preGapSetFitToRing = false;
+                if (_fitToRing)
+                {
+                    _fitToRing = false;
+                    OnPropertyChanged(nameof(FitToRing));
+                }
+            }
+
+            OnPropertyChanged(nameof(CanEditPreGapSeconds));
+            InvalidatePlacement();
+        }
+    }
+
+    /// <summary>Length in seconds of the pre-gap picture (60 to 1200, default 300).</summary>
+    public string PreGapSecondsText
+    {
+        get => _preGapSecondsText;
+        set { if (SetProperty(ref _preGapSecondsText, value?.Trim() ?? string.Empty)) InvalidatePlacement(); }
+    }
+
+    /// <summary>Experimental warning printed alongside pre-gap art on both CLI and UI.</summary>
+    public string PreGapWarning => DiscArtImageBuilder.CdPreGapWarning;
+
     public string OutputPath
     {
         get => _outputPath;
@@ -548,15 +686,18 @@ public sealed class DiscArtViewModel : ObservableObject
     /// choice is missing or not a number.</summary>
     public DiscArtRequest BuildRequest(string? outputPath = null)
     {
-        if (_picture is null) throw new ArgumentException("Open a PNG picture first.");
+        DiscArtTitleRingRequest? titleRing = BuildTitleRing();
+        if (_picture is null && titleRing is null) throw new ArgumentException("Open a PNG picture first.");
         if (_selectedDisc is null) throw new ArgumentException("Choose a disc preset or a saved calibration.");
         string output = outputPath ?? _outputPath;
         if (string.IsNullOrWhiteSpace(output)) throw new ArgumentException("Choose where to save the image.");
 
         bool files = CanCarryFiles && _filesFolder.Length > 0;
+        string? baseCue = IsCd && _baseCuePath.Length > 0 ? Path.GetFullPath(_baseCuePath) : null;
+        int? preGapSeconds = ParsePreGapSeconds(baseCue);
         return new DiscArtRequest(
             _medium,
-            _picturePath,
+            _picture is null ? string.Empty : _picturePath,
             _selectedDisc.Parameters,
             Path.GetFullPath(output),
             Tone,
@@ -564,13 +705,66 @@ public sealed class DiscArtViewModel : ObservableObject
             files ? Path.GetFullPath(_filesFolder) : null,
             files && _filesOuter ? PictureDiscFilesPlacement.OuterFiles : PictureDiscFilesPlacement.InnerFiles,
             string.IsNullOrWhiteSpace(_volumeLabel) ? "DISC_ART" : _volumeLabel.Trim(),
-            null,
+            baseCue,
             CdInterleave: true,
             DvdReadCompatibility: false,
             Overwrite: false,
-            Transform: Transform,
+            Transform: _picture is null ? null : Transform,
             ArtInnerRadiusMm: ParseRadius(_artInnerRadiusText, "inner"),
-            ArtOuterRadiusMm: ParseRadius(_artOuterRadiusText, "outer"));
+            ArtOuterRadiusMm: ParseRadius(_artOuterRadiusText, "outer"),
+            TitleRing: titleRing,
+            CdPreGapSeconds: preGapSeconds);
+    }
+
+    private DiscArtTitleRingRequest? BuildTitleRing()
+    {
+        if (!CanDrawTitleRing || string.IsNullOrWhiteSpace(_titleRingText)) return null;
+
+        string trimmedDate = _titleRingDateText.Trim();
+        DateOnly? date;
+        if (trimmedDate.Length == 0 || string.Equals(trimmedDate, "none", StringComparison.OrdinalIgnoreCase))
+        {
+            date = null;
+        }
+        else if (DateOnly.TryParseExact(trimmedDate, "yyyy-MM-dd", CultureInfo.InvariantCulture, DateTimeStyles.None, out DateOnly parsedDate))
+        {
+            date = parsedDate;
+        }
+        else
+        {
+            throw new ArgumentException($"Invalid title ring date '{trimmedDate}'. Expected yyyy-MM-dd, none, or empty.");
+        }
+
+        string trimmedHeight = _titleRingHeightText.Trim();
+        double height = DiscArtTitleRingRequest.DefaultHeightMm;
+        if (trimmedHeight.Length > 0
+            && !double.TryParse(trimmedHeight, NumberStyles.Float, CultureInfo.InvariantCulture, out height)
+            && !double.TryParse(trimmedHeight, NumberStyles.Float, CultureInfo.CurrentCulture, out height))
+        {
+            throw new ArgumentException($"The title ring height '{trimmedHeight}' is not a number of millimetres.");
+        }
+
+        return new DiscArtTitleRingRequest(_titleRingText.Trim(), date, height);
+    }
+
+    private int? ParsePreGapSeconds(string? baseCue)
+    {
+        if (!IsCd || !_hidePictureInPreGap) return null;
+        if (baseCue is null)
+        {
+            throw new ArgumentException("Choose the audio CD's CUE sheet first (a pre-gap picture goes before track 1).");
+        }
+
+        string trimmed = _preGapSecondsText.Trim();
+        if (trimmed.Length == 0) return DiscArtImageBuilder.CdPreGapDefaultSeconds;
+        if (!int.TryParse(trimmed, NumberStyles.None, CultureInfo.InvariantCulture, out int seconds)
+            || seconds is < DiscArtImageBuilder.CdPreGapMinimumSeconds or > DiscArtImageBuilder.CdPreGapMaximumSeconds)
+        {
+            throw new ArgumentException(
+                $"Invalid pre-gap length '{trimmed}'. Expected whole seconds from {DiscArtImageBuilder.CdPreGapMinimumSeconds} to {DiscArtImageBuilder.CdPreGapMaximumSeconds}.");
+        }
+
+        return seconds;
     }
 
     private double? ParseRadius(string text, string which)
@@ -598,12 +792,14 @@ public sealed class DiscArtViewModel : ObservableObject
         RefreshPreview();
     }
 
+    private bool HasPendingTitleRing => CanDrawTitleRing && !string.IsNullOrWhiteSpace(_titleRingText);
+
     /// <summary>Starts drawing the placement preview. The plan is made again only when the disc, files or band changed;
     /// a result that a newer change has overtaken is dropped.</summary>
     public Task RefreshPreview()
     {
         int generation = ++_placementGeneration;
-        if (_picture is null || _selectedDisc is null)
+        if (_selectedDisc is null || (_picture is null && !HasPendingTitleRing))
         {
             PlacementPreviewPng = null;
             PlanSummary = string.Empty;
@@ -623,19 +819,19 @@ public sealed class DiscArtViewModel : ObservableObject
         }
 
         DiscArtPlacement? known = _placementValid ? _placement : null;
-        BgraRaster picture = _picture;
+        BgraRaster? picture = _picture;
         PlacementTask = RunPreviewAsync(generation, request, known, picture);
         return PlacementTask;
     }
 
-    private async Task RunPreviewAsync(int generation, DiscArtRequest request, DiscArtPlacement? known, BgraRaster picture)
+    private async Task RunPreviewAsync(int generation, DiscArtRequest request, DiscArtPlacement? known, BgraRaster? picture)
     {
         try
         {
             (DiscArtPlacement placement, byte[] png) = await Task.Run(() =>
             {
                 DiscArtPlacement p = known ?? DiscArtImageBuilder.Placement(request);
-                BgraRaster view = RenderPlacement(picture, request.Transform!, p);
+                BgraRaster view = RenderPlacementCore(picture, request.Transform, p, request.TitleRing);
                 using var stream = new MemoryStream();
                 PngRaster.Write(stream, view);
                 return (p, stream.ToArray());
@@ -664,9 +860,22 @@ public sealed class DiscArtViewModel : ObservableObject
     /// </summary>
     public static BgraRaster RenderPlacement(BgraRaster picture, DiscArtTransform transform, DiscArtPlacement placement)
     {
+        ArgumentNullException.ThrowIfNull(picture);
+        ArgumentNullException.ThrowIfNull(transform);
+        return RenderPlacementCore(picture, transform, placement, null);
+    }
+
+    private static BgraRaster RenderPlacementCore(BgraRaster? picture, DiscArtTransform? transform,
+        DiscArtPlacement placement, DiscArtTitleRingRequest? titleRing)
+    {
         const int n = PreviewPixels;
-        BgraRaster canvas = DiscArtCanvas.Render(picture, transform, placement.PictureRadiusMm,
-            placement.Plan.PictureOuterRadiusMm, n);
+        BgraRaster? canvas = picture is not null
+            ? DiscArtCanvas.Render(picture, transform ?? DiscArtTransform.Default, placement.PictureRadiusMm,
+                placement.Plan.PictureOuterRadiusMm, n)
+            : null;
+        RosettaTitleRing? ring = placement.Plan.TitleRing is { } ringPlan && titleRing is not null
+            ? new RosettaTitleRing(titleRing.Title, titleRing.Date, ringPlan.InnerRadiusMm, ringPlan.OuterRadiusMm)
+            : null;
         double ringInner = placement.Plan.PictureInnerRadiusMm;
         double ringOuter = placement.Plan.PictureOuterRadiusMm;
         double mmPerPixel = 2 * PreviewDiscRadiusMm / n;
@@ -686,7 +895,14 @@ public sealed class DiscArtViewModel : ObservableObject
                     continue;
                 }
 
-                if (r < ringInner || r > ringOuter)
+                if (ring is not null && r >= ring.InnerRadiusMm && r <= ring.OuterRadiusMm)
+                {
+                    bool ink = ring.IsInk(r, Math.Atan2(my, mx));
+                    WriteColor(output, o, ink ? 0xFF000000 : 0xFFFFFFFF);
+                    continue;
+                }
+
+                if (canvas is null || r < ringInner || r > ringOuter || (ring is not null && r > ring.InnerRadiusMm))
                 {
                     WriteColor(output, o, BlankDiscColor);
                     continue;
@@ -727,6 +943,17 @@ public sealed class DiscArtViewModel : ObservableObject
         var text = new System.Text.StringBuilder();
         text.Append(string.Create(CultureInfo.InvariantCulture,
             $"Picture: {plan.PictureInnerRadiusMm:0.#} to {plan.PictureOuterRadiusMm:0.#} mm, sectors {plan.PictureStartLba:N0} to {plan.PictureEndLba - 1:N0}. Image: {plan.TotalSectors:N0} sectors."));
+        if (plan.CdPreGapSectors is { } preGapSectors)
+        {
+            text.Append(string.Create(CultureInfo.InvariantCulture,
+                $" Pre-gap: track 1 INDEX 00 (LBA 0 to {preGapSectors - 1:N0}); track 1 starts at LBA {preGapSectors:N0}. {DiscArtImageBuilder.CdPreGapWarning}"));
+        }
+        else if (plan.BaseCueSectors is { } baseSectors)
+        {
+            text.Append(string.Create(CultureInfo.InvariantCulture,
+                $" Base CUE: existing tracks take {baseSectors:N0} sectors; the picture is the last track."));
+        }
+
         if (plan.FilesLayout is { } layout)
         {
             text.Append(layout.Placement == PictureDiscFilesPlacement.InnerFiles
@@ -740,6 +967,12 @@ public sealed class DiscArtViewModel : ObservableObject
         {
             text.Append(string.Create(CultureInfo.InvariantCulture,
                 $" Band saves {band.SavedSecondsAt1x / 60:0.0} min of writing at 1x."));
+        }
+
+        if (plan.TitleRing is { } ring)
+        {
+            text.Append(string.Create(CultureInfo.InvariantCulture,
+                $" Title ring: \"{ring.Text}\" in r = {ring.InnerRadiusMm:0.###} to {ring.OuterRadiusMm:0.###} mm (sectors {ring.StartLba:N0} to {ring.EndLba - 1:N0})."));
         }
 
         return text.ToString();
@@ -783,6 +1016,10 @@ public sealed class DiscArtViewModel : ObservableObject
             LastResult = result;
             Progress = 100;
             StatusMessage = $"Image written: {result.OutputPath} ({result.BytesWritten:N0} bytes).";
+            if (result.Plan.CdPreGapSectors is not null)
+            {
+                StatusMessage += $" CUE: {result.CueSheetPath}. {DiscArtImageBuilder.CdPreGapWarning}";
+            }
             if (request.Medium == DiscArtMedium.BluRay)
             {
                 StatusMessage += " A read-back preview is not available for BD pictures yet.";
@@ -1041,6 +1278,12 @@ public sealed class DiscArtViewModel : ObservableObject
     {
         var dialog = new Microsoft.Win32.OpenFolderDialog { Title = "Folder with the files for the disc" };
         if (dialog.ShowDialog() == true) FilesFolder = dialog.FolderName;
+    }
+
+    private void BrowseBaseCue()
+    {
+        var dialog = new Microsoft.Win32.OpenFileDialog { Filter = "CUE sheets (*.cue)|*.cue", Title = "Audio CD CUE sheet" };
+        if (dialog.ShowDialog() == true) BaseCuePath = dialog.FileName;
     }
 
     private void BrowseOutput()

@@ -618,4 +618,226 @@ public sealed class DiscArtViewTests : IDisposable
         Assert.True(thread.Join(TimeSpan.FromSeconds(60)), "The navigation test did not finish.");
         if (failure is not null) throw new InvalidOperationException("Navigation failed: " + failure, failure);
     }
+
+    private string WriteAlbumCue()
+    {
+        string albumDir = P("album");
+        Directory.CreateDirectory(albumDir);
+        byte[] pcm = new byte[700 * OpticalConstants.RawSectorSize];
+        new Random(21).NextBytes(pcm);
+        using (var wav = new FileStream(Path.Combine(albumDir, "album.wav"), FileMode.Create))
+        {
+            var w = new BinaryWriter(wav);
+            w.Write("RIFF"u8);
+            w.Write(36 + pcm.Length);
+            w.Write("WAVEfmt "u8);
+            w.Write(16);
+            w.Write((short)1);
+            w.Write((short)2);
+            w.Write(44100);
+            w.Write(176400);
+            w.Write((short)4);
+            w.Write((short)16);
+            w.Write("data"u8);
+            w.Write(pcm.Length);
+            w.Write(pcm);
+        }
+
+        string cue = Path.Combine(albumDir, "album.cue");
+        File.WriteAllLines(cue, new[]
+        {
+            "TITLE \"Album\"",
+            "PERFORMER \"Artist\"",
+            "FILE \"album.wav\" WAVE",
+            "  TRACK 01 AUDIO",
+            "    TITLE \"One\"",
+            "    INDEX 01 00:00:00",
+            "  TRACK 02 AUDIO",
+            "    TITLE \"Two\"",
+            "    INDEX 01 00:05:00",
+        });
+        return cue;
+    }
+
+    [Fact]
+    public async Task Dvd_title_ring_from_page_equals_the_cli_bytes()
+    {
+        DiscArtViewModel page = NewPage();
+        page.Medium = DiscArtMedium.Dvd;
+        Assert.True(page.SelectPreset("small-dvd"));
+        Assert.True(page.OpenPicture(WritePicture()), page.StatusMessage);
+        page.TitleRingText = "Summer trip";
+        page.TitleRingDateText = "2026-11-17";
+
+        await page.PlacementTask;
+        Assert.NotNull(page.PlacementPreviewPng);
+        Assert.Contains("Title ring:", page.PlanSummary);
+
+        DiscArtResult fromPage = await GenerateFromPage(page, P("page-ring.iso"));
+        Assert.NotNull(fromPage.Plan.TitleRing);
+
+        (int code, string output, string error) = await Cli("disc-art", "generate", "--media", "dvd",
+            "--picture", WritePicture(), "--output", P("cli-ring.iso"), "--disc-presets-file", WritePresets(),
+            "--disc-preset", "small-dvd", "--title-ring", "Summer trip", "--title-ring-date", "2026-11-17");
+        Assert.True(code == 0, error + output);
+
+        Assert.Equal(Sha(P("cli-ring.iso")), Sha(P("page-ring.iso")));
+        Assert.NotNull(page.ReadbackPreviewPng);
+
+        // Title ring alone (without a picture) and with no date ("none") also matches the CLI.
+        DiscArtViewModel ringOnlyPage = NewPage();
+        ringOnlyPage.Medium = DiscArtMedium.Dvd;
+        Assert.True(ringOnlyPage.SelectPreset("small-dvd"));
+        ringOnlyPage.TitleRingText = "Summer trip";
+        ringOnlyPage.TitleRingDateText = string.Empty;
+        ringOnlyPage.TitleRingHeightText = "2.5";
+
+        await ringOnlyPage.PlacementTask;
+        Assert.NotNull(ringOnlyPage.PlacementPreviewPng);
+        await GenerateFromPage(ringOnlyPage, P("page-ring-only.iso"));
+
+        (int ringCode, string ringOut, string ringErr) = await Cli("disc-art", "generate", "--media", "dvd",
+            "--output", P("cli-ring-only.iso"), "--disc-presets-file", WritePresets(),
+            "--disc-preset", "small-dvd", "--title-ring", "Summer trip", "--title-ring-date", "none",
+            "--title-ring-height-mm", "2.5");
+        Assert.True(ringCode == 0, ringErr + ringOut);
+
+        Assert.Equal(Sha(P("cli-ring-only.iso")), Sha(P("page-ring-only.iso")));
+    }
+
+    [Fact]
+    public async Task Cd_pre_gap_picture_from_page_equals_the_cli_bytes()
+    {
+        string baseCue = WriteAlbumCue();
+        DiscArtViewModel page = NewPage();
+        Assert.False(page.HidePictureInPreGap);
+
+        page.Medium = DiscArtMedium.Cd;
+        Assert.True(page.SelectPreset("tiny-cd"));
+        Assert.True(page.OpenPicture(WritePicture()), page.StatusMessage);
+        page.BaseCuePath = baseCue;
+        page.HidePictureInPreGap = true;
+        page.PreGapSecondsText = "60";
+        Assert.True(page.FitToRing);
+
+        await page.PlacementTask;
+        Assert.NotNull(page.PlacementPreviewPng);
+        Assert.Contains("Experimental", page.PlanSummary);
+
+        string pageOut = P(Path.Combine("page", "pregap.wav"));
+        DiscArtResult fromPage = await GenerateFromPage(page, pageOut);
+        Assert.Equal(60 * 75, fromPage.Plan.CdPreGapSectors);
+        Assert.NotNull(fromPage.CueSheetPath);
+
+        string cliOut = P(Path.Combine("cli", "pregap.wav"));
+        (int code, string output, string error) = await Cli("disc-art", "generate", "--media", "cd",
+            "--picture", WritePicture(), "--output", cliOut, "--disc-presets-file", WritePresets(),
+            "--disc-preset", "tiny-cd", "--pregap-art", baseCue, "--pregap-seconds", "60");
+        Assert.True(code == 0, error + output);
+
+        Assert.Equal(Sha(cliOut), Sha(pageOut));
+        Assert.Equal(
+            Sha(P(Path.Combine("cli", "album-with-pregap-picture.cue"))),
+            Sha(fromPage.CueSheetPath!));
+        Assert.NotNull(page.ReadbackPreviewPng);
+    }
+
+    [Fact]
+    public void Pre_gap_option_is_off_by_default_and_carries_the_experimental_warning()
+    {
+        Exception? failure = null;
+        var thread = new Thread(() =>
+        {
+            try
+            {
+                DiscArtViewModel page = NewPage();
+                Assert.False(page.HidePictureInPreGap);
+
+                var view = new DiscArtView { DataContext = page };
+                view.Measure(new Size(1400, 900));
+                view.Arrange(new Rect(0, 0, 1400, 900));
+                view.UpdateLayout();
+
+                var checkboxes = FindVisualChildren<CheckBox>(view).ToList();
+                var preGapBox = Assert.Single(checkboxes, cb => string.Equals(
+                    System.Windows.Automation.AutomationProperties.GetName(cb),
+                    "Hide the picture in the pre-gap (experimental)",
+                    StringComparison.Ordinal));
+                Assert.False(preGapBox.IsChecked);
+                Assert.Contains("experimental", preGapBox.Content?.ToString() ?? string.Empty, StringComparison.OrdinalIgnoreCase);
+
+                var warningBlock = Assert.Single(FindVisualChildren<TextBlock>(view), tb => string.Equals(
+                    System.Windows.Automation.AutomationProperties.GetName(tb),
+                    "Pre-gap picture experimental warning",
+                    StringComparison.Ordinal));
+                Assert.Equal(DiscArtImageBuilder.CdPreGapWarning, warningBlock.Text);
+                Assert.Contains("noise", warningBlock.Text, StringComparison.OrdinalIgnoreCase);
+            }
+            catch (Exception ex)
+            {
+                failure = ex;
+            }
+        });
+        thread.SetApartmentState(ApartmentState.STA);
+        thread.Start();
+        Assert.True(thread.Join(TimeSpan.FromSeconds(60)), "The pre-gap view check did not finish.");
+        if (failure is not null) throw new InvalidOperationException("Pre-gap view check failed: " + failure, failure);
+    }
+
+    [Fact]
+    public void Title_box_is_disabled_with_a_reason_on_media_the_cli_refuses()
+    {
+        Exception? failure = null;
+        var thread = new Thread(() =>
+        {
+            try
+            {
+                DiscArtViewModel page = NewPage();
+                var view = new DiscArtView { DataContext = page };
+                view.Measure(new Size(1400, 900));
+                view.Arrange(new Rect(0, 0, 1400, 900));
+                view.UpdateLayout();
+
+                var textBoxes = FindVisualChildren<TextBox>(view).ToList();
+                var titleBox = Assert.Single(textBoxes, tb => string.Equals(
+                    System.Windows.Automation.AutomationProperties.GetName(tb),
+                    "Title ring text",
+                    StringComparison.Ordinal));
+                var dateBox = Assert.Single(textBoxes, tb => string.Equals(
+                    System.Windows.Automation.AutomationProperties.GetName(tb),
+                    "Title ring date",
+                    StringComparison.Ordinal));
+                var reasonBlock = Assert.Single(FindVisualChildren<TextBlock>(view), tb => string.Equals(
+                    System.Windows.Automation.AutomationProperties.GetName(tb),
+                    "Title ring unavailable reason",
+                    StringComparison.Ordinal));
+
+                // Supported on DVD.
+                page.Medium = DiscArtMedium.Dvd;
+                view.UpdateLayout();
+                Assert.True(titleBox.IsEnabled);
+                Assert.True(dateBox.IsEnabled);
+                Assert.NotEqual(Visibility.Visible, reasonBlock.Visibility);
+
+                // Refused on CD and BD with the CLI reason.
+                foreach (DiscArtMedium unsupported in new[] { DiscArtMedium.Cd, DiscArtMedium.BluRay })
+                {
+                    page.Medium = unsupported;
+                    view.UpdateLayout();
+                    Assert.False(titleBox.IsEnabled);
+                    Assert.False(dateBox.IsEnabled);
+                    Assert.Equal(Visibility.Visible, reasonBlock.Visibility);
+                    Assert.Contains("DVD picture discs only", reasonBlock.Text);
+                }
+            }
+            catch (Exception ex)
+            {
+                failure = ex;
+            }
+        });
+        thread.SetApartmentState(ApartmentState.STA);
+        thread.Start();
+        Assert.True(thread.Join(TimeSpan.FromSeconds(60)), "The title ring view check did not finish.");
+        if (failure is not null) throw new InvalidOperationException("Title ring view check failed: " + failure, failure);
+    }
 }

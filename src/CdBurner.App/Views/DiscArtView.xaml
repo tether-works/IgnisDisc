@@ -13,6 +13,7 @@
     <UserControl.Resources>
         <converters:PngBytesToImageSourceConverter x:Key="PngToImage" />
         <converters:BooleanToVisibilityConverter x:Key="BoolToVis" />
+        <converters:InverseBooleanToVisibilityConverter x:Key="InvBoolToVis" />
         <converters:InverseBooleanConverter x:Key="Not" />
     </UserControl.Resources>
 
@@ -109,7 +110,76 @@
                     </StackPanel>
                 </StackPanel>
 
-                <TextBlock Text="5. Image and burn" FontWeight="SemiBold" Margin="0,12,0,4" />
+                <StackPanel Margin="0,12,0,0" ToolTip="{Binding TitleRingToolTip}" ToolTipService.ShowOnDisabled="True">
+                    <TextBlock Text="5. Title ring (DVD only)" FontWeight="SemiBold" Margin="0,0,0,4"
+                               IsEnabled="{Binding CanDrawTitleRing}" />
+                    <TextBlock Text="Title (empty: no title ring)" Margin="0,0,0,2"
+                               IsEnabled="{Binding CanDrawTitleRing}" />
+                    <TextBox Text="{Binding TitleRingText, UpdateSourceTrigger=PropertyChanged}"
+                             IsEnabled="{Binding CanDrawTitleRing}"
+                             ToolTip="{Binding TitleRingToolTip}"
+                             ToolTipService.ShowOnDisabled="True"
+                             AutomationProperties.Name="Title ring text" />
+                    <StackPanel Orientation="Horizontal" Margin="0,6,0,0">
+                        <StackPanel Margin="0,0,8,0">
+                            <TextBlock Text="Date (yyyy-MM-dd or none)" Margin="0,0,0,2"
+                                       IsEnabled="{Binding CanDrawTitleRing}" />
+                            <TextBox Text="{Binding TitleRingDateText, UpdateSourceTrigger=PropertyChanged}"
+                                     Width="140"
+                                     IsEnabled="{Binding CanDrawTitleRing}"
+                                     ToolTip="{Binding TitleRingToolTip}"
+                                     ToolTipService.ShowOnDisabled="True"
+                                     AutomationProperties.Name="Title ring date" />
+                        </StackPanel>
+                        <StackPanel>
+                            <TextBlock Text="Height in mm (2 to 10)" Margin="0,0,0,2"
+                                       IsEnabled="{Binding CanDrawTitleRing}" />
+                            <TextBox Text="{Binding TitleRingHeightText, UpdateSourceTrigger=LostFocus}"
+                                     Width="80"
+                                     IsEnabled="{Binding CanDrawTitleRing}"
+                                     ToolTip="{Binding TitleRingToolTip}"
+                                     ToolTipService.ShowOnDisabled="True"
+                                     AutomationProperties.Name="Title ring height in millimetres" />
+                        </StackPanel>
+                    </StackPanel>
+                    <TextBlock Text="{Binding TitleRingUnavailableReason}"
+                               Visibility="{Binding CanDrawTitleRing, Converter={StaticResource InvBoolToVis}}"
+                               TextWrapping="Wrap" Margin="0,4,0,0"
+                               Foreground="{DynamicResource TextSecondaryBrush}"
+                               AutomationProperties.Name="Title ring unavailable reason" />
+                </StackPanel>
+
+                <StackPanel Margin="0,12,0,0">
+                    <StackPanel IsEnabled="{Binding IsCd}">
+                        <TextBlock Text="6. Audio CD CUE and pre-gap (CD only)" FontWeight="SemiBold" Margin="0,0,0,4" />
+                        <StackPanel Orientation="Horizontal">
+                            <Button Content="Audio CD CUE..." Command="{Binding ChooseBaseCueCommand}" Margin="0,0,6,0"
+                                    AutomationProperties.Name="Choose audio CD CUE sheet" />
+                            <Button Content="No CUE" Command="{Binding ClearBaseCueCommand}"
+                                    AutomationProperties.Name="Remove audio CD CUE sheet" />
+                        </StackPanel>
+                        <TextBlock Text="{Binding BaseCuePath}" TextWrapping="Wrap" Margin="0,4,0,0"
+                                   Foreground="{DynamicResource TextSecondaryBrush}" />
+                        <CheckBox Content="Hide the picture in the pre-gap (experimental)"
+                                  IsChecked="{Binding HidePictureInPreGap}"
+                                  IsEnabled="{Binding CanUsePreGap}"
+                                  Margin="0,6,0,0"
+                                  ToolTip="{Binding PreGapWarning}"
+                                  ToolTipService.ShowOnDisabled="True"
+                                  AutomationProperties.Name="Hide the picture in the pre-gap (experimental)" />
+                        <TextBlock Text="Pre-gap length in seconds (60 to 1200, default 300)" Margin="0,6,0,2"
+                                   IsEnabled="{Binding CanEditPreGapSeconds}" />
+                        <TextBox Text="{Binding PreGapSecondsText, UpdateSourceTrigger=PropertyChanged}"
+                                 Width="100" HorizontalAlignment="Left"
+                                 IsEnabled="{Binding CanEditPreGapSeconds}"
+                                 AutomationProperties.Name="Pre-gap length in seconds" />
+                    </StackPanel>
+                    <TextBlock Text="{Binding PreGapWarning}" TextWrapping="Wrap" Margin="0,4,0,0"
+                               Foreground="{DynamicResource CapacityWarningBrush}"
+                               AutomationProperties.Name="Pre-gap picture experimental warning" />
+                </StackPanel>
+
+                <TextBlock Text="7. Image and burn" FontWeight="SemiBold" Margin="0,12,0,4" />
                 <TextBlock Text="{Binding OutputHint}" TextWrapping="Wrap" Foreground="{DynamicResource TextSecondaryBrush}" />
                 <StackPanel Orientation="Horizontal" Margin="0,4,0,0">
                     <Button Content="Save as..." Command="{Binding ChooseOutputCommand}" Margin="0,0,6,0"
