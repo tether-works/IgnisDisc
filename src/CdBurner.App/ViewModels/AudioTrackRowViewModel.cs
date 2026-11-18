@@ -64,6 +64,9 @@ public class AudioTrackRowViewModel : ObservableObject
     /// <summary>Length of <see cref="HiddenAudioPcmStreamFactory"/>'s audio in CD frames.</summary>
     public int HiddenAudioFrames { get; set; }
 
+    /// <summary>True when <see cref="HiddenAudioPcmStreamFactory"/> holds a byte-level pre-gap picture.</summary>
+    public bool HiddenAudioIsPreGapPicture { get; set; }
+
     /// <summary>The decoded single-file album this row is a slice of, so its buffer is released after a burn.</summary>
     public CdBurner.Core.Audio.SingleFileAlbumSource? AlbumSource { get; set; }
 

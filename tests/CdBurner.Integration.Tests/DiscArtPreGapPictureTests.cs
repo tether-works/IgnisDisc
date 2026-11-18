@@ -2,7 +2,9 @@ using System.IO;
 using System.Text.Json;
 using CdBurner.Cli;
 using CdBurner.Core.Abstractions;
+using CdBurner.Core.Audio;
 using CdBurner.Core.Primitives;
+using CdBurner.Hardware.NativeWriting;
 using CdBurner.Hardware.Simulation;
 using CdBurner.Lithography.Cd;
 using CdBurner.Lithography.DiscArt;
@@ -305,6 +307,177 @@ public sealed class DiscArtPreGapPictureTests : IDisposable
         Assert.NotEqual(0, burn.Exit);
         Assert.Contains("pre-gap", burn.Err);
         Assert.Empty(medium.Sessions);
+    }
+
+    private (NativeAudioBurnEngine Engine, string StorePath) OffsetEngine(int writeOffset, int readOffset)
+    {
+        string store = Path.Combine(_dir, $"offsets_{Guid.NewGuid():N}.json");
+        string driveName = AccurateRipDriveOffsets.DriveName(_recorder.VendorId, _recorder.ProductId);
+        new DriveOffsetStore(store).RecordCombinedOffset(driveName, writeOffset + readOffset);
+        IReadOnlyList<DriveOffsetEntry> readOffsets = [new DriveOffsetEntry(driveName, readOffset, 100)];
+        var engine = new NativeAudioBurnEngine(Path.Combine(_dir, "logs"))
+        {
+            Wait = _ => { },
+            DriveOffsetStorePath = store,
+            LoadReadOffsets = _ => Task.FromResult(readOffsets),
+            ConfigureVirtualDrive = d =>
+            {
+                d.WriteOffsetSamples = writeOffset;
+                d.ReadOffsetSamples = readOffset;
+            }
+        };
+        return (engine, store);
+    }
+
+    private async Task<(string CuePath, byte[] PicturePcm)> GeneratePreGapAsync(string name = "art")
+    {
+        var generated = await Cli("disc-art", "generate", "--media", "cd", "--disc-preset", "cd-80",
+            "--picture", WritePicturePng(), "--pregap-art", WriteAlbumCue(),
+            "--pregap-seconds", PreGapSeconds.ToString(), "--tone", "binary",
+            "--output", Path.Combine(_dir, name, "pregap.wav"), "--json");
+        Assert.True(generated.Exit == 0, generated.Out + generated.Err);
+        using JsonDocument doc = JsonDocument.Parse(generated.Out.Trim());
+        string cue = doc.RootElement.GetProperty("cueSheetPath").GetString()!;
+        string wav = doc.RootElement.GetProperty("outputPath").GetString()!;
+        return (cue, File.ReadAllBytes(wav)[44..]);
+    }
+
+    private async Task<BurnOperationResult> BurnCueWithEngineAsync(string cue, NativeAudioBurnEngine engine, int? explicitWriteOffset = null)
+    {
+        var compilation = new AudioCdCompilation
+        {
+            RecordingMode = AudioRecordingMode.DiscAtOnceGapless,
+            AlbumTitle = "Album",
+            AlbumPerformer = "Artist",
+            IncludeCdText = true
+        };
+        compilation.ImportCueSheet(cue);
+        var service = new AudioCdBurnService(engine);
+        return await service.BurnAsync(_recorder, compilation, new AudioBurnOptions
+        {
+            UseDiscAtOnce = true,
+            WriteCdText = true,
+            KeepIndexMarks = true,
+            WriteOffsetSamples = explicitWriteOffset
+        });
+    }
+
+    private static byte[] ReadPictureSectors(VirtualDiscMedium medium)
+    {
+        byte[] disc = new byte[PreGapSectors * OpticalConstants.RawSectorSize];
+        for (int i = 0; i < PreGapSectors; i++)
+        {
+            medium.ReadSector(i, disc.AsSpan(i * OpticalConstants.RawSectorSize, OpticalConstants.RawSectorSize),
+                OpticalConstants.RawSectorSize);
+        }
+        return disc;
+    }
+
+    [Theory]
+    [InlineData(6)]
+    [InlineData(-6)]
+    public async Task Pre_gap_picture_burns_with_multiple_of_six_write_offset_and_reads_back_equal_to_generated(int writeOffset)
+    {
+        using var medium = VirtualDiscMedium.CreateBlankCdR700();
+        _recorder.InsertMedia(medium);
+        var (cue, picturePcm) = await GeneratePreGapAsync($"art_{writeOffset}");
+        var (engine, _) = OffsetEngine(writeOffset, readOffset: 6);
+
+        var result = await BurnCueWithEngineAsync(cue, engine);
+
+        Assert.True(result.Success, result.ErrorMessage);
+        Assert.Equal(writeOffset, engine.LastWriteOffsetPlan!.WriteOffset);
+        Assert.Equal(-writeOffset, engine.LastWriteOffsetPlan.ShiftSamples);
+        Assert.True(engine.LastResult!.Verification!.Passed);
+        Assert.Equal(picturePcm, ReadPictureSectors(medium));
+    }
+
+    [Fact]
+    public async Task Pre_gap_picture_with_write_offset_6_produces_same_image_and_disc_sectors_as_offset_0()
+    {
+        var (cue0, pcm0) = await GeneratePreGapAsync("art_base");
+        var (cue6, pcm6) = await GeneratePreGapAsync("art_6");
+        Assert.Equal(pcm0, pcm6);
+        Assert.Equal(File.ReadAllBytes(cue0), File.ReadAllBytes(cue6));
+
+        using var medium0 = VirtualDiscMedium.CreateBlankCdR700();
+        _recorder.InsertMedia(medium0);
+        var (engine0, _) = OffsetEngine(0, readOffset: 6);
+        var r0 = await BurnCueWithEngineAsync(cue0, engine0);
+        Assert.True(r0.Success, r0.ErrorMessage);
+
+        using var medium6 = VirtualDiscMedium.CreateBlankCdR700();
+        _recorder.InsertMedia(medium6);
+        var (engine6, _) = OffsetEngine(6, readOffset: 6);
+        var r6 = await BurnCueWithEngineAsync(cue6, engine6);
+        Assert.True(r6.Success, r6.ErrorMessage);
+
+        Assert.Equal(ReadPictureSectors(medium0), ReadPictureSectors(medium6));
+    }
+
+    [Theory]
+    [InlineData(7)]
+    [InlineData(-13)]
+    public async Task Pre_gap_picture_is_refused_with_offset_named_when_write_offset_is_not_a_multiple_of_six(int writeOffset)
+    {
+        using var medium = VirtualDiscMedium.CreateBlankCdR700();
+        _recorder.InsertMedia(medium);
+        var (cue, _) = await GeneratePreGapAsync($"art_bad_{writeOffset}");
+        var (engine, _) = OffsetEngine(writeOffset, readOffset: 6);
+
+        var result = await BurnCueWithEngineAsync(cue, engine);
+
+        Assert.False(result.Success);
+        Assert.True(engine.LastResult!.StoppedBeforeWriting);
+        Assert.Contains(writeOffset.ToString(), result.ErrorMessage);
+        Assert.Contains("6 samples", result.ErrorMessage);
+        Assert.Empty(medium.Sessions);
+        Assert.True(medium.IsBlank);
+    }
+
+    [Theory]
+    [InlineData(7)]
+    [InlineData(-13)]
+    public async Task Cli_disc_art_burn_refuses_explicit_non_multiple_of_six_write_offset_with_offset_named(int writeOffset)
+    {
+        using var medium = VirtualDiscMedium.CreateBlankCdR700();
+        _recorder.InsertMedia(medium);
+        var (cue, _) = await GeneratePreGapAsync($"art_cli_{writeOffset}");
+
+        var burn = await Cli("disc-art", "burn", "--drive", "VDRV-01", "--image", cue,
+            "--write-offset", writeOffset.ToString(), "--log-dir", Path.Combine(_dir, "logs"));
+
+        Assert.NotEqual(0, burn.Exit);
+        Assert.Contains(writeOffset.ToString(), burn.Err);
+        Assert.Contains("6 samples", burn.Err);
+        Assert.Empty(medium.Sessions);
+        Assert.True(medium.IsBlank);
+    }
+
+    [Theory]
+    [InlineData(7)]
+    [InlineData(-13)]
+    public async Task Ordinary_hidden_track_one_audio_is_not_refused_at_non_multiple_of_six_write_offsets(int writeOffset)
+    {
+        using var medium = VirtualDiscMedium.CreateBlankCdR700();
+        _recorder.InsertMedia(medium);
+        byte[] htoaPcm = new byte[300 * OpticalConstants.RawSectorSize];
+        new Random(99).NextBytes(htoaPcm);
+        string htoaWav = Path.Combine(_dir, $"htoa_{writeOffset}.wav");
+        using (var wav = new FileStream(htoaWav, FileMode.Create))
+        {
+            CdWaveHeader(wav, htoaPcm.Length);
+            wav.Write(htoaPcm);
+        }
+        string baseCue = WriteAlbumCue();
+        string cue = Path.Combine(_dir, $"htoa_{writeOffset}.cue");
+        CdBurner.Core.Images.PictureTrackCue.WriteWithPictureInPreGap(baseCue, htoaWav, cue);
+        var (engine, _) = OffsetEngine(writeOffset, readOffset: 6);
+
+        var result = await BurnCueWithEngineAsync(cue, engine);
+
+        Assert.True(result.Success, result.ErrorMessage);
+        Assert.True(engine.LastResult!.Verification!.Passed);
     }
 
     private sealed class SingleDeviceService(IDiscRecorderBackend recorder) : IDiscDeviceService

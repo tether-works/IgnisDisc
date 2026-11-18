@@ -151,4 +151,58 @@ public sealed class CddaInterleaverDrainTests
         Assert.Equal(trackFrames, FrameOf((int)end));
         Assert.Throws<ArgumentOutOfRangeException>(() => CdCircEdgeZones.LogicalDrawableEndByte(2 * 2_664));
     }
+
+    /// <summary>
+    /// A CIRC F1-frame is 24 bytes = 6 stereo 16-bit samples. Shifting a pre-interleaved CD-DA stream by a multiple
+    /// of 6 samples keeps every byte in its frame column so all bytes of a logical frame emerge together in order;
+    /// shifting by anything else moves bytes across frame columns with different delays and scatters the picture.
+    /// </summary>
+    [Theory]
+    [InlineData(-6, true)]
+    [InlineData(6, true)]
+    [InlineData(-7, false)]
+    [InlineData(13, false)]
+    public void Shifting_interleaved_stream_keeps_circ_frames_intact_only_for_multiples_of_six_samples(
+        int shiftSamples, bool sharp)
+    {
+        int context = CddaInterleaver.ContextBytes;
+        int stretchLength = (10 * SectorBytes) - context;
+        int[] leadIn = Tags(1, context);
+        int[] stretch = Tags(1 + context, stretchLength);
+        int[] leadOut = Tags(1 + context + stretchLength, context);
+        int[] stream = Interleave(leadIn, stretch, leadOut);
+
+        int shiftBytes = shiftSamples * 4;
+        int[] shifted = new int[stream.Length];
+        if (shiftBytes >= 0)
+        {
+            Array.Copy(stream, 0, shifted, shiftBytes, stream.Length - shiftBytes);
+        }
+        else
+        {
+            Array.Copy(stream, -shiftBytes, shifted, 0, stream.Length + shiftBytes);
+        }
+
+        int[] encoded = CircEncoderReference.Encode(shifted);
+
+        // Compare logical frame 30 (well away from the shifted ends) through the ECMA-130 C.4 encoder.
+        int baseIndex = 30 * CircEncoderReference.BytesPerFrame;
+        int[] frames = Enumerable.Range(0, CircEncoderReference.BytesPerFrame)
+            .Select(slot => Array.IndexOf(encoded, stretch[baseIndex + slot]) / CircEncoderReference.BytesPerFrame)
+            .ToArray();
+
+        if (sharp)
+        {
+            int expectedFrame = 30 + CircEncoderReference.ReferenceShiftFrames + (shiftSamples / 6);
+            Assert.All(frames, frame => Assert.Equal(expectedFrame, frame));
+            for (int slot = 0; slot < CircEncoderReference.BytesPerFrame; slot++)
+            {
+                Assert.Equal(stretch[baseIndex + slot], encoded[(expectedFrame * CircEncoderReference.BytesPerFrame) + slot]);
+            }
+        }
+        else
+        {
+            Assert.True(frames.Distinct().Count() > 1, "A non-multiple-of-6-sample shift must scatter one F1-frame across multiple output frames.");
+        }
+    }
 }

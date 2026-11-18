@@ -1606,6 +1606,7 @@ public class AudioBurnViewModel : ObservableObject, IDisposable
                             Index00Predecessor = cueTrk.Index00LeadFrames > 0 ? previousCueRow : null,
                             HiddenAudioPcmStreamFactory = cueTrk.HiddenAudioPcmStreamFactory,
                             HiddenAudioFrames = cueTrk.HiddenAudioFrames,
+                            HiddenAudioIsPreGapPicture = cueTrk.HiddenAudioIsPreGapPicture,
                             AlbumSource = cueTrk.AlbumSource,
                             SourceStartFrame = cueTrk.SourceStartFrame,
                             SourceFrameCount = cueTrk.SourceFrameCount
@@ -2323,6 +2324,7 @@ public class AudioBurnViewModel : ObservableObject, IDisposable
                     ? row.Index00LeadFrames : 0,
                 HiddenAudioPcmStreamFactory = row.HiddenAudioPcmStreamFactory,
                 HiddenAudioFrames = row.HiddenAudioFrames,
+                HiddenAudioIsPreGapPicture = row.HiddenAudioIsPreGapPicture,
                 AlbumSource = row.AlbumSource
             });
         }

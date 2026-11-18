@@ -351,7 +351,31 @@ public sealed class NativeAudioBurnEngine : IBurnEngineBackend, IAudioDiscVerifi
         NativeSaoWriteRequest request, AudioBurnOptions options, IProgress<BurnProgressSnapshot>? progress, CancellationToken ct)
     {
         request = await ApplyWriteOffsetAsync(recorder, tracks, request, options, ct).ConfigureAwait(false);
+        if (PreGapPictureWriteOffsetProblem(tracks, request) is { } offsetProblem)
+        {
+            LastResult = new NativeSaoWriteResult
+            {
+                Success = false,
+                StoppedBeforeWriting = true,
+                Message = offsetProblem
+            };
+            return BurnOperationResult.Failed($"{offsetProblem} Nothing was written to the disc.");
+        }
         return await Task.Run(() => Run(recorder, tracks, request, progress, ct), CancellationToken.None).ConfigureAwait(false);
+    }
+
+    private string? PreGapPictureWriteOffsetProblem(IReadOnlyList<AudioTrackSource> tracks, NativeSaoWriteRequest request)
+    {
+        if (request.ShiftSamples % 6 == 0 || !tracks.Any(t => t.PreGapAudioFrames > 0 && t.IsPreGapPicture))
+        {
+            return null;
+        }
+
+        int writeOffset = LastWriteOffsetPlan?.WriteOffset ?? -request.ShiftSamples;
+        return $"Pre-gap picture cannot be burned with a write-offset correction of {writeOffset:+0;-0;0} samples: "
+            + "CD-DA CIRC frames are 6 samples (24 bytes) wide, so shifting by a non-multiple of 6 samples moves bytes "
+            + "across frame symbol boundaries and blurs the picture. Use a drive whose write offset is a multiple of 6 "
+            + "samples, or pass --write-offset 0 to skip write-offset correction.";
     }
 
     /// <summary>The write-offset correction for this drive (or the one asked for), applied to <paramref name="request"/>.</summary>

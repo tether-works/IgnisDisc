@@ -1,3 +1,4 @@
+using System.Text.Json;
 using CdBurner.Core.Images;
 using CdBurner.Core.Primitives;
 
@@ -103,6 +104,12 @@ public record AudioCdTrackItem(
 
     /// <summary>Length of the hidden audio in CD frames.</summary>
     public int HiddenAudioFrames { get; init; }
+
+    /// <summary>
+    /// True when the hidden audio before track 1 is a byte-level CD picture generated with <c>disc-art</c>
+    /// (identified by its <c>.disc-art.json</c> sidecar), rather than ordinary music.
+    /// </summary>
+    public bool HiddenAudioIsPreGapPicture { get; init; }
 
     /// <summary>CUE "FLAGS PRE": the track was mastered with pre-emphasis.</summary>
     public bool PreEmphasis { get; init; }
@@ -792,9 +799,10 @@ public class AudioCdCompilation
                 int index00Lead = 0;
                 int hiddenFrames = 0;
                 Func<Stream>? hiddenFactory = null;
+                bool hiddenIsPreGapPicture = false;
                 if (trackNum == 1 && trk.SplitIndex00 is { DedicatedFileName: not null } htoa)
                 {
-                    (hiddenFrames, hiddenFactory) = ReadDedicatedHiddenAudio(htoa, cueDirectory, audioDecoder);
+                    (hiddenFrames, hiddenFactory, hiddenIsPreGapPicture) = ReadDedicatedHiddenAudio(htoa, cueDirectory, audioDecoder);
                 }
                 else if (_tracks.Count > 0 && !_tracks[^1].IsDataTrack && trk.SplitIndex00 is { DedicatedFileName: null } prevSplit)
                 {
@@ -820,6 +828,7 @@ public class AudioCdCompilation
                     Index00LeadFrames = index00Lead,
                     HiddenAudioFrames = hiddenFrames,
                     HiddenAudioPcmStreamFactory = hiddenFactory,
+                    HiddenAudioIsPreGapPicture = hiddenIsPreGapPicture,
                     PreEmphasis = trk.Flags.Contains("PRE"),
                     CopyPermitted = trk.Flags.Contains("DCP")
                 });
@@ -872,6 +881,7 @@ public class AudioCdCompilation
                     int index00Lead = 0;
                     int hiddenFrames = 0;
                     Func<Stream>? hiddenFactory = null;
+                    bool hiddenIsPreGapPicture = false;
                     if (k > 0 && GetIndex00Frames(trk) is int index00 && index00 < startFrame)
                     {
                         int previousStart = GetIndex01Frames(audioTracks[k - 1]) ?? 0;
@@ -880,7 +890,7 @@ public class AudioCdCompilation
                     else if (k == 0 && trackNum == 1 && trk.SplitIndex00 is { DedicatedFileName: not null } htoa)
                     {
                         // Hidden audio in its own file in front of a single-file album (EAC's layout).
-                        (hiddenFrames, hiddenFactory) = ReadDedicatedHiddenAudio(htoa, cueDirectory, audioDecoder);
+                        (hiddenFrames, hiddenFactory, hiddenIsPreGapPicture) = ReadDedicatedHiddenAudio(htoa, cueDirectory, audioDecoder);
                     }
                     else if (k == 0 && trackNum == 1 && startFrame > 0)
                     {
@@ -907,6 +917,7 @@ public class AudioCdCompilation
                         Index00LeadFrames = index00Lead,
                         HiddenAudioFrames = hiddenFrames,
                         HiddenAudioPcmStreamFactory = hiddenFrames > 0 ? hiddenFactory : null,
+                        HiddenAudioIsPreGapPicture = hiddenFrames > 0 && hiddenIsPreGapPicture,
                         PreEmphasis = trk.Flags.Contains("PRE"),
                         CopyPermitted = trk.Flags.Contains("DCP")
                     });
@@ -919,8 +930,9 @@ public class AudioCdCompilation
     }
 
     /// <summary>Audio before track 1 held in its own FILE (a CUE's dedicated INDEX 00 file): its length in frames from
-    /// the INDEX 00 position to the end of the file, and a reader for it. (0, null) when the file is missing or empty.</summary>
-    private static (int Frames, Func<Stream>? Factory) ReadDedicatedHiddenAudio(CueSplitIndex00 htoa, string cueDirectory,
+    /// the INDEX 00 position to the end of the file, a reader for it, and whether its sidecar marks it as a pre-gap
+    /// picture. (0, null, false) when the file is missing or empty.</summary>
+    private static (int Frames, Func<Stream>? Factory, bool IsPreGapPicture) ReadDedicatedHiddenAudio(CueSplitIndex00 htoa, string cueDirectory,
         IAudioDecoder? audioDecoder)
     {
         string htoaPath = Path.IsPathRooted(htoa.DedicatedFileName!)
@@ -928,7 +940,7 @@ public class AudioCdCompilation
             : Path.Combine(cueDirectory, htoa.DedicatedFileName!);
         if (!File.Exists(htoaPath))
         {
-            return (0, null);
+            return (0, null, false);
         }
 
         string htoaType = htoa.DedicatedFileType ?? "WAVE";
@@ -938,12 +950,43 @@ public class AudioCdCompilation
         int frames = Math.Max(0, htoaTotal - htoaStart);
         if (frames == 0)
         {
-            return (0, null);
+            return (0, null, false);
         }
 
         return (frames, rawHtoa
             ? RawCdAudioFile.CreateSliceFactory(htoaPath, htoaStart, frames, string.Equals(htoaType, "MOTOROLA", StringComparison.OrdinalIgnoreCase))
-            : new SingleFileAlbumSource(htoaPath, audioDecoder).CreateSliceFactory(htoaStart, frames));
+            : new SingleFileAlbumSource(htoaPath, audioDecoder).CreateSliceFactory(htoaStart, frames),
+            IsPreGapPictureSidecar(htoaPath));
+    }
+
+    private static bool IsPreGapPictureSidecar(string audioPath)
+    {
+        string sidecarPath = Path.GetFullPath(audioPath) + ".disc-art.json";
+        if (!File.Exists(sidecarPath))
+        {
+            return false;
+        }
+
+        try
+        {
+            using var doc = JsonDocument.Parse(File.ReadAllText(sidecarPath));
+            JsonElement root = doc.RootElement;
+            if (!root.TryGetProperty("format", out JsonElement format)
+                || !string.Equals(format.GetString(), "ignisdisc-disc-art-v1", StringComparison.Ordinal))
+            {
+                return false;
+            }
+
+            return root.TryGetProperty("plan", out JsonElement plan)
+                && plan.TryGetProperty("cdPreGapSectors", out JsonElement preGap)
+                && preGap.ValueKind == JsonValueKind.Number
+                && preGap.TryGetInt64(out long sectors)
+                && sectors > 0;
+        }
+        catch (Exception ex) when (ex is JsonException or IOException or UnauthorizedAccessException)
+        {
+            return false;
+        }
     }
 
     private static int ProbeAudioFrames(string path, string fileType, IAudioDecoder? decoder)

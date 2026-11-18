@@ -539,6 +539,12 @@ public class AudioTrackSource
     /// <summary>Length of the pre-gap audio in CD frames (1/75 s).</summary>
     public int PreGapAudioFrames { get; init; }
 
+    /// <summary>
+    /// True when this track's pre-gap audio holds a byte-level CD picture (generated with <c>disc-art</c>), whose
+    /// CIRC interleaving requires any write-offset shift to be a multiple of 6 stereo samples (one 24-byte frame).
+    /// </summary>
+    public bool IsPreGapPicture { get; init; }
+
     /// <summary>The track was mastered with pre-emphasis (CUE "FLAGS PRE").</summary>
     public bool PreEmphasis { get; init; }
 

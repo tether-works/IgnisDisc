@@ -625,6 +625,7 @@ public class AudioCdBurnService
 
                 Func<Stream>? preGapFactory = null;
                 int preGapAudioFrames = 0;
+                bool isPreGapPicture = false;
                 if (gapAudio[i] is { } gap)
                 {
                     preGapFactory = () => new MemoryStream(gap.Source, gap.Offset, gap.Frames * OpticalConstants.RawSectorSize, writable: false);
@@ -634,6 +635,7 @@ public class AudioCdBurnService
                 {
                     preGapFactory = trackItem.HiddenAudioPcmStreamFactory;
                     preGapAudioFrames = trackItem.HiddenAudioFrames;
+                    isPreGapPicture = trackItem.HiddenAudioIsPreGapPicture;
                     totalRequiredFrames += preGapAudioFrames;
                 }
 
@@ -653,6 +655,7 @@ public class AudioCdBurnService
                     PcmStreamFactory = () => new MemoryStream(pcmBytes, 0, pcmLength, writable: false),
                     PreGapPcmStreamFactory = preGapFactory,
                     PreGapAudioFrames = preGapAudioFrames,
+                    IsPreGapPicture = isPreGapPicture,
                     PreEmphasis = trackItem.PreEmphasis,
                     CopyPermitted = trackItem.CopyPermitted
                 });
