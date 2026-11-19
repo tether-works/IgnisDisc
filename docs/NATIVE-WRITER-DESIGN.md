@@ -39,7 +39,7 @@ session after it (CD-Extra) and copying an Enhanced CD whole, the Audio CD recov
 `HEALTH.json` certificates, the `eject` and `load` commands, and every picture-disc write: `disc-art burn` (including
 the two-session burn of a picture with the files at the outer edge on DVD-R and DVD+R, the rim header drawn on CD, DVD and BD-R picture discs, and the experimental audio CD
 picture in the pre-gap before track 1), the picture fill on data, DVD-Video and audio CD burns, and the Rosetta hybrid
-DVD-R. No picture disc has been burned on a real drive.
+DVD-R. One picture disc has been burned on a real drive, without a calibration, and its picture did not show (2026-11-18, results table).
 
 Phases 5–6 below are still plans.
 
@@ -420,6 +420,7 @@ Results:
 | 2026-11-15 | GP60NB50 | same disc, full erase again, session 1 as above | Data, `burn-data --native` second session (30 MB, 3 files) after the engine read the open disc itself | Session 2 imported session 1 and was laid out from **131,120** (102,432 + 28,688); 15.9 s writing, CLOSE TRACK + CLOSE SESSION accepted, read-back passed. Disc afterwards status 2, 146,512 sectors. Rip 146,512 sectors, 0 bad: the volume at 131,120 holds all 13 files identical, the one at 0 the first 10. Windows showed session 1 until the disc was reloaded, then 13/13 identical. |
 | 2026-11-15 | GP60NB50 | same disc, quick-erased | Data, `burn-data --native` closed (63 MB, 6 files incl. a 100-character name) | Disc-At-Once: 31.9 s writing, then **SYNCHRONIZE CACHE 376 s** (lead-out; 122 s for 372 MB on DVD-R), so the flush timeout went from 10 to 20 min. Status 2, one track of 31,024 sectors. UDF mount and rip: 6/6 identical. Any burn without an erase refused: "must be erased". |
 | 2026-11-15 | GP60NB50 | same disc, Windows' writer had formatted it to 65,264 blocks (restricted overwrite) | Data, `burn-data --native --overwrite` (230 MB, 13 files) | FORMAT UNIT 13h accepted, drive ready after 12.4 s; 118,071 sectors (+9 to a 32 KiB block) from LBA 0, 88.5 s; CLOSE SESSION accepted. Formatted size afterwards 118,080. 13/13 identical through Windows (UDF) and in a rip. |
+| 2026-11-18 | GP60NB50 | the Mitsubishi CD-RW, quick-erased (37 s) | First picture disc: one audio track made by `disc-art generate --rim-header` (12 alternating 30° wedges from r = 24.8 mm, rim header at 54–58 mm, 359,673 sectors) with the uncalibrated `cd-80` geometry, burned with `disc-art burn` | Written: 370,750 sectors with the lead-in in 11:13 (10.0x). The read-back stopped at LBA 128,547 (3/11/00, about r = 40 mm); a careful rip was stopped at 56 % to look at the disc, so whether that sector was written wrong is not known. **No picture:** neither the wedges nor the header text are visible; the whole surface shows fine concentric stripes, like record grooves. That is what an angle drift looks like: a few tenths of a percent error in the assumed track pitch or speed turns the picture through tens of full turns between the hub and the rim, so the wedges wind into thin spirals. Pictures on CD need a calibration of this drive and disc first (`disc-art calibrate`). |
 
 Media on hand: CD-RW, CD-R, DVD-R, DVD+RW, DVD+R, DVD-RW (Ritek) and DVD+R DL (Verbatim, used 2026-11-14). Ordered: BD-R, BD-RE and M-DISC BD-R, a Blu-ray writer (LG BP50NB40) and a second DVD writer (Lite-On iHAS124). No DVD-RAM, BD-R DL or BDXL yet.
 
