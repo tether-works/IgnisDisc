@@ -336,8 +336,16 @@ one assembly with a clear provenance boundary. Nothing in it touches a drive.
   gap inside a mark is under 150 µm. `RosettaArchiveOptions.IncludeRimHeader` (off by default) puts it on a book
   and ends the pages 0.20 mm below the band; `RosettaDvdEncodeOptions.FromCalibration` takes radii, sector count,
   channel bit length and pitch terms from a saved DVD calibration, which the ticks need to land on their angles.
-  Drawn through the DVD encoder only; so far checked in simulation (encoder, then `IsoReadbackRenderer`), not on a
-  burned disc.
+  Picture discs get the same header through `disc-art generate --rim-header` (`DiscArtRequest.RimHeader`): it is an
+  `IPictureOverlay` (`Imaging/`) that the CD track generator, the BD payload mapping and the DVD picture writer ask
+  before the picture, so it lies in the picture's frame at the outer edge of the picture's ring; the title is
+  `--label` or the picture's name, the SHA-256 prefix is the picture file's first 16 digits. `RosettaRimHeader.FitToBand`
+  gives full size when the ring is at least 4.00 mm (band plus gutter) and otherwise scales every length down, with
+  glyph rows rounded down to an even number of track turns of the disc's mean pitch; it refuses, with the reason,
+  below glyph cells of 50×75 µm on CD or 26×34 µm on DVD and BD (the resolution report's limits), or when a glyph
+  row would be under two turns. Without the switch, and for the Rosetta book, the bytes are unchanged. All of this is
+  checked in simulation only (CD and DVD read-back previews, BD bytes descrambled and placed on the spiral, then read
+  glyph by glyph against the font), not on a burned disc.
   `RosettaTitleRing` is the picture disc's title ring (`disc-art generate --title-ring <text>`, DVD only): the title in
   Spleen capitals and the date (yyyy-MM-dd) in the outer `--title-ring-height-mm` (default 3, 2 to 10) of the drawn
   area (the art band's outer edge or the end of the picture zone), 0.25 mm blank at each edge and the 8 font rows

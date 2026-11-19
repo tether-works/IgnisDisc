@@ -265,6 +265,116 @@ public sealed class RosettaRimHeaderTests : IDisposable
     }
 
     [Fact]
+    public void DefaultHeader_UsesExactlyTheFullSizeLengths()
+    {
+        RosettaRimHeaderMetrics m = CreateHeader().Metrics;
+
+        // Bit for bit: the DVD book with a header must not change.
+        Assert.Equal(RosettaRimHeaderMetrics.FullSize, m);
+        Assert.Equal(1.0, m.Scale);
+        Assert.Null(m.TurnsPerGlyphRow);
+        Assert.Equal(RosettaRimHeader.BandHeightMm, m.BandHeightMm);
+        Assert.Equal(RosettaRimHeader.TextHeightMm, m.TextHeightMm);
+        Assert.Equal(RosettaRimHeader.GlyphCellWidthMm, m.GlyphCellWidthMm);
+        Assert.Equal(RosettaRimHeader.DiagramPixelMm, m.DiagramPixelMm);
+        Assert.Equal(RosettaRimHeader.CapitalHeightMm, m.CapitalHeightMm);
+        Assert.Equal(RosettaRimHeader.TickWidthMm, m.TickWidthMm);
+        Assert.Equal(RosettaRimHeader.MinimumFeatureMm, m.MinimumFeatureMm);
+    }
+
+    [Fact]
+    public void FitToBand_FourMillimetres_IsFullSize_WithGlyphRowsOfWholeEvenTurns()
+    {
+        // CD pitch 1.6 um: 0.34 mm / 1.6 um = 212.5 turns, rounded down to an even 212.
+        RosettaRimHeader header = RosettaRimHeader.FitToBand(Title, Date, ShaPrefix, RosettaRimHeaderFormat.Cd, 54.0, 58.0, 0.0016);
+        RosettaRimHeaderMetrics m = header.Metrics;
+
+        Assert.Equal(1.0, m.Scale);
+        Assert.Equal(212, m.TurnsPerGlyphRow);
+        Assert.Equal(212 * 0.0016, m.GlyphPixelHeightMm, 12);
+        Assert.Equal(106 * 0.0016, m.DiagramPixelMm, 12); // half a glyph row: whole turns too
+        Assert.Equal(RosettaRimHeader.GlyphCellWidthMm, m.GlyphCellWidthMm, 12);
+        Assert.Equal(58.0, header.OuterRadiusMm);
+        Assert.True(header.InnerRadiusMm - m.PageGutterMm >= 54.0, "band and gutter stay inside the ring");
+        Assert.Equal(ExpectedHeaderText, header.HeaderText);
+    }
+
+    [Fact]
+    public void FitToBand_NarrowRing_ScalesEveryLength_AndKeepsTheLayout()
+    {
+        // 0.5 mm on a CD: an eighth of the full depth.
+        RosettaRimHeader header = RosettaRimHeader.FitToBand(Title, Date, ShaPrefix, RosettaRimHeaderFormat.Cd, 57.5, 58.0, 0.0016);
+        RosettaRimHeaderMetrics m = header.Metrics;
+
+        Assert.Equal(0.125, m.Scale, 12);
+        Assert.Equal(RosettaRimHeader.GlyphCellWidthMm * 0.125, m.GlyphCellWidthMm, 12);
+        Assert.Equal(RosettaRimHeader.TickZoneHeightMm * 0.125, m.TickZoneHeightMm, 12);
+        Assert.Equal(0, m.TurnsPerGlyphRow!.Value % 2);
+        Assert.Equal(m.TurnsPerGlyphRow.Value * 0.0016, m.GlyphPixelHeightMm, 12);
+        Assert.True(m.GlyphCellWidthMm >= 0.050 && m.TextHeightMm >= 0.075, "glyph cells at least 50 x 75 um");
+        Assert.True(header.InnerRadiusMm - m.PageGutterMm >= 57.5 - 1e-9, "band and gutter stay inside the ring");
+        Assert.Equal(5, header.Items.Count);
+        Assert.Equal(ExpectedHeaderText, header.HeaderText);
+
+        // The wide 0-degree tick at its scaled depth, the gap below it, and the first glyph row below that.
+        Assert.True(header.IsInk(58.0 - (0.5 * m.TickZoneHeightMm), 0.0));
+        Assert.False(header.IsInk(58.0 - (0.5 * m.TickZoneHeightMm), 2.5 * DegreesToRadians));
+        Assert.False(header.IsInk(58.0 - m.TickZoneHeightMm - (0.5 * m.TickToTextGapMm), 0.0));
+        // The same angles on the full-size header are ticks only near the rim.
+        Assert.False(CreateHeader().IsInk(58.0 - (0.5 * m.TickZoneHeightMm) - 1.0, 0.0));
+    }
+
+    [Fact]
+    public void FitToBand_RefusesBelowEachFormatsMinimumCell_WithTheReason()
+    {
+        // 0.09 mm: CD needs 50 x 75 um cells, about 0.114 mm; DVD and BD need 26 x 34 um, about 0.059 mm.
+        ArgumentException cd = Assert.Throws<ArgumentException>(() =>
+            RosettaRimHeader.FitToBand(Title, Date, ShaPrefix, RosettaRimHeaderFormat.Cd, 57.91, 58.0, 0.0016));
+        Assert.Contains("only 0.090 mm wide", cd.Message);
+        Assert.Contains("a CD needs glyph cells of at least 50 x 75 um", cd.Message);
+        Assert.Contains("at least 0.114 mm", cd.Message);
+
+        RosettaRimHeader dvd = RosettaRimHeader.FitToBand(Title, Date, ShaPrefix, RosettaRimHeaderFormat.Dvd, 57.91, 58.0, 0.00074);
+        Assert.True(dvd.Metrics.GlyphCellWidthMm >= 0.026 && dvd.Metrics.TextHeightMm >= 0.034);
+
+        ArgumentException bd = Assert.Throws<ArgumentException>(() =>
+            RosettaRimHeader.FitToBand(Title, Date, ShaPrefix, RosettaRimHeaderFormat.BluRay, 57.95, 58.0, 0.00032));
+        Assert.Contains("a BD needs glyph cells of at least 26 x 34 um", bd.Message);
+
+        // A pitch so coarse that a full-size glyph row would be under two turns.
+        ArgumentException coarse = Assert.Throws<ArgumentException>(() =>
+            RosettaRimHeader.FitToBand(Title, Date, ShaPrefix, RosettaRimHeaderFormat.Cd, 40.0, 58.0, 0.2));
+        Assert.Contains("too coarse for the rim header", coarse.Message);
+    }
+
+    [Fact]
+    public void ScaleAndPitchOptions_AreChecked()
+    {
+        Assert.Throws<ArgumentOutOfRangeException>(() => new RosettaRimHeader(new RosettaRimHeaderOptions(Title, Date, ShaPrefix, Scale: 0)));
+        Assert.Throws<ArgumentOutOfRangeException>(() => new RosettaRimHeader(new RosettaRimHeaderOptions(Title, Date, ShaPrefix, Scale: 1.5)));
+        Assert.Throws<ArgumentOutOfRangeException>(() => new RosettaRimHeader(new RosettaRimHeaderOptions(Title, Date, ShaPrefix, TrackPitchMm: -1)));
+        Assert.Throws<ArgumentOutOfRangeException>(() => new RosettaRimHeader(new RosettaRimHeaderOptions(Title, Date, ShaPrefix, TrackPitchMm: 0.2)));
+    }
+
+    [Fact]
+    public void Overlay_CoversBandAndGutter_InPictureCoordinates()
+    {
+        RosettaRimHeader header = CreateHeader();
+        var overlay = new RosettaRimHeaderOverlay(header);
+
+        Assert.Equal(header.InnerRadiusMm - RosettaRimHeader.PageGutterMm, overlay.InnerRadiusMm, 12);
+        Assert.Equal(58.0, overlay.OuterRadiusMm);
+        // Right-hand side of the picture is 0 degrees: the wide tick.
+        Assert.True(overlay.TrySample(57.8, 0.0, out byte tick));
+        Assert.Equal(RosettaDvdEncoder.InkLuminance, tick);
+        // In the gutter: part of the overlay, blank.
+        Assert.True(overlay.TrySample(-(header.InnerRadiusMm - 0.1), 0.0, out byte gutter));
+        Assert.Equal(RosettaDvdEncoder.PaperLuminance, gutter);
+        // Inside the ring the picture shows.
+        Assert.False(overlay.TrySample(0.0, 40.0, out _));
+    }
+
+    [Fact]
     public void Book_WithRimHeader_KeepsPagesBelowTheBand_AndDrawsBoth()
     {
         RosettaPagePreset preset = RosettaPresetCatalog.BuiltIn.Hobbyist;

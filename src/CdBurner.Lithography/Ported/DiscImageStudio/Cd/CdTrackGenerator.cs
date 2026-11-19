@@ -4,7 +4,8 @@
 // https://github.com/JiaFeiMiao-K-Cat/DiscImageStudio/blob/619ec7505ac8955f35fe2f353ebda74b6ea90dda/src/DiscImageStudio.Cd/CdTrackGenerator.cs
 // IgnisDisc changes: namespace; no JSON sidecar next to the track (upstream CdTrackMetadata); GenerateToStream also takes an in-memory BGRA raster; the read-back preview also renders
 // from a seekable stream (sectors read from a disc) and returns the pixels (RenderTrack); PNG output goes through
-// Imaging/PngRaster.cs; the CD-DA interleaver starts primed with the first palette byte instead of zero placeholders.
+// Imaging/PngRaster.cs; the CD-DA interleaver starts primed with the first palette byte instead of zero placeholders;
+// the raster overload takes an optional picture overlay (Imaging/IPictureOverlay.cs, used for the rim header).
 // Sampling, timing and read-back arithmetic are unchanged. See THIRD-PARTY-NOTICES.md.
 
 using System.Diagnostics;
@@ -125,9 +126,10 @@ public static class CdTrackGenerator
         CdAudioByteOrder audioByteOrder = CdAudioByteOrder.BigEndian,
         ToneProfile? tone = null,
         bool useSimdSampling = true,
-        bool useParallelSampling = true)
+        bool useParallelSampling = true,
+        IPictureOverlay? overlay = null)
         => GenerateToStream(RasterImage.FromRaster(picture), "raster", output, parameters, interleave, progress,
-            cancellationToken, outputDescription, audioByteOrder, tone, useSimdSampling, useParallelSampling);
+            cancellationToken, outputDescription, audioByteOrder, tone, useSimdSampling, useParallelSampling, overlay);
 
     private static CdGenerationSummary GenerateToStream(
         RasterImage source,
@@ -141,7 +143,8 @@ public static class CdTrackGenerator
         CdAudioByteOrder audioByteOrder,
         ToneProfile? tone,
         bool useSimdSampling,
-        bool useParallelSampling)
+        bool useParallelSampling,
+        IPictureOverlay? overlay = null)
     {
         ArgumentNullException.ThrowIfNull(output);
         if (!output.CanWrite)
@@ -151,7 +154,7 @@ public static class CdTrackGenerator
 
         CdAudioSamples.Validate(audioByteOrder);
         parameters.Validate();
-        CdImageSampler sampler = new(source, parameters);
+        CdImageSampler sampler = new(source, parameters, overlay);
         return GenerateSamplesToStream(
             sampler.Sample,
             summarySource,

@@ -55,7 +55,7 @@ public static partial class CliCommandRunner
         "overwrite", "strict-verify", "no-verify", "no-secure", "allow-damaged", "no-fill", "keep-folders",
         "generate-subtitles", "no-menu", "dual-layer", "fit-to-disc", "no-ffmpeg", "no-cd-text", "normalize", "peak-normalize", "rms-level",
         "no-burnfree", "append", "delete-backups", "confirm-shutdown", "windows-writer", "no-interleave",
-        "no-cover-lookup", "no-folder-image", "recursive", "no-rim"
+        "no-cover-lookup", "no-folder-image", "recursive", "no-rim", "rim-header"
     };
 
     private static void WriteJsonResult(TextWriter stdout, object payload)
@@ -3682,7 +3682,7 @@ public static partial class CliCommandRunner
         stdout.WriteLine("      Makes a hybrid Rosetta DVD-R image: the text, a page index and optional files with PAR2 recovery data inside r = 38 mm, a 2 MiB zero gap, then the text as microscope-readable pages and the rim header.");
         stdout.WriteLine("  rosetta burn --drive <id> --image <file.iso> [any burn-iso option] [--json]");
         stdout.WriteLine("      Burns an image made by 'rosetta build' (forwards to burn-iso).");
-        stdout.WriteLine("  disc-art generate --media cd|dvd|bd --picture <file.png> --output <file> [--files <folder> [--files-outer]] [--append-to <base.cue> | --pregap-art <base.cue> [--pregap-seconds <s>]] [--label <text>] [--tone photo|binary] [--start-angle <deg>] [--scale <x>] [--offset-x-mm <mm>] [--offset-y-mm <mm>] [--rotate <deg>] [--fit ring|disc] [--art-inner-radius-mm <mm>] [--art-outer-radius-mm <mm>] [--title-ring <text> [--title-ring-height-mm <mm>] [--title-ring-date yyyy-MM-dd|none]] [--read-compat] [--no-interleave] [--plan-only] [--overwrite] [--disc-preset <id>] [--drive-model <text> --media-id <text>] [--json]");
+        stdout.WriteLine("  disc-art generate --media cd|dvd|bd --picture <file.png> --output <file> [--files <folder> [--files-outer]] [--append-to <base.cue> | --pregap-art <base.cue> [--pregap-seconds <s>]] [--label <text>] [--tone photo|binary] [--start-angle <deg>] [--scale <x>] [--offset-x-mm <mm>] [--offset-y-mm <mm>] [--rotate <deg>] [--fit ring|disc] [--art-inner-radius-mm <mm>] [--art-outer-radius-mm <mm>] [--title-ring <text> [--title-ring-height-mm <mm>] [--title-ring-date yyyy-MM-dd|none]] [--read-compat] [--no-interleave] [--rim-header] [--plan-only] [--overwrite] [--disc-preset <id>] [--drive-model <text> --media-id <text>] [--json]");
         stdout.WriteLine("      Draws a picture in the data sectors of a DVD or BD image (optionally with files on the same disc) or makes a CD picture track, with its description file for the preview.");
         stdout.WriteLine("      --pregap-art (experimental, off by default) hides a CD picture in track 1's pre-gap instead; some players and rippers can play it as noise.");
         stdout.WriteLine("  disc-art preview --image <file.iso|.wav|.raw> --output <file.png> [--size <px>] [--json]");
@@ -3872,7 +3872,7 @@ public static partial class CliCommandRunner
             stdout.WriteLine("                                 for 'disc-art burn' (Session-at-Once, direct drive commands). WARNING: some players and rippers can rewind");
             stdout.WriteLine("                                 into the pre-gap, or rip it as a hidden track, and play the picture as loud noise. --fit defaults to ring.");
             stdout.WriteLine($"      --pregap-seconds <s>       Length of the pre-gap picture (default {DiscArtImageBuilder.CdPreGapDefaultSeconds}, {DiscArtImageBuilder.CdPreGapMinimumSeconds} to {DiscArtImageBuilder.CdPreGapMaximumSeconds}); the music moves out by that much.");
-            stdout.WriteLine("      --label <text>             Volume label of the files (default DISC_ART).");
+            stdout.WriteLine("      --label <text>             Volume label of the files (default DISC_ART); also the title of the rim header.");
             stdout.WriteLine("      --tone photo|binary        Photo (default) dithers midtones; binary is plain black and white.");
             stdout.WriteLine("      --start-angle <deg>        Rotate the picture on the disc.");
             stdout.WriteLine("      --scale <x>                Make the picture x times larger (default 1: its shorter side spans the disc diameter).");
@@ -3887,6 +3887,10 @@ public static partial class CliCommandRunner
             stdout.WriteLine("      --title-ring-date <date>   Date on the ring as yyyy-MM-dd (default today), or none.");
             stdout.WriteLine("      --read-compat              DVD: use the read-compatibility recipe (periodic-9b-16-v1).");
             stdout.WriteLine("      --no-interleave            CD only: write the track without the CD-DA delay interleave.");
+            stdout.WriteLine("      --rim-header               Draw the rim header at the outer edge of the picture: title (--label, else the picture's name),");
+            stdout.WriteLine("                                 today's date, the first 16 digits of the picture's SHA-256, angle ticks every 5 degrees and");
+            stdout.WriteLine("                                 how-to-read diagrams. Full size (2 mm capitals) needs a 4 mm ring; a narrower ring gets a");
+            stdout.WriteLine("                                 smaller header, down to glyph cells of 50 x 75 um (CD) or 26 x 34 um (DVD, BD); below that it is refused.");
             stdout.WriteLine("      --plan-only               Print the sector plan and write nothing.");
             stdout.WriteLine("      --overwrite                Replace existing output files.");
             stdout.WriteLine("      --disc-preset, --disc-presets-file, --drive-model, --media-id, --store, --inner-radius-mm, --outer-radius-mm, --sectors, --pitch-*");

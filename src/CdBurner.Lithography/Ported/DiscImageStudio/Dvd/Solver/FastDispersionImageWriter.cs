@@ -2,12 +2,16 @@
 // Copyright (c) 2026 Disc Image Studio contributors
 // Ported to IgnisDisc from DiscImageStudio src/DvdImageSolver/Solver/FastDispersionImageWriter.cs at commit 619ec7505ac8955f35fe2f353ebda74b6ea90dda:
 // https://github.com/JiaFeiMiao-K-Cat/DiscImageStudio/blob/619ec7505ac8955f35fe2f353ebda74b6ea90dda/src/DvdImageSolver/Solver/FastDispersionImageWriter.cs
-// IgnisDisc change: namespace; the legacy bridge-9b-v1 rule is not ported. See THIRD-PARTY-NOTICES.md.
+// IgnisDisc changes: namespace; the legacy bridge-9b-v1 rule is not ported; the picture overload takes an optional
+// picture overlay (Imaging/IPictureOverlay.cs, the rim header), asked before the picture, with sample reuse stopped
+// short of its ring and SIMD lanes in its ring sampled one by one. Without an overlay the arithmetic is unchanged.
+// See THIRD-PARTY-NOTICES.md.
 
 using System.Diagnostics;
 using System.Runtime.Intrinsics;
 using CdBurner.Lithography.Calibration;
 using CdBurner.Lithography.Dvd.Encoding;
+using CdBurner.Lithography.Imaging;
 
 namespace CdBurner.Lithography.Dvd.Solver;
 
@@ -137,11 +141,12 @@ public static class FastDispersionImageWriter
         Stream output,
         MultiBlockSolveOptions options,
         Action<FastDvdStreamProgress>? progress = null,
-        CancellationToken cancellationToken = default)
+        CancellationToken cancellationToken = default,
+        IPictureOverlay? overlay = null)
     {
         ValidateStream(output, options);
         RasterImage image = RasterImage.Load(imagePath);
-        PayloadImageSampler sampler = new(image, options.ImageMapping);
+        PayloadImageSampler sampler = new(image, options.ImageMapping, overlay);
         return WriteSampledStream(sampler, output, options, progress, cancellationToken);
     }
 
@@ -568,6 +573,8 @@ public static class FastDispersionImageWriter
         private readonly double _reusePositionMargin;
         private readonly double _reuseTangentMargin;
         private readonly double _reuseQuadraticBound;
+        private readonly IPictureOverlay? _overlay;
+        private readonly double _overlayInnerGuard = double.PositiveInfinity;
 
         // Analytic callbacks share the exact vector geometry while retaining
         // scalar trigonometry, so even coordinate-sensitive callbacks agree.
@@ -579,10 +586,13 @@ public static class FastDispersionImageWriter
         internal bool SupportsSampleReuse => _supportsReuseGeometry
             && (_referenceImage is not null || _image is not null);
 
-        internal PayloadImageSampler(RasterImage image, ImageMappingOptions options)
+        internal PayloadImageSampler(RasterImage image, ImageMappingOptions options, IPictureOverlay? overlay = null)
             : this(options)
         {
             _image = image;
+            _overlay = overlay;
+            // A little inside the ring, so SIMD radius roundoff never lets a lane skip the overlay.
+            _overlayInnerGuard = overlay is null ? double.PositiveInfinity : overlay.InnerRadiusMm - 1e-6;
         }
 
         internal PayloadImageSampler(CalibrationTarget target, ImageMappingOptions options, bool useSampleReuse)
@@ -640,6 +650,14 @@ public static class FastDispersionImageWriter
             var point = _spiral.AtArcLengthFast(globalChannelBit * _bitLengthMm);
             double angle = _startAngleRadians + _direction * point.Angle;
             double x = point.Radius * Math.Cos(angle), y = point.Radius * Math.Sin(angle);
+            if (_overlay is not null && point.Radius >= _overlayInnerGuard)
+            {
+                // Inside the overlay's ring: no reuse, the overlay first, then the picture.
+                reusableUntil = globalChannelBit;
+                return _overlay.TrySample(x, -y, out byte overlaid)
+                    ? new PixelSample(overlaid, 255)
+                    : SampleRasterPoint(x, y);
+            }
             bool stable;
             PixelSample sample;
             SampleRectangle region;
@@ -660,6 +678,12 @@ public static class FastDispersionImageWriter
             double travel = Math.Min(
                 Math.Min(SafeTravel(x - region.MinX, -tangentX), SafeTravel(region.MaxX - x, tangentX)),
                 Math.Min(SafeTravel(y - region.MinY, -tangentY), SafeTravel(region.MaxY - y, tangentY)));
+            if (_overlay is not null)
+            {
+                // The radius changes by at most the arc length travelled, so reuse ends before the overlay's ring.
+                travel = Math.Min(travel, Math.Max(0, (_overlayInnerGuard - point.Radius - _reusePositionMargin)
+                    / (1 + _reuseTangentMargin)));
+            }
             if (travel > 0 && double.IsFinite(travel))
                 reusableUntil = Math.BitDecrement(globalChannelBit + travel / _bitLengthMm);
             return sample;
@@ -707,7 +731,10 @@ public static class FastDispersionImageWriter
                         xMm, -yMm, globalChannelBit / 16, trackAngle))), 255);
             // RasterImage.SampleDisc flips mathematical y-up into image y-down.
             // Apply that same flip for analytic patterns, including the start angle.
-            PixelSample sample = _sampleGray is not null
+            PixelSample sample = _overlay is not null && radiusMm >= _overlayInnerGuard
+                    && _overlay.TrySample(xMm, -yMm, out byte overlaid)
+                ? new PixelSample(overlaid, 255)
+                : _sampleGray is not null
                 ? new PixelSample(_sampleGray(xMm, -yMm), 255)
                 : SampleRasterPoint(xMm, yMm);
             return new PayloadTarget(ScrambledForLuminance(sample.Luminance, toneIndex), sample.Alpha);
@@ -738,7 +765,8 @@ public static class FastDispersionImageWriter
                 _spiral.AtArcLengthFast(bits * Vector256.Create(_bitLengthMm));
             Vector256<double> angle = Vector256.Create(_startAngleRadians)
                 + Vector256.Create(_direction) * trackAngle;
-            if (_image is null || !_image.HasBinaryGrayscalePalette)
+            if (_image is null || !_image.HasBinaryGrayscalePalette
+                || (_overlay is not null && Vector256.GreaterThanOrEqualAny(radius, Vector256.Create(_overlayInnerGuard))))
             {
                 // Keep the original trig for analytic and bilinear colour/alpha sampling:
                 // tiny coordinate changes can cross luminance or alpha rounding

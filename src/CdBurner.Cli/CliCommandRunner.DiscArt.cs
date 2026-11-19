@@ -20,7 +20,7 @@ public static partial class CliCommandRunner
     private const string DiscArtGenerateUsage =
         "Usage: ignisdisc-cli disc-art generate --media cd|dvd|bd --picture <file.png> --output <file> "
         + "[--files <folder> [--files-outer]] [--append-to <base.cue> | --pregap-art <base.cue> [--pregap-seconds <s>]] [--label <text>] [--tone photo|binary] "
-        + "[--start-angle <deg>] [--scale <x>] [--offset-x-mm <mm>] [--offset-y-mm <mm>] [--rotate <deg>] [--fit ring|disc] [--art-inner-radius-mm <mm>] [--art-outer-radius-mm <mm>] [--title-ring <text> [--title-ring-height-mm <mm>] [--title-ring-date yyyy-MM-dd|none]] [--read-compat] [--no-interleave] [--plan-only] [--overwrite] [--json]";
+        + "[--start-angle <deg>] [--scale <x>] [--offset-x-mm <mm>] [--offset-y-mm <mm>] [--rotate <deg>] [--fit ring|disc] [--art-inner-radius-mm <mm>] [--art-outer-radius-mm <mm>] [--title-ring <text> [--title-ring-height-mm <mm>] [--title-ring-date yyyy-MM-dd|none]] [--read-compat] [--no-interleave] [--rim-header] [--plan-only] [--overwrite] [--json]";
 
     private const string DiscArtPreviewUsage =
         "Usage: ignisdisc-cli disc-art preview --image <file.iso|.wav|.raw> --output <file.png> [--size <px>] [--json]";
@@ -150,7 +150,12 @@ public static partial class CliCommandRunner
             ArtInnerRadiusMm: OptionalDouble(cmd, "art-inner-radius-mm"),
             ArtOuterRadiusMm: OptionalDouble(cmd, "art-outer-radius-mm"),
             TitleRing: titleRing,
-            CdPreGapSeconds: preGapSeconds);
+            CdPreGapSeconds: preGapSeconds,
+            RimHeader: cmd.HasFlag("rim-header")
+                ? new DiscArtRimHeader(
+                    cmd.GetOption("label") is { Length: > 0 } title ? title : Path.GetFileNameWithoutExtension(picture),
+                    DateOnly.FromDateTime(DateTime.Now))
+                : null);
 
         string media = MediaName(kind);
         try
@@ -468,6 +473,19 @@ public static partial class CliCommandRunner
             textSpanDegrees = ring.TextSpanDegrees,
             withPicture = ring.WithPicture,
         },
+        rimHeader = plan.RimHeader is not { } header ? null : new
+        {
+            text = header.HeaderText,
+            sha256Prefix = header.Sha256Prefix,
+            innerRadiusMm = header.InnerRadiusMm,
+            outerRadiusMm = header.OuterRadiusMm,
+            scale = header.Scale,
+            capitalHeightMm = header.CapitalHeightMm,
+            glyphCellWidthMm = header.GlyphCellWidthMm,
+            glyphCellHeightMm = header.GlyphCellHeightMm,
+            turnsPerGlyphRow = header.TurnsPerGlyphRow,
+            trackPitchUm = header.TrackPitchUm,
+        },
     };
 
     /// <summary>
@@ -562,6 +580,17 @@ public static partial class CliCommandRunner
             stdout.WriteLine(ring.WithPicture
                 ? "                the picture stops where the ring starts"
                 : "                no picture: the sectors before the ring are zero");
+        }
+
+        if (plan.RimHeader is { } header)
+        {
+            stdout.WriteLine($"  Rim header  : {header.HeaderText}");
+            stdout.WriteLine(string.Create(CultureInfo.InvariantCulture,
+                $"                radius {header.InnerRadiusMm:0.###} to {header.OuterRadiusMm:0.###} mm, capitals {header.CapitalHeightMm:0.###} mm tall (scale {header.Scale:0.###}), glyph cells {header.GlyphCellWidthMm * 1000:0} x {header.GlyphCellHeightMm * 1000:0} um, {header.TurnsPerGlyphRow} track turns per glyph row"));
+            if (header.Scale < 1)
+            {
+                stdout.WriteLine("                The ring at the rim is narrower than 4 mm, so the header is smaller than full size: read it with a magnifier or microscope.");
+            }
         }
 
         stdout.WriteLine($"  Image size  : {plan.TotalSectors:N0} sectors");

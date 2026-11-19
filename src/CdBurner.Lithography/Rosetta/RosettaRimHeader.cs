@@ -3,6 +3,7 @@
 
 using System.Globalization;
 using System.Text;
+using CdBurner.Lithography.Imaging;
 using CdBurner.Lithography.Rosetta.Fonts;
 
 namespace CdBurner.Lithography.Rosetta;
@@ -12,11 +13,102 @@ namespace CdBurner.Lithography.Rosetta;
 /// <param name="Date">Archive date, shown as yyyy-MM-dd.</param>
 /// <param name="Sha256Prefix">The first 8 to 64 hexadecimal digits of the archive's SHA-256.</param>
 /// <param name="OuterRadiusMm">Outer edge of the band: the outer edge of the drawable area.</param>
+/// <param name="Scale">
+/// Size of the header against its full size (1): every length in the band is multiplied by it. Greater than 0, at
+/// most 1. <see cref="RosettaRimHeader.FitToBand"/> picks it for a ring of a given width.
+/// </param>
+/// <param name="TrackPitchMm">
+/// Track pitch of the disc in millimetres, or 0. When given, a glyph row is a whole, even number of track turns
+/// (rounded down), so every row of a letter is drawn by the same number of turns.
+/// </param>
 public sealed record RosettaRimHeaderOptions(
     string Title,
     DateOnly Date,
     string Sha256Prefix,
-    double OuterRadiusMm = 58.0);
+    double OuterRadiusMm = 58.0,
+    double Scale = 1.0,
+    double TrackPitchMm = 0.0);
+
+/// <summary>
+/// Smallest glyph cell that still reads on one disc family, from the resolution report: CD 50 x 75 um (a CD
+/// symbol is 4.7 um long and 27 % of each frame is parity), DVD and BD 26 x 34 um.
+/// </summary>
+public sealed record RosettaRimHeaderFormat(string Name, double MinimumGlyphCellWidthMm, double MinimumGlyphCellHeightMm)
+{
+    public static RosettaRimHeaderFormat Cd { get; } = new("a CD", 0.050, 0.075);
+    public static RosettaRimHeaderFormat Dvd { get; } = new("a DVD", 0.026, 0.034);
+    public static RosettaRimHeaderFormat BluRay { get; } = new("a BD", 0.026, 0.034);
+}
+
+/// <summary>Every length of one header, in millimetres. <see cref="FullSize"/> is the header at scale 1.</summary>
+public sealed record RosettaRimHeaderMetrics(
+    double Scale,
+    double TickZoneHeightMm,
+    double TickWidthMm,
+    double ZeroTickWidthMm,
+    double MediumTickLengthMm,
+    double ShortTickLengthMm,
+    double TickToTextGapMm,
+    double GlyphPixelWidthMm,
+    double GlyphPixelHeightMm,
+    double PageGutterMm,
+    double MinimumFeatureMm,
+    int? TurnsPerGlyphRow)
+{
+    public static RosettaRimHeaderMetrics FullSize { get; } = Create(1.0, 0.0);
+
+    public double GlyphCellWidthMm => GlyphPixelWidthMm * Spleen5x8Font.CellPixelWidth;
+    public double TextHeightMm => GlyphPixelHeightMm * Spleen5x8Font.CellPixelHeight;
+    public double CapitalHeightMm => GlyphPixelHeightMm * 6;
+    public double DiagramPixelMm => TextHeightMm / RosettaRimHeader.DiagramRows;
+    public double LongTickLengthMm => TickZoneHeightMm;
+    public double BandHeightMm => TickZoneHeightMm + TickToTextGapMm + TextHeightMm;
+
+    /// <summary>
+    /// The lengths at <paramref name="scale"/>. With a track pitch the glyph row is rounded down to a whole, even
+    /// number of turns, so a diagram row (half a glyph row) is whole turns too. At scale 1 without a pitch the
+    /// lengths are exactly the full-size constants of <see cref="RosettaRimHeader"/>.
+    /// </summary>
+    public static RosettaRimHeaderMetrics Create(double scale, double trackPitchMm)
+    {
+        if (!double.IsFinite(scale) || scale <= 0.0 || scale > 1.0)
+        {
+            throw new ArgumentOutOfRangeException(nameof(scale), scale, "The header scale must be greater than 0 and at most 1.");
+        }
+        if (!double.IsFinite(trackPitchMm) || trackPitchMm < 0.0)
+        {
+            throw new ArgumentOutOfRangeException(nameof(trackPitchMm), trackPitchMm, "The track pitch must be 0 or a positive number.");
+        }
+
+        double rowMm = RosettaRimHeader.GlyphPixelHeightMm * scale;
+        int? turns = null;
+        if (trackPitchMm > 0.0)
+        {
+            int even = 2 * (int)Math.Floor((rowMm / (2.0 * trackPitchMm)) + 1e-9);
+            if (even < 2)
+            {
+                throw new ArgumentOutOfRangeException(nameof(trackPitchMm), trackPitchMm, string.Create(CultureInfo.InvariantCulture,
+                    $"The track pitch ({trackPitchMm * 1000.0:0.###} um) is too coarse for glyph rows of {rowMm * 1000.0:0.#} um: a row needs at least two turns."));
+            }
+            turns = even;
+            rowMm = even * trackPitchMm;
+        }
+
+        return new RosettaRimHeaderMetrics(
+            scale,
+            RosettaRimHeader.TickZoneHeightMm * scale,
+            RosettaRimHeader.TickWidthMm * scale,
+            RosettaRimHeader.ZeroTickWidthMm * scale,
+            RosettaRimHeader.MediumTickLengthMm * scale,
+            RosettaRimHeader.ShortTickLengthMm * scale,
+            RosettaRimHeader.TickToTextGapMm * scale,
+            RosettaRimHeader.GlyphPixelWidthMm * scale,
+            rowMm,
+            RosettaRimHeader.PageGutterMm * scale,
+            RosettaRimHeader.MinimumFeatureMm * scale,
+            turns);
+    }
+}
 
 public enum RosettaRimHeaderItemKind
 {
@@ -50,17 +142,23 @@ public sealed record RosettaRimHeaderItem(
 /// 0 degrees, has its top towards the rim and reads clockwise.
 /// </para>
 /// <para>
-/// Every stroke and every gap inside a mark is at least <see cref="MinimumFeatureMm"/> wide, so a laser pointer
-/// shone through the disc can project the header as a shadow.
+/// At full size every stroke and every gap inside a mark is at least <see cref="MinimumFeatureMm"/> wide, so a
+/// laser pointer shone through the disc can project the header as a shadow. A header made smaller for a narrow
+/// ring (<see cref="RosettaRimHeaderOptions.Scale"/>, <see cref="FitToBand"/>) keeps the same layout with every
+/// length scaled and then needs a magnifier or a microscope. The constants below are the full-size lengths;
+/// <see cref="Metrics"/> holds the lengths of this header.
 /// </para>
 /// </summary>
 public sealed class RosettaRimHeader
 {
-    /// <summary>Smallest stroke or gap inside a mark, in millimetres.</summary>
+    /// <summary>Smallest stroke or gap inside a mark at full size, in millimetres.</summary>
     public const double MinimumFeatureMm = 0.150;
 
-    /// <summary>Radial height of the whole band.</summary>
+    /// <summary>Radial height of the whole band at full size.</summary>
     public const double BandHeightMm = TickZoneHeightMm + TickToTextGapMm + TextHeightMm;
+
+    /// <summary>Radial depth of band plus gutter at full size: the ring <see cref="FitToBand"/> needs for scale 1.</summary>
+    public const double FullDepthMm = BandHeightMm + PageGutterMm;
 
     public const int TickCount = 72;
     public const double TickStepDegrees = 360.0 / TickCount;
@@ -79,13 +177,13 @@ public sealed class RosettaRimHeader
     public const double GlyphCellWidthMm = GlyphPixelWidthMm * Spleen5x8Font.CellPixelWidth;
     public const double TextHeightMm = GlyphPixelHeightMm * Spleen5x8Font.CellPixelHeight;
 
-    /// <summary>Height of a capital letter or digit: 6 of the 8 font rows.</summary>
+    /// <summary>Height of a capital letter or digit at full size: 6 of the 8 font rows.</summary>
     public const double CapitalHeightMm = GlyphPixelHeightMm * 6;
 
     public const int DiagramRows = 16;
     public const double DiagramPixelMm = TextHeightMm / DiagramRows;
 
-    /// <summary>Blank radial space the pages must leave below the band.</summary>
+    /// <summary>Blank radial space the pages (or a picture) must leave below the band at full size.</summary>
     public const double PageGutterMm = 0.20;
 
     public const int MinimumSha256PrefixLength = 8;
@@ -95,8 +193,6 @@ public sealed class RosettaRimHeader
     public const string GlassPlateCaption = "BD-R: GLASS PLATE AT 45°, LAMP AT SIDE";
 
     private const double TwoPi = 2.0 * Math.PI;
-    private const double ItemGapMm = 2 * GlyphCellWidthMm;
-    private const double LeadMm = GlyphCellWidthMm;
     private const int MinimumTitleColumns = 4;
 
     /// <summary>
@@ -149,13 +245,15 @@ public sealed class RosettaRimHeader
 
     private readonly Spleen5x8Font _font;
     private readonly Segment[] _segments;
+    private readonly RosettaRimHeaderMetrics _m;
 
     public RosettaRimHeader(RosettaRimHeaderOptions options, Spleen5x8Font? font = null)
     {
         ArgumentNullException.ThrowIfNull(options);
         ArgumentNullException.ThrowIfNull(options.Title);
         ArgumentNullException.ThrowIfNull(options.Sha256Prefix);
-        if (!double.IsFinite(options.OuterRadiusMm) || options.OuterRadiusMm <= BandHeightMm)
+        RosettaRimHeaderMetrics metrics = RosettaRimHeaderMetrics.Create(options.Scale, options.TrackPitchMm);
+        if (!double.IsFinite(options.OuterRadiusMm) || options.OuterRadiusMm <= metrics.BandHeightMm)
         {
             throw new ArgumentOutOfRangeException(nameof(options), options.OuterRadiusMm,
                 "OuterRadiusMm must be finite and larger than the height of the rim band.");
@@ -171,26 +269,31 @@ public sealed class RosettaRimHeader
         }
 
         _font = font ?? Spleen5x8Font.BuiltIn;
+        _m = metrics;
         OuterRadiusMm = options.OuterRadiusMm;
-        InnerRadiusMm = options.OuterRadiusMm - BandHeightMm;
-        TextOuterRadiusMm = options.OuterRadiusMm - TickZoneHeightMm - TickToTextGapMm;
-        TextMidRadiusMm = TextOuterRadiusMm - (0.5 * TextHeightMm);
+        InnerRadiusMm = options.OuterRadiusMm - metrics.BandHeightMm;
+        TextOuterRadiusMm = options.OuterRadiusMm - metrics.TickZoneHeightMm - metrics.TickToTextGapMm;
+        TextMidRadiusMm = TextOuterRadiusMm - (0.5 * metrics.TextHeightMm);
         Date = options.Date;
         Sha256Prefix = sha.ToUpperInvariant();
 
+        double cellMm = metrics.GlyphCellWidthMm;
+        double itemGapMm = 2 * cellMm;
+        double leadMm = cellMm;
+        double diagramPixelMm = metrics.DiagramPixelMm;
         string reflectedCaption = ToHeaderText(ReflectedLightCaption, _font);
         string glassCaption = ToHeaderText(GlassPlateCaption, _font);
         string tail = string.Create(CultureInfo.InvariantCulture, $"{options.Date:yyyy-MM-dd}  SHA-256 {Sha256Prefix}");
 
         // Everything except the title has a fixed length; the title gets what is left of the circle.
         double circumferenceMm = TwoPi * TextMidRadiusMm;
-        double fixedMm = LeadMm
-            + (tail.Length * GlyphCellWidthMm) + ItemGapMm
-            + (reflectedCaption.Length * GlyphCellWidthMm) + ItemGapMm
-            + (ReflectedLightBitmap[0].Length * DiagramPixelMm) + ItemGapMm
-            + (glassCaption.Length * GlyphCellWidthMm) + ItemGapMm
-            + (GlassPlateBitmap[0].Length * DiagramPixelMm) + ItemGapMm;
-        int titleColumns = (int)Math.Floor((circumferenceMm - fixedMm) / GlyphCellWidthMm) - 2;
+        double fixedMm = leadMm
+            + (tail.Length * cellMm) + itemGapMm
+            + (reflectedCaption.Length * cellMm) + itemGapMm
+            + (ReflectedLightBitmap[0].Length * diagramPixelMm) + itemGapMm
+            + (glassCaption.Length * cellMm) + itemGapMm
+            + (GlassPlateBitmap[0].Length * diagramPixelMm) + itemGapMm;
+        int titleColumns = (int)Math.Floor((circumferenceMm - fixedMm) / cellMm) - 2;
         if (titleColumns < MinimumTitleColumns)
         {
             throw new ArgumentOutOfRangeException(nameof(options), options.OuterRadiusMm,
@@ -207,7 +310,7 @@ public sealed class RosettaRimHeader
 
         var segments = new List<Segment>(5);
         var items = new List<RosettaRimHeaderItem>(5);
-        double cursorMm = LeadMm;
+        double cursorMm = leadMm;
         AddText(HeaderText);
         AddText(reflectedCaption);
         AddDiagram(ReflectedLightBitmap);
@@ -218,22 +321,88 @@ public sealed class RosettaRimHeader
 
         void AddText(string text)
         {
-            double widthMm = text.Length * GlyphCellWidthMm;
+            double widthMm = text.Length * cellMm;
             segments.Add(new Segment(cursorMm, widthMm, text, null));
             items.Add(new RosettaRimHeaderItem(RosettaRimHeaderItemKind.Text, text, [],
                 ArcToDegrees(cursorMm), ArcToDegrees(widthMm), text.Length));
-            cursorMm += widthMm + ItemGapMm;
+            cursorMm += widthMm + itemGapMm;
         }
 
         void AddDiagram(string[] bitmap)
         {
-            double widthMm = bitmap[0].Length * DiagramPixelMm;
+            double widthMm = bitmap[0].Length * diagramPixelMm;
             segments.Add(new Segment(cursorMm, widthMm, null, bitmap));
             items.Add(new RosettaRimHeaderItem(RosettaRimHeaderItemKind.Diagram, string.Empty, bitmap,
                 ArcToDegrees(cursorMm), ArcToDegrees(widthMm), bitmap[0].Length));
-            cursorMm += widthMm + ItemGapMm;
+            cursorMm += widthMm + itemGapMm;
         }
     }
+
+    /// <summary>
+    /// The largest header, up to full size, that fits with its gutter in the ring from
+    /// <paramref name="ringInnerRadiusMm"/> to <paramref name="ringOuterRadiusMm"/>, with glyph rows of whole track
+    /// turns. Refuses, with the reason, when the ring is too narrow for glyph cells of the format's minimum size
+    /// (<see cref="RosettaRimHeaderFormat"/>) or for two track turns per glyph row.
+    /// </summary>
+    /// <param name="trackPitchMm">Track pitch of the disc near the rim, in millimetres (greater than 0).</param>
+    /// <exception cref="ArgumentException">The ring is too narrow for readable text; the message says why.</exception>
+    public static RosettaRimHeader FitToBand(
+        string title,
+        DateOnly date,
+        string sha256Prefix,
+        RosettaRimHeaderFormat format,
+        double ringInnerRadiusMm,
+        double ringOuterRadiusMm,
+        double trackPitchMm,
+        Spleen5x8Font? font = null)
+    {
+        ArgumentNullException.ThrowIfNull(format);
+        if (!double.IsFinite(ringInnerRadiusMm) || !double.IsFinite(ringOuterRadiusMm)
+            || ringInnerRadiusMm < 0.0 || ringOuterRadiusMm <= ringInnerRadiusMm)
+        {
+            throw new ArgumentOutOfRangeException(nameof(ringOuterRadiusMm), ringOuterRadiusMm,
+                "The ring for the rim header must have an outer radius larger than its inner radius.");
+        }
+        if (!double.IsFinite(trackPitchMm) || trackPitchMm <= 0.0)
+        {
+            throw new ArgumentOutOfRangeException(nameof(trackPitchMm), trackPitchMm, "The track pitch must be positive.");
+        }
+
+        // Band plus gutter is FullDepthMm at scale 1; rounding rows to whole turns only ever makes the band shallower.
+        double availableMm = ringOuterRadiusMm - ringInnerRadiusMm;
+        double scale = Math.Min(1.0, availableMm / FullDepthMm);
+
+        // Smallest scale whose glyph cells reach the format's minimum after rows are rounded down to even turns.
+        double minimumRowMm = format.MinimumGlyphCellHeightMm / Spleen5x8Font.CellPixelHeight;
+        double rowFloorMm = 2.0 * trackPitchMm * Math.Max(1.0, Math.Ceiling((minimumRowMm / (2.0 * trackPitchMm)) - 1e-9));
+        double widthScale = format.MinimumGlyphCellWidthMm / GlyphCellWidthMm;
+        double rowScale = rowFloorMm / GlyphPixelHeightMm;
+        double minimumScale = Math.Max(widthScale, rowScale);
+        if (minimumScale > 1.0 + 1e-9)
+        {
+            throw new ArgumentException(string.Create(CultureInfo.InvariantCulture,
+                $"The track pitch of this disc ({trackPitchMm * 1000.0:0.###} um between turns) is too coarse for the rim header: "
+                + $"a glyph row of the full-size header ({GlyphPixelHeightMm:0.00} mm) must span at least two turns. Leave the rim header off for this disc."));
+        }
+        if (scale < minimumScale * (1.0 - 1e-9))
+        {
+            double neededMm = Math.Min(1.0, minimumScale) * FullDepthMm;
+            string rows = rowScale > widthScale && rowFloorMm > minimumRowMm * (1.0 + 1e-6)
+                ? string.Create(CultureInfo.InvariantCulture, $" and glyph rows of at least two track turns ({trackPitchMm * 1000.0:0.###} um pitch)")
+                : string.Empty;
+            throw new ArgumentException(string.Create(CultureInfo.InvariantCulture,
+                $"The rim header does not fit: the ring for it is only {availableMm:0.000} mm wide (r = {ringInnerRadiusMm:0.000} to {ringOuterRadiusMm:0.000} mm). "
+                + $"Readable text on {format.Name} needs glyph cells of at least {format.MinimumGlyphCellWidthMm * 1000.0:0} x {format.MinimumGlyphCellHeightMm * 1000.0:0} um{rows}, "
+                + $"so a ring of at least {neededMm:0.000} mm. Leave more room for the picture at the rim, or leave the rim header off."));
+        }
+
+        return new RosettaRimHeader(
+            new RosettaRimHeaderOptions(title, date, sha256Prefix, ringOuterRadiusMm, Math.Min(1.0, Math.Max(scale, minimumScale)), trackPitchMm),
+            font);
+    }
+
+    /// <summary>Every length of this header (scaled and fitted to the track pitch).</summary>
+    public RosettaRimHeaderMetrics Metrics => _m;
 
     /// <summary>Outer edge of the band (the rim side of the ticks), in millimetres.</summary>
     public double OuterRadiusMm { get; }
@@ -261,7 +430,7 @@ public sealed class RosettaRimHeader
     /// <summary>The strip's items in clockwise order: header text, caption, diagram, caption, diagram.</summary>
     public IReadOnlyList<RosettaRimHeaderItem> Items { get; }
 
-    /// <summary>Length in millimetres of tick <paramref name="tickIndex"/> (0 to 71), measured from the rim inward.</summary>
+    /// <summary>Full-size length in millimetres of tick <paramref name="tickIndex"/> (0 to 71), measured from the rim inward.</summary>
     public static double TickLengthMm(int tickIndex)
     {
         if ((uint)tickIndex >= TickCount)
@@ -292,8 +461,9 @@ public sealed class RosettaRimHeader
             angle = 0.0;
         }
 
+        RosettaRimHeaderMetrics m = _m;
         double depthMm = OuterRadiusMm - radiusMm;
-        if (depthMm <= TickZoneHeightMm)
+        if (depthMm <= m.TickZoneHeightMm)
         {
             const double stepRadians = TwoPi / TickCount;
             int tick = (int)Math.Round(angle / stepRadians);
@@ -301,19 +471,20 @@ public sealed class RosettaRimHeader
             tick %= TickCount;
 
             // The sides of a tick are radial lines, so its width is an angle: the stated width at the rim.
-            double halfWidthRadians = 0.5 * (tick == 0 ? ZeroTickWidthMm : TickWidthMm) / OuterRadiusMm;
-            double lengthMm = tick % 6 == 0 ? LongTickLengthMm
-                : tick % 2 == 0 ? MediumTickLengthMm
-                : ShortTickLengthMm;
+            double halfWidthRadians = 0.5 * (tick == 0 ? m.ZeroTickWidthMm : m.TickWidthMm) / OuterRadiusMm;
+            double lengthMm = tick % 6 == 0 ? m.LongTickLengthMm
+                : tick % 2 == 0 ? m.MediumTickLengthMm
+                : m.ShortTickLengthMm;
             return offsetRadians <= halfWidthRadians && depthMm <= lengthMm;
         }
 
-        double yMm = depthMm - (TickZoneHeightMm + TickToTextGapMm);
-        if (yMm < 0.0 || yMm >= TextHeightMm)
+        double yMm = depthMm - (m.TickZoneHeightMm + m.TickToTextGapMm);
+        if (yMm < 0.0 || yMm >= m.TextHeightMm)
         {
             return false;
         }
 
+        double cellMm = m.GlyphCellWidthMm;
         double uMm = angle * TextMidRadiusMm;
         for (int i = 0; i < _segments.Length; i++)
         {
@@ -330,16 +501,17 @@ public sealed class RosettaRimHeader
 
             if (segment.Text is { } text)
             {
-                int column = Math.Min((int)(xMm / GlyphCellWidthMm), text.Length - 1);
-                double xInCellMm = xMm - (column * GlyphCellWidthMm);
-                int px = Math.Min((int)(xInCellMm / GlyphPixelWidthMm), Spleen5x8Font.CellPixelWidth - 1);
-                int py = Math.Min((int)(yMm / GlyphPixelHeightMm), Spleen5x8Font.CellPixelHeight - 1);
+                int column = Math.Min((int)(xMm / cellMm), text.Length - 1);
+                double xInCellMm = xMm - (column * cellMm);
+                int px = Math.Min((int)(xInCellMm / m.GlyphPixelWidthMm), Spleen5x8Font.CellPixelWidth - 1);
+                int py = Math.Min((int)(yMm / m.GlyphPixelHeightMm), Spleen5x8Font.CellPixelHeight - 1);
                 return _font.IsPixelSet(text[column], px, py);
             }
 
             string[] bitmap = segment.Bitmap!;
-            int bx = Math.Min((int)(xMm / DiagramPixelMm), bitmap[0].Length - 1);
-            int by = Math.Min((int)(yMm / DiagramPixelMm), DiagramRows - 1);
+            double diagramPixelMm = m.DiagramPixelMm;
+            int bx = Math.Min((int)(xMm / diagramPixelMm), bitmap[0].Length - 1);
+            int by = Math.Min((int)(yMm / diagramPixelMm), DiagramRows - 1);
             return bitmap[by][bx] == '#';
         }
 
@@ -349,7 +521,7 @@ public sealed class RosettaRimHeader
     private double ArcToDegrees(double arcMm) => arcMm / TextMidRadiusMm * (180.0 / Math.PI);
 
     /// <summary>
-    /// Capitals only, so every letter is the full 2 mm; characters the font cannot draw become '?'.
+    /// Capitals only, so every letter is the full cell height; characters the font cannot draw become '?'.
     /// </summary>
     private static string ToHeaderText(string text, Spleen5x8Font font)
     {
@@ -369,4 +541,41 @@ public sealed class RosettaRimHeader
     }
 
     private readonly record struct Segment(double StartMm, double WidthMm, string? Text, string[]? Bitmap);
+}
+
+/// <summary>
+/// The rim header drawn over a picture disc. Inside the band and its gutter the header replaces the picture (ink
+/// dark, everything else light), so the text reads on any picture. Coordinates are the picture's (x right, y down):
+/// angle 0 of the header is the picture's right-hand side and the text runs clockwise as the picture is seen.
+/// </summary>
+public sealed class RosettaRimHeaderOverlay : IPictureOverlay
+{
+    public RosettaRimHeaderOverlay(RosettaRimHeader header)
+    {
+        ArgumentNullException.ThrowIfNull(header);
+        Header = header;
+        OuterRadiusMm = header.OuterRadiusMm;
+        InnerRadiusMm = Math.Max(0.0, header.InnerRadiusMm - header.Metrics.PageGutterMm);
+    }
+
+    public RosettaRimHeader Header { get; }
+
+    public double InnerRadiusMm { get; }
+
+    public double OuterRadiusMm { get; }
+
+    public bool TrySample(double xMm, double yDownMm, out byte gray)
+    {
+        double radiusMm = Math.Sqrt((xMm * xMm) + (yDownMm * yDownMm));
+        if (!(radiusMm >= InnerRadiusMm && radiusMm <= OuterRadiusMm))
+        {
+            gray = RosettaDvdEncoder.PaperLuminance;
+            return false;
+        }
+
+        gray = Header.IsInk(radiusMm, Math.Atan2(yDownMm, xMm))
+            ? RosettaDvdEncoder.InkLuminance
+            : RosettaDvdEncoder.PaperLuminance;
+        return true;
+    }
 }

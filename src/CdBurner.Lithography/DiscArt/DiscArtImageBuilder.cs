@@ -40,8 +40,15 @@ public sealed record DiscArtRequest(
     double? ArtInnerRadiusMm = null,          // DVD/BD: draw only from this radius outward (null: from the files' gap or LBA 0)
     double? ArtOuterRadiusMm = null,          // DVD/BD: draw only up to this radius; the image ends there (null: to the disc end)
     DiscArtTitleRingRequest? TitleRing = null, // DVD: title and date in large letters in the outer edge of the drawn area
-    int? CdPreGapSeconds = null);              // CD with BaseCuePath, experimental: the picture fills track 1's pre-gap
+    int? CdPreGapSeconds = null,               // CD with BaseCuePath, experimental: the picture fills track 1's pre-gap
                                                // (INDEX 00) for this many seconds instead of becoming the last track
+    DiscArtRimHeader? RimHeader = null);       // the Rosetta rim header at the outer edge of the picture; null: none
+
+/// <summary>
+/// Asks for the Rosetta rim header at the outer edge of the picture: title, date and the first 16 hexadecimal digits of
+/// the picture file's SHA-256, angle ticks every 5 degrees and the two how-to-read diagrams.
+/// </summary>
+public sealed record DiscArtRimHeader(string Title, DateOnly Date);
 
 /// <summary>Sector plan of the image, computed without generating any picture bytes (fast).</summary>
 public sealed record DiscArtPlan(
@@ -55,7 +62,8 @@ public sealed record DiscArtPlan(
     long? BaseCueSectors,               // CD with a base CUE: sectors the existing tracks take (incl. 150-sector pre-gap)
     DiscArtBand? Band = null,           // DVD/BD drawn in a band only; null when the picture fills the rest of the disc
     DiscArtTitleRingPlan? TitleRing = null, // DVD with a title ring: its sectors are the last of the drawn area
-    long? CdPreGapSectors = null);      // CD picture in track 1's pre-gap: its sectors, from LBA 0 to track 1's INDEX 01
+    long? CdPreGapSectors = null,       // CD picture in track 1's pre-gap: its sectors, from LBA 0 to track 1's INDEX 01
+    DiscArtRimHeaderPlan? RimHeader = null); // with the rim header: where it lies and how large it is
 
 /// <summary>
 /// A picture drawn only between two radii. The sectors before the band are zero (after the files and their gap when
@@ -125,6 +133,22 @@ public sealed record DiscArtTitleRingPlan(
 
 /// <summary>Plan of a picture disc and the radius its picture is mapped across (the encoder's sampling radius).</summary>
 public sealed record DiscArtPlacement(DiscArtPlan Plan, double PictureRadiusMm);
+
+/// <summary>Where the rim header lies and how large it is drawn.</summary>
+/// <param name="HeaderText">The first text item as drawn: title, date, SHA-256 prefix.</param>
+/// <param name="Scale">1 for full size (capitals 2.04 mm); smaller when the picture's ring at the rim is narrow.</param>
+/// <param name="TrackPitchUm">Mean track pitch of the disc, from its geometry; glyph rows are whole turns of it.</param>
+public sealed record DiscArtRimHeaderPlan(
+    string HeaderText,
+    string Sha256Prefix,
+    double InnerRadiusMm,
+    double OuterRadiusMm,
+    double Scale,
+    double CapitalHeightMm,
+    double GlyphCellWidthMm,
+    double GlyphCellHeightMm,
+    int TurnsPerGlyphRow,
+    double TrackPitchUm);
 
 public sealed record DiscArtResult(
     DiscArtPlan Plan,
@@ -375,7 +399,8 @@ public static class DiscArtImageBuilder
         string? CombinedCuePath,
         DiscArtTransform Transform,
         double PictureRadiusMm,    // radius the picture is mapped across (the encoder's sampling radius)
-        RosettaTitleRing? Ring = null)
+        RosettaTitleRing? Ring = null,
+        IPictureOverlay? Overlay = null)   // the rim header, asked before the picture by every encoder
     {
         /// <summary>False for a title ring alone: the sectors before the ring are zero.</summary>
         public bool HasPicture => PicturePath.Length > 0;
@@ -407,6 +432,24 @@ public static class DiscArtImageBuilder
         if (!hasPicture && request.Transform is { IsIdentity: false })
         {
             throw new ArgumentException("Scale, move, rotate and fit place a picture; there is no picture to place.");
+        }
+
+        if (request.RimHeader is not null)
+        {
+            if (!hasPicture)
+            {
+                throw new ArgumentException("The rim header is drawn over a picture and shows the picture's SHA-256; give a picture.");
+            }
+
+            if (request.TitleRing is not null)
+            {
+                throw new ArgumentException("Use either the title ring or the rim header: both are drawn in the outer edge of the picture.");
+            }
+
+            if (request.CdPreGapSeconds is not null)
+            {
+                throw new ArgumentException("The rim header is not drawn on a picture in the pre-gap yet; leave one of them off.");
+            }
         }
 
         if (request.TitleRing is { } titleRing)
@@ -559,14 +602,66 @@ public static class DiscArtImageBuilder
 
         try
         {
-            return request.Medium == DiscArtMedium.Cd
+            Prepared prepared = request.Medium == DiscArtMedium.Cd
                 ? PrepareCd(request, output, picture, tone, combinedCue)
                 : PrepareIso(request, output, picture, tone);
+            return request.RimHeader is null ? prepared : WithRimHeader(prepared);
         }
         catch (ArgumentOutOfRangeException ex)
         {
             // One exception type for every broken rule, with the message alone.
             throw new ArgumentException(ex.Message);
+        }
+    }
+
+    /// <summary>
+    /// Fits the rim header to the picture's ring at its outer edge (full size when there is room, smaller down to the
+    /// medium's readable minimum) and adds it to the plan. Refuses, with the reason, when the ring is too narrow.
+    /// </summary>
+    private static Prepared WithRimHeader(Prepared p)
+    {
+        DiscArtRequest request = p.Request;
+        DiscArtRimHeader wanted = request.RimHeader!;
+        ArgumentNullException.ThrowIfNull(wanted.Title);
+        CalibrationParameters d = request.Disc;
+        double trackPitchMm = Math.PI * ((d.OuterRadiusMm * d.OuterRadiusMm) - (d.InnerRadiusMm * d.InnerRadiusMm)) / d.TrackLengthMm;
+        if (!double.IsFinite(trackPitchMm) || trackPitchMm <= 0)
+        {
+            throw new ArgumentException("The disc geometry gives no usable track pitch for the rim header.");
+        }
+
+        RosettaRimHeaderFormat format = request.Medium switch
+        {
+            DiscArtMedium.Cd => RosettaRimHeaderFormat.Cd,
+            DiscArtMedium.Dvd => RosettaRimHeaderFormat.Dvd,
+            _ => RosettaRimHeaderFormat.BluRay,
+        };
+        string sha = PictureSha256Prefix(p.PicturePath);
+        RosettaRimHeader header = RosettaRimHeader.FitToBand(wanted.Title, wanted.Date, sha, format,
+            p.Plan.PictureInnerRadiusMm, p.Plan.PictureOuterRadiusMm, trackPitchMm);
+        var overlay = new RosettaRimHeaderOverlay(header);
+        RosettaRimHeaderMetrics m = header.Metrics;
+        var plan = p.Plan with
+        {
+            RimHeader = new DiscArtRimHeaderPlan(header.HeaderText, header.Sha256Prefix, overlay.InnerRadiusMm,
+                overlay.OuterRadiusMm, m.Scale, m.CapitalHeightMm, m.GlyphCellWidthMm, m.TextHeightMm,
+                m.TurnsPerGlyphRow ?? 0, trackPitchMm * 1000.0),
+        };
+        return p with { Plan = plan, Overlay = overlay };
+    }
+
+    /// <summary>The first 16 hexadecimal digits of the picture file's SHA-256: what the rim header shows.</summary>
+    private static string PictureSha256Prefix(string picturePath)
+    {
+        try
+        {
+            using FileStream stream = new(picturePath, FileMode.Open, FileAccess.Read, FileShare.Read,
+                bufferSize: 1024 * 1024, FileOptions.SequentialScan);
+            return Convert.ToHexString(System.Security.Cryptography.SHA256.HashData(stream))[..16];
+        }
+        catch (Exception ex) when (ex is IOException or UnauthorizedAccessException)
+        {
+            throw new ArgumentException($"The picture could not be read for its SHA-256: {ex.Message}");
         }
     }
 
@@ -1125,7 +1220,7 @@ public static class DiscArtImageBuilder
             {
                 fraction(value.Fraction);
             }
-        }, ct);
+        }, ct, p.Overlay);
     };
 
     /// <summary>
@@ -1156,7 +1251,10 @@ public static class DiscArtImageBuilder
         BluRayDiscParameters disc = BdParameters(r.Disc, r.StartAngleDegrees);
         BluRayGray8Raster raster = BluRayImageLoader.FromRaster(picture, tone: null, ct);
         raster = BluRayToneMapping.Apply(raster, p.Tone, ct);
-        var mapping = new BluRayImagePayloadMapping(disc, raster, new BluRayRunLengthMapping(r.Disc.BluRayInvertMapping));
+        var mapping = new BluRayImagePayloadMapping(disc, raster, new BluRayRunLengthMapping(r.Disc.BluRayInvertMapping))
+        {
+            Overlay = p.Overlay,
+        };
         var relay = new Relay<BluRayStreamingProgress>(value =>
         {
             fraction(value.Fraction);
@@ -1191,7 +1289,8 @@ public static class DiscArtImageBuilder
             },
             ct, p.OutputPath,
             wave ? CdAudioByteOrder.LittleEndian : CdAudioByteOrder.BigEndian,
-            p.Tone);
+            p.Tone,
+            overlay: p.Overlay);
         file.Flush();
     }
 

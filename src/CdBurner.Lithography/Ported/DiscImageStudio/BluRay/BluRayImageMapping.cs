@@ -2,9 +2,12 @@
 // Copyright (c) 2026 Disc Image Studio contributors
 // Ported to IgnisDisc from DiscImageStudio src/DiscImageStudio.BluRay/BluRayImageMapping.cs at commit 619ec7505ac8955f35fe2f353ebda74b6ea90dda:
 // https://github.com/JiaFeiMiao-K-Cat/DiscImageStudio/blob/619ec7505ac8955f35fe2f353ebda74b6ea90dda/src/DiscImageStudio.BluRay/BluRayImageMapping.cs
-// IgnisDisc change: namespace. See THIRD-PARTY-NOTICES.md.
+// IgnisDisc changes: namespace; an optional picture overlay (Imaging/IPictureOverlay.cs, the rim header) is asked
+// before the image, and clusters that reach its ring skip the pixel-reuse fast path. Without an overlay the arithmetic
+// is unchanged. See THIRD-PARTY-NOTICES.md.
 
 using System.Runtime.Intrinsics;
+using CdBurner.Lithography.Imaging;
 
 namespace CdBurner.Lithography.BluRay;
 
@@ -169,6 +172,12 @@ public sealed class BluRayImagePayloadMapping : IBluRayBatchPayloadMapping
         _maximumRadius = Math.Sqrt(maximumRadiusSquared);
     }
 
+    /// <summary>
+    /// Marks drawn over the image (the rim header), asked before the image at every payload byte. Its coordinates are
+    /// the picture's (x right, y down), so it is passed (x, -y) of this class's y-up millimetres.
+    /// </summary>
+    public IPictureOverlay? Overlay { get; init; }
+
     internal bool CanGenerateInParallel(BluRayDiscParameters disc)
         => _supportsParallelGeneration && _disc == disc;
 
@@ -189,6 +198,15 @@ public sealed class BluRayImagePayloadMapping : IBluRayBatchPayloadMapping
         if (firstSector % 32 != 0 || firstSector >= disc.TotalSectors
             || destination.Length != BluRayDiscParameters.PayloadBytesPerCluster)
             throw new ArgumentException("A complete aligned image cluster is required.");
+        if (Overlay is { } overlay)
+        {
+            // Radius grows along the track, so the cluster's two ends bound it. A cluster that reaches the overlay's
+            // ring is sampled point by point (FillScrambledPayload), which asks the overlay first.
+            double reach = Math.Max(_geometry.AtSector(firstSector).RadiusMm,
+                _geometry.AtSector(firstSector + (double)BluRayDiscParameters.SectorsPerCluster).RadiusMm);
+            if (reach >= overlay.InnerRadiusMm - 1e-6)
+                return false;
+        }
 
         double clusterBase = (long)(firstSector / 32) * BluRayDiscParameters.ChannelBitsPerRecordingUnit;
         double margin = _geometry.PixelReuseSafetyMarginMm;
@@ -340,7 +358,9 @@ public sealed class BluRayImagePayloadMapping : IBluRayBatchPayloadMapping
                         // Procedural calibration keeps its original callback and
                         // per-lane trig, sharing only the exact geometry arithmetic.
                         double x = radius * Math.Cos(angle), y = radius * Math.Sin(angle);
-                        destination[offset + lane] = _raster is not null
+                        destination[offset + lane] = Overlay is { } overlay && overlay.TrySample(x, -y, out byte overlaid)
+                            ? overlaid
+                            : _raster is not null
                             ? SampleRaster(x, y)
                             : _sampleLuminance(x, y);
                     }
@@ -351,7 +371,9 @@ public sealed class BluRayImagePayloadMapping : IBluRayBatchPayloadMapping
                 double sectorPosition = (clusterBase + offsets[offset])
                     / (BluRayDiscParameters.ChannelBitsPerRecordingUnit / 32.0);
                 BluRayTrackPoint point = _geometry.AtSector(sectorPosition);
-                destination[offset] = _raster is not null
+                destination[offset] = Overlay is { } overlay && overlay.TrySample(point.Xmm, -point.Ymm, out byte overlaid)
+                    ? overlaid
+                    : _raster is not null
                     ? SampleRaster(point.Xmm, point.Ymm) : _sampleLuminance(point.Xmm, point.Ymm);
             }
             runLength.MapLuminances(destination);
@@ -361,7 +383,10 @@ public sealed class BluRayImagePayloadMapping : IBluRayBatchPayloadMapping
             for (int offset = 0; offset < destination.Length; offset++)
             {
                 BluRayPayloadBytePosition position = GetPositionCore(context.Sector, offset, context.PhysicalSectorNumber);
-                byte luminance = _clipRasterAnnulus
+                byte luminance = Overlay is { } overlay
+                        && overlay.TrySample(position.TrackPoint.Xmm, -position.TrackPoint.Ymm, out byte overlaid)
+                    ? overlaid
+                    : _clipRasterAnnulus
                     ? SampleRaster(position.TrackPoint.Xmm, position.TrackPoint.Ymm)
                     : _sampleLuminance(position.TrackPoint.Xmm, position.TrackPoint.Ymm);
                 destination[offset] = _mapping.Map(luminance, position);

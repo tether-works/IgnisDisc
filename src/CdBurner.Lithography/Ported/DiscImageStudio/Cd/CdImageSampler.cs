@@ -2,11 +2,14 @@
 // Copyright (c) 2026 Disc Image Studio contributors
 // Ported to IgnisDisc from DiscImageStudio src/DiscImageStudio.Cd/CdImageSampler.cs at commit 619ec7505ac8955f35fe2f353ebda74b6ea90dda:
 // https://github.com/JiaFeiMiao-K-Cat/DiscImageStudio/blob/619ec7505ac8955f35fe2f353ebda74b6ea90dda/src/DiscImageStudio.Cd/CdImageSampler.cs
-// IgnisDisc change: namespace only. See THIRD-PARTY-NOTICES.md.
+// IgnisDisc changes: namespace; an optional picture overlay (Imaging/IPictureOverlay.cs) is asked before the raster,
+// and four-sample groups that reach its ring use the scalar path. Without an overlay the arithmetic is unchanged.
+// See THIRD-PARTY-NOTICES.md.
 
 using System.Runtime.Intrinsics;
 using CdBurner.Lithography;
 using CdBurner.Lithography.Calibration;
+using CdBurner.Lithography.Imaging;
 
 namespace CdBurner.Lithography.Cd;
 
@@ -26,11 +29,16 @@ internal sealed class CdImageSampler
     private readonly double _referenceOuterBoundary;
     private readonly double _referenceRadiusGuard;
     private readonly double _referencePixelScale;
+    private readonly IPictureOverlay? _overlay;
+    private readonly double _overlayInnerGuard = double.PositiveInfinity;
 
-    internal CdImageSampler(RasterImage source, CdDiscParameters parameters)
+    internal CdImageSampler(RasterImage source, CdDiscParameters parameters, IPictureOverlay? overlay = null)
         : this(parameters)
     {
         _source = source;
+        _overlay = overlay;
+        // A little inside the ring, so SIMD radius roundoff never lets a lane skip the overlay.
+        _overlayInnerGuard = overlay is null ? double.PositiveInfinity : overlay.InnerRadiusMm - 1e-6;
     }
 
     internal CdImageSampler(Func<double, double, byte> sampleGray, CdDiscParameters parameters)
@@ -70,6 +78,13 @@ internal sealed class CdImageSampler
 
     internal byte Sample(long globalByte)
     {
+        if (_overlay is not null)
+        {
+            (double overlayRadius, double overlayTheta) = _parameters.PolarFromByte(globalByte);
+            if (overlayRadius >= _overlayInnerGuard && _overlay.TrySample(
+                    overlayRadius * Math.Cos(overlayTheta), overlayRadius * Math.Sin(overlayTheta), out byte overlaid))
+                return overlaid;
+        }
         if (_geometry is { } geometry)
         {
             (double radius, double angle) = geometry.AtArcLengthFast(_parameters.ArcLengthFromByte(globalByte));
@@ -122,6 +137,9 @@ internal sealed class CdImageSampler
             angle = Vector256.Create(_parameters.StartAngleRadians)
                 + Vector256.Create(_angleScale) * (radius - Vector256.Create(_parameters.InnerRadiusMm));
         }
+        // Lanes in the overlay's ring go through the scalar path, which asks the overlay first.
+        if (_overlay is not null && Vector256.GreaterThanOrEqualAny(radius, Vector256.Create(_overlayInnerGuard)))
+            return SampleFourScalar(firstByte, secondByte, thirdByte, fourthByte);
         if (_sampleGray is not null && _referenceTarget is null)
         {
             // Analytic callbacks can distinguish arbitrarily close coordinates.
