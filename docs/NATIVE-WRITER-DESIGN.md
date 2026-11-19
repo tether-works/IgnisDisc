@@ -37,7 +37,7 @@ in full; and a dual-layer DVD+R with the layer break where IgnisDisc was told to
 SHA-256 of the disc equal to the image). Also real: a two-film DVD-9 on a dual-layer DVD+R with the break on the second film's first cell, played on an Xbox Series X across the layer change. Real since 2026-11-15: DVD-RW closed (Disc-At-Once), left open (incremental) and in restricted overwrite mode (expanded with 13h). A second session added to a real DVD-RW the same day. Still simulator only: DVD-RAM, dual-layer DVD-R, Blu-ray, a Mode 2 / XA data track in a mixed-mode CD, the write-offset correction on a mixed-mode CD, the open audio session with a data
 session after it (CD-Extra) and copying an Enhanced CD whole, the Audio CD recovery session, CD picture tracks, the radial spread of archive recovery data, the archive
 `HEALTH.json` certificates, the `eject` and `load` commands, and every picture-disc write: `disc-art burn` (including
-the two-session burn of a picture with the files at the outer edge on DVD-R and DVD+R, and the experimental audio CD
+the two-session burn of a picture with the files at the outer edge on DVD-R and DVD+R, the rim header drawn on CD, DVD and BD-R picture discs, and the experimental audio CD
 picture in the pre-gap before track 1), the picture fill on data, DVD-Video and audio CD burns, and the Rosetta hybrid
 DVD-R. No picture disc has been burned on a real drive.
 
