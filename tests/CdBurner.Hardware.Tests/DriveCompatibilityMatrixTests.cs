@@ -52,6 +52,20 @@ public class DriveCompatibilityMatrixTests
         public int NextWritableAddress { get; init; }
         public int[] SupportedWriteSpeedsSectorsPerSec { get; init; } = new[] { 705, 1411, 2116 };
 
+        /// <summary>IDiscFormat2Data.SupportedMediaTypes (IMAPI_MEDIA_PHYSICAL_TYPE values).</summary>
+        public int[] FormatSupportedMediaTypes { get; init; } =
+        {
+            (int)ImapiMediaPhysicalType.CdR,
+            (int)ImapiMediaPhysicalType.CdRw,
+            (int)ImapiMediaPhysicalType.DvdDashR,
+            (int)ImapiMediaPhysicalType.DvdDashRw,
+            (int)ImapiMediaPhysicalType.DvdPlusR,
+            (int)ImapiMediaPhysicalType.DvdPlusRw,
+            (int)ImapiMediaPhysicalType.DvdPlusRDoubleLayer,
+            (int)ImapiMediaPhysicalType.DvdDashRDoubleLayer,
+            (int)ImapiMediaPhysicalType.DvdRam
+        };
+
         // IDiscFormat2Erase fallback simulation (for finalized CD-RW / DVD-RW where IDiscFormat2Data reports unsupported)
         public bool EraseFormatSupported { get; init; }
         public ImapiMediaPhysicalType ErasePhysicalMediaType { get; init; } = ImapiMediaPhysicalType.CdRw;
@@ -149,18 +163,7 @@ public class DriveCompatibilityMatrixTests
         public bool MediaHeuristicallyBlank => _p.ThrowOnHeuristicallyBlank
             ? throw new COMException("E_NOTIMPL on MediaHeuristicallyBlank", unchecked((int)0x80004001))
             : _p.HeuristicallyBlank;
-        public Array SupportedMediaTypes => new object[]
-        {
-            (int)ImapiMediaPhysicalType.CdR,
-            (int)ImapiMediaPhysicalType.CdRw,
-            (int)ImapiMediaPhysicalType.DvdDashR,
-            (int)ImapiMediaPhysicalType.DvdDashRw,
-            (int)ImapiMediaPhysicalType.DvdPlusR,
-            (int)ImapiMediaPhysicalType.DvdPlusRw,
-            (int)ImapiMediaPhysicalType.DvdPlusRDoubleLayer,
-            (int)ImapiMediaPhysicalType.DvdDashRDoubleLayer,
-            (int)ImapiMediaPhysicalType.DvdRam
-        };
+        public Array SupportedMediaTypes => _p.FormatSupportedMediaTypes.Cast<object>().ToArray();
 
         public void put_Recorder(IDiscRecorder2? value) => _recorder = value;
         public IDiscRecorder2? get_Recorder() => _recorder;
@@ -1427,6 +1430,72 @@ public class DriveCompatibilityMatrixTests
         CanBurnAudioCd = false,
         CanErase = false
     };
+
+    /// <summary>
+    /// Windows' data-format list as the Lite-On iHAS124 returned it (2026-11-19, IGN-008): CD-R, CD-RW, DVD-RAM,
+    /// DVD+R, DVD+RW, DVD+R DL, DVD-R, DVD-RW, DVD-R DL, disk, BD-R, BD-RE.
+    /// </summary>
+    private static readonly int[] LiteOnWindowsFormatList = { 2, 3, 5, 6, 7, 8, 9, 10, 11, 12, 18, 19 };
+
+    private static SimulatedDrivePersona BlankCdRIn(int[] profiles, int[] windowsFormatList) => new()
+    {
+        Name = "Capabilities_Blank_CdR",
+        MmcProfiles = profiles,
+        FormatSupportedMediaTypes = windowsFormatList,
+        PhysicalMediaType = ImapiMediaPhysicalType.CdR,
+        PhysicallyBlank = true,
+        TotalSectorsOnMedia = 359_844,
+        FreeSectorsOnMedia = 359_844,
+        ExpectedMediaType = DiscMediaType.CdR,
+        ExpectedIsBlank = true,
+        ExpectedIsRewritable = false,
+        ExpectedIsAppendable = true,
+        ExpectedIsOverwriteOnly = false,
+        ExpectedRequiresEraseToWrite = false,
+        ExpectedHasDataThatBurningReplaces = false,
+        ExpectedTotalSectors = 359_844,
+        ExpectedFreeSectors = 359_844,
+        ExpectedUsedSectors = 0,
+        ExpectedNextWritableLba = 0,
+        CanBurnDataWithoutFlags = true,
+        CanBurnDataWithOverwriteFlag = true,
+        CanBurnAudioCd = true,
+        CanErase = false
+    };
+
+    [Fact]
+    public void GetCapabilities_LiteOnIhas124_ListsOnlyTheDrivesOwnProfiles_NotWindowsFormatList()
+    {
+        // The drive's GET CONFIGURATION profile list (IGN-008): no DVD-RAM (0012h), no BD (004xh).
+        int[] liteOnProfiles = { 0x002B, 0x001B, 0x001A, 0x0016, 0x0015, 0x0014, 0x0013, 0x0011, 0x0010, 0x000A, 0x0009, 0x0008 };
+        var provider = new SimulatedImapiComProvider(BlankCdRIn(liteOnProfiles, LiteOnWindowsFormatList));
+        using var recorder = new ImapiDiscRecorder(provider.ComRecorder, "SIM-DRIVE", provider);
+
+        var caps = recorder.GetCapabilities();
+
+        Assert.Equal(
+            new[]
+            {
+                DiscMediaType.CdR, DiscMediaType.CdRw, DiscMediaType.DvdMinusR, DiscMediaType.DvdMinusRw,
+                DiscMediaType.DvdPlusR, DiscMediaType.DvdPlusRw, DiscMediaType.DvdMinusRDualLayer, DiscMediaType.DvdPlusRDualLayer
+            }.OrderBy(m => (int)m),
+            caps.SupportedMediaTypes);
+        Assert.False(caps.CanWriteDvdRam);
+    }
+
+    [Fact]
+    public void GetCapabilities_DriveWithoutProfileList_FallsBackToWindowsFormatList()
+    {
+        var provider = new SimulatedImapiComProvider(BlankCdRIn(Array.Empty<int>(), LiteOnWindowsFormatList));
+        using var recorder = new ImapiDiscRecorder(provider.ComRecorder, "SIM-DRIVE", provider);
+
+        var caps = recorder.GetCapabilities();
+
+        Assert.Contains(DiscMediaType.CdR, caps.SupportedMediaTypes);
+        Assert.Contains(DiscMediaType.DvdRam, caps.SupportedMediaTypes);
+        Assert.Contains(DiscMediaType.BdRe, caps.SupportedMediaTypes);
+        Assert.True(caps.CanWriteCdR);
+    }
 
     [Fact]
     public void QueryMediaStatus_DiscJustLoaded_ReportsLoadingNotAFinishedOneSectorDisc_ThenBlank()

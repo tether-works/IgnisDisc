@@ -271,28 +271,12 @@ public class ImapiDiscRecorder : IDiscRecorderBackend, IDiscTocProvider, IAudioS
 
                     if (attached)
                     {
-                        try
+                        // Windows' SupportedMediaTypes is what its data format can write in general, not what this
+                        // drive can: for a Lite-On iHAS124 (2026-11-19) it named DVD-RAM, BD-R and BD-RE although the
+                        // drive lists none of those profiles. So it only stands in when the drive gave no profiles.
+                        if (profiles.Count == 0)
                         {
-                            var supportedArray = formatData.SupportedMediaTypes;
-                            if (supportedArray != null)
-                            {
-                                for (int i = 0; i < supportedArray.Length; i++)
-                                {
-                                    var item = supportedArray.GetValue(i);
-                                    if (item != null)
-                                    {
-                                        var phys = (ImapiMediaPhysicalType)Convert.ToInt32(item);
-                                        var mapped = MapPhysicalTypeToDiscMediaType(phys);
-                                        if (mapped != DiscMediaType.Unknown && mapped != DiscMediaType.NoMedia)
-                                        {
-                                            mediaTypes.Add(mapped);
-                                        }
-                                    }
-                                }
-                            }
-                        }
-                        catch
-                        {
+                            AddWindowsFormatMediaTypes(formatData, mediaTypes);
                         }
 
                         try
@@ -915,6 +899,39 @@ public class ImapiDiscRecorder : IDiscRecorderBackend, IDiscTocProvider, IAudioS
             }
         }
         return rom;
+    }
+
+    /// <summary>
+    /// Adds the disc types Windows' data format lists (<c>IDiscFormat2Data.SupportedMediaTypes</c>). A fallback only:
+    /// that list can name types the drive cannot write. A failed query adds nothing, as before.
+    /// </summary>
+    private static void AddWindowsFormatMediaTypes(IDiscFormat2Data formatData, HashSet<DiscMediaType> mediaTypes)
+    {
+        Array? supportedArray;
+        try
+        {
+            supportedArray = formatData.SupportedMediaTypes;
+        }
+        catch (COMException)
+        {
+            return;
+        }
+        if (supportedArray == null)
+        {
+            return;
+        }
+        foreach (var item in supportedArray)
+        {
+            if (item == null)
+            {
+                continue;
+            }
+            var mapped = MapPhysicalTypeToDiscMediaType((ImapiMediaPhysicalType)Convert.ToInt32(item));
+            if (mapped != DiscMediaType.Unknown && mapped != DiscMediaType.NoMedia)
+            {
+                mediaTypes.Add(mapped);
+            }
+        }
     }
 
     /// <summary>
