@@ -1,5 +1,6 @@
 using System.Globalization;
 using CdBurner.Core.Abstractions;
+using CdBurner.Lithography.Cd;
 using CdBurner.Lithography.Dvd.Solver;
 using CdBurner.Lithography.Presets;
 using CdBurner.Lithography.Rosetta;
@@ -33,28 +34,50 @@ public static partial class CliCommandRunner
     private static int HandleRosettaLadder(CommandLineArgs cmd, TextWriter stdout)
     {
         string media = cmd.GetOption("media") ?? "dvd";
-        if (!string.Equals(media, "dvd", StringComparison.OrdinalIgnoreCase)
-            && !string.Equals(media, "dvd-r", StringComparison.OrdinalIgnoreCase))
+        bool isDvd = string.Equals(media, "dvd", StringComparison.OrdinalIgnoreCase)
+            || string.Equals(media, "dvd-r", StringComparison.OrdinalIgnoreCase);
+        bool isCd = string.Equals(media, "cd", StringComparison.OrdinalIgnoreCase)
+            || string.Equals(media, "cd-r", StringComparison.OrdinalIgnoreCase);
+        if (!isDvd && !isCd)
         {
             throw new CommandLineException(
-                $"Unsupported --media '{media}'. 'rosetta ladder' currently supports DVD-R ('--media dvd').");
+                $"Unsupported --media '{media}'. 'rosetta ladder' supports DVD-R ('--media dvd') and CD-R ('--media cd').");
+        }
+
+        bool noInterleave = cmd.HasFlag("no-interleave");
+        if (noInterleave && isDvd)
+        {
+            throw new CommandLineException("--no-interleave applies only to CD-R ('--media cd').");
         }
 
         string? rawOutput = cmd.GetOption("output") ?? cmd.GetOption("out");
         if (string.IsNullOrWhiteSpace(rawOutput))
         {
-            throw new CommandLineException("Missing required option: --output <file.iso>");
+            throw new CommandLineException(isCd
+                ? "Missing required option: --output <file.wav|file.raw>"
+                : "Missing required option: --output <file.iso>");
         }
 
-        string isoFullPath = Path.GetFullPath(rawOutput);
+        string outputFullPath = Path.GetFullPath(rawOutput);
+        if (isCd)
+        {
+            string ext = Path.GetExtension(outputFullPath);
+            if (!ext.Equals(".wav", StringComparison.OrdinalIgnoreCase)
+                && !ext.Equals(".raw", StringComparison.OrdinalIgnoreCase))
+            {
+                throw new CommandLineException(
+                    "CD-R ladder output must be .wav (PCM audio + CUE) or .raw (big-endian audio).");
+            }
+        }
+
         string? rawJsonOutput = cmd.GetOption("json-output");
         string jsonFullPath = string.IsNullOrWhiteSpace(rawJsonOutput)
-            ? isoFullPath + ".json"
+            ? outputFullPath + ".json"
             : Path.GetFullPath(rawJsonOutput);
 
-        string presetId = cmd.GetOption("disc-preset") ?? "dvd-5-120mm";
+        string presetId = cmd.GetOption("disc-preset") ?? (isCd ? "cd-80" : "dvd-5-120mm");
         string? presetsFile = cmd.GetOption("disc-presets-file");
-        DvdDiscPresetDefinition preset = ResolveDvdPreset(presetId, presetsFile);
+        DiscPresetJsonDocument presetDoc = LoadLadderPresetDocument(presetsFile);
 
         double startAngleDegrees = 0.0;
         if (cmd.GetOption("start-angle") is { } rawAngle)
@@ -67,16 +90,29 @@ public static partial class CliCommandRunner
             }
         }
 
+        RosettaLadderOptions ladderOptions;
+        if (isCd)
+        {
+            CdDiscPresetDefinition cdPreset = ResolveCdPreset(presetDoc, presetId);
+            ladderOptions = RosettaLadderOptions.FromCdPreset(cdPreset, startAngleDegrees, interleave: !noInterleave);
+        }
+        else
+        {
+            DvdDiscPresetDefinition dvdPreset = ResolveDvdPreset(presetDoc, presetId);
+            ladderOptions = RosettaLadderOptions.FromDvdPreset(dvdPreset, startAngleDegrees);
+        }
+
         RosettaLadderLayout layout;
         try
         {
-            layout = RosettaLadderDisc.CreateLayout(RosettaLadderOptions.FromDvdPreset(preset, startAngleDegrees));
+            layout = RosettaLadderDisc.CreateLayout(ladderOptions);
         }
         catch (ArgumentException ex)
         {
             throw new CommandLineException(ex.Message);
         }
 
+        string mediaLabel = layout.Manifest.Media;
         if (cmd.HasFlag("plan-only"))
         {
             string? jsonDir = Path.GetDirectoryName(jsonFullPath);
@@ -92,9 +128,9 @@ public static partial class CliCommandRunner
                 {
                     success = true,
                     planOnly = true,
-                    media = "DVD-R",
-                    discPresetId = preset.Id,
-                    outputPath = isoFullPath,
+                    media = mediaLabel,
+                    discPresetId = presetId,
+                    outputPath = outputFullPath,
                     jsonPath = jsonFullPath,
                     totalSectors = layout.Manifest.FillSectors,
                     zoneCount = layout.Manifest.Zones.Count,
@@ -106,15 +142,61 @@ public static partial class CliCommandRunner
             else
             {
                 stdout.WriteLine($"Plan only: wrote Rosetta ladder manifest to {jsonFullPath}");
-                stdout.WriteLine($"  Disc Preset : {preset.Id} ({layout.Manifest.FillSectors:N0} sectors)");
+                stdout.WriteLine($"  Media        : {mediaLabel}");
+                stdout.WriteLine($"  Disc Preset  : {presetId} ({layout.Manifest.FillSectors:N0} sectors)");
                 stdout.WriteLine($"  Zones / Rungs: {layout.Manifest.Zones.Count} / {layout.Manifest.Rungs.Count}");
-                stdout.WriteLine($"  Target ISO  : {isoFullPath} (not written)");
+                stdout.WriteLine($"  Target Output: {outputFullPath} (not written)");
             }
 
             return 0;
         }
 
-        FastDvdStreamSummary summary = RosettaLadderDisc.WriteIsoFile(layout, isoFullPath, jsonFullPath);
+        if (isCd)
+        {
+            CdGenerationSummary cdSummary = RosettaLadderDisc.WriteCdFile(layout, outputFullPath, jsonFullPath);
+            long fileBytes = new FileInfo(outputFullPath).Length;
+
+            if (cmd.IsJson)
+            {
+                WriteJsonResult(stdout, new
+                {
+                    success = true,
+                    planOnly = false,
+                    media = mediaLabel,
+                    discPresetId = presetId,
+                    outputPath = outputFullPath,
+                    cueSheetPath = cdSummary.CueSheetPath,
+                    jsonPath = jsonFullPath,
+                    bytesWritten = fileBytes,
+                    sectorsWritten = cdSummary.Sectors,
+                    elapsedSeconds = cdSummary.Elapsed.TotalSeconds,
+                    zoneCount = layout.Manifest.Zones.Count,
+                    rungCount = layout.Manifest.Rungs.Count,
+                });
+            }
+            else
+            {
+                stdout.WriteLine("Rosetta resolution-ladder CD-R track generated.");
+                stdout.WriteLine($"  Output Track : {outputFullPath} ({fileBytes:N0} bytes)");
+                if (cdSummary.CueSheetPath is not null)
+                {
+                    stdout.WriteLine($"  CUE Sheet    : {cdSummary.CueSheetPath}");
+                }
+                stdout.WriteLine($"  Manifest JSON: {jsonFullPath}");
+                stdout.WriteLine($"  Disc Preset  : {presetId}");
+                stdout.WriteLine($"  Sectors      : {cdSummary.Sectors:N0}");
+                stdout.WriteLine($"  Zones        : {layout.Manifest.Zones.Count}");
+                stdout.WriteLine($"  Rungs        : {layout.Manifest.Rungs.Count}");
+                if (cdSummary.CueSheetPath is not null)
+                {
+                    stdout.WriteLine($"  Burn with    : ignisdisc-cli burn-audio --drive <id> --tracks \"{cdSummary.CueSheetPath}\" --dao --native");
+                }
+            }
+
+            return 0;
+        }
+
+        FastDvdStreamSummary summary = RosettaLadderDisc.WriteIsoFile(layout, outputFullPath, jsonFullPath);
 
         if (cmd.IsJson)
         {
@@ -122,9 +204,9 @@ public static partial class CliCommandRunner
             {
                 success = true,
                 planOnly = false,
-                media = "DVD-R",
-                discPresetId = preset.Id,
-                outputPath = isoFullPath,
+                media = mediaLabel,
+                discPresetId = presetId,
+                outputPath = outputFullPath,
                 jsonPath = jsonFullPath,
                 bytesWritten = summary.BytesWritten,
                 sectorsWritten = summary.SectorsWritten,
@@ -136,19 +218,19 @@ public static partial class CliCommandRunner
         else
         {
             stdout.WriteLine("Rosetta resolution-ladder DVD-R image generated.");
-            stdout.WriteLine($"  Output ISO   : {isoFullPath} ({summary.BytesWritten:N0} bytes)");
+            stdout.WriteLine($"  Output ISO   : {outputFullPath} ({summary.BytesWritten:N0} bytes)");
             stdout.WriteLine($"  Manifest JSON: {jsonFullPath}");
-            stdout.WriteLine($"  Disc Preset  : {preset.Id}");
+            stdout.WriteLine($"  Disc Preset  : {presetId}");
             stdout.WriteLine($"  Sectors      : {summary.SectorsWritten:N0}");
             stdout.WriteLine($"  Zones        : {layout.Manifest.Zones.Count}");
             stdout.WriteLine($"  Rungs        : {layout.Manifest.Rungs.Count}");
-            stdout.WriteLine($"  Burn with    : ignisdisc-cli burn-iso --drive <id> --iso \"{isoFullPath}\" --native");
+            stdout.WriteLine($"  Burn with    : ignisdisc-cli burn-iso --drive <id> --iso \"{outputFullPath}\" --native");
         }
 
         return 0;
     }
 
-    private static DvdDiscPresetDefinition ResolveDvdPreset(string presetId, string? presetsFile)
+    private static DiscPresetJsonDocument LoadLadderPresetDocument(string? presetsFile)
     {
         DiscPresetJsonDocument doc = DiscPresetJsonStore.LoadBuiltIn();
         if (!string.IsNullOrWhiteSpace(presetsFile))
@@ -168,7 +250,11 @@ public static partial class CliCommandRunner
                 doc = DiscPresetJsonStore.Merge(doc, DiscPresetJsonStore.Load(defaultPath));
             }
         }
+        return doc;
+    }
 
+    private static DvdDiscPresetDefinition ResolveDvdPreset(DiscPresetJsonDocument doc, string presetId)
+    {
         DvdDiscPresetDefinition? match = doc.DvdPresets.FirstOrDefault(
             p => string.Equals(p.Id, presetId, StringComparison.OrdinalIgnoreCase));
         if (match is not null)
@@ -178,5 +264,18 @@ public static partial class CliCommandRunner
 
         string available = string.Join(", ", doc.DvdPresets.Select(p => p.Id));
         throw new CommandLineException($"Unknown DVD disc preset '{presetId}'. Available DVD presets: {available}");
+    }
+
+    private static CdDiscPresetDefinition ResolveCdPreset(DiscPresetJsonDocument doc, string presetId)
+    {
+        CdDiscPresetDefinition? match = doc.CdPresets.FirstOrDefault(
+            p => string.Equals(p.Id, presetId, StringComparison.OrdinalIgnoreCase));
+        if (match is not null)
+        {
+            return match;
+        }
+
+        string available = string.Join(", ", doc.CdPresets.Select(p => p.Id));
+        throw new CommandLineException($"Unknown CD disc preset '{presetId}'. Available CD presets: {available}");
     }
 }

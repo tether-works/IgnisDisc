@@ -2,6 +2,7 @@ using System.Diagnostics;
 using System.Globalization;
 using System.Text.Json;
 using System.Text.Json.Serialization;
+using CdBurner.Lithography.Cd;
 using CdBurner.Lithography.Dvd.Encoding;
 using CdBurner.Lithography.Dvd.Solver;
 using CdBurner.Lithography.Geometry;
@@ -9,6 +10,12 @@ using CdBurner.Lithography.Presets;
 using CdBurner.Lithography.Rosetta.Fonts;
 
 namespace CdBurner.Lithography.Rosetta;
+
+public enum RosettaLadderMedium
+{
+    Dvd,
+    Cd,
+}
 
 public sealed record RosettaLadderOptions(
     string DiscPresetId = "dvd-5-120mm",
@@ -23,7 +30,10 @@ public sealed record RosettaLadderOptions(
     double PitchCubic = 0.0,
     double StartAngleDegrees = 0.0,
     bool ReadCompatibility = true,
-    int FastParallelism = 0)
+    int FastParallelism = 0,
+    RosettaLadderMedium Medium = RosettaLadderMedium.Dvd,
+    double LinearVelocityMmPerSecond = CdDiscParameters.StandardLinearVelocityMmPerSecond,
+    bool CdInterleave = true)
 {
     public uint OutputSectors => UsableSectors ?? TotalSectors;
 
@@ -46,7 +56,48 @@ public sealed record RosettaLadderOptions(
             PitchCubic: preset.PitchCubic,
             StartAngleDegrees: startAngleDegrees,
             ReadCompatibility: readCompatibility,
-            FastParallelism: fastParallelism);
+            FastParallelism: fastParallelism,
+            Medium: RosettaLadderMedium.Dvd);
+    }
+
+    public static RosettaLadderOptions FromCdPreset(
+        CdDiscPresetDefinition preset,
+        double startAngleDegrees = 0.0,
+        bool interleave = true)
+    {
+        ArgumentNullException.ThrowIfNull(preset);
+        if (preset.Sectors <= 0 || preset.Sectors > uint.MaxValue)
+        {
+            throw new ArgumentOutOfRangeException(nameof(preset), preset.Sectors, "CD preset Sectors must be in 1..uint.MaxValue.");
+        }
+
+        uint? usableSectors = null;
+        if (preset.UsableSectors is { } usable)
+        {
+            if (usable <= 0 || usable > preset.Sectors)
+            {
+                throw new ArgumentOutOfRangeException(nameof(preset), usable, "CD preset UsableSectors must be in 1..Sectors.");
+            }
+            usableSectors = checked((uint)usable);
+        }
+
+        return new RosettaLadderOptions(
+            DiscPresetId: preset.Id,
+            TotalSectors: checked((uint)preset.Sectors),
+            UsableSectors: usableSectors,
+            PsnOffset: 0,
+            InnerRadiusMm: preset.InnerRadiusMm,
+            OuterRadiusMm: preset.OuterRadiusMm,
+            ChannelBitLengthNm: 0.0,
+            PitchLinear: preset.PitchLinear,
+            PitchQuadratic: preset.PitchQuadratic,
+            PitchCubic: preset.PitchCubic,
+            StartAngleDegrees: startAngleDegrees,
+            ReadCompatibility: false,
+            FastParallelism: 0,
+            Medium: RosettaLadderMedium.Cd,
+            LinearVelocityMmPerSecond: preset.LinearVelocityMmPerSecond,
+            CdInterleave: interleave);
     }
 }
 
@@ -136,30 +187,36 @@ public sealed record RosettaLadderManifest(
     double LabelCellHeightUm,
     IReadOnlyList<string> TestTextLines,
     IReadOnlyList<RosettaLadderZone> Zones,
-    IReadOnlyList<RosettaLadderRung> Rungs);
+    IReadOnlyList<RosettaLadderRung> Rungs,
+    double LinearVelocityMmPerSecond = 0.0,
+    bool CdInterleave = false,
+    int CircEdgeZoneBytes = 0);
 
 public sealed class RosettaLadderLayout
 {
     internal RosettaLadderLayout(
         RosettaLadderOptions options,
-        DvdTrackGeometry trackGeometry,
+        DvdTrackGeometry? trackGeometry,
+        CdDiscParameters? cdParameters,
         RosettaLadderManifest manifest,
         IReadOnlyList<RosettaPagePreset> ladderPresets)
     {
         Options = options;
         TrackGeometry = trackGeometry;
+        CdParameters = cdParameters;
         Manifest = manifest;
         LadderPresets = ladderPresets;
     }
 
     public RosettaLadderOptions Options { get; }
-    public DvdTrackGeometry TrackGeometry { get; }
+    public DvdTrackGeometry? TrackGeometry { get; }
+    public CdDiscParameters? CdParameters { get; }
     public RosettaLadderManifest Manifest { get; }
     public IReadOnlyList<RosettaPagePreset> LadderPresets { get; }
 }
 
 /// <summary>
-/// Generates a DVD-R optical resolution-ladder disc image with labelled rungs spanning
+/// Generates a DVD-R or CD-R optical resolution-ladder disc image with labelled rungs spanning
 /// inner, middle, and outer radii plus a JSON manifest of rung positions.
 /// </summary>
 public static class RosettaLadderDisc
@@ -204,27 +261,48 @@ public static class RosettaLadderDisc
 
         ValidateOptions(options);
 
-        IReadOnlyList<RosettaPagePreset> ladderPresets = catalog.Ladder;
+        bool isCd = options.Medium == RosettaLadderMedium.Cd;
+        IReadOnlyList<RosettaPagePreset> ladderPresets = isCd
+            ? catalog.Ladder.Where(p => p.CdSupported && p.CellSize.IsCdCompatible).ToArray()
+            : catalog.Ladder;
         if (ladderPresets.Count == 0 || ladderPresets.Count > 8)
         {
             throw new ArgumentException(
-                $"Rosetta ladder preset catalog must contain 1 to 8 rungs (got {ladderPresets.Count}).",
+                isCd
+                    ? $"Rosetta CD-R ladder preset catalog must contain 1 to 8 rungs >= 50x75 um with cdSupported=true (got {ladderPresets.Count})."
+                    : $"Rosetta ladder preset catalog must contain 1 to 8 rungs (got {ladderPresets.Count}).",
                 nameof(catalog));
         }
 
-        double bitLengthMm = options.ChannelBitLengthNm * 1.0e-6;
-        double trackLengthMm = options.TotalSectors * (double)DvdEccBlockEncoder.ChannelBitsPerSector * bitLengthMm;
-        DvdTrackGeometry geom = DvdTrackGeometry.Create(
-            options.InnerRadiusMm,
-            options.OuterRadiusMm,
-            trackLengthMm,
-            options.PitchLinear,
-            options.PitchQuadratic,
-            options.PitchCubic);
-
         uint fillSectors = options.OutputSectors;
         double maxPageHeightMm = ladderPresets.Max(p => p.PageRadialHeightMeters * 1.0e3);
-        double sectorLengthMm = DvdEccBlockEncoder.ChannelBitsPerSector * bitLengthMm;
+
+        DvdTrackGeometry? geom = null;
+        CdDiscParameters? cdParams = null;
+        double bitLengthMm = 0.0;
+        double sectorLengthMm;
+        if (isCd)
+        {
+            cdParams = BuildCdParameters(options);
+            sectorLengthMm = options.LinearVelocityMmPerSecond / 75.0;
+        }
+        else
+        {
+            bitLengthMm = options.ChannelBitLengthNm * 1.0e-6;
+            double trackLengthMm = options.TotalSectors * (double)DvdEccBlockEncoder.ChannelBitsPerSector * bitLengthMm;
+            geom = DvdTrackGeometry.Create(
+                options.InnerRadiusMm,
+                options.OuterRadiusMm,
+                trackLengthMm,
+                options.PitchLinear,
+                options.PitchQuadratic,
+                options.PitchCubic);
+            sectorLengthMm = DvdEccBlockEncoder.ChannelBitsPerSector * bitLengthMm;
+        }
+
+        (uint StartLba, uint EndLba) ComputeLbaRange(double rInnerMm, double rOuterMm) => isCd
+            ? ComputeAlignedCdLbaRange(cdParams!, rInnerMm, rOuterMm, fillSectors)
+            : ComputeAlignedLbaRange(geom!, rInnerMm, rOuterMm, bitLengthMm, fillSectors);
 
         double innerNominalOuterMm = options.InnerRadiusMm + 6.200;
         double middleNominalOuterMm = (0.5 * (options.InnerRadiusMm + options.OuterRadiusMm)) + (0.5 * maxPageHeightMm);
@@ -243,7 +321,7 @@ public static class RosettaLadderDisc
             double outerMm = zoneSpecs[z].OuterMm;
             double innerMm = outerMm - maxPageHeightMm;
             double midMm = 0.5 * (innerMm + outerMm);
-            (uint startLba, uint endLba) = ComputeAlignedLbaRange(geom, innerMm, outerMm, bitLengthMm, fillSectors);
+            (uint startLba, uint endLba) = ComputeLbaRange(innerMm, outerMm);
             zones[z] = new RosettaLadderZone(
                 zoneSpecs[z].ZoneId,
                 zoneSpecs[z].ShortTag,
@@ -263,6 +341,22 @@ public static class RosettaLadderDisc
             throw new ArgumentOutOfRangeException(
                 nameof(options),
                 "Radial zones do not maintain at least 1.0 mm separation inside the disc data band.");
+        }
+
+        if (isCd)
+        {
+            long drawableEndByte = CdCircEdgeZones.LogicalDrawableEndByte(cdParams!.TotalBytes);
+            double innerEdgeRadiusMm = cdParams.RadiusFromByte(CdCircEdgeZones.InnerEdgeZoneBytes);
+            double outerEdgeRadiusMm = cdParams.RadiusFromByte(drawableEndByte);
+            if (zones[0].InnerRadiusMm <= innerEdgeRadiusMm
+                || zones[^1].OuterRadiusMm >= outerEdgeRadiusMm
+                || (long)zones[0].StartLba * CdDiscParameters.BytesPerSector < CdCircEdgeZones.InnerEdgeZoneBytes
+                || (long)zones[^1].EndLba * CdDiscParameters.BytesPerSector > drawableEndByte)
+            {
+                throw new ArgumentOutOfRangeException(
+                    nameof(options),
+                    "CD-R ladder zones must stay outside the ~18 mm CIRC edge zones at the start and end of the track.");
+            }
         }
 
         double slotAngleDeg = 360.0 / ladderPresets.Count;
@@ -322,12 +416,9 @@ public static class RosettaLadderDisc
 
                 string rungId = string.Create(CultureInfo.InvariantCulture, $"{zone.ShortTag}-R{k + 1:D2}-{sizeTag}");
                 string headerText = string.Create(CultureInfo.InvariantCulture, $"{zone.ShortTag} {sizeTag} um R{k + 1}/{ladderPresets.Count}");
-                (uint rungStartLba, uint rungEndLba) = ComputeAlignedLbaRange(
-                    geom,
+                (uint rungStartLba, uint rungEndLba) = ComputeLbaRange(
                     Math.Min(labelInnerMm, pageInnerMm),
-                    zone.OuterRadiusMm,
-                    bitLengthMm,
-                    fillSectors);
+                    zone.OuterRadiusMm);
 
                 rungs[rungCursor++] = new RosettaLadderRung(
                     rungId,
@@ -351,20 +442,22 @@ public static class RosettaLadderDisc
             }
         }
 
-        string discPresetId = string.IsNullOrWhiteSpace(options.DiscPresetId) ? "custom-dvd" : options.DiscPresetId;
+        string discPresetId = string.IsNullOrWhiteSpace(options.DiscPresetId)
+            ? (isCd ? "custom-cd" : "custom-dvd")
+            : options.DiscPresetId;
         var manifest = new RosettaLadderManifest(
             SchemaVersion,
             FormatId,
-            "DVD-R",
+            isCd ? "CD-R" : "DVD-R",
             discPresetId,
             StartLba: 0,
             FillSectors: fillSectors,
             TotalSectors: options.TotalSectors,
-            PsnOffset: options.PsnOffset,
-            ReadCompatibility: options.ReadCompatibility ? DvdReadCompatibilityModes.Current : DvdReadCompatibilityModes.Off,
+            PsnOffset: isCd ? 0u : options.PsnOffset,
+            ReadCompatibility: isCd ? "none" : (options.ReadCompatibility ? DvdReadCompatibilityModes.Current : DvdReadCompatibilityModes.Off),
             InnerRadiusMm: options.InnerRadiusMm,
             OuterRadiusMm: options.OuterRadiusMm,
-            ChannelBitLengthNm: options.ChannelBitLengthNm,
+            ChannelBitLengthNm: isCd ? 0.0 : options.ChannelBitLengthNm,
             PitchLinear: options.PitchLinear,
             PitchQuadratic: options.PitchQuadratic,
             PitchCubic: options.PitchCubic,
@@ -376,9 +469,12 @@ public static class RosettaLadderDisc
             LabelCellHeightUm: labelCell.HeightUm,
             TestTextLines: DefaultTestTextLines,
             Zones: zones,
-            Rungs: rungs);
+            Rungs: rungs,
+            LinearVelocityMmPerSecond: isCd ? options.LinearVelocityMmPerSecond : 0.0,
+            CdInterleave: isCd && options.CdInterleave,
+            CircEdgeZoneBytes: isCd && options.CdInterleave ? CdCircEdgeZones.InnerEdgeZoneBytes : 0);
 
-        return new RosettaLadderLayout(options, geom, manifest, ladderPresets);
+        return new RosettaLadderLayout(options, geom, cdParams, manifest, ladderPresets);
     }
 
     public static Func<double, double, byte> CreateReadSideGrayscaleSampler(
@@ -741,6 +837,10 @@ public static class RosettaLadderDisc
     {
         ArgumentNullException.ThrowIfNull(layout);
         ArgumentNullException.ThrowIfNull(output);
+        if (layout.Options.Medium != RosettaLadderMedium.Dvd)
+        {
+            throw new ArgumentException("WriteStream requires a DVD-R RosettaLadderLayout; use WriteCdStream for CD-R.", nameof(layout));
+        }
 
         RosettaLadderManifest manifest = layout.Manifest;
         double bitLengthMm = manifest.ChannelBitLengthNm * 1.0e-6;
@@ -862,6 +962,10 @@ public static class RosettaLadderDisc
     {
         ArgumentNullException.ThrowIfNull(layout);
         ArgumentException.ThrowIfNullOrWhiteSpace(isoOutputPath);
+        if (layout.Options.Medium != RosettaLadderMedium.Dvd)
+        {
+            throw new ArgumentException("WriteIsoFile requires a DVD-R RosettaLadderLayout; use WriteCdFile for CD-R.", nameof(layout));
+        }
 
         string isoFullPath = Path.GetFullPath(isoOutputPath);
         string? isoDir = Path.GetDirectoryName(isoFullPath);
@@ -884,6 +988,73 @@ public static class RosettaLadderDisc
         {
             summary = WriteStream(layout, fs, progress, cancellationToken);
         }
+
+        File.WriteAllText(resolvedJsonPath, SerializeManifestJson(layout.Manifest));
+        return summary;
+    }
+
+    public static CdGenerationSummary WriteCdStream(
+        RosettaLadderLayout layout,
+        Stream output,
+        CdAudioByteOrder audioByteOrder = CdAudioByteOrder.BigEndian,
+        Action<CdProgress>? progress = null,
+        CancellationToken cancellationToken = default)
+    {
+        ArgumentNullException.ThrowIfNull(layout);
+        ArgumentNullException.ThrowIfNull(output);
+        if (layout.Options.Medium != RosettaLadderMedium.Cd || layout.CdParameters is not { } cdParams)
+        {
+            throw new ArgumentException("WriteCdStream requires a CD-R RosettaLadderLayout.", nameof(layout));
+        }
+
+        Func<double, double, byte> sampler = CreateReadSideGrayscaleSampler(layout);
+        return CdTrackGenerator.GeneratePatternToStream(
+            sampler,
+            output,
+            cdParams,
+            layout.Options.CdInterleave,
+            progress,
+            cancellationToken,
+            outputDescription: "rosetta-cd-ladder-stream",
+            audioByteOrder: audioByteOrder,
+            useSimdSampling: true,
+            useParallelSampling: true);
+    }
+
+    public static CdGenerationSummary WriteCdFile(
+        RosettaLadderLayout layout,
+        string trackOutputPath,
+        string? jsonOutputPath = null,
+        Action<CdProgress>? progress = null,
+        CancellationToken cancellationToken = default)
+    {
+        ArgumentNullException.ThrowIfNull(layout);
+        ArgumentException.ThrowIfNullOrWhiteSpace(trackOutputPath);
+        if (layout.Options.Medium != RosettaLadderMedium.Cd || layout.CdParameters is not { } cdParams)
+        {
+            throw new ArgumentException("WriteCdFile requires a CD-R RosettaLadderLayout.", nameof(layout));
+        }
+
+        string trackFullPath = Path.GetFullPath(trackOutputPath);
+        string resolvedJsonPath = string.IsNullOrWhiteSpace(jsonOutputPath)
+            ? trackFullPath + ".json"
+            : Path.GetFullPath(jsonOutputPath);
+        string? jsonDir = Path.GetDirectoryName(resolvedJsonPath);
+        if (!string.IsNullOrEmpty(jsonDir))
+        {
+            Directory.CreateDirectory(jsonDir);
+        }
+
+        Func<double, double, byte> sampler = CreateReadSideGrayscaleSampler(layout);
+        CdGenerationSummary summary = CdTrackGenerator.GeneratePattern(
+            sampler,
+            trackFullPath,
+            cdParams,
+            layout.Options.CdInterleave,
+            progress,
+            cancellationToken,
+            useSimdSampling: true,
+            useParallelSampling: true);
 
         File.WriteAllText(resolvedJsonPath, SerializeManifestJson(layout.Manifest));
         return summary;
@@ -1028,6 +1199,71 @@ public static class RosettaLadderDisc
         return (startLba, endLba);
     }
 
+    internal static CdDiscParameters BuildCdParameters(RosettaLadderOptions options)
+    {
+        var cdParams = new CdDiscParameters(
+            options.InnerRadiusMm,
+            options.OuterRadiusMm,
+            options.TotalSectors,
+            options.LinearVelocityMmPerSecond,
+            StartAngleRadians: 0.0,
+            ImageOuterRadiusMm: options.OuterRadiusMm,
+            PitchLinear: options.PitchLinear,
+            PitchQuadratic: options.PitchQuadratic,
+            PitchCubic: options.PitchCubic,
+            UsableSectors: options.UsableSectors);
+        cdParams.Validate();
+        return cdParams;
+    }
+
+    internal static CdDiscParameters BuildCdParameters(RosettaLadderManifest manifest)
+    {
+        double velocity = manifest.LinearVelocityMmPerSecond > 0.0
+            ? manifest.LinearVelocityMmPerSecond
+            : CdDiscParameters.StandardLinearVelocityMmPerSecond;
+        var cdParams = new CdDiscParameters(
+            manifest.InnerRadiusMm,
+            manifest.OuterRadiusMm,
+            manifest.TotalSectors,
+            velocity,
+            StartAngleRadians: 0.0,
+            ImageOuterRadiusMm: manifest.OuterRadiusMm,
+            PitchLinear: manifest.PitchLinear,
+            PitchQuadratic: manifest.PitchQuadratic,
+            PitchCubic: manifest.PitchCubic,
+            UsableSectors: manifest.FillSectors == manifest.TotalSectors ? null : manifest.FillSectors);
+        cdParams.Validate();
+        return cdParams;
+    }
+
+    private static (uint StartLba, uint EndLba) ComputeAlignedCdLbaRange(
+        CdDiscParameters cdParams,
+        double rInnerMm,
+        double rOuterMm,
+        uint maxOutputSectors)
+    {
+        double clampedInner = Math.Max(cdParams.InnerRadiusMm, rInnerMm - RadialLbaGuardMm);
+        double clampedOuter = Math.Min(cdParams.OuterRadiusMm, rOuterMm + RadialLbaGuardMm);
+
+        double ExactSectorAtRadius(double rMm)
+        {
+            if (cdParams.VariablePitchGeometry is { } varGeom)
+            {
+                double sectorLengthMm = cdParams.LinearVelocityMmPerSecond / 75.0;
+                return varGeom.ArcLengthAtRadius(rMm) / sectorLengthMm;
+            }
+
+            double rInSq = cdParams.InnerRadiusMm * cdParams.InnerRadiusMm;
+            double rOutSq = cdParams.OuterRadiusMm * cdParams.OuterRadiusMm;
+            double fraction = Math.Clamp(((rMm * rMm) - rInSq) / (rOutSq - rInSq), 0.0, 1.0);
+            return fraction * cdParams.Sectors;
+        }
+
+        uint startLba = (uint)Math.Clamp((long)Math.Floor(ExactSectorAtRadius(clampedInner)), 0L, maxOutputSectors);
+        uint endLba = (uint)Math.Clamp((long)Math.Ceiling(ExactSectorAtRadius(clampedOuter)), 0L, maxOutputSectors);
+        return (startLba, endLba);
+    }
+
     private static RosettaPolarBox CreatePolarBox(
         double innerMm,
         double outerMm,
@@ -1056,29 +1292,66 @@ public static class RosettaLadderDisc
 
     private static void ValidateOptions(RosettaLadderOptions options)
     {
-        if (options.TotalSectors < DvdEccBlockEncoder.SectorCount)
+        if (!Enum.IsDefined(options.Medium))
         {
-            throw new ArgumentOutOfRangeException(nameof(options), options.TotalSectors, "TotalSectors must cover at least one 16-sector ECC block.");
+            throw new ArgumentOutOfRangeException(nameof(options), options.Medium, "Unsupported Rosetta ladder medium.");
         }
 
-        if (options.UsableSectors is { } usable)
+        bool isCd = options.Medium == RosettaLadderMedium.Cd;
+        if (isCd)
         {
-            if (usable < DvdEccBlockEncoder.SectorCount
-                || usable > options.TotalSectors
-                || usable % DvdEccBlockEncoder.SectorCount != 0)
+            if (options.TotalSectors == 0)
+            {
+                throw new ArgumentOutOfRangeException(nameof(options), options.TotalSectors, "TotalSectors must be positive.");
+            }
+            if (options.UsableSectors is { } usableCd && (usableCd == 0 || usableCd > options.TotalSectors))
+            {
+                throw new ArgumentOutOfRangeException(nameof(options), usableCd, "UsableSectors must be in 1..TotalSectors.");
+            }
+            if (!double.IsFinite(options.LinearVelocityMmPerSecond) || options.LinearVelocityMmPerSecond <= 0.0)
+            {
+                throw new ArgumentOutOfRangeException(nameof(options), options.LinearVelocityMmPerSecond, "LinearVelocityMmPerSecond must be finite and positive.");
+            }
+            long totalBytes = checked((long)options.OutputSectors * CdDiscParameters.BytesPerSector);
+            if (options.CdInterleave && totalBytes <= 2L * CdCircEdgeZones.InnerEdgeZoneBytes)
             {
                 throw new ArgumentOutOfRangeException(
                     nameof(options),
-                    usable,
-                    "UsableSectors must be a positive multiple of 16 and at most TotalSectors.");
+                    options.OutputSectors,
+                    $"An interleaved CD-R ladder track must exceed both CIRC edge zones ({2 * CdCircEdgeZones.InnerEdgeZoneBytes} bytes).");
             }
         }
-        else if (options.TotalSectors % DvdEccBlockEncoder.SectorCount != 0)
+        else
         {
-            throw new ArgumentOutOfRangeException(
-                nameof(options),
-                options.TotalSectors,
-                "TotalSectors must be a multiple of 16 when UsableSectors is omitted.");
+            if (options.TotalSectors < DvdEccBlockEncoder.SectorCount)
+            {
+                throw new ArgumentOutOfRangeException(nameof(options), options.TotalSectors, "TotalSectors must cover at least one 16-sector ECC block.");
+            }
+
+            if (options.UsableSectors is { } usable)
+            {
+                if (usable < DvdEccBlockEncoder.SectorCount
+                    || usable > options.TotalSectors
+                    || usable % DvdEccBlockEncoder.SectorCount != 0)
+                {
+                    throw new ArgumentOutOfRangeException(
+                        nameof(options),
+                        usable,
+                        "UsableSectors must be a positive multiple of 16 and at most TotalSectors.");
+                }
+            }
+            else if (options.TotalSectors % DvdEccBlockEncoder.SectorCount != 0)
+            {
+                throw new ArgumentOutOfRangeException(
+                    nameof(options),
+                    options.TotalSectors,
+                    "TotalSectors must be a multiple of 16 when UsableSectors is omitted.");
+            }
+
+            if (!double.IsFinite(options.ChannelBitLengthNm) || options.ChannelBitLengthNm <= 0.0)
+            {
+                throw new ArgumentOutOfRangeException(nameof(options), options.ChannelBitLengthNm, "ChannelBitLengthNm must be finite and positive.");
+            }
         }
 
         if (!double.IsFinite(options.InnerRadiusMm) || options.InnerRadiusMm <= 0.0)
@@ -1096,13 +1369,9 @@ public static class RosettaLadderDisc
             throw new ArgumentOutOfRangeException(
                 nameof(options),
                 radialSpanMm,
-                $"DVD resolution ladder requires at least {MinimumRadialSpanMm:F1} mm of radial span (got {radialSpanMm:F2} mm).");
+                $"{(isCd ? "CD-R" : "DVD")} resolution ladder requires at least {MinimumRadialSpanMm:F1} mm of radial span (got {radialSpanMm:F2} mm).");
         }
 
-        if (!double.IsFinite(options.ChannelBitLengthNm) || options.ChannelBitLengthNm <= 0.0)
-        {
-            throw new ArgumentOutOfRangeException(nameof(options), options.ChannelBitLengthNm, "ChannelBitLengthNm must be finite and positive.");
-        }
         if (!double.IsFinite(options.StartAngleDegrees))
         {
             throw new ArgumentOutOfRangeException(nameof(options), options.StartAngleDegrees, "StartAngleDegrees must be finite.");

@@ -1,5 +1,6 @@
 using System.Collections;
 using System.Numerics;
+using CdBurner.Lithography.Cd;
 using CdBurner.Lithography.Dvd.Encoding;
 using CdBurner.Lithography.Dvd.Solver;
 using CdBurner.Lithography.Geometry;
@@ -115,7 +116,7 @@ public static class RosettaLadderReadback
 
         var context = VerificationContext.Create(manifest);
         (BitArray activeBlocks, List<(uint StartBlock, int BlockCount)> runs) =
-            RosettaLadderDisc.CollectActiveBlockRuns(context.Geometry, manifest, maxGapBlocks: 64);
+            RosettaLadderDisc.CollectActiveBlockRuns(context.Geometry!, manifest, maxGapBlocks: 64);
 
         int maxRunBlocks = Math.Min(BatchBlockLimit, runs.Count > 0 ? runs.Max(r => r.BlockCount) : 1);
         byte[] batchBuffer = new byte[checked(maxRunBlocks * DvdEccBlockEncoder.PayloadBytesPerBlock)];
@@ -164,7 +165,7 @@ public static class RosettaLadderReadback
         RosettaLadderManifest manifest = layout.Manifest;
         var context = VerificationContext.Create(manifest);
         (BitArray activeBlocks, List<(uint StartBlock, int BlockCount)> runs) =
-            RosettaLadderDisc.CollectActiveBlockRuns(context.Geometry, manifest, maxGapBlocks: 16);
+            RosettaLadderDisc.CollectActiveBlockRuns(context.Geometry!, manifest, maxGapBlocks: 16);
 
         Func<DvdCodewordSample, byte> sampler = RosettaLadderDisc.CreateCodewordGrayscaleSampler(layout);
         var processorStream = new BlockBatchProcessorStream(context, activeBlocks, cancellationToken);
@@ -191,6 +192,300 @@ public static class RosettaLadderReadback
         }
 
         return BuildReport(context, manifest, processorStream.InspectedBlocks);
+    }
+
+    public static RosettaLadderVerificationReport VerifyCdTrack(
+        string trackPath,
+        string? jsonManifestPath = null,
+        CancellationToken cancellationToken = default)
+    {
+        ArgumentException.ThrowIfNullOrWhiteSpace(trackPath);
+        string trackFullPath = Path.GetFullPath(trackPath);
+        string manifestPath = string.IsNullOrWhiteSpace(jsonManifestPath)
+            ? trackFullPath + ".json"
+            : Path.GetFullPath(jsonManifestPath);
+
+        RosettaLadderManifest manifest = RosettaLadderDisc.LoadManifestJson(manifestPath);
+        using var fs = new FileStream(
+            trackFullPath,
+            FileMode.Open,
+            FileAccess.Read,
+            FileShare.Read,
+            bufferSize: 1024 * 1024,
+            FileOptions.SequentialScan);
+
+        Span<byte> signature = stackalloc byte[12];
+        int signatureLength = fs.ReadAtLeast(signature, signature.Length, throwOnEndOfStream: false);
+        bool wave = Path.GetExtension(trackFullPath).Equals(".wav", StringComparison.OrdinalIgnoreCase)
+            || (signatureLength == 12 && signature[..4].SequenceEqual("RIFF"u8)
+                && signature[8..].SequenceEqual("WAVE"u8));
+        fs.Position = 0;
+
+        long audioOffset = 0;
+        long audioLength = fs.Length;
+        if (wave)
+        {
+            (audioOffset, audioLength) = CdWaveFile.ReadAudioRange(fs);
+        }
+
+        return VerifyCdAudioRange(
+            fs,
+            audioOffset,
+            audioLength,
+            wave ? CdAudioByteOrder.LittleEndian : CdAudioByteOrder.BigEndian,
+            manifest,
+            cancellationToken);
+    }
+
+    public static RosettaLadderVerificationReport VerifyCdStream(
+        Stream seekableTrackStream,
+        CdAudioByteOrder byteOrder,
+        RosettaLadderManifest manifest,
+        CancellationToken cancellationToken = default)
+    {
+        ArgumentNullException.ThrowIfNull(seekableTrackStream);
+        ArgumentNullException.ThrowIfNull(manifest);
+        CdAudioSamples.Validate(byteOrder);
+        if (!seekableTrackStream.CanRead || !seekableTrackStream.CanSeek)
+        {
+            throw new ArgumentException("Track stream must be readable and seekable.", nameof(seekableTrackStream));
+        }
+
+        return VerifyCdAudioRange(seekableTrackStream, 0, seekableTrackStream.Length, byteOrder, manifest, cancellationToken);
+    }
+
+    private static RosettaLadderVerificationReport VerifyCdAudioRange(
+        Stream input,
+        long audioOffset,
+        long audioLength,
+        CdAudioByteOrder byteOrder,
+        RosettaLadderManifest manifest,
+        CancellationToken cancellationToken)
+    {
+        if (!string.Equals(manifest.Media, "CD-R", StringComparison.OrdinalIgnoreCase))
+        {
+            throw new ArgumentException($"Expected a CD-R ladder manifest (got '{manifest.Media}').", nameof(manifest));
+        }
+
+        CdDiscParameters cdParams = RosettaLadderDisc.BuildCdParameters(manifest);
+        if (audioLength < cdParams.TotalBytes)
+        {
+            throw new ArgumentOutOfRangeException(
+                nameof(input),
+                audioLength,
+                $"CD track audio length ({audioLength:N0}) is smaller than FillSectors ({cdParams.TotalBytes:N0} bytes).");
+        }
+
+        var context = VerificationContext.CreateForCd(manifest);
+        const int SectorsPerWindow = 448;
+        const int WindowBytes = SectorsPerWindow * CdDiscParameters.BytesPerSector;
+        int lookAhead = manifest.CdInterleave ? CddaInterleaveTable.MaximumFileOffset : 0;
+        byte[] buffer = new byte[WindowBytes + lookAhead];
+        bool littleEndian = byteOrder == CdAudioByteOrder.LittleEndian;
+        int inspectedSectors = 0;
+        var parallelOptions = new ParallelOptions { CancellationToken = cancellationToken };
+
+        for (int z = 0; z < manifest.Zones.Count; z++)
+        {
+            RosettaLadderZone zone = manifest.Zones[z];
+            uint sectorCursor = zone.StartLba;
+            while (sectorCursor < zone.EndLba)
+            {
+                cancellationToken.ThrowIfCancellationRequested();
+                int chunkSectors = (int)Math.Min(SectorsPerWindow, zone.EndLba - sectorCursor);
+                long windowStart = (long)sectorCursor * CdDiscParameters.BytesPerSector;
+                long remaining = audioLength - windowStart;
+                int wanted = (int)Math.Min((long)(chunkSectors * CdDiscParameters.BytesPerSector) + lookAhead, Math.Max(0, remaining));
+                if (wanted <= 0)
+                {
+                    break;
+                }
+
+                input.Position = audioOffset + windowStart;
+                int bytesRead = input.ReadAtLeast(buffer.AsSpan(0, wanted), wanted, throwOnEndOfStream: false);
+                bytesRead &= ~1;
+                if (littleEndian)
+                {
+                    CdAudioSamples.SwapByteOrder(buffer.AsSpan(0, bytesRead));
+                }
+
+                int zoneIndex = z;
+                long baseSector = sectorCursor;
+                Parallel.For(0, chunkSectors, parallelOptions, sectorOffset =>
+                {
+                    long sectorByte = (baseSector + sectorOffset) * CdDiscParameters.BytesPerSector;
+                    long localClassified = 0;
+                    RungAccumulator? lastAcc = null;
+                    bool lastIsPage = false;
+                    int lastSubIdx = -1;
+                    int runSamples = 0;
+                    int runDark = 0;
+
+                    for (int b = 0; b < CdDiscParameters.BytesPerSector; b++)
+                    {
+                        long logical = sectorByte + b;
+                        long local = manifest.CdInterleave
+                            ? logical + CddaInterleaveTable.FileOffsetFor((int)(logical % CddaInterleaveTable.BytesPerFrame)) - windowStart
+                            : logical - windowStart;
+                        if ((ulong)local >= (ulong)bytesRead)
+                        {
+                            continue;
+                        }
+
+                        byte palette = buffer[local];
+                        byte tone = palette == 0x0D ? (byte)2 : palette == 0xAA ? (byte)1 : (byte)0;
+                        if (tone == 0)
+                        {
+                            continue;
+                        }
+
+                        localClassified++;
+                        (double rMm, double theta) = cdParams.PolarFromByte(logical);
+                        if (rMm < zone.InnerRadiusMm || rMm >= zone.OuterRadiusMm)
+                        {
+                            continue;
+                        }
+
+                        double cwRad = theta - (TwoPi * Math.Floor(theta / TwoPi));
+                        if (cwRad < 0.0 || cwRad >= TwoPi)
+                        {
+                            cwRad = 0.0;
+                        }
+
+                        double relRad = cwRad - context.StartAngleRad;
+                        if (relRad < 0.0)
+                        {
+                            relRad += TwoPi;
+                        }
+                        int k = (int)(relRad * context.InvSlotAngleRad);
+                        if ((uint)k >= (uint)context.SlotCount)
+                        {
+                            k = context.SlotCount - 1;
+                        }
+
+                        RungAccumulator acc = context.Accumulators[(zoneIndex * context.SlotCount) + k];
+                        AccumulateSample(
+                            acc,
+                            rMm,
+                            cwRad,
+                            tone,
+                            ref lastAcc,
+                            ref lastIsPage,
+                            ref lastSubIdx,
+                            ref runSamples,
+                            ref runDark);
+                    }
+
+                    FlushSampleRun(lastAcc, lastIsPage, lastSubIdx, runSamples, runDark);
+                    if (localClassified > 0)
+                    {
+                        Interlocked.Add(ref context.ClassifiedPayloadBytes, localClassified);
+                    }
+                });
+
+                inspectedSectors += chunkSectors;
+                sectorCursor += (uint)chunkSectors;
+            }
+        }
+
+        return BuildReport(context, manifest, inspectedSectors);
+    }
+
+    private static void AccumulateSample(
+        RungAccumulator acc,
+        double rMm,
+        double cwRad,
+        byte tone,
+        ref RungAccumulator? lastAcc,
+        ref bool lastIsPage,
+        ref int lastSubIdx,
+        ref int runSamples,
+        ref int runDark)
+    {
+        if (rMm < acc.MinInnerMm || rMm >= acc.MaxOuterMm)
+        {
+            return;
+        }
+
+        bool isPage = false;
+        int subIdx = -1;
+        bool matched = false;
+        if (rMm >= acc.LabelInnerMm && rMm < acc.LabelOuterMm)
+        {
+            double delta = cwRad - acc.LabelStartRad;
+            if (delta < 0.0) delta += TwoPi;
+            if (delta < acc.LabelSpanRad)
+            {
+                int lx = (int)(delta * acc.LabelUGridScale);
+                if (lx >= acc.LabelGridW) lx = acc.LabelGridW - 1;
+                double yMm = acc.LabelHeightMm - (rMm - acc.LabelInnerMm);
+                int ly = yMm <= 0.0 ? 0 : (int)(yMm * acc.LabelYGridScale);
+                if (ly >= acc.LabelGridH) ly = acc.LabelGridH - 1;
+                isPage = false;
+                subIdx = (ly * acc.LabelGridW) + lx;
+                matched = true;
+            }
+        }
+
+        if (!matched && rMm >= acc.PageInnerMm && rMm < acc.PageOuterMm)
+        {
+            double delta = cwRad - acc.PageStartRad;
+            if (delta < 0.0) delta += TwoPi;
+            if (delta < acc.PageSpanRad)
+            {
+                int px = (int)(delta * acc.PageUGridScale);
+                if (px >= acc.PageGridW) px = acc.PageGridW - 1;
+                double yMm = acc.PageHeightMm - (rMm - acc.PageInnerMm);
+                int py = yMm <= 0.0 ? 0 : (int)(yMm * acc.PageYGridScale);
+                if (py >= acc.PageGridH) py = acc.PageGridH - 1;
+                isPage = true;
+                subIdx = (py * acc.PageGridW) + px;
+                matched = true;
+            }
+        }
+
+        if (!matched)
+        {
+            return;
+        }
+
+        if (ReferenceEquals(acc, lastAcc) && isPage == lastIsPage && subIdx == lastSubIdx)
+        {
+            runSamples++;
+            if (tone == 2)
+            {
+                runDark++;
+            }
+        }
+        else
+        {
+            FlushSampleRun(lastAcc, lastIsPage, lastSubIdx, runSamples, runDark);
+            lastAcc = acc;
+            lastIsPage = isPage;
+            lastSubIdx = subIdx;
+            runSamples = 1;
+            runDark = tone == 2 ? 1 : 0;
+        }
+    }
+
+    private static void FlushSampleRun(
+        RungAccumulator? lastAcc,
+        bool lastIsPage,
+        int lastSubIdx,
+        int runSamples,
+        int runDark)
+    {
+        if (lastAcc is null)
+        {
+            return;
+        }
+        int[] sArr = lastIsPage ? lastAcc.PageSamples : lastAcc.LabelSamples;
+        Interlocked.Add(ref sArr[lastSubIdx], runSamples);
+        if (runDark > 0)
+        {
+            int[] dArr = lastIsPage ? lastAcc.PageDark : lastAcc.LabelDark;
+            Interlocked.Add(ref dArr[lastSubIdx], runDark);
+        }
     }
 
     private static bool SectorMayHit(
@@ -245,11 +540,11 @@ public static class RosettaLadderReadback
                 int sectorMidIdx = DvdEccBlockEncoder.PayloadBytesPerSector / 2;
                 int sectorMidBit = PayloadCenters[sectorCenterBase + sectorMidIdx];
                 int sectorLastBit = PayloadCenters[sectorCenterBase + DvdEccBlockEncoder.PayloadBytesPerSector - 1];
-                (double rStart, double aStart) = context.Geometry.AtArcLengthFast(
+                (double rStart, double aStart) = context.Geometry!.AtArcLengthFast(
                     (blockBaseBit + sectorFirstBit) * context.BitLengthMm);
-                (double rMid, double aMid) = context.Geometry.AtArcLengthFast(
+                (double rMid, double aMid) = context.Geometry!.AtArcLengthFast(
                     (blockBaseBit + sectorMidBit) * context.BitLengthMm);
-                (double rEnd, double aEnd) = context.Geometry.AtArcLengthFast(
+                (double rEnd, double aEnd) = context.Geometry!.AtArcLengthFast(
                     (blockBaseBit + sectorLastBit) * context.BitLengthMm);
 
                 int zone0 = context.FindZoneIndex(rStart);
@@ -414,92 +709,19 @@ public static class RosettaLadderReadback
                         acc = context.Accumulators[(zoneIndex * context.SlotCount) + k];
                     }
 
-                    if (rMm < acc.MinInnerMm || rMm >= acc.MaxOuterMm)
-                    {
-                        continue;
-                    }
-
-                    bool isPage = false;
-                    int subIdx = -1;
-                    bool matched = false;
-                    if (rMm >= acc.LabelInnerMm && rMm < acc.LabelOuterMm)
-                    {
-                        double delta = cwRad - acc.LabelStartRad;
-                        if (delta < 0.0) delta += TwoPi;
-                        if (delta < acc.LabelSpanRad)
-                        {
-                            int lx = (int)(delta * acc.LabelUGridScale);
-                            if (lx >= acc.LabelGridW) lx = acc.LabelGridW - 1;
-                            double yMm = acc.LabelHeightMm - (rMm - acc.LabelInnerMm);
-                            int ly = yMm <= 0.0 ? 0 : (int)(yMm * acc.LabelYGridScale);
-                            if (ly >= acc.LabelGridH) ly = acc.LabelGridH - 1;
-                            isPage = false;
-                            subIdx = (ly * acc.LabelGridW) + lx;
-                            matched = true;
-                        }
-                    }
-
-                    if (!matched && rMm >= acc.PageInnerMm && rMm < acc.PageOuterMm)
-                    {
-                        double delta = cwRad - acc.PageStartRad;
-                        if (delta < 0.0) delta += TwoPi;
-                        if (delta < acc.PageSpanRad)
-                        {
-                            int px = (int)(delta * acc.PageUGridScale);
-                            if (px >= acc.PageGridW) px = acc.PageGridW - 1;
-                            double yMm = acc.PageHeightMm - (rMm - acc.PageInnerMm);
-                            int py = yMm <= 0.0 ? 0 : (int)(yMm * acc.PageYGridScale);
-                            if (py >= acc.PageGridH) py = acc.PageGridH - 1;
-                            isPage = true;
-                            subIdx = (py * acc.PageGridW) + px;
-                            matched = true;
-                        }
-                    }
-
-                    if (!matched)
-                    {
-                        continue;
-                    }
-
-                    if (ReferenceEquals(acc, lastAcc) && isPage == lastIsPage && subIdx == lastSubIdx)
-                    {
-                        runSamples++;
-                        if (tone == 2)
-                        {
-                            runDark++;
-                        }
-                    }
-                    else
-                    {
-                        if (lastAcc is not null)
-                        {
-                            int[] sArr = lastIsPage ? lastAcc.PageSamples : lastAcc.LabelSamples;
-                            Interlocked.Add(ref sArr[lastSubIdx], runSamples);
-                            if (runDark > 0)
-                            {
-                                int[] dArr = lastIsPage ? lastAcc.PageDark : lastAcc.LabelDark;
-                                Interlocked.Add(ref dArr[lastSubIdx], runDark);
-                            }
-                        }
-
-                        lastAcc = acc;
-                        lastIsPage = isPage;
-                        lastSubIdx = subIdx;
-                        runSamples = 1;
-                        runDark = tone == 2 ? 1 : 0;
-                    }
+                    AccumulateSample(
+                        acc,
+                        rMm,
+                        cwRad,
+                        tone,
+                        ref lastAcc,
+                        ref lastIsPage,
+                        ref lastSubIdx,
+                        ref runSamples,
+                        ref runDark);
                 }
 
-                if (lastAcc is not null)
-                {
-                    int[] sArr = lastIsPage ? lastAcc.PageSamples : lastAcc.LabelSamples;
-                    Interlocked.Add(ref sArr[lastSubIdx], runSamples);
-                    if (runDark > 0)
-                    {
-                        int[] dArr = lastIsPage ? lastAcc.PageDark : lastAcc.LabelDark;
-                        Interlocked.Add(ref dArr[lastSubIdx], runDark);
-                    }
-                }
+                FlushSampleRun(lastAcc, lastIsPage, lastSubIdx, runSamples, runDark);
             }
 
             if (localClassified > 0)
@@ -987,7 +1209,7 @@ public static class RosettaLadderReadback
         public long ClassifiedPayloadBytes;
 
         private VerificationContext(
-            DvdTrackGeometry geometry,
+            DvdTrackGeometry? geometry,
             double bitLengthMm,
             uint psnOffset,
             bool readCompatibility,
@@ -1007,7 +1229,7 @@ public static class RosettaLadderReadback
             Accumulators = accumulators;
         }
 
-        public DvdTrackGeometry Geometry { get; }
+        public DvdTrackGeometry? Geometry { get; }
         public double BitLengthMm { get; }
         public uint PsnOffset { get; }
         public bool ReadCompatibility { get; }
@@ -1061,6 +1283,33 @@ public static class RosettaLadderReadback
                 bitLengthMm,
                 manifest.PsnOffset,
                 readCompat,
+                startRad,
+                slotCount,
+                manifest.Zones,
+                accumulators);
+        }
+
+        public static VerificationContext CreateForCd(RosettaLadderManifest manifest)
+        {
+            double startRad = (manifest.StartAngleDegrees % 360.0) * DegreesToRadians;
+            if (startRad < 0.0)
+            {
+                startRad += TwoPi;
+            }
+
+            int zoneCount = Math.Max(1, manifest.Zones.Count);
+            int slotCount = Math.Max(1, manifest.Rungs.Count / zoneCount);
+            var accumulators = new RungAccumulator[manifest.Rungs.Count];
+            for (int i = 0; i < manifest.Rungs.Count; i++)
+            {
+                accumulators[i] = new RungAccumulator(manifest.Rungs[i]);
+            }
+
+            return new VerificationContext(
+                null,
+                0.0,
+                0,
+                false,
                 startRad,
                 slotCount,
                 manifest.Zones,

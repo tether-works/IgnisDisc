@@ -3675,8 +3675,8 @@ public static partial class CliCommandRunner
         stdout.WriteLine("      Reads or updates DVD+R / DVD+RW / DVD+R DL book-type bitsetting.");
         stdout.WriteLine("  repair-par2 --path <folder> [--par2 <path>] [--delete-backups] [--json]");
         stdout.WriteLine("      Verifies and repairs a folder in place from its PAR2 recovery set (keeps backup files unless --delete-backups).");
-        stdout.WriteLine("  rosetta ladder --media dvd --output <file.iso> [--json-output <file.json>] [--disc-preset <id>] [--start-angle <deg>] [--plan-only] [--json]");
-        stdout.WriteLine("      Generates a DVD-R optical resolution-ladder image (250x375 down to 13x17 um across inner, middle, and outer radii) plus a JSON manifest of rung positions.");
+        stdout.WriteLine("  rosetta ladder --media dvd|cd --output <file.iso|file.wav|file.raw> [--json-output <file.json>] [--disc-preset <id>] [--start-angle <deg>] [--no-interleave] [--plan-only] [--json]");
+        stdout.WriteLine("      Generates a DVD-R (250x375 down to 13x17 um) or CD-R (250x375 down to 50x75 um) optical resolution-ladder image across inner, middle, and outer radii plus a JSON manifest of rung positions.");
         stdout.WriteLine("  rosetta build --text <folder> --output <file.iso> [--title <text>] [--date yyyy-mm-dd] [--files <folder>] [--cells hobbyist|high-density|<rung id>] [--pages-radius <mm>] [--redundancy <0-100>] [--no-fill] [--no-rim] [--disc-preset <id>] [--plan-only] [--overwrite] [--json]");
         stdout.WriteLine("      Makes a hybrid Rosetta DVD-R image: the text, a page index and optional files with PAR2 recovery data inside r = 38 mm, a 2 MiB zero gap, then the text as microscope-readable pages and the rim header.");
         stdout.WriteLine("  rosetta burn --drive <id> --image <file.iso> [any burn-iso option] [--json]");
@@ -3939,15 +3939,16 @@ public static partial class CliCommandRunner
         {
             stdout.WriteLine(LegalBanner.VersionNotice);
             stdout.WriteLine();
-            stdout.WriteLine("  rosetta ladder --media dvd --output <file.iso> [--json-output <file.json>] [--disc-preset <id>] [--disc-presets-file <path>] [--start-angle <deg>] [--plan-only] [--json]");
-            stdout.WriteLine("      Generates a DVD-R optical resolution-ladder image (250x375 down to 13x17 um across inner, middle, and outer radii) plus a JSON manifest of rung positions.");
-            stdout.WriteLine("      --media dvd              Target optical medium (DVD-R only).");
-            stdout.WriteLine("      --output, --out <path>   Destination raw DVD-R .iso file.");
+            stdout.WriteLine("  rosetta ladder --media dvd|cd --output <file.iso|file.wav|file.raw> [--json-output <file.json>] [--disc-preset <id>] [--disc-presets-file <path>] [--start-angle <deg>] [--no-interleave] [--plan-only] [--json]");
+            stdout.WriteLine("      Generates a DVD-R (250x375 down to 13x17 um) or CD-R (250x375 down to 50x75 um) optical resolution-ladder image across inner, middle, and outer radii plus a JSON manifest of rung positions.");
+            stdout.WriteLine("      --media dvd|cd           Target optical medium (DVD-R or CD-R; default dvd).");
+            stdout.WriteLine("      --output, --out <path>   Destination raw DVD-R .iso or CD-R .wav (with CUE) / .raw file.");
             stdout.WriteLine("      --json-output <path>     Optional manifest JSON path (default <output>.json).");
-            stdout.WriteLine("      --disc-preset <id>       DVD preset ID from DiscPresetJsonStore (default dvd-5-120mm).");
+            stdout.WriteLine("      --disc-preset <id>       Preset ID from DiscPresetJsonStore (default dvd-5-120mm or cd-80).");
             stdout.WriteLine("      --disc-presets-file <p>  Optional user presets JSON file to merge.");
             stdout.WriteLine("      --start-angle <deg>      Optional angular offset in degrees (default 0).");
-            stdout.WriteLine("      --plan-only              Write only the JSON manifest without writing the .iso.");
+            stdout.WriteLine("      --no-interleave          CD-R only: write the track without the CD-DA delay interleave.");
+            stdout.WriteLine("      --plan-only              Write only the JSON manifest without writing the disc image.");
             stdout.WriteLine();
             stdout.WriteLine("  rosetta build --text <folder> --output <file.iso> [options] [--json]");
             stdout.WriteLine("      Makes a hybrid Rosetta DVD-R image. Inside the pages' inner radius: an archive volume (ISO 9660 + Joliet + UDF)");

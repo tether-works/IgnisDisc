@@ -1,4 +1,6 @@
+using System.Text;
 using System.Text.Json;
+using CdBurner.Lithography.Cd;
 using CdBurner.Lithography.Dvd.Encoding;
 using CdBurner.Lithography.Dvd.Solver;
 using CdBurner.Lithography.Geometry;
@@ -107,6 +109,210 @@ public sealed class RosettaLadderTests : IDisposable
         var ex = Assert.Throws<ArgumentOutOfRangeException>(() =>
             RosettaLadderDisc.CreateLayout(RosettaLadderOptions.FromDvdPreset(miniDvd)));
         Assert.Contains("radial span", ex.Message, StringComparison.OrdinalIgnoreCase);
+    }
+
+    [Theory]
+    [InlineData("cd-80")]
+    [InlineData("cd-74")]
+    [InlineData("verbatim-azo-43438")]
+    [InlineData("ritek-medical-aqua")]
+    public void CreateLayout_CdR_IncludesOnlyRungsAtLeast50x75UmWithoutOverlapAndAvoidsCircEdgeZones(string cdPresetId)
+    {
+        CdDiscPresetDefinition cdPreset = DiscPresetJsonStore.LoadBuiltIn().CdPresets.Single(p => p.Id == cdPresetId);
+        RosettaLadderLayout layout = RosettaLadderDisc.CreateLayout(RosettaLadderOptions.FromCdPreset(cdPreset, startAngleDegrees: 12.5));
+        RosettaLadderManifest manifest = layout.Manifest;
+
+        Assert.Equal("CD-R", manifest.Media);
+        Assert.Equal(cdPresetId, manifest.DiscPresetId);
+        Assert.Equal(3, manifest.Zones.Count);
+        Assert.Equal(["inner", "middle", "outer"], manifest.Zones.Select(z => z.ZoneId).ToArray());
+        Assert.Equal(15, manifest.Rungs.Count);
+        Assert.True(manifest.CdInterleave);
+        Assert.Equal(CdCircEdgeZones.InnerEdgeZoneBytes, manifest.CircEdgeZoneBytes);
+
+        (double w, double h)[] expectedSizes =
+        [
+            (250.0, 375.0),
+            (150.0, 225.0),
+            (100.0, 150.0),
+            (75.0,  113.0),
+            (50.0,  75.0),
+        ];
+
+        for (int z = 0; z < 3; z++)
+        {
+            List<RosettaLadderRung> zoneRungs = manifest.Rungs.Where(r => r.ZoneIndex == z).ToList();
+            Assert.Equal(5, zoneRungs.Count);
+            for (int k = 0; k < expectedSizes.Length; k++)
+            {
+                RosettaLadderRung rung = zoneRungs[k];
+                Assert.Equal(expectedSizes[k].w, rung.CellWidthUm);
+                Assert.Equal(expectedSizes[k].h, rung.CellHeightUm);
+                Assert.True(rung.CdSupported);
+                Assert.True(rung.CellWidthUm >= 50.0 && rung.CellHeightUm >= 75.0);
+                Assert.True(BoxesDisjoint(rung.Label.Bounds, rung.Page));
+            }
+        }
+
+        // All 30 polar boxes (15 labels + 15 pages) must be pairwise disjoint.
+        RosettaPolarBox[] allBoxes = manifest.Rungs.SelectMany(r => new[] { r.Label.Bounds, r.Page }).ToArray();
+        for (int i = 0; i < allBoxes.Length; i++)
+        {
+            for (int j = i + 1; j < allBoxes.Length; j++)
+            {
+                Assert.True(BoxesDisjoint(allBoxes[i], allBoxes[j]), $"CD polar box {i} overlaps box {j}.");
+            }
+        }
+
+        // Every zone and rung byte range must stay strictly outside both ~18 mm CIRC edge zones.
+        long totalBytes = checked((long)manifest.FillSectors * CdDiscParameters.BytesPerSector);
+        long drawableEndByte = CdCircEdgeZones.LogicalDrawableEndByte(totalBytes);
+        CdDiscParameters cdParams = layout.CdParameters!;
+        double innerEdgeRadius = cdParams.RadiusFromByte(CdCircEdgeZones.InnerEdgeZoneBytes);
+        double outerEdgeRadius = cdParams.RadiusFromByte(drawableEndByte);
+
+        Assert.All(manifest.Zones, zone =>
+        {
+            Assert.True(zone.InnerRadiusMm > innerEdgeRadius);
+            Assert.True(zone.OuterRadiusMm < outerEdgeRadius);
+            Assert.True((long)zone.StartLba * CdDiscParameters.BytesPerSector >= CdCircEdgeZones.InnerEdgeZoneBytes);
+            Assert.True((long)zone.EndLba * CdDiscParameters.BytesPerSector <= drawableEndByte);
+        });
+        Assert.All(manifest.Rungs, rung =>
+        {
+            Assert.True((long)rung.StartLba * CdDiscParameters.BytesPerSector >= CdCircEdgeZones.InnerEdgeZoneBytes);
+            Assert.True((long)rung.EndLba * CdDiscParameters.BytesPerSector <= drawableEndByte);
+        });
+
+        string json = RosettaLadderDisc.SerializeManifestJson(manifest);
+        string jsonPath = Path.Combine(_tempDir, $"{cdPresetId}.json");
+        File.WriteAllText(jsonPath, json);
+        RosettaLadderManifest reloaded = RosettaLadderDisc.LoadManifestJson(jsonPath);
+        Assert.Equal("CD-R", reloaded.Media);
+        Assert.Equal(15, reloaded.Rungs.Count);
+        Assert.Equal(CdCircEdgeZones.InnerEdgeZoneBytes, reloaded.CircEdgeZoneBytes);
+    }
+
+    [Fact]
+    public void CreateLayout_CdR_ExcludesSub50x75RungsAndRefusesCatalogWithoutCompatibleRungs()
+    {
+        const string mixedCatalogJson = """
+        {
+          "schemaVersion": 1,
+          "presets": [
+            { "id": "hobbyist", "name": "Hobbyist", "targetMedia": "DVD-R", "cellWidthUm": 100, "cellHeightUm": 150, "columns": 30, "rows": 13, "radialGutterUm": 200, "tangentialGutterUm": 200 },
+            { "id": "high-density", "name": "High-density", "targetMedia": "DVD-R", "cellWidthUm": 26, "cellHeightUm": 34, "columns": 30, "rows": 17, "radialGutterUm": 60, "tangentialGutterUm": 60 }
+          ],
+          "ladder": [
+            { "cellWidthUm": 60, "cellHeightUm": 90, "columns": 30, "rows": 13, "radialGutterUm": 120, "tangentialGutterUm": 120, "cdSupported": true },
+            { "cellWidthUm": 40, "cellHeightUm": 60, "columns": 30, "rows": 15, "radialGutterUm": 90, "tangentialGutterUm": 90, "cdSupported": true },
+            { "cellWidthUm": 34, "cellHeightUm": 51, "columns": 30, "rows": 17, "radialGutterUm": 80, "tangentialGutterUm": 80, "cdSupported": false }
+          ]
+        }
+        """;
+
+        CdDiscPresetDefinition cd80 = DiscPresetJsonStore.LoadBuiltIn().CdPresets.Single(p => p.Id == "cd-80");
+        using var mixedMs = new MemoryStream(Encoding.UTF8.GetBytes(mixedCatalogJson));
+        RosettaPresetCatalog mixedCatalog = RosettaPresetCatalog.Load(mixedMs);
+        RosettaLadderLayout layout = RosettaLadderDisc.CreateLayout(RosettaLadderOptions.FromCdPreset(cd80), mixedCatalog);
+        Assert.Equal(3, layout.Manifest.Rungs.Count);
+        Assert.All(layout.Manifest.Rungs, r => Assert.Equal(60.0, r.CellWidthUm));
+
+        const string tooSmallOnlyJson = """
+        {
+          "schemaVersion": 1,
+          "presets": [
+            { "id": "hobbyist", "name": "Hobbyist", "targetMedia": "DVD-R", "cellWidthUm": 100, "cellHeightUm": 150, "columns": 30, "rows": 13, "radialGutterUm": 200, "tangentialGutterUm": 200 },
+            { "id": "high-density", "name": "High-density", "targetMedia": "DVD-R", "cellWidthUm": 26, "cellHeightUm": 34, "columns": 30, "rows": 17, "radialGutterUm": 60, "tangentialGutterUm": 60 }
+          ],
+          "ladder": [
+            { "cellWidthUm": 40, "cellHeightUm": 60, "columns": 30, "rows": 15, "radialGutterUm": 90, "tangentialGutterUm": 90, "cdSupported": true },
+            { "cellWidthUm": 26, "cellHeightUm": 34, "columns": 30, "rows": 17, "radialGutterUm": 60, "tangentialGutterUm": 60, "cdSupported": false }
+          ]
+        }
+        """;
+
+        using var smallMs = new MemoryStream(Encoding.UTF8.GetBytes(tooSmallOnlyJson));
+        RosettaPresetCatalog smallCatalog = RosettaPresetCatalog.Load(smallMs);
+        Assert.Throws<ArgumentException>(() =>
+            RosettaLadderDisc.CreateLayout(RosettaLadderOptions.FromCdPreset(cd80), smallCatalog));
+    }
+
+    [Fact]
+    public void CreateLayout_CdR_RejectsTinySectorCountOrNarrowRadialSpan()
+    {
+        var tinySectors = new RosettaLadderOptions(
+            DiscPresetId: "tiny-sectors",
+            TotalSectors: 2,
+            InnerRadiusMm: 24.825,
+            OuterRadiusMm: 58.0,
+            Medium: RosettaLadderMedium.Cd,
+            CdInterleave: true);
+        Assert.Throws<ArgumentOutOfRangeException>(() => RosettaLadderDisc.CreateLayout(tinySectors));
+
+        var narrowSpan = new RosettaLadderOptions(
+            DiscPresetId: "narrow-cd",
+            TotalSectors: 100_000,
+            InnerRadiusMm: 24.0,
+            OuterRadiusMm: 38.0,
+            Medium: RosettaLadderMedium.Cd,
+            CdInterleave: true);
+        var ex = Assert.Throws<ArgumentOutOfRangeException>(() => RosettaLadderDisc.CreateLayout(narrowSpan));
+        Assert.Contains("radial span", ex.Message, StringComparison.OrdinalIgnoreCase);
+    }
+
+    [Theory]
+    [InlineData(true, 0.0)]
+    [InlineData(false, 19.5)]
+    public void CdR_WriteCdFile_And_VerifyCdTrack_MatchAll15RungsAndLabels(bool interleave, double startAngleDegrees)
+    {
+        var cdPreset = new CdDiscPresetDefinition(
+            Id: "cd-ladder-slice",
+            DisplayName: "CD ladder slice",
+            Description: "Dense radial span for fast readback verification",
+            Sectors: 100_000,
+            InnerRadiusMm: 24.825,
+            OuterRadiusMm: 46.5,
+            LinearVelocityMmPerSecond: 1200.0);
+
+        RosettaLadderLayout layout = RosettaLadderDisc.CreateLayout(
+            RosettaLadderOptions.FromCdPreset(cdPreset, startAngleDegrees: startAngleDegrees, interleave: interleave));
+
+        string trackPath = Path.Combine(_tempDir, interleave ? "cd-ladder.wav" : "cd-ladder.raw");
+        string jsonPath = trackPath + ".json";
+        CdGenerationSummary summary = RosettaLadderDisc.WriteCdFile(layout, trackPath, jsonPath);
+
+        Assert.True(File.Exists(trackPath));
+        Assert.True(File.Exists(jsonPath));
+        if (interleave)
+        {
+            Assert.NotNull(summary.CueSheetPath);
+            Assert.True(File.Exists(summary.CueSheetPath!));
+            Assert.Equal(44L + (100_000L * CdDiscParameters.BytesPerSector), new FileInfo(trackPath).Length);
+        }
+        else
+        {
+            Assert.Null(summary.CueSheetPath);
+            Assert.Equal(100_000L * CdDiscParameters.BytesPerSector, new FileInfo(trackPath).Length);
+        }
+
+        RosettaLadderVerificationReport report = RosettaLadderReadback.VerifyCdTrack(trackPath, jsonPath);
+        _output.WriteLine($"CD-R interleave={interleave}, angle={startAngleDegrees}: Passed={report.PassedRungs}/{report.TotalRungs}, Sectors={report.InspectedEccBlocks}, Classified={report.ClassifiedPayloadBytes:N0}");
+        foreach (RosettaRungVerification r in report.Rungs.Where(x => !x.AllGlyphBitmapsMatch))
+        {
+            _output.WriteLine($"  FAIL {r.RungId}: lblMis={r.LabelMismatchedSubpixels} (uns={r.LabelUnsampledSubpixels}), pgMis={r.PageMismatchedSubpixels} (uns={r.PageUnsampledSubpixels}), cellMis={r.MismatchedGlyphCells}, minCov={r.MinSampledPixelsPerGlyphCell}, cross={r.CrosshairsAndRuleMatch}");
+        }
+
+        Assert.True(report.AllRungsMatch, $"CD-R readback matched {report.PassedRungs}/{report.TotalRungs} rungs.");
+        Assert.Equal(15, report.PassedRungs);
+        Assert.All(report.Rungs, rung =>
+        {
+            Assert.Equal(0, rung.LabelMismatchedSubpixels);
+            Assert.Equal(0, rung.PageMismatchedSubpixels);
+            Assert.Equal(0, rung.MismatchedGlyphCells);
+            Assert.True(rung.CrosshairsAndRuleMatch, $"Crosshairs/rule failed on {rung.RungId}");
+            Assert.True(rung.MinSampledPixelsPerGlyphCell >= 28, $"Low sample coverage on {rung.RungId}: {rung.MinSampledPixelsPerGlyphCell}");
+        });
     }
 
     private static bool SamplePngBoxSubpixel(

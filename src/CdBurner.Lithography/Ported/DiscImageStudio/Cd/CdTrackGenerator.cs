@@ -5,7 +5,8 @@
 // IgnisDisc changes: namespace; no JSON sidecar next to the track (upstream CdTrackMetadata); GenerateToStream also takes an in-memory BGRA raster; the read-back preview also renders
 // from a seekable stream (sectors read from a disc) and returns the pixels (RenderTrack); PNG output goes through
 // Imaging/PngRaster.cs; the CD-DA interleaver starts primed with the first palette byte instead of zero placeholders;
-// the raster overload takes an optional picture overlay (Imaging/IPictureOverlay.cs, used for the rim header).
+// the raster overload takes an optional picture overlay (Imaging/IPictureOverlay.cs, used for the rim header);
+// analytic pattern overloads accept an optional useParallelSampling switch (default false).
 // Sampling, timing and read-back arithmetic are unchanged. See THIRD-PARTY-NOTICES.md.
 
 using System.Diagnostics;
@@ -181,12 +182,13 @@ public static class CdTrackGenerator
         bool interleave,
         Action<CdProgress>? progress = null,
         CancellationToken cancellationToken = default,
-        bool useSimdSampling = true)
+        bool useSimdSampling = true,
+        bool useParallelSampling = false)
     {
         ArgumentNullException.ThrowIfNull(sampleGray);
         return WritePatternFile(outputPath, parameters, cancellationToken,
             (file, path, order) => GeneratePatternToStream(sampleGray, file, parameters, interleave,
-                progress, cancellationToken, path, order, useSimdSampling));
+                progress, cancellationToken, path, order, useSimdSampling, useParallelSampling));
     }
 
     public static CdGenerationSummary GeneratePattern(CalibrationTarget target, string outputPath, bool interleave,
@@ -297,7 +299,8 @@ public static class CdTrackGenerator
         CancellationToken cancellationToken = default,
         string outputDescription = "direct-burn-stream",
         CdAudioByteOrder audioByteOrder = CdAudioByteOrder.BigEndian,
-        bool useSimdSampling = true)
+        bool useSimdSampling = true,
+        bool useParallelSampling = false)
     {
         ArgumentNullException.ThrowIfNull(sampleGray);
         ArgumentNullException.ThrowIfNull(output);
@@ -320,7 +323,8 @@ public static class CdTrackGenerator
             outputDescription,
             audioByteOrder,
             ToneProfile.LegacyBinary,
-            useSimdSampling && sampler.SupportsSimd ? sampler.SampleFour : null);
+            useSimdSampling && sampler.SupportsSimd ? sampler.SampleFour : null,
+            useParallelSampling);
     }
 
     private static CdGenerationSummary GenerateSamplesToStream(
