@@ -100,11 +100,12 @@ public class RosettaPresetCatalogTests
     }
 
     [Fact]
-    public void PlanLayout_ComputesDvdCapacityWithoutTextFolder_AndRejectsNonDvd()
+    public void PlanLayout_ComputesDvdAndCdCapacityWithoutTextFolder_AndRejectsSub50x75OnCd()
     {
         DiscPresetJsonDocument presets = DiscPresetJsonStore.LoadBuiltIn();
         CalibrationParameters dvd = DiscArtPresets.ToParameters(presets.DvdPresets.First(p => p.Id == "dvd-5-120mm"));
         CalibrationParameters cd = DiscArtPresets.ToParameters(presets.CdPresets.First());
+        CalibrationParameters bd = DiscArtPresets.ToParameters(presets.BluRayPresets!.First());
 
         RosettaHybridPlan hobbyist = RosettaHybridDisc.PlanLayout(dvd, RosettaPresetCatalog.BuiltIn.Hobbyist);
         RosettaHybridPlan highDensity = RosettaHybridDisc.PlanLayout(dvd, RosettaPresetCatalog.BuiltIn.HighDensity);
@@ -114,6 +115,14 @@ public class RosettaPresetCatalogTests
         Assert.True(highDensity.PageCapacity > hobbyist.PageCapacity);
         Assert.Equal(hobbyist.VaultCeilingSectors, highDensity.VaultCeilingSectors);
 
-        Assert.Throws<ArgumentException>(() => RosettaHybridDisc.PlanLayout(cd, RosettaPresetCatalog.BuiltIn.Hobbyist));
+        RosettaHybridPlan cdHobbyist = RosettaHybridDisc.PlanLayout(cd, RosettaPresetCatalog.BuiltIn.Hobbyist);
+        RosettaHybridPlan cd50x75 = RosettaHybridDisc.PlanLayout(cd, RosettaPresetCatalog.BuiltIn.GetPreset("ladder-50x75"));
+        Assert.Equal(CalibrationDiscKind.Cd, cdHobbyist.Medium);
+        Assert.True(cdHobbyist.PageCapacity > 0);
+        Assert.True(cd50x75.PageCapacity > cdHobbyist.PageCapacity);
+        Assert.Equal(cdHobbyist.VaultCeilingSectors, cd50x75.VaultCeilingSectors);
+
+        Assert.Throws<ArgumentException>(() => RosettaHybridDisc.PlanLayout(cd, RosettaPresetCatalog.BuiltIn.HighDensity));
+        Assert.Throws<ArgumentException>(() => RosettaHybridDisc.PlanLayout(bd, RosettaPresetCatalog.BuiltIn.Hobbyist));
     }
 }

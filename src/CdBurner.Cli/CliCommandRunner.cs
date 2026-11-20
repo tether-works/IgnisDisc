@@ -3062,6 +3062,11 @@ public static partial class CliCommandRunner
         {
             throw new CommandLineException($"Image not found: '{image}'.");
         }
+        else if (string.Equals(Path.GetExtension(image), ".cue", StringComparison.OrdinalIgnoreCase))
+        {
+            (ripped, unreadable) = await ExtractCueDataTrackToTempIsoAsync(image, output).ConfigureAwait(false);
+            image = ripped;
+        }
 
         var report = await ArchiveRecoveryService.RecoverFromImageAsync(
             image!, unreadable, output, Par2Runner.FindPar2Executable(), progress).ConfigureAwait(false);
@@ -3097,6 +3102,94 @@ public static partial class CliCommandRunner
             stdout.WriteLine($"Report saved to: {reportPath}");
         }
         return report.FullyRecovered ? 0 : 2;
+    }
+
+    private static async Task<(string TempIsoPath, IReadOnlyList<int> BadSectors)> ExtractCueDataTrackToTempIsoAsync(
+        string cuePath, string outputBase)
+    {
+        CueSheet sheet = CueSheetParser.ParseFile(cuePath);
+        if (sheet.Files.Count == 0 || sheet.Files[0].Tracks.Count == 0)
+        {
+            throw new CommandLineException($"The CUE sheet has no tracks: '{cuePath}'.");
+        }
+
+        CueFileEntry file = sheet.Files[0];
+        CueTrack track1 = file.Tracks[0];
+        int sectorSize = track1.DataType switch
+        {
+            CueTrackDataType.Mode1_2048 => OpticalConstants.DataSectorSize,
+            CueTrackDataType.Mode1_2352 or CueTrackDataType.Mode2_2352 => OpticalConstants.RawSectorSize,
+            CueTrackDataType.Mode2_2336 => 2336,
+            _ => throw new CommandLineException($"Track 1 of '{Path.GetFileName(cuePath)}' is {track1.DataType}, not a data track."),
+        };
+
+        string cueDir = Path.GetDirectoryName(Path.GetFullPath(cuePath)) ?? string.Empty;
+        string binPath = Path.IsPathRooted(file.FileName) ? file.FileName : Path.Combine(cueDir, file.FileName);
+        if (!File.Exists(binPath))
+        {
+            throw new CommandLineException($"Data track file not found: '{binPath}'.");
+        }
+
+        int index01 = track1.Indices.FirstOrDefault(i => i.IndexNumber == 1)?.Position.ToFrameCount() ?? 0;
+        long startByte = (long)index01 * sectorSize;
+        long endByte = new FileInfo(binPath).Length;
+        if (file.Tracks.Count > 1)
+        {
+            CueTrack next = file.Tracks[1];
+            int nextFrame = next.Indices.FirstOrDefault(i => i.IndexNumber == 0)?.Position.ToFrameCount()
+                ?? next.Indices.FirstOrDefault(i => i.IndexNumber == 1)?.Position.ToFrameCount()
+                ?? 0;
+            endByte = (long)nextFrame * OpticalConstants.RawSectorSize;
+        }
+
+        int sectors = (int)Math.Max(0, (endByte - startByte) / sectorSize);
+        if (sectors == 0)
+        {
+            throw new CommandLineException($"Track 1 of '{Path.GetFileName(cuePath)}' is empty.");
+        }
+
+        string tempIso = outputBase.TrimEnd(Path.DirectorySeparatorChar) + ".cue-track1.iso";
+        var bad = new List<int>();
+        byte[] raw = new byte[sectorSize];
+        byte[] user2048 = new byte[OpticalConstants.DataSectorSize];
+
+        await using var bin = new FileStream(binPath, FileMode.Open, FileAccess.Read, FileShare.Read, 1 << 16, useAsync: false);
+        await using var iso = new FileStream(tempIso, FileMode.Create, FileAccess.Write, FileShare.None, 1 << 16, useAsync: false);
+        bin.Position = startByte;
+        for (int lba = 0; lba < sectors; lba++)
+        {
+            bin.ReadExactly(raw);
+            if (sectorSize == OpticalConstants.RawSectorSize)
+            {
+                bool intact = false;
+                try
+                {
+                    RawSectorCodec.Extract2048From2352(raw, user2048, out intact);
+                }
+                catch (InvalidDataException)
+                {
+                    intact = false;
+                }
+
+                if (!intact)
+                {
+                    Array.Clear(user2048);
+                    bad.Add(lba);
+                }
+            }
+            else if (sectorSize == 2336)
+            {
+                Buffer.BlockCopy(raw, 8, user2048, 0, OpticalConstants.DataSectorSize);
+            }
+            else
+            {
+                Buffer.BlockCopy(raw, 0, user2048, 0, OpticalConstants.DataSectorSize);
+            }
+
+            iso.Write(user2048);
+        }
+
+        return (tempIso, bad);
     }
 
     private static async Task<int> HandleArchiveVerifyAsync(CommandLineArgs cmd, TextWriter stdout)
@@ -3677,10 +3770,10 @@ public static partial class CliCommandRunner
         stdout.WriteLine("      Verifies and repairs a folder in place from its PAR2 recovery set (keeps backup files unless --delete-backups).");
         stdout.WriteLine("  rosetta ladder --media dvd|cd --output <file.iso|file.wav|file.raw> [--json-output <file.json>] [--disc-preset <id>] [--start-angle <deg>] [--no-interleave] [--plan-only] [--json]");
         stdout.WriteLine("      Generates a DVD-R (250x375 down to 13x17 um) or CD-R (250x375 down to 50x75 um) optical resolution-ladder image across inner, middle, and outer radii plus a JSON manifest of rung positions.");
-        stdout.WriteLine("  rosetta build --text <folder> --output <file.iso> [--title <text>] [--date yyyy-mm-dd] [--files <folder>] [--cells hobbyist|high-density|<rung id>] [--pages-radius <mm>] [--redundancy <0-100>] [--no-fill] [--no-rim] [--disc-preset <id>] [--plan-only] [--overwrite] [--json]");
-        stdout.WriteLine("      Makes a hybrid Rosetta DVD-R image: the text, a page index and optional files with PAR2 recovery data inside r = 38 mm, a 2 MiB zero gap, then the text as microscope-readable pages and the rim header.");
-        stdout.WriteLine("  rosetta burn --drive <id> --image <file.iso> [any burn-iso option] [--json]");
-        stdout.WriteLine("      Burns an image made by 'rosetta build' (forwards to burn-iso).");
+        stdout.WriteLine("  rosetta build --text <folder> --output <file.iso|file.cue|file.bin> [--media dvd|cd] [--title <text>] [--date yyyy-mm-dd] [--files <folder>] [--cells hobbyist|high-density|<rung id>] [--pages-radius <mm>] [--redundancy <0-100>] [--no-fill] [--no-rim] [--no-interleave] [--disc-preset <id>] [--plan-only] [--overwrite] [--json]");
+        stdout.WriteLine("      Makes a hybrid Rosetta DVD-R or CD-R image: the text, a page index and optional files with PAR2 recovery data inside r = 38 mm, a 2 MiB zero gap, then the text as microscope-readable pages and the rim header (CD-R >= 50x75 um cells).");
+        stdout.WriteLine("  rosetta burn --drive <id> --image <file.iso|file.cue> [any burn-iso or burn-audio option] [--json]");
+        stdout.WriteLine("      Burns an image made by 'rosetta build' (forwards to burn-iso for DVD-R, or burn-audio --dao --native for mixed-mode CD-R).");
         stdout.WriteLine("  disc-art generate --media cd|dvd|bd --picture <file.png> --output <file> [--files <folder> [--files-outer]] [--append-to <base.cue> | --pregap-art <base.cue> [--pregap-seconds <s>]] [--label <text>] [--tone photo|binary] [--start-angle <deg>] [--scale <x>] [--offset-x-mm <mm>] [--offset-y-mm <mm>] [--rotate <deg>] [--fit ring|disc] [--art-inner-radius-mm <mm>] [--art-outer-radius-mm <mm>] [--title-ring <text> [--title-ring-height-mm <mm>] [--title-ring-date yyyy-MM-dd|none]] [--read-compat] [--no-interleave] [--rim-header] [--plan-only] [--overwrite] [--disc-preset <id>] [--drive-model <text> --media-id <text>] [--json]");
         stdout.WriteLine("      Draws a picture in the data sectors of a DVD or BD image (optionally with files on the same disc) or makes a CD picture track, with its description file for the preview.");
         stdout.WriteLine("      --pregap-art (experimental, off by default) hides a CD picture in track 1's pre-gap instead; some players and rippers can play it as noise.");
@@ -3950,27 +4043,29 @@ public static partial class CliCommandRunner
             stdout.WriteLine("      --no-interleave          CD-R only: write the track without the CD-DA delay interleave.");
             stdout.WriteLine("      --plan-only              Write only the JSON manifest without writing the disc image.");
             stdout.WriteLine();
-            stdout.WriteLine("  rosetta build --text <folder> --output <file.iso> [options] [--json]");
-            stdout.WriteLine("      Makes a hybrid Rosetta DVD-R image. Inside the pages' inner radius: an archive volume (ISO 9660 + Joliet + UDF)");
-            stdout.WriteLine("      with the text files, a page index (which page and tile holds which document), optional files, checksum");
-            stdout.WriteLine("      manifests and PAR2 recovery data. Then at least 2 MiB of zero sectors, then the same text as pages to read");
-            stdout.WriteLine("      with a microscope, and the rim header (title, date, SHA-256 prefix). A computer sees only the archive volume.");
+            stdout.WriteLine("  rosetta build --text <folder> --output <file.iso|file.cue|file.bin> [options] [--json]");
+            stdout.WriteLine("      Makes a hybrid Rosetta DVD-R (.iso) or mixed-mode CD-R (.cue/.bin) image. Inside the pages' inner radius:");
+            stdout.WriteLine("      an archive volume (ISO 9660 + Joliet + UDF) with the text files, a page index (which page and tile holds");
+            stdout.WriteLine("      which document), optional files, checksum manifests and PAR2 recovery data. Then at least 2 MiB of zero");
+            stdout.WriteLine("      sectors, then the same text as pages to read with a microscope, and the rim header (title, date, SHA-256");
+            stdout.WriteLine("      prefix). A computer sees only the archive volume.");
+            stdout.WriteLine("      --media dvd|cd           Target medium (default dvd). CD-R requires glyph cells of at least 50x75 um.");
             stdout.WriteLine("      --text <folder>          The .txt and .md files (UTF-8) at the top of the folder, in name order.");
-            stdout.WriteLine("      --output, --out <path>   Destination .iso (a <path>.rosetta.json description is written next to it).");
+            stdout.WriteLine("      --output, --out <path>   Destination .iso (DVD-R) or .cue/.bin (CD-R); a .rosetta.json sidecar is written next to it.");
             stdout.WriteLine("      --title <text>           Archive title (default: the text folder's name).");
             stdout.WriteLine("      --date yyyy-mm-dd        Archive date (default: today, UTC).");
             stdout.WriteLine("      --files <folder>         Extra files for the archive volume, kept under their own paths.");
-            stdout.WriteLine("      --cells <id>             Glyph cell preset: hobbyist (100x150 um, default), high-density (26x34 um) or a ladder rung id.");
+            stdout.WriteLine("      --cells <id>             Glyph cell preset: hobbyist (100x150 um, default), high-density (26x34 um, DVD only) or a ladder rung id.");
             stdout.WriteLine("      --pages-radius <mm>      Radius where the pages begin (default 38); the archive and its gap end before it.");
             stdout.WriteLine("      --redundancy <0-100>     Minimum PAR2 recovery data in percent (default 10; needs par2). 0: manifests only.");
             stdout.WriteLine("      --no-fill                Do not grow the recovery data to fill the room inside the pages' radius.");
             stdout.WriteLine("      --no-rim                 Leave out the rim header.");
-            stdout.WriteLine("      --disc-preset <id>       DVD geometry preset (default dvd-5-120mm), or --drive-model/--media-id for a saved calibration.");
+            stdout.WriteLine("      --no-interleave          CD-R only: write the picture track without the CD-DA delay interleave.");
+            stdout.WriteLine("      --disc-preset <id>       Disc geometry preset (default dvd-5-120mm / cd-80), or --drive-model/--media-id for a saved calibration.");
             stdout.WriteLine("      --plan-only              Print the layout and capacities without writing anything.");
-            stdout.WriteLine("      CD-R hybrid discs come later (after the CD picture port, with cells of at least 50x75 um).");
             stdout.WriteLine();
-            stdout.WriteLine("  rosetta burn --drive <id> --image <file.iso> [any burn-iso option] [--json]");
-            stdout.WriteLine("      Burns an image made by 'rosetta build' with burn-iso. Check the disc later with 'recover --drive <id> --out <folder>'.");
+            stdout.WriteLine("  rosetta burn --drive <id> --image <file.iso|file.cue> [any burn-iso or burn-audio option] [--json]");
+            stdout.WriteLine("      Burns an image made by 'rosetta build' with burn-iso (DVD-R) or burn-audio --dao --native (CD-R). Check the disc later with 'recover --drive <id> --out <folder>'.");
             return;
         }
 

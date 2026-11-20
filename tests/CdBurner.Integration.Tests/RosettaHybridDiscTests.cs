@@ -6,8 +6,13 @@ using System.Text.Json;
 using CdBurner.Cli;
 using CdBurner.Core.Abstractions;
 using CdBurner.Core.Archival;
+using CdBurner.Core.Images;
 using CdBurner.Core.Iso;
+using CdBurner.Core.Primitives;
 using CdBurner.Hardware.Simulation;
+using CdBurner.Lithography.Cd;
+using CdBurner.Lithography.Geometry;
+using CdBurner.Lithography.Rosetta;
 using Xunit;
 
 namespace CdBurner.Integration.Tests;
@@ -270,16 +275,322 @@ public sealed class RosettaHybridDiscTests : IDisposable
         AssertVaultMatchesSources(P("out"));
     }
 
+    // ---- CD-R hybrid -----------------------------------------------------------------------------------------------
+
+    [Fact]
+    public async Task Plan_FullCd_PagesStartAt38mmWithCircMargin_AndAccepts50x75()
+    {
+        (int code, string output, string error) = await RunAsync("rosetta", "build", "--media", "cd",
+            "--text", WriteTexts(), "--output", P("plan.cue"), "--title", "CD Plan", "--date", "2026-11-20",
+            "--plan-only", "--json");
+        Assert.True(code == 0, error + output);
+        JsonElement root = JsonDocument.Parse(output).RootElement;
+        Assert.Equal("CD-R", root.GetProperty("media").GetString());
+        Assert.True(root.GetProperty("cdInterleave").GetBoolean());
+        JsonElement plan = root.GetProperty("plan");
+
+        // cd-80: Sectors = 359,675, UsableSectors = 359,673, r0 = 24.825 mm, r1 = 58.0 mm; 2-sector CIRC lead-in pullback.
+        long expectedAt38 = (long)Math.Floor(359_675.0 * (38.0 * 38 - 24.825 * 24.825) / (58.0 * 58 - 24.825 * 24.825));
+        long start = plan.GetProperty("pagesStartLba").GetInt64();
+        Assert.Equal(expectedAt38 - 2, start);
+        Assert.Equal(start - 1024, plan.GetProperty("vaultCeilingSectors").GetInt64());
+        Assert.Equal(359_673, plan.GetProperty("pagesEndLba").GetInt64());
+        Assert.False(File.Exists(P("plan.cue")));
+
+        // Minimum CD cell size 50 x 75 um is accepted.
+        (code, output, error) = await RunAsync("rosetta", "build", "--media", "cd",
+            "--cells", "ladder-50x75", "--text", WriteTexts(), "--output", P("plan50.cue"),
+            "--title", "CD 50x75", "--date", "2026-11-20", "--plan-only", "--json");
+        Assert.True(code == 0, error + output);
+        JsonElement plan50 = JsonDocument.Parse(output).RootElement.GetProperty("plan");
+        Assert.Equal(50.0, plan50.GetProperty("cells").GetProperty("widthUm").GetDouble());
+        Assert.Equal(75.0, plan50.GetProperty("cells").GetProperty("heightUm").GetDouble());
+        Assert.True(plan50.GetProperty("pageCapacity").GetInt64() > plan.GetProperty("pageCapacity").GetInt64());
+    }
+
+    [Fact]
+    public async Task Build_Cd_NoPageSectorInsideTheVolume_AndTheGapIsZero()
+    {
+        (string cue, string bin, JsonElement result) = await BuildCdAsync(redundancy: 0, cells: "ladder-50x75");
+        Assert.Equal("CD-R", result.GetProperty("media").GetString());
+        Assert.True(File.Exists(cue));
+        Assert.True(File.Exists(bin));
+
+        long pagesStart = result.GetProperty("pagesStartLba").GetInt64();
+        long pagesEnd = result.GetProperty("pagesEndLba").GetInt64();
+        long vaultEnd = result.GetProperty("vaultEndLba").GetInt64();
+        Assert.Equal(pagesEnd * 2352L, new FileInfo(bin).Length);
+
+        // CUE has Track 1 MODE1/2352 and Track 2 AUDIO with INDEX 00 at pagesStart - 150, INDEX 01 at pagesStart.
+        CueSheet sheet = CueSheetParser.ParseFile(cue);
+        Assert.Equal(2, sheet.Tracks.Count);
+        Assert.Equal(CueTrackDataType.Mode1_2352, sheet.Tracks[0].DataType);
+        Assert.Equal(CueTrackDataType.Audio, sheet.Tracks[1].DataType);
+        Assert.Equal(pagesStart - 150, sheet.Tracks[1].Indices.Single(i => i.IndexNumber == 0).Position.ToFrameCount());
+        Assert.Equal(pagesStart, sheet.Tracks[1].Indices.Single(i => i.IndexNumber == 1).Position.ToFrameCount());
+
+        // Extract Track 1 Mode 1 user sectors (0 .. pagesStart - 151) from the .bin and verify ISO 9660 + UDF + gap.
+        byte[] binBytes = await File.ReadAllBytesAsync(bin);
+        int mode1Sectors = (int)(pagesStart - 150);
+        byte[] track1Iso = new byte[mode1Sectors * 2048];
+        for (int lba = 0; lba < mode1Sectors; lba++)
+        {
+            bool ok = RawSectorCodec.Extract2048From2352(
+                binBytes.AsSpan(lba * 2352, 2352),
+                track1Iso.AsSpan(lba * 2048, 2048),
+                out bool edcValid);
+            Assert.True(ok && edcValid, $"Mode 1 sector {lba} EDC failed");
+        }
+
+        // ECMA-119 8.4: Primary Volume Descriptor at sector 16.
+        ReadOnlySpan<byte> pvd = track1Iso.AsSpan(16 * 2048, 2048);
+        Assert.Equal(1, pvd[0]);
+        Assert.Equal("CD001", Encoding.ASCII.GetString(pvd.Slice(1, 5)));
+        long isoEnd = BinaryPrimitives.ReadUInt32LittleEndian(pvd.Slice(80, 4));
+        Assert.True(isoEnd + 1024 <= pagesStart, $"ISO 9660 volume ends at {isoEnd}, pages start at {pagesStart}");
+
+        // ECMA-167 3/10.2 & 3/10.5: UDF AVDP at sector 256 and Partition Descriptor.
+        ReadOnlySpan<byte> anchor = track1Iso.AsSpan(256 * 2048, 2048);
+        Assert.Equal(2, BinaryPrimitives.ReadUInt16LittleEndian(anchor));
+        uint vdsLength = BinaryPrimitives.ReadUInt32LittleEndian(anchor.Slice(16, 4));
+        uint vdsLocation = BinaryPrimitives.ReadUInt32LittleEndian(anchor.Slice(20, 4));
+        long partitionEnd = -1;
+        for (uint i = 0; i < vdsLength / 2048; i++)
+        {
+            ReadOnlySpan<byte> descriptor = track1Iso.AsSpan((int)((vdsLocation + i) * 2048), 2048);
+            if (BinaryPrimitives.ReadUInt16LittleEndian(descriptor) == 5)
+            {
+                partitionEnd = BinaryPrimitives.ReadUInt32LittleEndian(descriptor.Slice(188, 4))
+                               + (long)BinaryPrimitives.ReadUInt32LittleEndian(descriptor.Slice(192, 4));
+            }
+        }
+        Assert.True(partitionEnd > 256, "no UDF partition descriptor found");
+        Assert.True(partitionEnd + 1024 <= pagesStart, $"UDF partition ends at {partitionEnd}, pages start at {pagesStart}");
+
+        // Every file lies strictly inside the clamped volume; vault holds text, page index, files and manifest.
+        using (var ms = new MemoryStream(track1Iso, writable: false))
+        using (var reader = IsoImageReader.FromStream(ms))
+        {
+            Assert.NotEmpty(reader.AllFiles);
+            foreach (IsoFileEntry file in reader.AllFiles)
+            {
+                Assert.True(file.StartLba + (file.SizeBytes + 2047) / 2048 <= isoEnd, file.VirtualPath);
+            }
+            Assert.Contains(reader.AllFiles, f => f.VirtualPath == "/ROSETTA/TEXT/a-note.txt");
+            Assert.Contains(reader.AllFiles, f => f.VirtualPath == "/ROSETTA/PAGE-INDEX.TXT");
+            Assert.Contains(reader.AllFiles, f => f.VirtualPath == "/ROSETTA/PAGE-INDEX.JSON");
+            Assert.Contains(reader.AllFiles, f => f.VirtualPath == "/sub/data.bin");
+        }
+
+        // Between vaultEnd and Track 2 INDEX 00: zero Mode 1 user sectors (incl. 150-sector Mode 1 post-gap).
+        Assert.Equal(Math.Max(isoEnd, partitionEnd), vaultEnd);
+        Assert.True(pagesStart - vaultEnd >= 1024);
+        Assert.True(track1Iso.AsSpan((int)(vaultEnd * 2048)).IndexOfAnyExcept((byte)0) < 0);
+
+        // Between Track 2 INDEX 00 and INDEX 01: 150 sectors of silent Red Book audio.
+        Assert.True(binBytes.AsSpan((int)((pagesStart - 150) * 2352), 150 * 2352).IndexOfAnyExcept((byte)0) < 0);
+
+        // Track 2 carries CD-DA picture bytes (palette bytes 0x0D / 0xAA in little-endian audio).
+        Assert.True(binBytes.AsSpan((int)(pagesStart * 2352), (int)((pagesEnd - pagesStart) * 2352)).IndexOfAnyExcept((byte)0) >= 0);
+
+        using JsonDocument sidecar = JsonDocument.Parse(await File.ReadAllTextAsync(cue + ".rosetta.json"));
+        Assert.Equal("CD-R", sidecar.RootElement.GetProperty("media").GetString());
+        Assert.True(sidecar.RootElement.GetProperty("cdInterleave").GetBoolean());
+        Assert.Equal(pagesStart, sidecar.RootElement.GetProperty("pages").GetProperty("startLba").GetInt64());
+        Assert.Empty(Directory.EnumerateDirectories(_dir, "*.rosetta-work-*", SearchOption.AllDirectories));
+    }
+
+    [Fact]
+    public async Task Burn_OnSimulatedCdR_VerifiesMixedModeCue_AndReadsBackPagesAndRim()
+    {
+        (string cue, _, JsonElement built) = await BuildCdAsync(redundancy: 0, cells: "hobbyist");
+        long pagesStart = built.GetProperty("pagesStartLba").GetInt64();
+        long pagesEnd = built.GetProperty("pagesEndLba").GetInt64();
+
+        using var medium = VirtualDiscMedium.CreateBlankCdR700();
+        _recorder.InsertMedia(medium);
+
+        (int code, string output, string error) = await RunAsync("rosetta", "burn", "--drive", "VDRV-01", "--image", cue,
+            "--log-dir", P("logs"), "--json");
+        Assert.True(code == 0, error + output);
+        using (JsonDocument burn = JsonDocument.Parse(output))
+        {
+            Assert.True(burn.RootElement.GetProperty("success").GetBoolean());
+            Assert.True(burn.RootElement.GetProperty("verified").GetBoolean());
+        }
+
+        // Track 1 is Mode 1 data, Track 2 is Audio starting at pagesStart.
+        var tracks = Assert.Single(medium.Sessions).Tracks;
+        Assert.Equal(new[] { false, true }, tracks.Select(t => t.IsAudio));
+        Assert.Equal(0, tracks[0].StartLba);
+        Assert.Equal(pagesStart, tracks[1].StartLba);
+        Assert.Equal(pagesEnd - pagesStart, tracks[1].SectorCount);
+
+        // verify --cue checks the mixed-mode disc against the CUE sheet.
+        (code, output, error) = await RunAsync("verify", "--drive", "VDRV-01", "--cue", cue, "--log-dir", P("logs"), "--json");
+        Assert.True(code == 0, error + output);
+        Assert.True(JsonDocument.Parse(output).RootElement.GetProperty("success").GetBoolean());
+
+        // Read Track 2 back from the virtual disc and verify page 1 crosshair & rim tick pixels match RosettaBook.
+        int trackSectors = (int)(pagesEnd - pagesStart);
+        byte[] track2Bytes = new byte[trackSectors * 2352];
+        for (int i = 0; i < trackSectors; i++)
+        {
+            medium.ReadSector((int)pagesStart + i, track2Bytes.AsSpan(i * 2352, 2352), 2352);
+        }
+        // Swap little-endian CD-DA samples to big-endian byte stream for palette lookup.
+        CdAudioSamples.SwapByteOrder(track2Bytes);
+
+        double startRadiusMm = built.GetProperty("plan").GetProperty("pagesStartRadiusMm").GetDouble();
+        double outerRadiusMm = built.GetProperty("plan").GetProperty("pagesOuterRadiusMm").GetDouble();
+        double pagesInnerMm = built.GetProperty("plan").GetProperty("pagesInnerRadiusMm").GetDouble();
+        double rimInnerMm = built.GetProperty("plan").GetProperty("rimInnerRadiusMm").GetDouble();
+        var full = new CdDiscParameters(24.825, 58.0, SmallDiscSectors);
+        var trackParams = new CdDiscParameters(startRadiusMm, 58.0, SmallDiscSectors - pagesStart,
+            StartAngleRadians: full.ThetaFromRadius(startRadiusMm), UsableSectors: trackSectors);
+        var book = RosettaBook.Build(
+            [
+                new RosettaDocument("a-note", File.ReadAllText(Path.Combine(TextFolder, "a-note.txt")).Replace("\r\n", "\n", StringComparison.Ordinal)),
+                new RosettaDocument("b-poem", File.ReadAllText(Path.Combine(TextFolder, "b-poem.md")).Replace("\r\n", "\n", StringComparison.Ordinal)),
+            ],
+            new RosettaArchiveOptions("CD Test", new DateOnly(2026, 11, 20), RosettaPresetCatalog.BuiltIn.Hobbyist,
+                InnerRadiusMm: pagesInnerMm, OuterRadiusMm: outerRadiusMm + RosettaRimHeader.PageGutterMm + RosettaRimHeader.BandHeightMm,
+                HasInnerFileVault: true, IncludeRimHeader: true));
+
+        // Sample deinterleaved logical bytes across Track 2 and verify dark/light palette classification matches the book.
+        long drawableEnd = CdCircEdgeZones.LogicalDrawableEndByte(track2Bytes.Length);
+        int matchedBookInk = 0;
+        int matchedRimInk = 0;
+        int mismatched = 0;
+        Func<double, double, byte> expectedSampler = RosettaDvdEncoder.CreateReadSideGrayscaleSampler(book, 0.0);
+        for (long logical = CdCircEdgeZones.InnerEdgeZoneBytes; logical < drawableEnd; logical += 97)
+        {
+            long fileOffset = logical + CddaInterleaveTable.FileOffsetFor((int)(logical % CddaInterleaveTable.BytesPerFrame));
+            if (fileOffset >= track2Bytes.Length) continue;
+            byte palette = track2Bytes[fileOffset];
+            Assert.True(palette is 0x0D or 0xAA, $"Unexpected palette byte 0x{palette:X2} at logical {logical}");
+
+            (double rMm, double theta) = trackParams.PolarFromByte(logical);
+            byte expected = expectedSampler(rMm * Math.Cos(theta), rMm * Math.Sin(theta));
+            bool actualInk = palette == 0x0D;
+            bool expectedInk = expected < 128;
+            if (actualInk != expectedInk) mismatched++;
+            else if (actualInk)
+            {
+                if (rMm >= rimInnerMm) matchedRimInk++;
+                else matchedBookInk++;
+            }
+        }
+
+        Assert.Equal(0, mismatched);
+        Assert.True(matchedBookInk > 100, $"Expected >100 matched page ink samples, got {matchedBookInk}");
+        Assert.True(matchedRimInk > 20, $"Expected >20 matched rim ink samples, got {matchedRimInk}");
+
+        // recover --drive reads the mixed-mode CD's Mode 1 vault without tripping on Track 2 audio.
+        (code, output, error) = await RunAsync("recover", "--drive", "VDRV-01", "--out", P("cd-out"), "--json");
+        Assert.True(code == 0, error + output);
+        JsonElement report = JsonDocument.Parse(output).RootElement;
+        Assert.True(report.GetProperty("success").GetBoolean());
+        Assert.Equal(0, report.GetProperty("unreadableSectors").GetInt32());
+        AssertVaultMatchesSources(P("cd-out"));
+    }
+
+    [Fact]
+    public async Task Burn_OnSimulatedCdR_WithPar2_RepairsDamagedTrack1()
+    {
+        if (_par2 == null) return;
+        (string cue, string bin, JsonElement built) = await BuildCdAsync(redundancy: 10, cells: "hobbyist");
+        Assert.True(built.GetProperty("recoverySectors").GetInt32() > 0);
+
+        using var medium = VirtualDiscMedium.CreateBlankCdR700();
+        _recorder.InsertMedia(medium);
+
+        (int code, string output, string error) = await RunAsync("rosetta", "burn", "--drive", "VDRV-01", "--image", cue,
+            "--log-dir", P("logs"), "--json");
+        Assert.True(code == 0, error + output);
+        Assert.True(JsonDocument.Parse(output).RootElement.GetProperty("verified").GetBoolean());
+
+        // Damage Track 1 files in the .bin (beyond RSPC P/Q repair, i.e. corrupting sync + data) and recover via CUE.
+        int dataLba;
+        int textLba;
+        long pagesStart = built.GetProperty("pagesStartLba").GetInt64();
+        byte[] binBytes = await File.ReadAllBytesAsync(bin);
+        byte[] track1Iso = new byte[(pagesStart - 150) * 2048];
+        for (int lba = 0; lba < pagesStart - 150; lba++)
+        {
+            RawSectorCodec.Extract2048From2352(binBytes.AsSpan(lba * 2352, 2352), track1Iso.AsSpan(lba * 2048, 2048), out _);
+        }
+        using (var ms = new MemoryStream(track1Iso, writable: false))
+        using (var reader = IsoImageReader.FromStream(ms))
+        {
+            dataLba = reader.AllFiles.Single(f => f.VirtualPath.EndsWith("/sub/data.bin", StringComparison.Ordinal)).StartLba;
+            textLba = reader.AllFiles.Single(f => f.VirtualPath.EndsWith("/b-poem.md", StringComparison.Ordinal)).StartLba;
+        }
+
+        await using (var stream = new FileStream(bin, FileMode.Open, FileAccess.Write))
+        {
+            foreach (int lba in Enumerable.Range(dataLba + 5, 20).Append(textLba))
+            {
+                stream.Position = lba * 2352L;
+                stream.Write(new byte[2352]);
+            }
+        }
+
+        (code, output, error) = await RunAsync("recover", "--image", cue, "--out", P("cd-repaired"), "--json");
+        Assert.True(code == 0, error + output);
+        JsonElement report = JsonDocument.Parse(output).RootElement;
+        string[] repaired = report.GetProperty("repairedFiles").EnumerateArray().Select(e => e.GetString()!).ToArray();
+        Assert.Contains(repaired, f => f.EndsWith("data.bin", StringComparison.Ordinal));
+        Assert.Contains(repaired, f => f.EndsWith("b-poem.md", StringComparison.Ordinal));
+        AssertVaultMatchesSources(P("cd-repaired"));
+    }
+
     // ---- refusals --------------------------------------------------------------------------------------------------
 
     [Fact]
-    public async Task Cd_IsRefused_WithTheReason()
+    public async Task Cd_Sub50x75Presets_AndWrongExtension_AreRefused_WithTheReason()
     {
-        (int code, _, string error) = await RunAsync("rosetta", "build", "--media", "cd", "--text", WriteTexts(), "--output", P("cd.iso"));
-
+        (int code, _, string error) = await RunAsync("rosetta", "build", "--media", "cd",
+            "--cells", "high-density", "--text", WriteTexts(), "--output", P("cd.cue"));
         Assert.Equal(1, code);
-        Assert.Contains("DVD-R only", error);
         Assert.Contains("50 x 75 um", error);
+
+        (code, _, error) = await RunAsync("rosetta", "build", "--media", "cd",
+            "--cells", "ladder-34x51", "--text", WriteTexts(), "--output", P("cd.cue"));
+        Assert.Equal(1, code);
+        Assert.Contains("50 x 75 um", error);
+
+        (code, _, error) = await RunAsync("rosetta", "build", "--media", "cd",
+            "--text", WriteTexts(), "--output", P("cd.iso"));
+        Assert.Equal(1, code);
+        Assert.Contains(".cue", error);
+
+        (code, _, error) = await RunAsync("rosetta", "build", "--media", "dvd",
+            "--no-interleave", "--text", WriteTexts(), "--output", P("dvd.iso"));
+        Assert.Equal(1, code);
+        Assert.Contains("CD-R", error);
+
+        (code, _, error) = await RunAsync("rosetta", "burn", "--drive", "VDRV-01", "--image", P("cd.bin"));
+        Assert.Equal(1, code);
+        Assert.Contains(".cue", error);
+    }
+
+    [Fact]
+    public async Task Build_Cd_NoInterleave_AndNoRim_PlacesPagesWithoutCircPullback()
+    {
+        string cue = P("cd-plain.cue");
+        (int code, string output, string error) = await RunAsync("rosetta", "build", "--media", "cd", "--no-interleave", "--no-rim",
+            "--text", WriteTexts(), "--output", cue, "--title", "No Interleave", "--date", "2026-11-20",
+            "--disc-presets-file", WritePresets(), "--disc-preset", "small-cd", "--redundancy", "0", "--json");
+        Assert.True(code == 0, error + output);
+
+        JsonElement root = JsonDocument.Parse(output).RootElement;
+        Assert.False(root.GetProperty("cdInterleave").GetBoolean());
+        JsonElement plan = root.GetProperty("plan");
+        Assert.False(plan.TryGetProperty("rimInnerRadiusMm", out _));
+
+        long expectedAt38 = (long)Math.Floor(SmallDiscSectors * (38.0 * 38 - 24.825 * 24.825) / (58.0 * 58 - 24.825 * 24.825));
+        Assert.Equal(expectedAt38, plan.GetProperty("pagesStartLba").GetInt64());
     }
 
     [Fact]
@@ -364,7 +675,10 @@ public sealed class RosettaHybridDiscTests : IDisposable
         File.WriteAllText(path, $$"""
             {
               "schemaVersion": 4,
-              "cdPresets": [],
+              "cdPresets": [
+                { "id": "small-cd", "displayName": "Small CD", "description": "test", "sectors": {{SmallDiscSectors}},
+                  "innerRadiusMm": 24.825, "outerRadiusMm": 58, "linearVelocityMmPerSecond": 1200 }
+              ],
               "bluRayPresets": [],
               "dvdPresets": [
                 { "id": "small-dvd", "displayName": "Small DVD", "description": "test", "totalSectors": {{SmallDiscSectors}},
@@ -373,6 +687,18 @@ public sealed class RosettaHybridDiscTests : IDisposable
             }
             """);
         return path;
+    }
+
+    private async Task<(string Cue, string Bin, JsonElement Result)> BuildCdAsync(int redundancy, string cells)
+    {
+        string cue = P("hybrid-cd.cue");
+        (int code, string output, string error) = await RunAsync("rosetta", "build", "--media", "cd", "--cells", cells,
+            "--text", WriteTexts(), "--files", FilesFolder, "--output", cue, "--title", "CD Test", "--date", "2026-11-20",
+            "--disc-presets-file", WritePresets(), "--disc-preset", "small-cd",
+            "--redundancy", redundancy.ToString(System.Globalization.CultureInfo.InvariantCulture), "--json");
+        Assert.True(code == 0, error + output);
+        JsonElement json = JsonDocument.Parse(output).RootElement.Clone();
+        return (json.GetProperty("cueSheetPath").GetString()!, json.GetProperty("binaryPath").GetString()!, json);
     }
 
     private async Task<(string Iso, JsonElement Result)> BuildAsync(int redundancy)

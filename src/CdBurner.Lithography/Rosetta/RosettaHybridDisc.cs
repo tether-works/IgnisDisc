@@ -4,19 +4,22 @@ using System.Text;
 using System.Text.Json;
 using CdBurner.Core.Archival;
 using CdBurner.Core.Compilation;
+using CdBurner.Core.Images;
 using CdBurner.Core.Iso;
 using CdBurner.Core.Primitives;
 using CdBurner.Lithography.Calibration;
+using CdBurner.Lithography.Cd;
 using CdBurner.Lithography.Dvd.Encoding;
 using CdBurner.Lithography.Dvd.Solver;
+using CdBurner.Lithography.Geometry;
 
 namespace CdBurner.Lithography.Rosetta;
 
-/// <summary>Everything needed for one hybrid Rosetta DVD image.</summary>
+/// <summary>Everything needed for one hybrid Rosetta DVD-R or CD-R image.</summary>
 /// <param name="TextFolder">Folder whose <c>.txt</c> and <c>.md</c> files (UTF-8, top level only, in name order) become
 /// the pages and the vault's text.</param>
-/// <param name="Disc">DVD geometry, from a preset or a saved calibration.</param>
-/// <param name="OutputPath">The <c>.iso</c> to write.</param>
+/// <param name="Disc">DVD or CD geometry, from a preset or a saved calibration.</param>
+/// <param name="OutputPath">The <c>.iso</c> (DVD-R) or <c>.cue</c>/<c>.bin</c> (CD-R) to write.</param>
 /// <param name="Title">Archive title (contents page, page headers, rim).</param>
 /// <param name="Date">Archive date (contents page, rim).</param>
 /// <param name="Preset">Glyph cell preset of the pages.</param>
@@ -27,6 +30,7 @@ namespace CdBurner.Lithography.Rosetta;
 /// <param name="FillWithRecoveryData">Grow the recovery data until the vault reaches its ceiling.</param>
 /// <param name="IncludeRimHeader">Title, date, SHA-256 prefix and angle ticks at the rim.</param>
 /// <param name="Par2Path">par2 program; needed when <paramref name="RedundancyPercent"/> is above 0.</param>
+/// <param name="CdInterleave">CD-R only: apply Red Book CIRC delay compensation (true by default).</param>
 public sealed record RosettaHybridRequest(
     string TextFolder,
     CalibrationParameters Disc,
@@ -41,7 +45,8 @@ public sealed record RosettaHybridRequest(
     bool IncludeRimHeader = true,
     double StartAngleDegrees = 0,
     string? Par2Path = null,
-    bool Overwrite = false);
+    bool Overwrite = false,
+    bool CdInterleave = true);
 
 /// <summary>
 /// The sector and page plan of a hybrid disc, from the geometry model and the page layout. Every capacity here is what
@@ -68,7 +73,9 @@ public sealed record RosettaHybridPlan(
     int PagesUsed,
     int DocumentCount,
     string TextSha256,
-    IReadOnlyList<RosettaDocumentRange> Documents)
+    IReadOnlyList<RosettaDocumentRange> Documents,
+    CalibrationDiscKind Medium = CalibrationDiscKind.Dvd,
+    bool CdInterleave = false)
 {
     /// <summary>Bytes the vault may take in all (files, manifests, recovery data and file system).</summary>
     public long VaultCeilingBytes => (long)VaultCeilingSectors * IsoUdfImageBuilder.SectorSize;
@@ -91,17 +98,20 @@ public sealed record RosettaHybridResult(
     int RecoverySectors,
     int? RecoveryBlocks,
     long BytesWritten,
-    TimeSpan Elapsed);
+    TimeSpan Elapsed,
+    string? CueSheetPath = null,
+    string? BinaryPath = null);
 
 /// <summary>
-/// A hybrid Rosetta DVD: the archive vault (text, page index, optional files, manifests and PAR2 recovery data) as an
-/// ISO 9660 + Joliet + UDF volume from LBA 0, clamped so that it and a zero gap of at least 2 MiB end before the sector
-/// at the pages' inner radius (38 mm by default); then the microscope-readable text pages to the end of the disc, with
-/// the rim header (title, date, SHA-256 prefix) at the edge. A computer sees only the vault; no page sector lies inside
-/// the volume.
+/// A hybrid Rosetta disc (DVD-R or CD-R): the archive vault (text, page index, optional files, manifests and PAR2
+/// recovery data) as an ISO 9660 + Joliet + UDF volume from LBA 0, clamped so that it and a zero gap of at least 2 MiB
+/// end before the pages' start LBA (at 38 mm by default); then the microscope-readable text pages to the end of the
+/// disc, with the rim header (title, date, SHA-256 prefix) at the edge. On CD-R this is a mixed-mode disc (Track 1
+/// Mode 1 vault, Track 2 CD-DA picture track) written as a BIN/CUE pair with glyph cells of at least 50 x 75 um. A
+/// computer sees only the vault; no page sector lies inside the volume.
 /// <para>
-/// The image is built in <c>&lt;output&gt;.partial</c> and renamed when complete; staging happens in a work folder next to
-/// the output that is always removed.
+/// Images are built via <c>.partial</c> files and renamed when complete; staging happens in a work folder next to the
+/// output that is always removed.
 /// </para>
 /// </summary>
 public static class RosettaHybridDisc
@@ -122,6 +132,9 @@ public static class RosettaHybridDisc
     public const string SidecarSuffix = ".rosetta.json";
 
     private const int Align = OpticalConstants.DvdEccBlockSectors;
+    private const int CdMinimumAudioTrackSectors = 4 * OpticalConstants.AudioFramesPerSecond; // Red Book 4 s minimum
+    private const int CdCircLeadInSectors =
+        (CdCircEdgeZones.InnerEdgeZoneBytes + CdDiscParameters.BytesPerSector - 1) / CdDiscParameters.BytesPerSector;
     private static readonly UTF8Encoding StrictUtf8 = new(encoderShouldEmitUTF8Identifier: false, throwOnInvalidBytes: true);
 
     /// <summary>The plan, without staging the vault or drawing any page.</summary>
@@ -129,7 +142,7 @@ public static class RosettaHybridDisc
 
     /// <summary>
     /// Computes the disc sector and page layout plan for a disc geometry and Rosetta preset before any text folder
-    /// is chosen, using the exact same <see cref="DiscTrack"/> and <see cref="RosettaBook"/> layout math as
+    /// is chosen, using the exact same geometry and <see cref="RosettaBook"/> layout math as
     /// <see cref="Plan(RosettaHybridRequest)"/>.
     /// </summary>
     public static RosettaHybridPlan PlanLayout(
@@ -139,7 +152,8 @@ public static class RosettaHybridDisc
         DateOnly? date = null,
         double pagesInnerRadiusMm = DefaultPagesInnerRadiusMm,
         bool includeRimHeader = true,
-        double startAngleDegrees = 0)
+        double startAngleDegrees = 0,
+        bool cdInterleave = true)
     {
         ArgumentNullException.ThrowIfNull(disc);
         ArgumentNullException.ThrowIfNull(preset);
@@ -155,6 +169,7 @@ public static class RosettaHybridDisc
             pagesInnerRadiusMm,
             includeRimHeader,
             startAngleDegrees,
+            cdInterleave,
             outputPath: string.Empty).Plan;
     }
 
@@ -172,13 +187,18 @@ public static class RosettaHybridDisc
         }
 
         Stopwatch stopwatch = Stopwatch.StartNew();
+        bool isCd = p.Plan.Medium == CalibrationDiscKind.Cd;
         string outputDir = Path.GetDirectoryName(p.OutputPath)!;
         Directory.CreateDirectory(outputDir);
         string work = Path.Combine(outputDir, Path.GetFileName(p.OutputPath) + ".rosetta-work-" + Guid.NewGuid().ToString("N")[..8]);
-        string partial = p.OutputPath + ".partial";
-        string sidecarPath = p.OutputPath + SidecarSuffix;
+        string? cuePath = isCd ? Path.ChangeExtension(p.OutputPath, ".cue") : null;
+        string? binPath = isCd ? Path.ChangeExtension(p.OutputPath, ".bin") : null;
+        string partial = (binPath ?? p.OutputPath) + ".partial";
+        string? cuePartial = cuePath is null ? null : cuePath + ".partial";
+        string sidecarPath = (cuePath ?? p.OutputPath) + SidecarSuffix;
         bool finished = false;
-        bool moved = false;
+        bool movedMain = false;
+        bool movedCue = false;
         try
         {
             // 1. The vault's own files: the text as hashed, and the page index.
@@ -191,7 +211,8 @@ public static class RosettaHybridDisc
             }
 
             // 2. Manifests and PAR2, through the archive stager, with the ceiling the radius allows.
-            ArchivePlan archivePlan = ArchiveSpanPlanner.Plan(sources, DiscMediaType.DvdMinusR, request.RedundancyPercent,
+            DiscMediaType archiveMedia = isCd ? DiscMediaType.CdR : DiscMediaType.DvdMinusR;
+            ArchivePlan archivePlan = ArchiveSpanPlanner.Plan(sources, archiveMedia, request.RedundancyPercent,
                 setId: null, fillFreeSpace: request.FillWithRecoveryData && request.RedundancyPercent > 0,
                 ceilingSectorsOverride: p.Plan.VaultCeilingSectors);
             if (archivePlan.Discs.Count != 1)
@@ -213,42 +234,55 @@ public static class RosettaHybridDisc
             PictureDiscLayout layout;
             try
             {
-                layout = PictureDiscLayoutPlanner.PlanInnerBefore(root, isoOptions, PictureDiscMedium.Dvd,
-                    p.Plan.PagesStartLba, p.Plan.PagesEndLba);
+                layout = PictureDiscLayoutPlanner.PlanInnerBefore(
+                    root,
+                    isoOptions,
+                    isCd ? PictureDiscMedium.Cd : PictureDiscMedium.Dvd,
+                    p.Plan.PagesStartLba,
+                    p.Plan.PagesEndLba);
             }
             catch (InvalidOperationException ex)
             {
                 throw new ArgumentException("The vault does not end before the pages. " + ex.Message);
             }
 
-            // 4. Vault, zero gap, pages: one pass, the pages streamed straight into the image.
-            MultiBlockSolveOptions solve = RosettaDvdEncoder.BuildSolveOptions(p.Encode with
+            // 4. Vault, zero gap, pages: one pass into the output image.
+            if (isCd)
             {
-                StartLba = (uint)layout.PictureStartLba,
-                FillSectors = (uint)layout.PictureSectorCount,
-            });
-            await using (var output = new FileStream(partial, FileMode.Create, FileAccess.Write, FileShare.None,
-                bufferSize: 1024 * 1024, FileOptions.SequentialScan))
+                WriteCdBinAndCue(p, root, isoOptions, layout, work, binPath!, partial, cuePath!, cuePartial!,
+                    request.Overwrite, progress, stopwatch, cancellationToken, ref movedMain, ref movedCue);
+            }
+            else
             {
-                Report(progress, stopwatch, "compose", "Writing the vault…", 0);
-                PictureDiscImageComposer.Compose(root, isoOptions, layout, zone =>
+                MultiBlockSolveOptions solve = RosettaDvdEncoder.BuildSolveOptions(p.DvdEncode! with
                 {
-                    RosettaDvdEncoder.WriteStream(p.Book, zone, solve, value =>
+                    StartLba = (uint)layout.PictureStartLba,
+                    FillSectors = (uint)layout.PictureSectorCount,
+                });
+                await using (var output = new FileStream(partial, FileMode.Create, FileAccess.Write, FileShare.None,
+                    bufferSize: 1024 * 1024, FileOptions.SequentialScan))
+                {
+                    Report(progress, stopwatch, "compose", "Writing the vault…", 0);
+                    PictureDiscImageComposer.Compose(root, isoOptions, layout, zone =>
                     {
-                        if (value.CompletedBlocks == 1 || value.CompletedBlocks % 256 == 0 || value.CompletedBlocks == value.TotalBlocks)
+                        RosettaDvdEncoder.WriteStream(p.Book, zone, solve, value =>
                         {
-                            Report(progress, stopwatch, "pages", "Drawing the pages…", value.Fraction);
-                        }
-                    }, cancellationToken);
-                }, output);
+                            if (value.CompletedBlocks == 1 || value.CompletedBlocks % 256 == 0 || value.CompletedBlocks == value.TotalBlocks)
+                            {
+                                Report(progress, stopwatch, "pages", "Drawing the pages…", value.Fraction);
+                            }
+                        }, cancellationToken);
+                    }, output);
+                }
+
+                cancellationToken.ThrowIfCancellationRequested();
+                File.Move(partial, p.OutputPath, request.Overwrite);
+                movedMain = true;
             }
 
-            cancellationToken.ThrowIfCancellationRequested();
-            File.Move(partial, p.OutputPath, request.Overwrite);
-            moved = true;
-            long bytes = new FileInfo(p.OutputPath).Length;
+            long bytes = new FileInfo(binPath ?? p.OutputPath).Length;
             var result = new RosettaHybridResult(p.Plan, layout, p.OutputPath, sidecarPath, label, archivePlan.SetId,
-                staged.RecoverySectors, staged.Recovery?.RecoveryBlocks, bytes, stopwatch.Elapsed);
+                staged.RecoverySectors, staged.Recovery?.RecoveryBlocks, bytes, stopwatch.Elapsed, cuePath, binPath);
             WriteSidecar(sidecarPath, request, result);
             finished = true;
             Report(progress, stopwatch, "complete", "Hybrid Rosetta image completed.", 1);
@@ -260,15 +294,149 @@ public static class RosettaHybridDisc
             {
                 // A half-written image never sits under the final name, and an image never stays without its description.
                 TryDeleteFile(partial);
-                if (moved)
-                {
-                    TryDeleteFile(p.OutputPath);
-                    TryDeleteFile(sidecarPath);
-                }
+                if (cuePartial is not null) TryDeleteFile(cuePartial);
+                if (movedMain) TryDeleteFile(binPath ?? p.OutputPath);
+                if (movedCue && cuePath is not null) TryDeleteFile(cuePath);
+                if (movedMain || movedCue) TryDeleteFile(sidecarPath);
             }
 
             TryDeleteDirectory(work);
         }
+    }
+
+    private static void WriteCdBinAndCue(
+        Prepared p,
+        CompilationDirectory root,
+        IsoBuildOptions isoOptions,
+        PictureDiscLayout layout,
+        string work,
+        string binPath,
+        string binPartial,
+        string cuePath,
+        string cuePartial,
+        bool overwrite,
+        IProgress<DiscJobProgress>? progress,
+        Stopwatch stopwatch,
+        CancellationToken cancellationToken,
+        ref bool movedBin,
+        ref bool movedCue)
+    {
+        const int DataSectorSize = IsoUdfImageBuilder.SectorSize;
+        const int RawSectorSize = OpticalConstants.RawSectorSize;
+        const int PostGapSectors = OpticalConstants.CdLeadInFrames;
+        const int PreGapSectors = OpticalConstants.CdLeadInFrames;
+
+        string vaultIsoPath = Path.Combine(work, "vault.iso");
+        Report(progress, stopwatch, "compose", "Writing the vault…", 0);
+        using (var vaultStream = new FileStream(vaultIsoPath, FileMode.Create, FileAccess.ReadWrite, FileShare.None,
+            bufferSize: 1024 * 1024, FileOptions.SequentialScan))
+        {
+            IsoUdfImageBuilder.Build(root, vaultStream, isoOptions, sessionStartLba: 0);
+            vaultStream.Flush();
+            long expectedVaultBytes = (long)layout.VolumeEndLba * DataSectorSize;
+            if (vaultStream.Length != expectedVaultBytes)
+            {
+                throw new InvalidOperationException(
+                    $"The file system took {vaultStream.Length / DataSectorSize:N0} sectors but the layout planned {layout.VolumeEndLba:N0}.");
+            }
+
+            vaultStream.Position = 0;
+            using var binStream = new FileStream(binPartial, FileMode.Create, FileAccess.Write, FileShare.None,
+                bufferSize: 1024 * 1024, FileOptions.SequentialScan);
+
+            byte[] user2048 = new byte[DataSectorSize];
+            byte[] zero2048 = new byte[DataSectorSize];
+            byte[] raw2352 = new byte[RawSectorSize];
+
+            // Track 1: Mode 1/2352 vault sectors, then Mode 1 zero gap including the 150-sector Yellow Book post-gap.
+            int mode1EndLba = layout.PictureStartLba - PreGapSectors;
+            for (int lba = 0; lba < mode1EndLba; lba++)
+            {
+                if ((lba & 0xFF) == 0)
+                {
+                    cancellationToken.ThrowIfCancellationRequested();
+                }
+
+                if (lba < layout.VolumeEndLba)
+                {
+                    vaultStream.ReadExactly(user2048);
+                    RawSectorCodec.Convert2048To2352Mode1(user2048, lba, raw2352);
+                }
+                else
+                {
+                    RawSectorCodec.Convert2048To2352Mode1(zero2048, lba, raw2352);
+                }
+
+                binStream.Write(raw2352);
+            }
+
+            // Track 2 INDEX 00 pre-gap: 150 sectors (2 seconds) of silent Red Book audio.
+            Array.Clear(raw2352);
+            for (int i = 0; i < PreGapSectors; i++)
+            {
+                binStream.Write(raw2352);
+            }
+
+            // Track 2 INDEX 01: CD-DA Rosetta pages (+ optional rim header) in little-endian Red Book PCM.
+            Report(progress, stopwatch, "pages", "Drawing the pages…", 0);
+            int lastPercent = -1;
+            Func<double, double, byte> sampler = RosettaDvdEncoder.CreateReadSideGrayscaleSampler(p.Book, startAngleDegrees: 0.0);
+            CdTrackGenerator.GeneratePatternToStream(
+                sampler,
+                binStream,
+                p.CdTrack!,
+                p.Plan.CdInterleave,
+                value =>
+                {
+                    int pct = (int)(value.Fraction * 100);
+                    if (pct != lastPercent && (pct == 100 || pct % 10 == 0))
+                    {
+                        lastPercent = pct;
+                        Report(progress, stopwatch, "pages", "Drawing the pages…", value.Fraction);
+                    }
+                },
+                cancellationToken,
+                outputDescription: binPath,
+                audioByteOrder: CdAudioByteOrder.LittleEndian,
+                useSimdSampling: true,
+                useParallelSampling: true);
+            binStream.Flush();
+
+            long expectedTotalBytes = (long)layout.PictureEndLba * RawSectorSize;
+            if (binStream.Length != expectedTotalBytes)
+            {
+                throw new InvalidOperationException(
+                    $"The CD binary image took {binStream.Length:N0} bytes but the layout planned {expectedTotalBytes:N0}.");
+            }
+        }
+
+        // Track 1 has at least (MinimumGapSectors - PreGapSectors) zero sectors after VolumeEndLba; the last 150 are the post-gap.
+        _ = PostGapSectors;
+        cancellationToken.ThrowIfCancellationRequested();
+
+        var track1 = new CueTrack(
+            1,
+            CueTrackDataType.Mode1_2352,
+            Title: p.Book.ArchiveTitle,
+            Indices: [new CueIndex(1, MsfAddress.FromFrameCount(0))]);
+        var track2 = new CueTrack(
+            2,
+            CueTrackDataType.Audio,
+            Title: "Rosetta Pages",
+            Indices:
+            [
+                new CueIndex(0, MsfAddress.FromFrameCount(layout.PictureStartLba - PreGapSectors)),
+                new CueIndex(1, MsfAddress.FromFrameCount(layout.PictureStartLba)),
+            ]);
+        var cueSheet = new CueSheet(
+            Title: p.Book.ArchiveTitle,
+            Files: [new CueFileEntry(Path.GetFileName(binPath), "BINARY", [track1, track2])]);
+        CueSheetWriter.WriteToFile(cueSheet, cuePartial);
+
+        File.Move(binPartial, binPath, overwrite);
+        movedBin = true;
+        File.Move(cuePartial, cuePath, overwrite);
+        movedCue = true;
     }
 
     /// <summary>
@@ -284,7 +452,8 @@ public static class RosettaHybridDisc
     private sealed record Prepared(
         RosettaHybridPlan Plan,
         RosettaBook Book,
-        RosettaDvdEncodeOptions Encode,
+        RosettaDvdEncodeOptions? DvdEncode,
+        CdDiscParameters? CdTrack,
         IReadOnlyList<VaultText> Texts,
         string OutputPath,
         string? FilesFolder);
@@ -301,16 +470,41 @@ public static class RosettaHybridDisc
             throw new ArgumentException("Give the archive a title.");
         }
 
-        if (string.IsNullOrWhiteSpace(request.OutputPath)
-            || !string.Equals(Path.GetExtension(request.OutputPath), ".iso", StringComparison.OrdinalIgnoreCase))
+        string ext = Path.GetExtension(request.OutputPath ?? string.Empty);
+        if (request.Disc.Kind == CalibrationDiscKind.Cd)
         {
-            throw new ArgumentException("The hybrid disc is written as an .iso file.");
+            if (string.IsNullOrWhiteSpace(request.OutputPath)
+                || (!string.Equals(ext, ".cue", StringComparison.OrdinalIgnoreCase)
+                    && !string.Equals(ext, ".bin", StringComparison.OrdinalIgnoreCase)))
+            {
+                throw new ArgumentException("A hybrid Rosetta CD-R is written as a .cue/.bin mixed-mode disc image (give --output <file.cue> or <file.bin>).");
+            }
+        }
+        else if (string.IsNullOrWhiteSpace(request.OutputPath)
+                 || !string.Equals(ext, ".iso", StringComparison.OrdinalIgnoreCase))
+        {
+            throw new ArgumentException("The hybrid DVD-R disc is written as an .iso file.");
         }
 
         string output = Path.GetFullPath(request.OutputPath);
-        if (!request.Overwrite && File.Exists(output))
+        if (!request.Overwrite)
         {
-            throw new ArgumentException($"The file already exists: {output} (use --overwrite to replace it).");
+            if (request.Disc.Kind == CalibrationDiscKind.Cd)
+            {
+                string cuePath = Path.ChangeExtension(output, ".cue");
+                string binPath = Path.ChangeExtension(output, ".bin");
+                foreach (string candidate in new[] { output, cuePath, binPath, cuePath + SidecarSuffix }.Distinct(StringComparer.OrdinalIgnoreCase))
+                {
+                    if (File.Exists(candidate))
+                    {
+                        throw new ArgumentException($"The file already exists: {candidate} (use --overwrite to replace it).");
+                    }
+                }
+            }
+            else if (File.Exists(output))
+            {
+                throw new ArgumentException($"The file already exists: {output} (use --overwrite to replace it).");
+            }
         }
 
         if (request.RedundancyPercent is < 0 or > 100)
@@ -350,6 +544,7 @@ public static class RosettaHybridDisc
             request.PagesInnerRadiusMm,
             request.IncludeRimHeader,
             request.StartAngleDegrees,
+            request.CdInterleave,
             output);
     }
 
@@ -363,12 +558,13 @@ public static class RosettaHybridDisc
         double pagesInnerRadiusMm,
         bool includeRimHeader,
         double startAngleDegrees,
+        bool cdInterleave,
         string outputPath)
     {
-        if (disc.Kind != CalibrationDiscKind.Dvd)
+        if (disc.Kind is not (CalibrationDiscKind.Dvd or CalibrationDiscKind.Cd))
         {
             throw new ArgumentException(
-                "A hybrid Rosetta disc is DVD-R only for now. CD-R comes after the CD port, with glyph cells of at least 50 x 75 um.");
+                "A hybrid Rosetta disc supports DVD-R and CD-R. BD-R contrast/polarity are unmeasured.");
         }
 
         if (!double.IsFinite(pagesInnerRadiusMm) || !double.IsFinite(startAngleDegrees))
@@ -376,14 +572,119 @@ public static class RosettaHybridDisc
             throw new ArgumentException("The radius and start angle must be finite numbers.");
         }
 
-        RosettaDvdEncodeOptions encode;
+        if (preset.CellSize.WidthUm <= 0 || preset.Columns <= 0)
+        {
+            throw new ArgumentException("The cell preset is not valid.");
+        }
+
+        bool isCd = disc.Kind == CalibrationDiscKind.Cd;
+        if (isCd && (!preset.CdSupported || !preset.CellSize.IsCdCompatible))
+        {
+            throw new ArgumentException(
+                $"Glyph cells below 50 x 75 um cannot be read on CD-R ({preset.Name} is {preset.CellSize.WidthUm:0.###} x {preset.CellSize.HeightUm:0.###} um; " +
+                "a CD channel symbol is 4.7 um long and CIRC parity uses 27% of each frame). Choose 'hobbyist' or a CD-compatible rung (>= 50 x 75 um).");
+        }
+
+        RosettaDvdEncodeOptions? dvdEncode = null;
+        CdDiscParameters? cdTrack = null;
+        long discSectors;
+        int pagesStart;
+        int pagesEnd;
+        double pagesStartRadiusMm;
+        double pagesOuter;
+
         try
         {
             disc.Validate();
-            encode = RosettaDvdEncodeOptions.FromCalibration(disc, startAngleDegrees);
-            if (preset.CellSize.WidthUm <= 0 || preset.Columns <= 0)
+            if (isCd)
             {
-                throw new ArgumentException("The cell preset is not valid.");
+                if (disc.PitchLinear != 0 || disc.PitchQuadratic != 0 || disc.PitchCubic != 0)
+                {
+                    throw new ArgumentException(
+                        "A calibrated non-constant track pitch cannot yet be combined with other tracks on CD-R; use a CD preset or constant-pitch calibration.");
+                }
+
+                var full = new CdDiscParameters(
+                    disc.InnerRadiusMm,
+                    disc.OuterRadiusMm,
+                    disc.Sectors,
+                    disc.LinearDensity,
+                    StartAngleRadians: startAngleDegrees * (Math.PI / 180.0),
+                    ImageOuterRadiusMm: disc.OuterRadiusMm,
+                    PitchLinear: disc.PitchLinear,
+                    PitchQuadratic: disc.PitchQuadratic,
+                    PitchCubic: disc.PitchCubic,
+                    UsableSectors: disc.UsableSectors);
+                full.Validate();
+
+                if (pagesInnerRadiusMm <= full.InnerRadiusMm || pagesInnerRadiusMm >= full.OuterRadiusMm)
+                {
+                    throw new ArgumentException(
+                        $"The pages must start between the disc's inner and outer radius ({full.InnerRadiusMm:0.###} to {full.OuterRadiusMm:0.###} mm).");
+                }
+
+                double rInSq = full.InnerRadiusMm * full.InnerRadiusMm;
+                double rOutSq = full.OuterRadiusMm * full.OuterRadiusMm;
+                double fraction = Math.Clamp(((pagesInnerRadiusMm * pagesInnerRadiusMm) - rInSq) / (rOutSq - rInSq), 0.0, 1.0);
+                long lbaAtRadius = (long)Math.Floor(fraction * full.Sectors);
+                int leadInPullback = cdInterleave ? CdCircLeadInSectors : 0;
+
+                discSectors = full.Sectors;
+                pagesStart = checked((int)Math.Clamp(lbaAtRadius - leadInPullback, 0, full.OutputSectors));
+                pagesEnd = checked((int)full.OutputSectors);
+
+                if (pagesEnd - pagesStart < CdMinimumAudioTrackSectors)
+                {
+                    throw new ArgumentException(
+                        "No CD audio picture track (at least 300 sectors / 4 seconds) fits between the pages' inner radius and the end of the disc.");
+                }
+
+                long trackBytes = (long)(pagesEnd - pagesStart) * CdDiscParameters.BytesPerSector;
+                long drawableEndByte = cdInterleave ? CdCircEdgeZones.LogicalDrawableEndByte(trackBytes) : trackBytes;
+                pagesStartRadiusMm = full.RadiusFromByte((long)pagesStart * CdDiscParameters.BytesPerSector);
+                pagesOuter = Math.Min(
+                    full.OuterRadiusMm,
+                    full.RadiusFromByte(((long)pagesStart * CdDiscParameters.BytesPerSector) + drawableEndByte));
+                if (pagesOuter <= pagesInnerRadiusMm)
+                {
+                    throw new ArgumentException(
+                        "No drawable CD picture area remains outside the CIRC edge zones between the pages' inner radius and the end of the disc.");
+                }
+
+                cdTrack = new CdDiscParameters(
+                    pagesStartRadiusMm,
+                    full.OuterRadiusMm,
+                    full.Sectors - pagesStart,
+                    full.LinearVelocityMmPerSecond,
+                    StartAngleRadians: full.ThetaFromRadius(pagesStartRadiusMm),
+                    ImageOuterRadiusMm: full.ImageOuterRadiusMm,
+                    UsableSectors: (long)pagesEnd - pagesStart,
+                    SourceImageOuterRadiusMm: full.SamplingImageOuterRadiusMm);
+                cdTrack.Validate();
+            }
+            else
+            {
+                dvdEncode = RosettaDvdEncodeOptions.FromCalibration(disc, startAngleDegrees);
+                var geometry = new DiscTrack(dvdEncode);
+                uint outputSectors = dvdEncode.UsableSectors ?? dvdEncode.TotalSectors;
+                pagesEnd = checked((int)(outputSectors / Align * Align));
+                if (pagesInnerRadiusMm <= dvdEncode.InnerRadiusMm || pagesInnerRadiusMm >= dvdEncode.OuterRadiusMm)
+                {
+                    throw new ArgumentException(
+                        $"The pages must start between the disc's inner and outer radius ({dvdEncode.InnerRadiusMm:0.###} to {dvdEncode.OuterRadiusMm:0.###} mm).");
+                }
+
+                // The page zone starts on the ECC block that holds the pages' inner radius, so no page pixel is lost.
+                long lbaAtRadius = geometry.LbaAtRadius(pagesInnerRadiusMm);
+                pagesStart = checked((int)(lbaAtRadius / Align * Align));
+                if (pagesEnd - pagesStart < Align)
+                {
+                    throw new ArgumentException("No page sector fits between the pages' inner radius and the end of the disc.");
+                }
+
+                discSectors = dvdEncode.TotalSectors;
+                pagesStartRadiusMm = geometry.RadiusAtLba(pagesStart);
+                pagesOuter = Math.Min(dvdEncode.OuterRadiusMm, geometry.RadiusAtLba(pagesEnd));
             }
         }
         catch (ArgumentException ex)
@@ -391,19 +692,6 @@ public static class RosettaHybridDisc
             throw new ArgumentException(ex.Message);
         }
 
-        // One geometry: the encoder's own track model places every sector, so the clamp uses it too.
-        var geometry = new DiscTrack(encode);
-        uint outputSectors = encode.UsableSectors ?? encode.TotalSectors;
-        int pagesEnd = checked((int)(outputSectors / Align * Align));
-        if (pagesInnerRadiusMm <= encode.InnerRadiusMm || pagesInnerRadiusMm >= encode.OuterRadiusMm)
-        {
-            throw new ArgumentException(
-                $"The pages must start between the disc's inner and outer radius ({encode.InnerRadiusMm:0.###} to {encode.OuterRadiusMm:0.###} mm).");
-        }
-
-        // The page zone starts on the ECC block that holds the pages' inner radius, so no page pixel is lost.
-        long lbaAtRadius = geometry.LbaAtRadius(pagesInnerRadiusMm);
-        int pagesStart = checked((int)(lbaAtRadius / Align * Align));
         int vaultCeiling = pagesStart - PictureDiscLayoutPlanner.MinimumGapSectors;
         if (vaultCeiling < 512)
         {
@@ -411,12 +699,6 @@ public static class RosettaHybridDisc
                 $"Only {Math.Max(0, vaultCeiling):N0} sectors lie inside r = {pagesInnerRadiusMm:0.###} mm after the 2 MiB gap; move the pages outward.");
         }
 
-        if (pagesEnd - pagesStart < Align)
-        {
-            throw new ArgumentException("No page sector fits between the pages' inner radius and the end of the disc.");
-        }
-
-        double pagesOuter = Math.Min(encode.OuterRadiusMm, geometry.RadiusAtLba(pagesEnd));
         RosettaBook book;
         try
         {
@@ -458,10 +740,10 @@ public static class RosettaHybridDisc
 
         RosettaBand body = book.Bands[^1];
         var plan = new RosettaHybridPlan(
-            DiscSectors: encode.TotalSectors,
+            DiscSectors: discSectors,
             PagesStartLba: pagesStart,
             PagesEndLba: pagesEnd,
-            PagesStartRadiusMm: geometry.RadiusAtLba(pagesStart),
+            PagesStartRadiusMm: pagesStartRadiusMm,
             PagesInnerRadiusMm: pagesInnerRadiusMm,
             PagesOuterRadiusMm: book.RimHeader is { } rim ? rim.InnerRadiusMm - RosettaRimHeader.PageGutterMm : pagesOuter,
             RimInnerRadiusMm: book.RimHeader?.InnerRadiusMm,
@@ -478,8 +760,10 @@ public static class RosettaHybridDisc
             PagesUsed: book.TotalPages,
             DocumentCount: texts.Count,
             TextSha256: book.TextSha256Hex,
-            Documents: book.DocumentRanges);
-        return new Prepared(plan, book, encode, texts, outputPath, filesFolder);
+            Documents: book.DocumentRanges,
+            Medium: disc.Kind,
+            CdInterleave: isCd && cdInterleave);
+        return new Prepared(plan, book, dvdEncode, cdTrack, texts, outputPath, filesFolder);
     }
 
     private static IReadOnlyList<VaultText> LoadTexts(string folder)
@@ -654,10 +938,11 @@ public static class RosettaHybridDisc
     private static void WriteSidecar(string path, RosettaHybridRequest request, RosettaHybridResult result)
     {
         RosettaHybridPlan plan = result.Plan;
+        bool isCd = request.Disc.Kind == CalibrationDiscKind.Cd;
         var doc = new
         {
             format = "ignisdisc-rosetta-hybrid-1",
-            media = "DVD-R",
+            media = isCd ? "CD-R" : "DVD-R",
             title = request.Title.Trim(),
             date = request.Date.ToString("yyyy-MM-dd", CultureInfo.InvariantCulture),
             textSha256 = plan.TextSha256,
@@ -666,6 +951,9 @@ public static class RosettaHybridDisc
             disc = request.Disc,
             startAngleDegrees = request.StartAngleDegrees,
             rimHeader = request.IncludeRimHeader,
+            cdInterleave = isCd ? request.CdInterleave : (bool?)null,
+            cueSheet = result.CueSheetPath is null ? null : Path.GetFileName(result.CueSheetPath),
+            binaryFile = result.BinaryPath is null ? null : Path.GetFileName(result.BinaryPath),
             vault = new
             {
                 volumeEndLba = result.Layout.VolumeEndLba,

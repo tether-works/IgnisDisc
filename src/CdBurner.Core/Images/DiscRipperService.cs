@@ -232,21 +232,33 @@ public class DiscRipperService
 
         // A raw rip of a disc with audio runs to the lead-out in the table of contents. The used size Windows reports
         // can stop short of it (2 sectors on a Session-at-Once CD, measured 2026-11-11), which would cut the end of the
-        // last track.
-        if (options.Raw2352Mode && !options.SectorCount.HasValue && recorder is IDiscTocProvider tocProvider)
+        // last track. Conversely, a 2048-byte ISO rip of a mixed-mode CD must stop at the end of Track 1 (data) before
+        // Track 2's audio pre-gap so it does not read audio sectors as Mode 1 data.
+        if (!options.SectorCount.HasValue)
         {
-            try
+            if (options.Raw2352Mode && recorder is IDiscTocProvider tocProvider)
             {
-                var toc = tocProvider.ReadTableOfContents();
-                if (toc.Count > 0 && toc.Any(t => t.IsAudio))
+                try
                 {
-                    int tocEnd = toc.Max(t => t.StartLba + t.SectorCount);
-                    sectorCount = Math.Max(sectorCount, tocEnd - startLba);
+                    var toc = tocProvider.ReadTableOfContents();
+                    if (toc.Count > 0 && toc.Any(t => t.IsAudio))
+                    {
+                        int tocEnd = toc.Max(t => t.StartLba + t.SectorCount);
+                        sectorCount = Math.Max(sectorCount, tocEnd - startLba);
+                    }
+                }
+                catch (Exception ex) when (ex is IOException or InvalidOperationException or UnauthorizedAccessException)
+                {
+                    // Without a table of contents the used size stands.
                 }
             }
-            catch (Exception ex) when (ex is IOException or InvalidOperationException or UnauthorizedAccessException)
+            else if (!options.Raw2352Mode && startLba == 0)
             {
-                // Without a table of contents the used size stands.
+                int? mixedDataEnd = TryGetMixedModeDataTrackEndLba(recorder);
+                if (mixedDataEnd is > 0)
+                {
+                    sectorCount = Math.Min(sectorCount, mixedDataEnd.Value);
+                }
             }
         }
 
@@ -495,5 +507,61 @@ public class DiscRipperService
         }
 
         return 0;
+    }
+
+    private static int? TryGetMixedModeDataTrackEndLba(IDiscRecorderBackend recorder)
+    {
+        if (recorder is IDiscTocProvider tocProvider)
+        {
+            try
+            {
+                var toc = tocProvider.ReadTableOfContents();
+                if (toc.Count > 1 && !toc[0].IsAudio && toc[1].IsAudio)
+                {
+                    return Math.Max(0, toc[1].StartLba - OpticalConstants.CdLeadInFrames);
+                }
+            }
+            catch (Exception ex) when (ex is IOException or InvalidOperationException or UnauthorizedAccessException)
+            {
+            }
+        }
+
+        try
+        {
+            var mediumProp = recorder.GetType().GetProperty("CurrentMedium");
+            if (mediumProp?.GetValue(recorder) is object mediumObj
+                && mediumObj.GetType().GetProperty("Sessions")?.GetValue(mediumObj) is System.Collections.IEnumerable sessions)
+            {
+                foreach (var sessionItem in sessions)
+                {
+                    if (sessionItem.GetType().GetProperty("Tracks")?.GetValue(sessionItem) is not System.Collections.IEnumerable tracks)
+                    {
+                        continue;
+                    }
+
+                    var list = tracks.Cast<object>().ToList();
+                    if (list.Count > 1)
+                    {
+                        var t0 = list[0].GetType();
+                        var t1 = list[1].GetType();
+                        bool firstIsAudio = t0.GetProperty("IsAudio")?.GetValue(list[0]) is bool a0 && a0;
+                        bool secondIsAudio = t1.GetProperty("IsAudio")?.GetValue(list[1]) is bool a1 && a1;
+                        if (!firstIsAudio && secondIsAudio)
+                        {
+                            int? index00 = t1.GetProperty("Index00Lba")?.GetValue(list[1]) as int?;
+                            int start1 = t1.GetProperty("StartLba")?.GetValue(list[1]) is int s1 ? s1 : 0;
+                            return Math.Max(0, index00 ?? (start1 - OpticalConstants.CdLeadInFrames));
+                        }
+                    }
+
+                    break;
+                }
+            }
+        }
+        catch
+        {
+        }
+
+        return null;
     }
 }

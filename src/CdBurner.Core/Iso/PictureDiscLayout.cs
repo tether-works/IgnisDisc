@@ -19,6 +19,9 @@ public enum PictureDiscFilesPlacement
 /// <summary>Disc family; sets the alignment of the picture zone and of the files session.</summary>
 public enum PictureDiscMedium
 {
+    /// <summary>CD: 1 sector (2,048-byte Mode 1 sector; mixed-mode picture track starts at Track 2 INDEX 01).</summary>
+    Cd,
+
     /// <summary>DVD: one ECC block is 16 sectors (ECMA-267 §18).</summary>
     Dvd,
 
@@ -76,6 +79,7 @@ public static class PictureDiscLayoutPlanner
     /// <summary>Picture zone alignment for <paramref name="medium"/>.</summary>
     public static int AlignmentFor(PictureDiscMedium medium) => medium switch
     {
+        PictureDiscMedium.Cd => 1,
         PictureDiscMedium.Dvd => OpticalConstants.DvdEccBlockSectors,
         PictureDiscMedium.BluRay => OpticalConstants.BdClusterSectors,
         _ => throw new ArgumentOutOfRangeException(nameof(medium), medium, "Unknown disc medium."),

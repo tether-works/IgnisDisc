@@ -8,40 +8,44 @@ using CdBurner.Lithography.Rosetta;
 namespace CdBurner.Cli;
 
 /// <summary>
-/// <c>rosetta build | burn</c>: a hybrid Rosetta DVD-R. The archive vault (text, page index, optional files, manifests,
-/// PAR2) sits inside the pages' inner radius as a normal ISO 9660 + Joliet + UDF volume, then a zero gap, then the
-/// microscope-readable pages and the rim header. The work is done by <see cref="RosettaHybridDisc"/>; the burn forwards
-/// to <c>burn-iso</c>.
+/// <c>rosetta build | burn</c>: a hybrid Rosetta DVD-R or CD-R. The archive vault (text, page index, optional files,
+/// manifests, PAR2) sits inside the pages' inner radius as a normal ISO 9660 + Joliet + UDF volume, then a zero gap,
+/// then the microscope-readable pages and the rim header. The work is done by <see cref="RosettaHybridDisc"/>; the burn
+/// forwards to <c>burn-iso</c> (DVD-R) or <c>burn-audio --dao --native</c> (mixed-mode CD-R).
 /// </summary>
 public static partial class CliCommandRunner
 {
     private const string RosettaBuildUsage =
-        "Usage: ignisdisc-cli rosetta build --text <folder> --output <file.iso> [--title <text>] [--date yyyy-mm-dd] "
+        "Usage: ignisdisc-cli rosetta build --text <folder> --output <file.iso|file.cue|file.bin> [--title <text>] [--date yyyy-mm-dd] "
         + "[--files <folder>] [--cells hobbyist|high-density|<rung id>] [--pages-radius <mm>] [--redundancy <0-100>] [--no-fill] "
-        + "[--no-rim] [--media dvd] [--disc-preset <id>] [--drive-model <text> --media-id <text>] [--start-angle <deg>] "
+        + "[--no-rim] [--media dvd|cd] [--no-interleave] [--disc-preset <id>] [--drive-model <text> --media-id <text>] [--start-angle <deg>] "
         + "[--plan-only] [--overwrite] [--json]";
 
     private const string RosettaBurnUsage =
-        "Usage: ignisdisc-cli rosetta burn --drive <id> --image <file.iso> [any burn-iso option] [--json]";
+        "Usage: ignisdisc-cli rosetta burn --drive <id> --image <file.iso|file.cue> [any burn-iso or burn-audio option] [--json]";
 
     private static async Task<int> HandleRosettaBuildAsync(CommandLineArgs cmd, TextWriter stdout, TextWriter stderr)
     {
         string media = (cmd.GetOption("media") ?? "dvd").ToLowerInvariant();
-        if (media is "cd" or "cd-r")
+        bool isCd = media is "cd" or "cd-r";
+        bool isDvd = media is "dvd" or "dvd-r";
+        if (!isCd && !isDvd)
         {
-            throw new CommandLineException(
-                "A hybrid Rosetta disc is DVD-R only for now. CD-R comes after the CD picture port, with glyph cells of at least 50 x 75 um.");
+            throw new CommandLineException($"Unsupported --media '{media}'. 'rosetta build' supports DVD-R ('--media dvd') and CD-R ('--media cd').");
         }
 
-        if (media is not ("dvd" or "dvd-r"))
+        bool noInterleave = cmd.HasFlag("no-interleave");
+        if (noInterleave && isDvd)
         {
-            throw new CommandLineException($"Unsupported --media '{media}'. 'rosetta build' writes DVD-R images ('--media dvd').");
+            throw new CommandLineException("--no-interleave applies only to CD-R ('--media cd').");
         }
 
         string text = cmd.GetOption("text") is { Length: > 0 } t ? Path.GetFullPath(t) : throw new CommandLineException(RosettaBuildUsage);
         string output = (cmd.GetOption("output") ?? cmd.GetOption("out")) is { Length: > 0 } o
             ? Path.GetFullPath(o)
-            : throw new CommandLineException("Missing required option: --output <file.iso>");
+            : throw new CommandLineException(isCd
+                ? "Missing required option: --output <file.cue|file.bin>"
+                : "Missing required option: --output <file.iso>");
 
         string title = cmd.GetOption("title") is { Length: > 0 } givenTitle
             ? givenTitle
@@ -78,8 +82,10 @@ public static partial class CliCommandRunner
             throw new CommandLineException("--files needs a folder: --files <folder>");
         }
 
-        (CalibrationParameters disc, string source) = ResolveCalibrationParameters(cmd, CalibrationDiscKind.Dvd);
+        CalibrationDiscKind discKind = isCd ? CalibrationDiscKind.Cd : CalibrationDiscKind.Dvd;
+        (CalibrationParameters disc, string source) = ResolveCalibrationParameters(cmd, discKind);
         string? par2 = redundancy > 0 && !cmd.HasFlag("plan-only") ? Par2Runner.FindPar2Executable() : null;
+        string mediaLabel = isCd ? "CD-R" : "DVD-R";
         var request = new RosettaHybridRequest(
             text, disc, output, title, date, preset,
             FilesFolder: files is null ? null : Path.GetFullPath(files),
@@ -89,7 +95,8 @@ public static partial class CliCommandRunner
             IncludeRimHeader: !cmd.HasFlag("no-rim"),
             StartAngleDegrees: OptionalDouble(cmd, "start-angle") ?? 0,
             Par2Path: par2,
-            Overwrite: cmd.HasFlag("overwrite"));
+            Overwrite: cmd.HasFlag("overwrite"),
+            CdInterleave: !noInterleave);
 
         try
         {
@@ -102,15 +109,16 @@ public static partial class CliCommandRunner
                     {
                         success = true,
                         planOnly = true,
-                        media = "DVD-R",
+                        media = mediaLabel,
                         parametersFrom = source,
                         outputPath = output,
+                        cdInterleave = isCd ? plan.CdInterleave : (bool?)null,
                         plan = RosettaPlanDto(plan),
                     });
                 }
                 else
                 {
-                    stdout.WriteLine("Plan for a hybrid Rosetta DVD-R (nothing was written).");
+                    stdout.WriteLine($"Plan for a hybrid Rosetta {mediaLabel} (nothing was written).");
                     stdout.WriteLine($"  Disc        : {source}, {plan.DiscSectors:N0} sectors");
                     WriteRosettaPlanLines(stdout, plan);
                     stdout.WriteLine($"  Output      : {output}");
@@ -127,16 +135,20 @@ public static partial class CliCommandRunner
 
             var progress = new RosettaConsoleProgress(cmd.IsJson ? null : stderr);
             RosettaHybridResult result = await RosettaHybridDisc.GenerateAsync(request, progress).ConfigureAwait(false);
+            string burnImage = result.CueSheetPath ?? result.OutputPath;
             if (cmd.IsJson)
             {
                 WriteJsonResult(stdout, new
                 {
                     success = true,
-                    media = "DVD-R",
+                    media = mediaLabel,
                     parametersFrom = source,
                     plan = RosettaPlanDto(result.Plan),
                     outputPath = result.OutputPath,
+                    cueSheetPath = result.CueSheetPath,
+                    binaryPath = result.BinaryPath,
                     sidecarPath = result.SidecarPath,
+                    cdInterleave = isCd ? result.Plan.CdInterleave : (bool?)null,
                     volumeLabel = result.VolumeLabel,
                     setId = result.SetId,
                     vaultEndLba = result.Layout.VolumeEndLba,
@@ -151,16 +163,24 @@ public static partial class CliCommandRunner
             }
             else
             {
-                stdout.WriteLine("Hybrid Rosetta DVD-R image written.");
+                stdout.WriteLine($"Hybrid Rosetta {mediaLabel} image written.");
                 stdout.WriteLine($"  Disc        : {source}, {result.Plan.DiscSectors:N0} sectors");
                 WriteRosettaPlanLines(stdout, result.Plan);
                 stdout.WriteLine(string.Create(CultureInfo.InvariantCulture,
                     $"  Vault used  : sectors 0 to {result.Layout.VolumeEndLba - 1:N0} ({result.Layout.VolumeEndLba * 2048.0 / 1048576:N1} MB, recovery data {result.RecoverySectors * 2048.0 / 1048576:N1} MB), label {result.VolumeLabel}"));
                 stdout.WriteLine($"  Zero gap    : sectors {result.Layout.GapStartLba:N0} to {result.Layout.GapEndLba - 1:N0} ({result.Layout.GapSectorCount:N0} sectors)");
-                stdout.WriteLine($"  Image       : {result.OutputPath} ({result.BytesWritten:N0} bytes)");
+                if (result.CueSheetPath is not null)
+                {
+                    stdout.WriteLine($"  CUE sheet   : {result.CueSheetPath}");
+                    stdout.WriteLine($"  Binary      : {result.BinaryPath} ({result.BytesWritten:N0} bytes)");
+                }
+                else
+                {
+                    stdout.WriteLine($"  Image       : {result.OutputPath} ({result.BytesWritten:N0} bytes)");
+                }
                 stdout.WriteLine($"  Description : {result.SidecarPath}");
                 stdout.WriteLine(string.Create(CultureInfo.InvariantCulture, $"  Elapsed     : {result.Elapsed.TotalSeconds:0.0} s"));
-                stdout.WriteLine($"Burn with: ignisdisc-cli rosetta burn --drive <id> --image \"{result.OutputPath}\"");
+                stdout.WriteLine($"Burn with: ignisdisc-cli rosetta burn --drive <id> --image \"{burnImage}\"");
                 stdout.WriteLine($"Check later with: ignisdisc-cli recover --drive <id> --out <folder>");
             }
 
@@ -175,25 +195,46 @@ public static partial class CliCommandRunner
     private static Task<int> HandleRosettaBurnAsync(
         CommandLineArgs cmd, TextWriter stdout, TextWriter stderr, IDiscDeviceService deviceService, IBurnEngineBackend burnEngine)
     {
-        string image = Path.GetFullPath(cmd.GetRequiredOption("image", "--image <file.iso>"));
+        string image = Path.GetFullPath(cmd.GetRequiredOption("image", "--image <file.iso|file.cue>"));
         cmd.GetRequiredOption("drive", "--drive <id>");
-        if (!string.Equals(Path.GetExtension(image), ".iso", StringComparison.OrdinalIgnoreCase))
+        string ext = Path.GetExtension(image).ToLowerInvariant();
+        if (ext == ".bin")
         {
-            throw new CommandLineException($"Cannot burn '{Path.GetFileName(image)}'. Give the .iso that 'rosetta build' made.");
+            throw new CommandLineException(
+                $"A hybrid Rosetta CD-R is burned through its CUE sheet. Burn the .cue next to it: {Path.ChangeExtension(image, ".cue")}");
+        }
+
+        if (ext is not (".iso" or ".cue"))
+        {
+            throw new CommandLineException($"Cannot burn '{Path.GetFileName(image)}'. Give the .iso (DVD-R) or .cue (CD-R) that 'rosetta build' made.");
         }
 
         if (!File.Exists(image + RosettaHybridDisc.SidecarSuffix))
         {
             throw new CommandLineException(
                 $"'{Path.GetFileName(image)}' has no {RosettaHybridDisc.SidecarSuffix} description next to it, so it was not made by "
-                + "'rosetta build'. Burn other images with burn-iso.");
+                + "'rosetta build'. Burn other images with burn-iso or burn-audio.");
         }
 
-        var forwarded = new CommandLineArgs { Subcommand = "burn-iso" };
+        var forwarded = new CommandLineArgs();
         foreach (var option in cmd.Options) forwarded.Options[option.Key] = option.Value;
         foreach (string flag in cmd.Flags) forwarded.Flags.Add(flag);
         forwarded.Positionals.AddRange(cmd.Positionals.Skip(1));
         forwarded.Options.Remove("image");
+
+        if (ext == ".cue")
+        {
+            forwarded.Subcommand = "burn-audio";
+            forwarded.Options["tracks"] = image;
+            forwarded.Flags.Add("dao");
+            if (!cmd.HasFlag("native") && !cmd.HasFlag("windows-writer"))
+            {
+                forwarded.Flags.Add("native");
+            }
+            return HandleBurnAudioAsync(forwarded, stdout, stderr, deviceService, burnEngine);
+        }
+
+        forwarded.Subcommand = "burn-iso";
         forwarded.Options["iso"] = image;
         return HandleBurnIsoAsync(forwarded, stdout, stderr, deviceService, burnEngine);
     }
