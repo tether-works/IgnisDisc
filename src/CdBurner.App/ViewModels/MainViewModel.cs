@@ -852,7 +852,13 @@ public class MainViewModel : ObservableObject, IDisposable
             _speedCapMediaKey = key;
             if (AvailableWriteSpeeds.Count > 0) SelectDefaultWriteSpeed();
         }
-        SpeedCapReason = cap?.Reason;
+        // The reason also says when the drive's slowest speed is above the cap, so take it from the policy.
+        SpeedCapReason = cap is null
+            ? null
+            : WriteSpeedPolicy.ChooseForMedia(
+                WriteSpeedPolicy.ForDisc(AvailableWriteSpeeds, media!.MediaType),
+                _settings.DefaultWriteSpeedMultiplier, media.MediaManufacturerId, media.MediaType).Reason
+              ?? cap.Reason;
     }
 
     /// <summary>

@@ -86,7 +86,27 @@ public static class WriteSpeedPolicy
                 ? under.OrderBy(s => s.BytesPerSecond).ThenBy(s => s.Rotation == WriteRotation.Clv).Last()
                 : speeds.MinBy(s => s.BytesPerSecond);
         }
-        return (chosen, cap.Reason);
+        return (chosen, IsCapUnmet(chosen.Value, cap) ? UnmetCapReason(chosen.Value, cap) : cap.Reason);
+    }
+
+    /// <summary>True when the speed is still above the cap, i.e. the drive offers nothing at or below it.</summary>
+    private static bool IsCapUnmet(WriteSpeedDescriptor chosen, MediaSpeedCap cap) =>
+        chosen.Multiplier > cap.MaxMultiplier + 0.25;
+
+    private static string UnmetCapReason(WriteSpeedDescriptor chosen, MediaSpeedCap cap) =>
+        $"The disc's speed limit of {cap.MaxMultiplier:0.#}x cannot be met on this drive; " +
+        $"the slowest speed it offers, {chosen.Multiplier:0.#}x, is used instead. {cap.Reason}";
+
+    /// <summary>
+    /// One line for the media-info command: the chosen speed and why. Distinguishes a speed held to the disc's limit
+    /// from a limit the drive cannot meet. Returns null when the disc has no cap (use <see cref="ExplainRecommended"/>).
+    /// </summary>
+    public static string? DescribeCappedChoice(WriteSpeedDescriptor? chosen, MediaSpeedCap? cap)
+    {
+        if (cap is null || chosen is not { } s) return null;
+        return IsCapUnmet(s, cap)
+            ? $"{s.Multiplier:0.#}x: {UnmetCapReason(s, cap)}"
+            : $"{s.Multiplier:0.#}x: held to the disc's speed limit ({cap.MaxMultiplier:0.#}x). {cap.Reason}";
     }
 
     /// <summary>Why <see cref="Recommended"/> picked what it did, in one plain sentence (for logs and help).</summary>

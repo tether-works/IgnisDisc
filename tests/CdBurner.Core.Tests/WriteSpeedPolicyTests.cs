@@ -45,6 +45,40 @@ public class WriteSpeedPolicyTests
     }
 
     [Fact]
+    public void LiteOnSixteenTimesOnly_SaysTheCapCannotBeMet()
+    {
+        // GET PERFORMANCE on the Lite-On iHAS124 offered only 16x CLV for the FORNET CD-R (cap 10x).
+        var offered = new[] { WriteSpeedDescriptor.FromMultiplier(16, DiscMediaType.CdR) with { Rotation = WriteRotation.Clv } };
+        var (speed, reason) = WriteSpeedPolicy.ChooseForMedia(offered, WriteSpeedPolicy.Recommended, FornetId, DiscMediaType.CdR);
+        Assert.Equal(16, speed!.Value.Multiplier, 1);
+        Assert.Contains("10x cannot be met", reason);
+        Assert.Contains("slowest speed it offers, 16x", reason);
+        Assert.Contains("FORNET", reason);
+
+        var line = WriteSpeedPolicy.DescribeCappedChoice(speed, MediaSpeedCaps.Find(FornetId, DiscMediaType.CdR));
+        Assert.StartsWith("16x: ", line);
+        Assert.Contains("cannot be met", line);
+        Assert.DoesNotContain("held to the disc's", line);
+    }
+
+    [Fact]
+    public void CapThatCanBeMet_KeepsTheHeldToWording()
+    {
+        var (speed, reason) = WriteSpeedPolicy.ChooseForMedia(RealCdRList, WriteSpeedPolicy.Recommended, FornetId, DiscMediaType.CdR);
+        Assert.DoesNotContain("cannot be met", reason);
+
+        var line = WriteSpeedPolicy.DescribeCappedChoice(speed, MediaSpeedCaps.Find(FornetId, DiscMediaType.CdR));
+        Assert.StartsWith("10x: held to the disc's speed limit (10x).", line);
+        Assert.DoesNotContain("cannot be met", line);
+    }
+
+    [Fact]
+    public void UncappedMedia_HasNoCappedChoiceLine()
+    {
+        Assert.Null(WriteSpeedPolicy.DescribeCappedChoice(Cd(16), MediaSpeedCaps.Find(SonyId, DiscMediaType.CdR)));
+    }
+
+    [Fact]
     public void UncappedMedia_KeepsThePolicyChoiceAndHasNoReason()
     {
         var (speed, reason) = WriteSpeedPolicy.ChooseForMedia(RealCdRList, WriteSpeedPolicy.Recommended, SonyId, DiscMediaType.CdR);

@@ -423,9 +423,8 @@ public static partial class CliCommandRunner
         {
             var forDisc = WriteSpeedPolicy.ForDisc(caps.SupportedWriteSpeeds, status.MediaType);
             var capped = WriteSpeedPolicy.ChooseForMedia(forDisc, WriteSpeedPolicy.Recommended, status.MediaManufacturerId, status.MediaType);
-            recommendedSpeed = speedCap is not null && capped.Speed is { } s
-                ? $"{s.Multiplier:0.#}x: held to the disc's speed limit ({speedCap.MaxMultiplier:0.#}x). {speedCap.Reason}"
-                : WriteSpeedPolicy.ExplainRecommended(forDisc);
+            recommendedSpeed = WriteSpeedPolicy.DescribeCappedChoice(capped.Speed, speedCap)
+                ?? WriteSpeedPolicy.ExplainRecommended(forDisc);
         }
         // Straight from the drive (read-only): formatted size and the write speeds it offers for this disc.
         var driveReport = status.MediaPresent && recorder is IDriveMediaReportProvider reportProvider
