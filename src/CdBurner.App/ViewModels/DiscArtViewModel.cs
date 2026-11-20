@@ -87,11 +87,14 @@ public sealed partial class DiscArtViewModel : ObservableObject
     private string _titleRingText = string.Empty;
     private string _titleRingDateText = DateOnly.FromDateTime(DateTime.Now).ToString("yyyy-MM-dd", CultureInfo.InvariantCulture);
     private string _titleRingHeightText = string.Empty;
+    private bool _includeRimHeader;
     private string _baseCuePath = string.Empty;
     private bool _hidePictureInPreGap;
     private string _preGapSecondsText = DiscArtImageBuilder.CdPreGapDefaultSeconds.ToString(CultureInfo.InvariantCulture);
     private string _outputPath = string.Empty;
     private string _planSummary = string.Empty;
+    private bool _hasPlanError;
+    private string _rimHeaderValidationMessage = string.Empty;
     private string _statusMessage = "Open a PNG picture, choose the disc and place the picture.";
     private byte[]? _placementPreviewPng;
     private byte[]? _readbackPreviewPng;
@@ -524,7 +527,25 @@ public sealed partial class DiscArtViewModel : ObservableObject
     public string VolumeLabel
     {
         get => _volumeLabel;
-        set => SetProperty(ref _volumeLabel, value ?? string.Empty);
+        set
+        {
+            if (SetProperty(ref _volumeLabel, value ?? string.Empty) && _includeRimHeader)
+            {
+                InvalidatePlacement();
+            }
+        }
+    }
+
+    // ---------------------------------------------------------------------------------------------------------------
+    // Band 0 rim header (CD, DVD and BD)
+    // ---------------------------------------------------------------------------------------------------------------
+
+    /// <summary>Draws the Rosetta Band 0 rim header (title, date, SHA-256 prefix, 5-degree ticks and reading diagrams)
+    /// at the outer edge of the picture; off by default.</summary>
+    public bool IncludeRimHeader
+    {
+        get => _includeRimHeader;
+        set { if (SetProperty(ref _includeRimHeader, value)) InvalidatePlacement(); }
     }
 
     // ---------------------------------------------------------------------------------------------------------------
@@ -640,6 +661,26 @@ public sealed partial class DiscArtViewModel : ObservableObject
         private set => SetProperty(ref _planSummary, value);
     }
 
+    public bool HasPlanError
+    {
+        get => _hasPlanError;
+        private set => SetProperty(ref _hasPlanError, value);
+    }
+
+    public string RimHeaderValidationMessage
+    {
+        get => _rimHeaderValidationMessage;
+        private set
+        {
+            if (SetProperty(ref _rimHeaderValidationMessage, value))
+            {
+                OnPropertyChanged(nameof(HasRimHeaderValidationMessage));
+            }
+        }
+    }
+
+    public bool HasRimHeaderValidationMessage => _rimHeaderValidationMessage.Length > 0;
+
     public string StatusMessage
     {
         get => _statusMessage;
@@ -703,6 +744,16 @@ public sealed partial class DiscArtViewModel : ObservableObject
         bool files = CanCarryFiles && _filesFolder.Length > 0;
         string? baseCue = IsCd && _baseCuePath.Length > 0 ? Path.GetFullPath(_baseCuePath) : null;
         int? preGapSeconds = ParsePreGapSeconds(baseCue);
+        DiscArtRimHeader? rimHeader = null;
+        if (_includeRimHeader)
+        {
+            string trimmedLabel = _volumeLabel.Trim();
+            string rimTitle = trimmedLabel.Length > 0 && !string.Equals(trimmedLabel, "DISC_ART", StringComparison.Ordinal)
+                ? trimmedLabel
+                : Path.GetFileNameWithoutExtension(_picturePath);
+            rimHeader = new DiscArtRimHeader(rimTitle, DateOnly.FromDateTime(DateTime.Now));
+        }
+
         return new DiscArtRequest(
             _medium,
             _picture is null ? string.Empty : _picturePath,
@@ -721,7 +772,8 @@ public sealed partial class DiscArtViewModel : ObservableObject
             ArtInnerRadiusMm: ParseRadius(_artInnerRadiusText, "inner"),
             ArtOuterRadiusMm: ParseRadius(_artOuterRadiusText, "outer"),
             TitleRing: titleRing,
-            CdPreGapSeconds: preGapSeconds);
+            CdPreGapSeconds: preGapSeconds,
+            RimHeader: rimHeader);
     }
 
     private DiscArtTitleRingRequest? BuildTitleRing()
@@ -811,6 +863,8 @@ public sealed partial class DiscArtViewModel : ObservableObject
         {
             PlacementPreviewPng = null;
             PlanSummary = string.Empty;
+            HasPlanError = false;
+            RimHeaderValidationMessage = string.Empty;
             return PlacementTask = Task.CompletedTask;
         }
 
@@ -822,6 +876,8 @@ public sealed partial class DiscArtViewModel : ObservableObject
         catch (ArgumentException ex)
         {
             PlanSummary = ex.Message;
+            HasPlanError = true;
+            RimHeaderValidationMessage = string.Empty;
             PlacementPreviewPng = null;
             return PlacementTask = Task.CompletedTask;
         }
@@ -839,7 +895,7 @@ public sealed partial class DiscArtViewModel : ObservableObject
             (DiscArtPlacement placement, byte[] png) = await Task.Run(() =>
             {
                 DiscArtPlacement p = known ?? DiscArtImageBuilder.Placement(request);
-                BgraRaster view = RenderPlacementCore(picture, request.Transform, p, request.TitleRing);
+                BgraRaster view = RenderPlacementCore(picture, request.Transform, p, request.TitleRing, request.RimHeader);
                 using var stream = new MemoryStream();
                 PngRaster.Write(stream, view);
                 return (p, stream.ToArray());
@@ -848,6 +904,8 @@ public sealed partial class DiscArtViewModel : ObservableObject
             _placement = placement;
             _placementValid = true;
             PlacementPreviewPng = png;
+            HasPlanError = false;
+            RimHeaderValidationMessage = string.Empty;
             PlanSummary = DescribePlan(placement.Plan);
         }
         catch (Exception ex) when (ex is ArgumentException or InvalidDataException or IOException
@@ -856,6 +914,11 @@ public sealed partial class DiscArtViewModel : ObservableObject
             if (generation != _placementGeneration) return;
             _placementValid = false;
             PlacementPreviewPng = null;
+            HasPlanError = true;
+            RimHeaderValidationMessage = request.RimHeader is not null
+                && ex.Message.Contains("rim header", StringComparison.OrdinalIgnoreCase)
+                ? ex.Message
+                : string.Empty;
             PlanSummary = ex.Message;
         }
     }
@@ -870,11 +933,11 @@ public sealed partial class DiscArtViewModel : ObservableObject
     {
         ArgumentNullException.ThrowIfNull(picture);
         ArgumentNullException.ThrowIfNull(transform);
-        return RenderPlacementCore(picture, transform, placement, null);
+        return RenderPlacementCore(picture, transform, placement, null, null);
     }
 
     private static BgraRaster RenderPlacementCore(BgraRaster? picture, DiscArtTransform? transform,
-        DiscArtPlacement placement, DiscArtTitleRingRequest? titleRing)
+        DiscArtPlacement placement, DiscArtTitleRingRequest? titleRing, DiscArtRimHeader? rimHeader)
     {
         const int n = PreviewPixels;
         BgraRaster? canvas = picture is not null
@@ -883,6 +946,15 @@ public sealed partial class DiscArtViewModel : ObservableObject
             : null;
         RosettaTitleRing? ring = placement.Plan.TitleRing is { } ringPlan && titleRing is not null
             ? new RosettaTitleRing(titleRing.Title, titleRing.Date, ringPlan.InnerRadiusMm, ringPlan.OuterRadiusMm)
+            : null;
+        RosettaRimHeaderOverlay? rimOverlay = placement.Plan.RimHeader is { } rimPlan && rimHeader is not null
+            ? new RosettaRimHeaderOverlay(new RosettaRimHeader(new RosettaRimHeaderOptions(
+                rimHeader.Title,
+                rimHeader.Date,
+                rimPlan.Sha256Prefix,
+                rimPlan.OuterRadiusMm,
+                rimPlan.Scale,
+                rimPlan.TrackPitchUm / 1000.0)))
             : null;
         double ringInner = placement.Plan.PictureInnerRadiusMm;
         double ringOuter = placement.Plan.PictureOuterRadiusMm;
@@ -907,6 +979,13 @@ public sealed partial class DiscArtViewModel : ObservableObject
                 {
                     bool ink = ring.IsInk(r, Math.Atan2(my, mx));
                     WriteColor(output, o, ink ? 0xFF000000 : 0xFFFFFFFF);
+                    continue;
+                }
+
+                if (rimOverlay is not null && rimOverlay.TrySample(mx, my, out byte rimGray))
+                {
+                    uint color = 0xFF000000u | ((uint)rimGray << 16) | ((uint)rimGray << 8) | rimGray;
+                    WriteColor(output, o, color);
                     continue;
                 }
 
@@ -981,6 +1060,16 @@ public sealed partial class DiscArtViewModel : ObservableObject
         {
             text.Append(string.Create(CultureInfo.InvariantCulture,
                 $" Title ring: \"{ring.Text}\" in r = {ring.InnerRadiusMm:0.###} to {ring.OuterRadiusMm:0.###} mm (sectors {ring.StartLba:N0} to {ring.EndLba - 1:N0})."));
+        }
+
+        if (plan.RimHeader is { } rimHeader)
+        {
+            text.Append(string.Create(CultureInfo.InvariantCulture,
+                $" Rim header: \"{rimHeader.HeaderText}\" in r = {rimHeader.InnerRadiusMm:0.###} to {rimHeader.OuterRadiusMm:0.###} mm (scale {rimHeader.Scale:0.###}, glyph cells {rimHeader.GlyphCellWidthMm * 1000:0} x {rimHeader.GlyphCellHeightMm * 1000:0} um)."));
+            if (rimHeader.Scale < 1)
+            {
+                text.Append(" Scaled to fit the ring: read with a magnifier or microscope.");
+            }
         }
 
         return text.ToString();

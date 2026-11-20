@@ -840,4 +840,220 @@ public sealed class DiscArtViewTests : IDisposable
         Assert.True(thread.Join(TimeSpan.FromSeconds(60)), "The title ring view check did not finish.");
         if (failure is not null) throw new InvalidOperationException("Title ring view check failed: " + failure, failure);
     }
+
+    private string WriteRimHeaderPresets()
+    {
+        string path = P("rim-presets.json");
+        File.WriteAllText(path, """
+            {
+              "schemaVersion": 4,
+              "cdPresets": [
+                { "id": "ring-cd", "displayName": "Ring CD", "description": "test", "sectors": 10900,
+                  "innerRadiusMm": 53, "outerRadiusMm": 58, "linearVelocityMmPerSecond": 1200 },
+                { "id": "narrow-cd", "displayName": "Narrow CD", "description": "test", "sectors": 1422,
+                  "innerRadiusMm": 57.9, "outerRadiusMm": 58, "linearVelocityMmPerSecond": 1200 }
+              ],
+              "dvdPresets": [
+                { "id": "ring-dvd", "displayName": "Ring DVD", "description": "test", "totalSectors": 16896,
+                  "innerRadiusMm": 53, "outerRadiusMm": 58, "channelBitLengthNm": 133.3 },
+                { "id": "narrow-dvd", "displayName": "Narrow DVD", "description": "test", "totalSectors": 2048,
+                  "innerRadiusMm": 57.96, "outerRadiusMm": 58, "channelBitLengthNm": 133.3 }
+              ],
+              "bluRayPresets": [
+                { "id": "ring-bd", "displayName": "Ring BD", "description": "test", "totalSectors": 17600,
+                  "innerRadiusMm": 53.5, "outerRadiusMm": 58 },
+                { "id": "narrow-bd", "displayName": "Narrow BD", "description": "test", "totalSectors": 10176,
+                  "innerRadiusMm": 57.98, "outerRadiusMm": 58 }
+              ]
+            }
+            """);
+        return path;
+    }
+
+    [Fact]
+    public void Rim_header_checkbox_is_off_by_default_and_available_on_cd_dvd_and_bd()
+    {
+        Exception? failure = null;
+        var thread = new Thread(() =>
+        {
+            try
+            {
+                DiscArtViewModel page = new(null, WriteRimHeaderPresets(), P("no-calibrations.json"));
+                Assert.False(page.IncludeRimHeader);
+
+                var view = new DiscArtView { DataContext = page };
+                view.Measure(new Size(1400, 900));
+                view.Arrange(new Rect(0, 0, 1400, 900));
+                view.UpdateLayout();
+
+                var rimBox = Assert.Single(FindVisualChildren<CheckBox>(view), cb => string.Equals(
+                    System.Windows.Automation.AutomationProperties.GetName(cb),
+                    "Include Band 0 rim header",
+                    StringComparison.Ordinal));
+                var planSummary = Assert.Single(FindVisualChildren<TextBlock>(view), tb => string.Equals(
+                    System.Windows.Automation.AutomationProperties.GetName(tb),
+                    "Picture disc plan summary",
+                    StringComparison.Ordinal));
+                var rimValidation = Assert.Single(FindVisualChildren<TextBlock>(view), tb => string.Equals(
+                    System.Windows.Automation.AutomationProperties.GetName(tb),
+                    "Band 0 rim header validation",
+                    StringComparison.Ordinal));
+
+                Assert.False(rimBox.IsChecked);
+                Assert.NotNull(planSummary);
+                Assert.NotEqual(Visibility.Visible, rimValidation.Visibility);
+
+                foreach (DiscArtMedium medium in new[] { DiscArtMedium.Cd, DiscArtMedium.Dvd, DiscArtMedium.BluRay })
+                {
+                    page.Medium = medium;
+                    view.UpdateLayout();
+                    Assert.True(rimBox.IsEnabled);
+                }
+
+                rimBox.IsChecked = true;
+                view.UpdateLayout();
+                Assert.True(page.IncludeRimHeader);
+            }
+            catch (Exception ex)
+            {
+                failure = ex;
+            }
+        });
+        thread.SetApartmentState(ApartmentState.STA);
+        thread.Start();
+        Assert.True(thread.Join(TimeSpan.FromSeconds(60)), "The rim header view check did not finish.");
+        if (failure is not null) throw new InvalidOperationException("Rim header view check failed: " + failure, failure);
+    }
+
+    [Theory]
+    [InlineData(DiscArtMedium.Cd, "cd", "ring-cd", "page-rim.wav", "cli-rim.wav", "DISC_ART", null)]
+    [InlineData(DiscArtMedium.Dvd, "dvd", "ring-dvd", "page-rim.iso", "cli-rim.iso", "DISC_ART", null)]
+    [InlineData(DiscArtMedium.Dvd, "dvd", "ring-dvd", "page-rim-lbl.iso", "cli-rim-lbl.iso", "Holiday", "Holiday")]
+    [InlineData(DiscArtMedium.BluRay, "bd", "ring-bd", "page-rim-bd.iso", "cli-rim-bd.iso", "DISC_ART", null)]
+    public async Task Rim_header_requests_and_images_match_cli_and_preview_shows_rim_band(
+        DiscArtMedium medium, string cliMedia, string presetId, string pageFile, string cliFile,
+        string volumeLabel, string? cliLabel)
+    {
+        string presets = WriteRimHeaderPresets();
+        DiscArtViewModel page = new(null, presets, P("no-calibrations.json"));
+        page.Medium = medium;
+        Assert.True(page.SelectPreset(presetId));
+        Assert.True(page.OpenPicture(WritePicture()), page.StatusMessage);
+        page.VolumeLabel = volumeLabel;
+
+        // Off by default: request omits RimHeader and the outer-left edge of the placement preview shows the black picture.
+        Assert.Null(page.BuildRequest(P(pageFile)).RimHeader);
+        await page.PlacementTask;
+        Assert.NotNull(page.PlacementPreviewPng);
+        BgraRaster withoutRim = PngRaster.Read(new MemoryStream(page.PlacementPreviewPng!));
+        (int pxLeft, int pyLeft) = PreviewPixel(-55.5, 0);
+        int leftOffset = (pyLeft * withoutRim.Width + pxLeft) * 4;
+        Assert.Equal(0, withoutRim.Pixels[leftOffset]);
+
+        // Enabled: request matches CLI --rim-header, placement preview renders the rim-header band, and image bytes match.
+        page.IncludeRimHeader = true;
+        DiscArtRequest req = page.BuildRequest(P(pageFile));
+        DiscArtRimHeader rim = Assert.IsType<DiscArtRimHeader>(req.RimHeader);
+        string expectedTitle = cliLabel ?? Path.GetFileNameWithoutExtension(WritePicture());
+        Assert.Equal(expectedTitle, rim.Title);
+        Assert.Equal(DateOnly.FromDateTime(DateTime.Now), rim.Date);
+
+        await page.PlacementTask;
+        Assert.False(page.HasPlanError);
+        Assert.False(page.HasRimHeaderValidationMessage);
+        Assert.Contains("Rim header:", page.PlanSummary);
+        Assert.NotNull(page.PlacementPreviewPng);
+
+        BgraRaster withRim = PngRaster.Read(new MemoryStream(page.PlacementPreviewPng!));
+        // Inside the rim band at (-55.5, 0) the white rim paper replaces the black picture; at (57.8, 0) the 0-deg tick is dark.
+        Assert.Equal(255, withRim.Pixels[leftOffset]);
+        (int pxZero, int pyZero) = PreviewPixel(57.8, 0);
+        int zeroOffset = (pyZero * withRim.Width + pxZero) * 4;
+        Assert.Equal(0, withRim.Pixels[zeroOffset]);
+
+        await GenerateFromPage(page, P(pageFile));
+
+        var cliArgs = new List<string>
+        {
+            "disc-art", "generate", "--media", cliMedia,
+            "--picture", WritePicture(), "--output", P(cliFile),
+            "--disc-presets-file", presets, "--disc-preset", presetId, "--rim-header",
+        };
+        if (cliLabel is not null)
+        {
+            cliArgs.Add("--label");
+            cliArgs.Add(cliLabel);
+        }
+
+        (int code, string output, string error) = await Cli([.. cliArgs]);
+        Assert.True(code == 0, error + output);
+        Assert.Equal(Sha(P(cliFile)), Sha(P(pageFile)));
+    }
+
+    [Theory]
+    [InlineData(DiscArtMedium.Cd, "narrow-cd", "50 x 75 um")]
+    [InlineData(DiscArtMedium.Dvd, "narrow-dvd", "26 x 34 um")]
+    [InlineData(DiscArtMedium.BluRay, "narrow-bd", "26 x 34 um")]
+    public async Task Rim_header_narrow_ring_refusal_surfaces_before_generation_and_in_visual_tree(
+        DiscArtMedium medium, string presetId, string expectedCellFloor)
+    {
+        string presets = WriteRimHeaderPresets();
+        DiscArtViewModel page = new(null, presets, P("no-calibrations.json"));
+        page.Medium = medium;
+        Assert.True(page.SelectPreset(presetId));
+        Assert.True(page.OpenPicture(WritePicture()), page.StatusMessage);
+
+        page.IncludeRimHeader = true;
+        await page.PlacementTask;
+
+        Assert.True(page.HasPlanError);
+        Assert.True(page.HasRimHeaderValidationMessage);
+        Assert.Null(page.PlacementPreviewPng);
+        Assert.Contains("rim header does not fit", page.PlanSummary);
+        Assert.Contains(expectedCellFloor, page.PlanSummary);
+        Assert.Equal(page.PlanSummary, page.RimHeaderValidationMessage);
+
+        // Generation also refuses cleanly and leaves no output file behind.
+        string outFile = P($"refused-{presetId}" + (medium == DiscArtMedium.Cd ? ".wav" : ".iso"));
+        page.OutputPath = outFile;
+        await page.GenerateAsync();
+        Assert.Null(page.LastResult);
+        Assert.False(File.Exists(outFile));
+        Assert.Contains("rim header does not fit", page.StatusMessage);
+
+        // Visual tree surfaces the refusal in both the plan summary and rim-header validation TextBlocks.
+        Exception? failure = null;
+        var thread = new Thread(() =>
+        {
+            try
+            {
+                var view = new DiscArtView { DataContext = page };
+                view.Measure(new Size(1400, 900));
+                view.Arrange(new Rect(0, 0, 1400, 900));
+                view.UpdateLayout();
+
+                var planSummary = Assert.Single(FindVisualChildren<TextBlock>(view), tb => string.Equals(
+                    System.Windows.Automation.AutomationProperties.GetName(tb),
+                    "Picture disc plan summary",
+                    StringComparison.Ordinal));
+                var rimValidation = Assert.Single(FindVisualChildren<TextBlock>(view), tb => string.Equals(
+                    System.Windows.Automation.AutomationProperties.GetName(tb),
+                    "Band 0 rim header validation",
+                    StringComparison.Ordinal));
+
+                Assert.Equal(Visibility.Visible, rimValidation.Visibility);
+                Assert.Contains("rim header does not fit", rimValidation.Text);
+                Assert.Contains(expectedCellFloor, planSummary.Text);
+                view.DataContext = null;
+            }
+            catch (Exception ex)
+            {
+                failure = ex;
+            }
+        });
+        thread.SetApartmentState(ApartmentState.STA);
+        thread.Start();
+        Assert.True(thread.Join(TimeSpan.FromSeconds(60)), "The narrow-ring view check did not finish.");
+        if (failure is not null) throw new InvalidOperationException("Narrow-ring view check failed: " + failure, failure);
+    }
 }

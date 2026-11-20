@@ -157,8 +157,24 @@
                 </StackPanel>
 
                 <StackPanel Margin="0,12,0,0">
+                    <TextBlock Text="6. Band 0 rim header (CD / DVD / BD)" FontWeight="SemiBold" Margin="0,0,0,4" />
+                    <CheckBox Content="Include Band 0 rim header (title, date, SHA-256, 5° ticks)"
+                              IsChecked="{Binding IncludeRimHeader}"
+                              ToolTip="Draws the Band 0 rim header (title, date, SHA-256 prefix, 5-degree angle ticks and how-to-read diagrams) at the outer edge of the picture. Scales down to 50 x 75 um glyph cells (CD) or 26 x 34 um (DVD / BD) and refuses narrower rings."
+                              AutomationProperties.Name="Include Band 0 rim header" />
+                    <TextBlock Text="Draws title, date, SHA-256 prefix, 5° ticks and reading diagrams at the rim (min 50 x 75 um CD, 26 x 34 um DVD / BD)."
+                               TextWrapping="Wrap" Margin="0,4,0,0"
+                               Foreground="{DynamicResource TextSecondaryBrush}" />
+                    <TextBlock Text="{Binding RimHeaderValidationMessage}"
+                               Visibility="{Binding HasRimHeaderValidationMessage, Converter={StaticResource BoolToVis}}"
+                               TextWrapping="Wrap" Margin="0,4,0,0"
+                               Foreground="{DynamicResource CapacityWarningBrush}"
+                               AutomationProperties.Name="Band 0 rim header validation" />
+                </StackPanel>
+
+                <StackPanel Margin="0,12,0,0">
                     <StackPanel IsEnabled="{Binding IsCd}">
-                        <TextBlock Text="6. Audio CD CUE and pre-gap (CD only)" FontWeight="SemiBold" Margin="0,0,0,4" />
+                        <TextBlock Text="7. Audio CD CUE and pre-gap (CD only)" FontWeight="SemiBold" Margin="0,0,0,4" />
                         <StackPanel Orientation="Horizontal">
                             <Button Content="Audio CD CUE..." Command="{Binding ChooseBaseCueCommand}" Margin="0,0,6,0"
                                     AutomationProperties.Name="Choose audio CD CUE sheet" />
@@ -186,7 +202,7 @@
                                AutomationProperties.Name="Pre-gap picture experimental warning" />
                 </StackPanel>
 
-                <TextBlock Text="7. Image and burn" FontWeight="SemiBold" Margin="0,12,0,4" />
+                <TextBlock Text="8. Image and burn" FontWeight="SemiBold" Margin="0,12,0,4" />
                 <TextBlock Text="{Binding OutputHint}" TextWrapping="Wrap" Foreground="{DynamicResource TextSecondaryBrush}" />
                 <StackPanel Orientation="Horizontal" Margin="0,4,0,0">
                     <Button Content="Save as..." Command="{Binding ChooseOutputCommand}" Margin="0,0,6,0"
@@ -230,7 +246,18 @@
             </StackPanel>
 
             <TextBlock Grid.Row="1" Text="{Binding PlanSummary}" TextWrapping="Wrap" Margin="0,8,0,0"
-                       Foreground="{DynamicResource TextSecondaryBrush}" />
+                       AutomationProperties.Name="Picture disc plan summary">
+                <TextBlock.Style>
+                    <Style TargetType="TextBlock">
+                        <Setter Property="Foreground" Value="{DynamicResource TextSecondaryBrush}" />
+                        <Style.Triggers>
+                            <DataTrigger Binding="{Binding HasPlanError}" Value="True">
+                                <Setter Property="Foreground" Value="{DynamicResource CapacityWarningBrush}" />
+                            </DataTrigger>
+                        </Style.Triggers>
+                    </Style>
+                </TextBlock.Style>
+            </TextBlock>
 
             <StackPanel Grid.Row="2" Margin="0,12,0,0">
                 <StackPanel Orientation="Horizontal">
