@@ -34,7 +34,7 @@ public sealed record DiscArtDiscChoice(string Text, CalibrationParameters Parame
 /// generation, a read-back preview of the result and the burn. The request is built exactly as
 /// <c>ignisdisc-cli disc-art generate</c> builds it, so the same choices give the same image bytes.
 /// </summary>
-public sealed class DiscArtViewModel : ObservableObject
+public sealed partial class DiscArtViewModel : ObservableObject
 {
     /// <summary>Width and height of the placement preview in pixels; it shows a whole 120 mm disc.</summary>
     public const int PreviewPixels = 360;
@@ -146,6 +146,7 @@ public sealed class DiscArtViewModel : ObservableObject
         CancelCommand = new RelayCommand(() => _cts?.Cancel(), () => IsBusy);
 
         ReloadDiscChoices();
+        InitializeRosetta();
     }
 
     private bool CanBurn => _burnImage is not null || (_deviceService is not null && _burnEngine is not null);
@@ -220,6 +221,7 @@ public sealed class DiscArtViewModel : ObservableObject
             OnPropertyChanged(nameof(CanEditPreGapSeconds));
             OnPropertyChanged(nameof(OutputHint));
             ReloadDiscChoices();
+            OnMediumChangedRosetta();
         }
     }
 
@@ -251,7 +253,11 @@ public sealed class DiscArtViewModel : ObservableObject
         get => _selectedDisc;
         set
         {
-            if (SetProperty(ref _selectedDisc, value)) InvalidatePlacement();
+            if (SetProperty(ref _selectedDisc, value))
+            {
+                InvalidatePlacement();
+                RefreshRosettaPlan();
+            }
         }
     }
 
@@ -668,6 +674,8 @@ public sealed class DiscArtViewModel : ObservableObject
             if (!SetProperty(ref _isBusy, value)) return;
             GenerateCommand.RaiseCanExecuteChanged();
             BurnCommand.RaiseCanExecuteChanged();
+            RosettaGenerateCommand?.RaiseCanExecuteChanged();
+            RosettaBurnCommand?.RaiseCanExecuteChanged();
             CommandManager.InvalidateRequerySuggested();
         }
     }

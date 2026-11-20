@@ -127,6 +127,37 @@ public static class RosettaHybridDisc
     /// <summary>The plan, without staging the vault or drawing any page.</summary>
     public static RosettaHybridPlan Plan(RosettaHybridRequest request) => Prepare(request).Plan;
 
+    /// <summary>
+    /// Computes the disc sector and page layout plan for a disc geometry and Rosetta preset before any text folder
+    /// is chosen, using the exact same <see cref="DiscTrack"/> and <see cref="RosettaBook"/> layout math as
+    /// <see cref="Plan(RosettaHybridRequest)"/>.
+    /// </summary>
+    public static RosettaHybridPlan PlanLayout(
+        CalibrationParameters disc,
+        RosettaPagePreset preset,
+        string? title = null,
+        DateOnly? date = null,
+        double pagesInnerRadiusMm = DefaultPagesInnerRadiusMm,
+        bool includeRimHeader = true,
+        double startAngleDegrees = 0)
+    {
+        ArgumentNullException.ThrowIfNull(disc);
+        ArgumentNullException.ThrowIfNull(preset);
+        string resolvedTitle = string.IsNullOrWhiteSpace(title) ? "Rosetta Archive" : title.Trim();
+        DateOnly resolvedDate = date ?? DateOnly.FromDateTime(DateTime.UtcNow);
+        return PrepareCore(
+            disc,
+            preset,
+            resolvedTitle,
+            resolvedDate,
+            Array.Empty<VaultText>(),
+            filesFolder: null,
+            pagesInnerRadiusMm,
+            includeRimHeader,
+            startAngleDegrees,
+            outputPath: string.Empty).Plan;
+    }
+
     /// <summary>Stages the vault (with PAR2 when asked), writes it, the gap and the pages into the image.</summary>
     public static async Task<RosettaHybridResult> GenerateAsync(
         RosettaHybridRequest request,
@@ -265,12 +296,6 @@ public static class RosettaHybridDisc
         ArgumentNullException.ThrowIfNull(request);
         ArgumentNullException.ThrowIfNull(request.Disc);
         ArgumentNullException.ThrowIfNull(request.Preset);
-        if (request.Disc.Kind != CalibrationDiscKind.Dvd)
-        {
-            throw new ArgumentException(
-                "A hybrid Rosetta disc is DVD-R only for now. CD-R comes after the CD port, with glyph cells of at least 50 x 75 um.");
-        }
-
         if (string.IsNullOrWhiteSpace(request.Title))
         {
             throw new ArgumentException("Give the archive a title.");
@@ -291,11 +316,6 @@ public static class RosettaHybridDisc
         if (request.RedundancyPercent is < 0 or > 100)
         {
             throw new ArgumentException("The redundancy must be 0 to 100 percent.");
-        }
-
-        if (!double.IsFinite(request.PagesInnerRadiusMm) || !double.IsFinite(request.StartAngleDegrees))
-        {
-            throw new ArgumentException("The radius and start angle must be finite numbers.");
         }
 
         string? filesFolder = null;
@@ -320,12 +340,48 @@ public static class RosettaHybridDisc
         }
 
         IReadOnlyList<VaultText> texts = LoadTexts(request.TextFolder);
+        return PrepareCore(
+            request.Disc,
+            request.Preset,
+            request.Title.Trim(),
+            request.Date,
+            texts,
+            filesFolder,
+            request.PagesInnerRadiusMm,
+            request.IncludeRimHeader,
+            request.StartAngleDegrees,
+            output);
+    }
+
+    private static Prepared PrepareCore(
+        CalibrationParameters disc,
+        RosettaPagePreset preset,
+        string title,
+        DateOnly date,
+        IReadOnlyList<VaultText> texts,
+        string? filesFolder,
+        double pagesInnerRadiusMm,
+        bool includeRimHeader,
+        double startAngleDegrees,
+        string outputPath)
+    {
+        if (disc.Kind != CalibrationDiscKind.Dvd)
+        {
+            throw new ArgumentException(
+                "A hybrid Rosetta disc is DVD-R only for now. CD-R comes after the CD port, with glyph cells of at least 50 x 75 um.");
+        }
+
+        if (!double.IsFinite(pagesInnerRadiusMm) || !double.IsFinite(startAngleDegrees))
+        {
+            throw new ArgumentException("The radius and start angle must be finite numbers.");
+        }
+
         RosettaDvdEncodeOptions encode;
         try
         {
-            request.Disc.Validate();
-            encode = RosettaDvdEncodeOptions.FromCalibration(request.Disc, request.StartAngleDegrees);
-            if (request.Preset.CellSize.WidthUm <= 0 || request.Preset.Columns <= 0)
+            disc.Validate();
+            encode = RosettaDvdEncodeOptions.FromCalibration(disc, startAngleDegrees);
+            if (preset.CellSize.WidthUm <= 0 || preset.Columns <= 0)
             {
                 throw new ArgumentException("The cell preset is not valid.");
             }
@@ -339,20 +395,20 @@ public static class RosettaHybridDisc
         var geometry = new DiscTrack(encode);
         uint outputSectors = encode.UsableSectors ?? encode.TotalSectors;
         int pagesEnd = checked((int)(outputSectors / Align * Align));
-        if (request.PagesInnerRadiusMm <= encode.InnerRadiusMm || request.PagesInnerRadiusMm >= encode.OuterRadiusMm)
+        if (pagesInnerRadiusMm <= encode.InnerRadiusMm || pagesInnerRadiusMm >= encode.OuterRadiusMm)
         {
             throw new ArgumentException(
                 $"The pages must start between the disc's inner and outer radius ({encode.InnerRadiusMm:0.###} to {encode.OuterRadiusMm:0.###} mm).");
         }
 
         // The page zone starts on the ECC block that holds the pages' inner radius, so no page pixel is lost.
-        long lbaAtRadius = geometry.LbaAtRadius(request.PagesInnerRadiusMm);
+        long lbaAtRadius = geometry.LbaAtRadius(pagesInnerRadiusMm);
         int pagesStart = checked((int)(lbaAtRadius / Align * Align));
         int vaultCeiling = pagesStart - PictureDiscLayoutPlanner.MinimumGapSectors;
         if (vaultCeiling < 512)
         {
             throw new ArgumentException(
-                $"Only {Math.Max(0, vaultCeiling):N0} sectors lie inside r = {request.PagesInnerRadiusMm:0.###} mm after the 2 MiB gap; move the pages outward.");
+                $"Only {Math.Max(0, vaultCeiling):N0} sectors lie inside r = {pagesInnerRadiusMm:0.###} mm after the 2 MiB gap; move the pages outward.");
         }
 
         if (pagesEnd - pagesStart < Align)
@@ -367,13 +423,13 @@ public static class RosettaHybridDisc
             book = RosettaBook.Build(
                 texts.Select(t => t.Document).ToList(),
                 new RosettaArchiveOptions(
-                    request.Title.Trim(),
-                    request.Date,
-                    request.Preset,
-                    InnerRadiusMm: request.PagesInnerRadiusMm,
+                    title,
+                    date,
+                    preset,
+                    InnerRadiusMm: pagesInnerRadiusMm,
                     OuterRadiusMm: pagesOuter,
                     HasInnerFileVault: true,
-                    IncludeRimHeader: request.IncludeRimHeader));
+                    IncludeRimHeader: includeRimHeader));
         }
         catch (Exception ex) when (ex is InvalidOperationException or ArgumentException)
         {
@@ -397,7 +453,7 @@ public static class RosettaHybridDisc
         {
             throw new ArgumentException(
                 $"The vault's files take {inputBytes / 1048576.0:N1} MB, more than the {vaultCeiling * 2048L / 1048576.0:N1} MB " +
-                $"that fit inside r = {request.PagesInnerRadiusMm:0.###} mm with the 2 MiB gap.");
+                $"that fit inside r = {pagesInnerRadiusMm:0.###} mm with the 2 MiB gap.");
         }
 
         RosettaBand body = book.Bands[^1];
@@ -406,16 +462,16 @@ public static class RosettaHybridDisc
             PagesStartLba: pagesStart,
             PagesEndLba: pagesEnd,
             PagesStartRadiusMm: geometry.RadiusAtLba(pagesStart),
-            PagesInnerRadiusMm: request.PagesInnerRadiusMm,
+            PagesInnerRadiusMm: pagesInnerRadiusMm,
             PagesOuterRadiusMm: book.RimHeader is { } rim ? rim.InnerRadiusMm - RosettaRimHeader.PageGutterMm : pagesOuter,
             RimInnerRadiusMm: book.RimHeader?.InnerRadiusMm,
             VaultCeilingSectors: vaultCeiling,
             VaultInputBytes: inputBytes,
             VaultInputSectors: inputSectors,
-            PresetId: request.Preset.Id,
-            PresetName: request.Preset.Name,
-            CellWidthUm: request.Preset.CellSize.WidthUm,
-            CellHeightUm: request.Preset.CellSize.HeightUm,
+            PresetId: preset.Id,
+            PresetName: preset.Name,
+            CellWidthUm: preset.CellSize.WidthUm,
+            CellHeightUm: preset.CellSize.HeightUm,
             Columns: body.Preset.Columns,
             BodyRows: body.Preset.BodyRows,
             PageCapacity: book.TotalPhysicalTiles,
@@ -423,7 +479,7 @@ public static class RosettaHybridDisc
             DocumentCount: texts.Count,
             TextSha256: book.TextSha256Hex,
             Documents: book.DocumentRanges);
-        return new Prepared(plan, book, encode, texts, output, filesFolder);
+        return new Prepared(plan, book, encode, texts, outputPath, filesFolder);
     }
 
     private static IReadOnlyList<VaultText> LoadTexts(string folder)

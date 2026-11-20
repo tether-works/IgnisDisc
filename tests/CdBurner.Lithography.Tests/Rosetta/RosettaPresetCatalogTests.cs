@@ -1,4 +1,7 @@
 using System.Text;
+using CdBurner.Lithography.Calibration;
+using CdBurner.Lithography.DiscArt;
+using CdBurner.Lithography.Presets;
 using CdBurner.Lithography.Rosetta;
 using Xunit;
 
@@ -94,5 +97,23 @@ public class RosettaPresetCatalogTests
         string tooFewRows = customJson.Replace("\"rows\": 12", "\"rows\": 7");
         using var badRows = new MemoryStream(Encoding.UTF8.GetBytes(tooFewRows));
         Assert.Throws<InvalidDataException>(() => RosettaPresetCatalog.Load(badRows));
+    }
+
+    [Fact]
+    public void PlanLayout_ComputesDvdCapacityWithoutTextFolder_AndRejectsNonDvd()
+    {
+        DiscPresetJsonDocument presets = DiscPresetJsonStore.LoadBuiltIn();
+        CalibrationParameters dvd = DiscArtPresets.ToParameters(presets.DvdPresets.First(p => p.Id == "dvd-5-120mm"));
+        CalibrationParameters cd = DiscArtPresets.ToParameters(presets.CdPresets.First());
+
+        RosettaHybridPlan hobbyist = RosettaHybridDisc.PlanLayout(dvd, RosettaPresetCatalog.BuiltIn.Hobbyist);
+        RosettaHybridPlan highDensity = RosettaHybridDisc.PlanLayout(dvd, RosettaPresetCatalog.BuiltIn.HighDensity);
+
+        Assert.True(hobbyist.PageCapacity > 0);
+        Assert.Equal(hobbyist.PageCapacity - hobbyist.PagesUsed, hobbyist.PagesFree);
+        Assert.True(highDensity.PageCapacity > hobbyist.PageCapacity);
+        Assert.Equal(hobbyist.VaultCeilingSectors, highDensity.VaultCeilingSectors);
+
+        Assert.Throws<ArgumentException>(() => RosettaHybridDisc.PlanLayout(cd, RosettaPresetCatalog.BuiltIn.Hobbyist));
     }
 }
