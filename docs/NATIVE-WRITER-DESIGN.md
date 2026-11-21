@@ -257,7 +257,8 @@ speed in kB over 1,000 ms), then `SET CD SPEED` if the drive refuses that.
   byte 1 0xA2 (FOV, DCRT so the drive skips the hour-long certification, Immed), byte 3 = 8, the blocks offered for
   type 00h, byte 8 = 00h, bytes 9–11 = the block length 0x000800 (refused if the drive offers another). The writer
   then polls `TEST UNIT READY` through 2/04/04 for up to 90 minutes, showing the progress indication (sense byte 15
-  bit 7, bytes 16–17 of 65,536) as "Formatting n %". To check on a real disc: whether the drive offers 00h with
+  bit 7, bytes 16–17 of 65,536) as "Formatting n %". Real-disc testing of DVD-RAM will not be done (2026-11-21: the medium is out of production;
+  any fix comes from a user's bug report and command log). Unchecked on a real disc: whether the drive offers 00h with
   2,048 in its type parameter, whether it accepts DCRT, how long it stays "format in progress", and whether its
   2/04/04 answers carry the progress bytes. Both: no test write, same leave-to-replace rule. The size is the format
   capacity; the track size is used only when the drive reports no format information.
