@@ -22,6 +22,7 @@ public sealed record WhisperInstallation(string CliPath, string ModelPath, Whisp
     public string Describe() => Build switch
     {
         WhisperBuildKind.CudaX64 => $"whisper.cpp {WhisperCatalog.WhisperVersion} (NVIDIA GPU), model {ModelName}",
+        WhisperBuildKind.VulkanX64 => $"whisper.cpp {WhisperCatalog.WhisperVersion} (AMD or Intel GPU, Vulkan), model {ModelName}",
         WhisperBuildKind.CpuX64 or WhisperBuildKind.CpuArm64 => $"whisper.cpp {WhisperCatalog.WhisperVersion} (processor), model {ModelName}",
         _ => $"whisper.cpp, model {ModelName}"
     };

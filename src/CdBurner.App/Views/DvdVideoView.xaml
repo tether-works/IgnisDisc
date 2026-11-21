@@ -163,7 +163,7 @@
                     <CheckBox Content="Generate subtitles"
                               AutomationProperties.Name="Generate subtitles"
                               IsChecked="{Binding GenerateSubtitles}"
-                              ToolTip="Makes subtitles by speech recognition for movies with no .srt file next to them. Machine-generated: names and quiet speech are sometimes misheard. Fast on an NVIDIA GPU, much slower on the processor."
+                              ToolTip="Makes subtitles by speech recognition for movies with no .srt file next to them. Machine-generated: names and quiet speech are sometimes misheard. Fast on a graphics card (NVIDIA, AMD or Intel), slower on integrated graphics, slowest on the processor."
                               VerticalAlignment="Center"
                               Foreground="{DynamicResource TextPrimaryBrush}"
                               Margin="0,0,6,0" />

@@ -3708,9 +3708,9 @@ public static partial class CliCommandRunner
         stdout.WriteLine("      --generate-subtitles makes subtitles by speech recognition for movies with no .srt next to them (needs install-subtitle-tool);");
         stdout.WriteLine("      --subtitle-language <code|auto> sets the spoken language (default en).");
         stdout.WriteLine("  install-subtitle-tool [--plan-only] [--json]");
-        stdout.WriteLine("      Optional download for subtitles: whisper.cpp (NVIDIA GPU build when one is found, else the processor build) and a speech model, each checked against a pinned SHA-256.");
+        stdout.WriteLine("      Optional download for subtitles: whisper.cpp (NVIDIA GPU build, AMD/Intel GPU build through Vulkan, else the processor build) and a speech model, each checked against a pinned SHA-256.");
         stdout.WriteLine("  generate-subtitles --input <movie> [--output <file.srt>] [--language <code|auto>] [--ffmpeg <path>] [--json]");
-        stdout.WriteLine("      Makes machine-generated subtitles for a movie (FFmpeg + whisper.cpp). Fast on an NVIDIA GPU, much slower on the processor; names are often misheard.");
+        stdout.WriteLine("      Makes machine-generated subtitles for a movie (FFmpeg + whisper.cpp). Fast on a graphics card, slower on integrated graphics, slowest on the processor; names are often misheard.");
         stdout.WriteLine("  rip --drive <id> --output <file.iso|file.bin> [--raw] [--json]");
         stdout.WriteLine("      Rips optical disc to an ISO or raw BIN+CUE image.");
         stdout.WriteLine("  rip-audio --drive <id> --output <folder> [--format wav|flac|mp3|opus|aac[,...]] [--bitrate <kbps>] [--mp3-bitrate <kbps> | --mp3-quality V0..V9] [--opus-bitrate <kbps>] [--aac-bitrate <kbps>] [--library <folder>] [--naming <template>] [--tracks 1,3,5] [--lookup] [--release <n|mbid>] [--no-cover-lookup] [--no-folder-image] [--overwrite] [--keep-wav] [--continue-on-error] [--read-offset <samples>] [--verify-accuraterip] [--verify-ctdb] [--no-ctdb-repair] [--no-secure] [--repair] [--json]");

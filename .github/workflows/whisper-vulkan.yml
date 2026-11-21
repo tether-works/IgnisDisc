@@ -5,16 +5,22 @@ name: whisper.cpp Vulkan build
 # for NVIDIA (CUDA); its source also has a Vulkan back end, which runs on any GPU whose driver supports Vulkan 1.2.
 # The build uses the same options as whisper.cpp's own Windows x64 release, plus GGML_VULKAN=ON.
 #
-# Run by hand. The archive is kept as a workflow artifact with a build provenance attestation. With
-# "publish" set, it is also attached to a pre-release that is never marked latest; the app pins that file's SHA-256.
+# Run by hand. A build keeps the archive as a workflow artifact with a build provenance attestation. Publishing is a
+# separate run: given a build run's id and the SHA-256 the app pins, it downloads that exact attested archive (a new
+# build would not be byte-identical), checks hash and attestation, and attaches it to a pre-release that is never
+# marked latest. Published files are never replaced.
 
 on:
   workflow_dispatch:
     inputs:
-      publish:
-        description: Attach the archive to the whisper-vulkan pre-release
-        type: boolean
-        default: false
+      publish_run_id:
+        description: Publish the archive of this earlier build run instead of building (leave empty to build)
+        type: string
+        default: ''
+      expected_sha256:
+        description: SHA-256 the archive must have (the value pinned in WhisperCatalog.VulkanX64Program)
+        type: string
+        default: ''
   push:
     branches:
       - whisper-vulkan-build
@@ -36,6 +42,7 @@ env:
 jobs:
   build:
     name: Build whisper.cpp (Vulkan, x64)
+    if: github.event_name != 'workflow_dispatch' || inputs.publish_run_id == ''
     runs-on: windows-2022
     timeout-minutes: 60
     permissions:
@@ -135,25 +142,39 @@ jobs:
           if-no-files-found: error
 
   publish:
-    name: Attach to the whisper-vulkan pre-release
-    needs: build
-    if: github.event_name == 'workflow_dispatch' && inputs.publish
+    name: Attach an attested build to the whisper-vulkan pre-release
+    if: github.event_name == 'workflow_dispatch' && inputs.publish_run_id != ''
     runs-on: ubuntu-latest
     permissions:
       contents: write
+      actions: read
+      attestations: read
+    env:
+      BUILD_RUN_ID: ${{ inputs.publish_run_id }}
+      EXPECTED_SHA256: ${{ inputs.expected_sha256 }}
+      GH_TOKEN: ${{ github.token }}
     steps:
-      - name: Download artifact
+      - name: Check inputs
+        run: |
+          [[ "$BUILD_RUN_ID" =~ ^[0-9]+$ ]] || { echo "publish_run_id must be a run number" >&2; exit 1; }
+          [[ "$EXPECTED_SHA256" =~ ^[0-9a-f]{64}$ ]] || { echo "expected_sha256 must be 64 lowercase hex digits" >&2; exit 1; }
+
+      - name: Download the build run's archive
         uses: actions/download-artifact@v4
         with:
           name: whisper-vulkan-x64
+          run-id: ${{ inputs.publish_run_id }}
+          github-token: ${{ github.token }}
 
-      - name: Check hash and publish
-        env:
-          GH_TOKEN: ${{ github.token }}
-          EXPECTED: ${{ needs.build.outputs.sha256 }}
+      - name: Check hash, attestation, and publish
         run: |
           actual=$(sha256sum "$ARCHIVE_NAME" | cut -d' ' -f1)
-          test "$actual" = "$EXPECTED"
+          if [ "$actual" != "$EXPECTED_SHA256" ]; then
+            echo "Archive SHA-256 $actual does not match $EXPECTED_SHA256" >&2
+            exit 1
+          fi
+          gh attestation verify "$ARCHIVE_NAME" -R "$GITHUB_REPOSITORY" \
+            --signer-workflow "$GITHUB_REPOSITORY/.github/workflows/whisper-vulkan.yml"
           tag="whisper-vulkan-$WHISPER_VERSION"
           if gh release view "$tag" -R "$GITHUB_REPOSITORY" > /dev/null 2>&1; then
             echo "Release $tag already exists; published files are never replaced." >&2
@@ -161,4 +182,4 @@ jobs:
           fi
           gh release create "$tag" "$ARCHIVE_NAME" -R "$GITHUB_REPOSITORY" --target "$GITHUB_SHA" --prerelease --latest=false \
             --title "whisper.cpp $WHISPER_VERSION Vulkan build (subtitle tool download)" \
-            --notes "Optional download used by IgnisDisc's Generate subtitles on PCs with AMD or Intel graphics. Built from ggml-org/whisper.cpp commit $WHISPER_COMMIT by run $GITHUB_SERVER_URL/$GITHUB_REPOSITORY/actions/runs/$GITHUB_RUN_ID. SHA-256: $actual. whisper.cpp is MIT licensed."
+            --notes "Optional download for IgnisDisc's Generate subtitles on PCs with AMD or Intel graphics (not an IgnisDisc release). Built from ggml-org/whisper.cpp commit $WHISPER_COMMIT (tag v$WHISPER_VERSION) with GGML_VULKAN=ON by $GITHUB_SERVER_URL/$GITHUB_REPOSITORY/actions/runs/$BUILD_RUN_ID, which recorded a build provenance attestation. SHA-256: $actual. whisper.cpp is MIT licensed; the licence is inside the archive."

@@ -100,15 +100,47 @@ public sealed class SubtitleToolInstallTests : IDisposable
     }
 
     [Fact]
-    public void AmdOrIntelGpu_GetsProcessorBuildAndSaysWhy()
+    public void AmdGpu_GetsVulkanBuildAndTurboModel()
     {
         var amd = new GpuAdapterInfo("AMD Radeon RX 7900 XTX", GpuVendor.Amd, "31.0.24027.1012");
-        var plan = WhisperCatalog.ChoosePlan([amd], nvidiaCudaDriverInstalled: false, Architecture.X64);
+        var plan = WhisperCatalog.ChoosePlan([IntelUhd770, amd], nvidiaCudaDriverInstalled: false, Architecture.X64);
+
+        Assert.Equal(WhisperBuildKind.VulkanX64, plan.Build);
+        Assert.Same(WhisperCatalog.VulkanX64Program, plan.Program);
+        Assert.Same(WhisperCatalog.LargeV3TurboModel, plan.Model);
+        Assert.True(plan.UsesGpu);
+        Assert.Contains("Radeon", plan.Reason);      // AMD named before the integrated Intel adapter
+        Assert.Contains("Vulkan", plan.Reason);
+    }
+
+    [Fact]
+    public void IntegratedIntelGraphicsOnly_GetsVulkanBuildAndSaysItIsSlower()
+    {
+        var plan = WhisperCatalog.ChoosePlan([IntelUhd770], nvidiaCudaDriverInstalled: false, Architecture.X64);
+
+        Assert.Equal(WhisperBuildKind.VulkanX64, plan.Build);
+        Assert.Same(WhisperCatalog.LargeV3TurboModel, plan.Model);
+        Assert.Contains("UHD Graphics 770", plan.Reason);
+        Assert.Contains("18 minutes", plan.Reason);
+    }
+
+    [Fact]
+    public void OtherVendorOnly_GetsProcessorBuild()
+    {
+        var other = new GpuAdapterInfo("Matrox G200eW3", GpuVendor.Other, "9.15.1.150");
+        var plan = WhisperCatalog.ChoosePlan([other], nvidiaCudaDriverInstalled: false, Architecture.X64);
 
         Assert.Equal(WhisperBuildKind.CpuX64, plan.Build);
-        Assert.Same(WhisperCatalog.CpuX64Program, plan.Program);
-        Assert.Contains("only for NVIDIA", plan.Reason);
-        Assert.Contains("Radeon", plan.Reason);
+        Assert.False(plan.UsesGpu);
+    }
+
+    [Fact]
+    public void ProgramFor_MapsEveryBuildToItsOwnArchive()
+    {
+        Assert.Same(WhisperCatalog.CudaX64Program, WhisperCatalog.ProgramFor(WhisperBuildKind.CudaX64));
+        Assert.Same(WhisperCatalog.CpuX64Program, WhisperCatalog.ProgramFor(WhisperBuildKind.CpuX64));
+        Assert.Same(WhisperCatalog.CpuArm64Program, WhisperCatalog.ProgramFor(WhisperBuildKind.CpuArm64));
+        Assert.Same(WhisperCatalog.VulkanX64Program, WhisperCatalog.ProgramFor(WhisperBuildKind.VulkanX64));
     }
 
     [Fact]
@@ -126,7 +158,7 @@ public sealed class SubtitleToolInstallTests : IDisposable
         WhisperDownload[] all =
         [
             WhisperCatalog.CudaX64Program, WhisperCatalog.CpuX64Program, WhisperCatalog.CpuArm64Program,
-            WhisperCatalog.LargeV3TurboModel, WhisperCatalog.BaseModel, WhisperCatalog.SileroVadModel
+            WhisperCatalog.VulkanX64Program, WhisperCatalog.LargeV3TurboModel, WhisperCatalog.BaseModel, WhisperCatalog.SileroVadModel
         ];
 
         foreach (WhisperDownload d in all)
@@ -140,6 +172,8 @@ public sealed class SubtitleToolInstallTests : IDisposable
         }
 
         Assert.Contains("/download/" + WhisperCatalog.ReleaseTag + "/", WhisperCatalog.CudaX64Program.Url);
+        Assert.StartsWith("https://github.com/tether-works/IgnisDisc/releases/download/whisper-vulkan-1.9.5/",
+            WhisperCatalog.VulkanX64Program.Url);
         Assert.Contains("/resolve/" + WhisperCatalog.ModelRevision + "/", WhisperCatalog.BaseModel.Url);
     }
 

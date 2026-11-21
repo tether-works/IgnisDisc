@@ -204,6 +204,63 @@ public sealed class SubtitleGenerationTests : IDisposable
     }
 
     [Fact]
+    public async Task Generate_VulkanBuild_NamesTheGpuThatWasUsed()
+    {
+        // Lines as the Vulkan build of whisper-cli 1.9.5 printed them on a PC with an RTX 3090 and Intel UHD 770,
+        // with the Intel GPU chosen (it is then the only listed device, so it becomes Vulkan0).
+        var runner = new FakeRunner(_ffmpeg, _whisper.CliPath)
+        {
+            WhisperLines =
+            [
+                "ggml_vulkan: Found 1 Vulkan devices:",
+                "ggml_vulkan: 0 = Intel(R) UHD Graphics 770 (Intel Corporation) | uma: 1 | fp16: 1 | bf16: 0 | fp4: 0 | warp size: 32 | shared memory: 32768 | int dot: 1 | matrix cores: none",
+                "whisper_backend_init_gpu: device 0: Vulkan0 (type: 1)",
+                "whisper_backend_init_gpu: found GPU device 0: Vulkan0 (type: 1, cnt: 0)",
+                "whisper_backend_init_gpu: using Vulkan0 backend",
+                WhisperNoGpuLine, // the voice activity model runs on the processor and prints this afterwards
+                "progress = 100%"
+            ]
+        };
+        var options = Options();
+        options.Whisper = _whisper with { Build = WhisperBuildKind.VulkanX64 };
+
+        SubtitleGenerationResult result = await new SubtitleGenerationService(runner).GenerateAsync(_movie, options);
+
+        Assert.True(result.Success, result.ErrorMessage);
+        Assert.Equal("Intel(R) UHD Graphics 770 (Vulkan0)", result.Backend);
+        Assert.Null(result.ErrorMessage);
+    }
+
+    [Fact]
+    public async Task Generate_VulkanBuildWithNoUsableGpu_SucceedsWithADriverWarning()
+    {
+        var runner = new FakeRunner(_ffmpeg, _whisper.CliPath)
+        {
+            WhisperLines = ["ggml_vulkan: No devices found.", "whisper_backend_init_gpu: device 0: CPU (type: 0)", WhisperNoGpuLine, "progress = 100%"]
+        };
+        var options = Options();
+        options.Whisper = _whisper with { Build = WhisperBuildKind.VulkanX64 };
+
+        SubtitleGenerationResult result = await new SubtitleGenerationService(runner).GenerateAsync(_movie, options);
+
+        Assert.True(result.Success);
+        Assert.Equal("processor", result.Backend);
+        Assert.Contains("Vulkan", result.ErrorMessage);
+        Assert.Contains("graphics driver", result.ErrorMessage);
+    }
+
+    [Theory]
+    [InlineData("CUDA0", "NVIDIA GPU (CUDA0)")]
+    [InlineData("Vulkan1", "AMD Radeon RX 7900 XTX (Vulkan1)")]
+    [InlineData("Vulkan2", "GPU (Vulkan2)")]                 // not in the listed devices
+    [InlineData("CPU", "processor")]
+    public void DescribeBackend_NamesTheDevice(string device, string expected)
+    {
+        var names = new Dictionary<string, string> { ["Vulkan0"] = "Intel(R) UHD Graphics 770", ["Vulkan1"] = "AMD Radeon RX 7900 XTX" };
+        Assert.Equal(expected, SubtitleGenerationService.DescribeBackend(device, names));
+    }
+
+    [Fact]
     public async Task Generate_CancelledDuringRecognition_LeavesNoSubtitlesOrJobFiles()
     {
         using var cts = new CancellationTokenSource();

@@ -189,9 +189,12 @@
           <p class="feature-detail-status">PHYSICAL <span class="badge-warn">[ PARTIAL ]</span> · VIRTUAL <span class="badge-na">[ N/A ]</span></p>
           <ul class="spec-module-list feature-detail-notes">
             <li>Optional 1-click download, nothing bundled: whisper.cpp 1.9.5 and its models, every file pinned by SHA-256 (<code>install-subtitle-tool</code>, or the button on the DVD-Video screen).</li>
-            <li>On a PC with an NVIDIA GPU and driver 551.61 or newer it gets the CUDA build and the large-v3-turbo model (2.3 GB download); every other PC gets the processor build and the smaller base model (160 MB).</li>
-            <li>AMD and Intel GPUs are not used: whisper.cpp publishes no Windows GPU build for them.</li>
+            <li>On a PC with an NVIDIA GPU and driver 551.61 or newer it gets the CUDA build and the large-v3-turbo model (2.3 GB download).</li>
+            <li>With an AMD or Intel GPU instead, integrated graphics included, it gets a Vulkan build of the same whisper.cpp source and the large-v3-turbo model (1.6 GB download): whisper.cpp publishes no Windows GPU build for these, so IgnisDisc's own GitHub workflow builds it, with a build provenance attestation.</li>
+            <li>Any other PC gets the processor build and the smaller base model (160 MB).</li>
             <li>Measured on one PC, on an 86-minute animated feature with English dialogue, against its human-made subtitles: on an RTX 3090, 3.3 min from movie file to .srt (26 times real time) with a word error rate of 24.9%; processor build only (16-core desktop processor, base model), 3.4 min and 34.3%.</li>
+            <li>Through the Vulkan build, speech recognition alone (from the extracted audio) took 18.1 min on Intel UHD Graphics 770 integrated graphics (26.0%), and 60 s on the RTX 3090 (26.1%; the CUDA build took 56 s on the same audio).</li>
+            <li>The Vulkan build has not been run on an AMD GPU yet.</li>
             <li>The large model on that processor ran at 1.7 times real time (178 s for 5 minutes, about 50 minutes for this film), so the better model needs a GPU.</li>
             <li>The error rate counts wording the human subtitles shorten too; an invented place name was never heard right.</li>
             <li>The subtitles are machine-generated: check them before relying on them.</li>

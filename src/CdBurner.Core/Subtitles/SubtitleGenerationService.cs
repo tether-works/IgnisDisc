@@ -47,7 +47,8 @@ public sealed record SubtitleGenerationProgress(double Percent, string Status);
 /// <param name="Elapsed">Time the job took (zero when taken from the cache).</param>
 /// <param name="AudioDuration">Length of the movie's audio, when FFmpeg reported it.</param>
 /// <param name="FromCache">True when an earlier result for the same file, model and language was reused.</param>
-/// <param name="Backend">What did the recognition: "NVIDIA GPU (CUDA0)", "processor", or null when unknown.</param>
+/// <param name="Backend">What did the recognition: "NVIDIA GPU (CUDA0)", "Intel(R) UHD Graphics 770 (Vulkan0)",
+/// "processor", or null when unknown.</param>
 /// <param name="ErrorMessage">Why it failed, or a warning on success (for example a GPU that could not be used).</param>
 public sealed record SubtitleGenerationResult(
     bool Success,
@@ -83,6 +84,11 @@ public sealed class SubtitleGenerationService
     private static readonly Regex FfmpegOutTime = new(@"^out_time_us=(?<us>\d+)", RegexOptions.Compiled | RegexOptions.CultureInvariant);
     private static readonly Regex WhisperProgress = new(@"progress\s*=\s*(?<p>\d+)%", RegexOptions.Compiled | RegexOptions.CultureInvariant);
     private static readonly Regex WhisperGpuDevice = new(@"whisper_backend_init_gpu:\s*device\s*\d+:\s*(?<dev>\S+)", RegexOptions.Compiled | RegexOptions.CultureInvariant);
+
+    // The Vulkan back end lists its devices before whisper.cpp picks one, for example
+    // "ggml_vulkan: 1 = Intel(R) UHD Graphics 770 (Intel Corporation) | uma: 1 | fp16: 1 | ...". Device "Vulkan1" is
+    // entry 1 of that list.
+    private static readonly Regex VulkanDeviceName = new(@"^ggml_vulkan:\s*(?<i>\d+)\s*=\s*(?<name>[^|]+?)\s*(\([^()|]*\))?\s*\|", RegexOptions.Compiled | RegexOptions.CultureInvariant);
 
     /// <summary>
     /// whisper.cpp decoding settings added to every run. <c>-mc 0</c> stops each 30-second window from being fed the
@@ -234,6 +240,7 @@ public sealed class SubtitleGenerationService
 
             int threads = options.Threads is > 0 ? options.Threads.Value : Math.Clamp(Environment.ProcessorCount * 2 / 3, 1, 16);
             string? backend = null;
+            var vulkanNames = new Dictionary<string, string>(StringComparer.Ordinal);
             var whisperTail = new Queue<string>();
             var whisperArgs = new List<string>
             {
@@ -259,11 +266,16 @@ public sealed class SubtitleGenerationService
                 line =>
                 {
                     Remember(whisperTail, line);
+                    Match vk = VulkanDeviceName.Match(line);
+                    if (vk.Success)
+                    {
+                        vulkanNames["Vulkan" + vk.Groups["i"].Value] = vk.Groups["name"].Value;
+                    }
+
                     Match dev = WhisperGpuDevice.Match(line);
                     if (dev.Success)
                     {
-                        string name = dev.Groups["dev"].Value;
-                        backend = name.StartsWith("CUDA", StringComparison.OrdinalIgnoreCase) ? $"NVIDIA GPU ({name})" : "processor";
+                        backend = DescribeBackend(dev.Groups["dev"].Value, vulkanNames);
                     }
                     else if (backend == null && line.Contains("no GPU found", StringComparison.OrdinalIgnoreCase))
                     {
@@ -301,9 +313,12 @@ public sealed class SubtitleGenerationService
             await File.WriteAllTextAsync(tempSrt, SrtCueList.Format(cues), new UTF8Encoding(false), cancellationToken).ConfigureAwait(false);
             File.Move(tempSrt, srtPath, overwrite: true);
 
-            string? warning = whisper.Build == WhisperBuildKind.CudaX64 && backend == "processor"
-                ? "The GPU build is installed but whisper.cpp found no usable NVIDIA GPU, so the processor was used (much slower). Check the NVIDIA driver."
-                : null;
+            string? warning = backend != "processor" ? null : whisper.Build switch
+            {
+                WhisperBuildKind.CudaX64 => "The GPU build is installed but whisper.cpp found no usable NVIDIA GPU, so the processor was used (much slower). Check the NVIDIA driver.",
+                WhisperBuildKind.VulkanX64 => "The GPU build is installed but whisper.cpp found no GPU with Vulkan support, so the processor was used (much slower with this model). Update the graphics driver.",
+                _ => null
+            };
             progress?.Report(new SubtitleGenerationProgress(100, $"{cues.Count} subtitles made for {movieInfo.Name} in {stopwatch.Elapsed.TotalMinutes:F1} min."));
             return new SubtitleGenerationResult(true, srtPath, cues.Count, stopwatch.Elapsed, duration, false, backend, warning);
         }
@@ -385,6 +400,25 @@ public sealed class SubtitleGenerationService
         {
             return 0;
         }
+    }
+
+    /// <summary>
+    /// Names the device whisper.cpp reported ("CUDA0", "Vulkan1", "CPU") for status lines: the GPU name when the Vulkan
+    /// back end listed it, otherwise the device name; anything else is the processor.
+    /// </summary>
+    public static string DescribeBackend(string device, IReadOnlyDictionary<string, string> vulkanNames)
+    {
+        if (device.StartsWith("CUDA", StringComparison.OrdinalIgnoreCase))
+        {
+            return $"NVIDIA GPU ({device})";
+        }
+
+        if (device.StartsWith("Vulkan", StringComparison.OrdinalIgnoreCase))
+        {
+            return vulkanNames.TryGetValue(device, out string? name) ? $"{name} ({device})" : $"GPU ({device})";
+        }
+
+        return "processor";
     }
 
     private static void Remember(Queue<string> tail, string line)

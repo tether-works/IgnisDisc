@@ -35,6 +35,28 @@ https://github.com/animetosho/par2cmdline-turbo/blob/v1.5.0/COPYING and the rele
 works: recovery files made by either program verify and repair with the other. When IgnisDisc finds par2cmdline 1.4.0
 it offers the 1-click update. You can also put any `par2.exe` on `PATH`; the 1-click install location is checked first.
 
+## whisper.cpp and speech models (optional, 1-click install available)
+
+"Generate subtitles" calls an external `whisper-cli.exe` as a separate program. It is **not** bundled. The 1-click
+install on the **DVD-Video** screen (or `install-subtitle-tool`) puts it in `%LOCALAPPDATA%\Programs\whisper.cpp`, with
+a `NOTICE-IgnisDisc.txt` naming its source. Every file's SHA-256 is pinned in IgnisDisc and a download with any other
+hash is refused.
+
+- [whisper.cpp](https://github.com/ggml-org/whisper.cpp) 1.9.5 (MIT, Copyright (c) 2023-2026 The ggml authors). The
+  processor and NVIDIA CUDA 12.4 archives are the official files of whisper.cpp's `b5454` release (the Windows
+  programs of v1.9.5), used unchanged. The CUDA archive, as whisper.cpp publishes it, also contains NVIDIA's CUDA
+  runtime and cuBLAS libraries.
+- For AMD and Intel graphics, whisper.cpp publishes no Windows GPU build, so IgnisDisc's workflow
+  `.github/workflows/whisper-vulkan.yml` builds the same v1.9.5 source (commit
+  `d1be6fde11ac6e0407606b4e42fe72d34add8037`) with its Vulkan back end on a GitHub-hosted runner, with a build
+  provenance attestation, and attaches it to the `whisper-vulkan-1.9.5` pre-release of this repository. The archive
+  holds whisper.cpp's licence as `LICENSE-whisper.cpp.txt` and a `BUILD-INFO.txt` naming the source commit and build
+  run. It uses the `vulkan-1.dll` that comes with the graphics driver; no Vulkan file is included.
+- Speech models: OpenAI Whisper base and large-v3-turbo (MIT, Copyright (c) 2022 OpenAI) in whisper.cpp's format, from
+  [ggerganov/whisper.cpp on Hugging Face](https://huggingface.co/ggerganov/whisper.cpp), and the Silero voice activity
+  model (MIT) from [ggml-org/whisper-vad](https://huggingface.co/ggml-org/whisper-vad), each pinned to a repository
+  revision.
+
 ## DiscImageStudio and CDImage (ported source code, GPL-3.0-or-later)
 
 The lithography code under `src/CdBurner.Lithography/Ported/DiscImageStudio/` is ported from
