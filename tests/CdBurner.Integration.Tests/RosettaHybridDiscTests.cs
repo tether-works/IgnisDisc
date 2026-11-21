@@ -550,23 +550,24 @@ public sealed class RosettaHybridDiscTests : IDisposable
     [Fact]
     public async Task Cd_Sub50x75Presets_AndWrongExtension_AreRefused_WithTheReason()
     {
+        // --redundancy 0 keeps these refusals independent of par2, which a PC may not have installed.
         (int code, _, string error) = await RunAsync("rosetta", "build", "--media", "cd",
-            "--cells", "high-density", "--text", WriteTexts(), "--output", P("cd.cue"));
+            "--cells", "high-density", "--text", WriteTexts(), "--output", P("cd.cue"), "--redundancy", "0");
         Assert.Equal(1, code);
         Assert.Contains("50 x 75 um", error);
 
         (code, _, error) = await RunAsync("rosetta", "build", "--media", "cd",
-            "--cells", "ladder-34x51", "--text", WriteTexts(), "--output", P("cd.cue"));
+            "--cells", "ladder-34x51", "--text", WriteTexts(), "--output", P("cd.cue"), "--redundancy", "0");
         Assert.Equal(1, code);
         Assert.Contains("50 x 75 um", error);
 
         (code, _, error) = await RunAsync("rosetta", "build", "--media", "cd",
-            "--text", WriteTexts(), "--output", P("cd.iso"));
+            "--text", WriteTexts(), "--output", P("cd.iso"), "--redundancy", "0");
         Assert.Equal(1, code);
         Assert.Contains(".cue", error);
 
         (code, _, error) = await RunAsync("rosetta", "build", "--media", "dvd",
-            "--no-interleave", "--text", WriteTexts(), "--output", P("dvd.iso"));
+            "--no-interleave", "--text", WriteTexts(), "--output", P("dvd.iso"), "--redundancy", "0");
         Assert.Equal(1, code);
         Assert.Contains("CD-R", error);
 
