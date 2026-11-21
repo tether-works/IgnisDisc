@@ -3,11 +3,11 @@
  * Edit SITE_CONFIG below (or run scripts/Publish-ReleaseAndSite.ps1) to update links.
  */
 const SITE_CONFIG = {
-  version: "1.17",
+  version: "1.18",
   githubRepoUrl: "https://github.com/tether-works/IgnisDisc",
   githubReleasesUrl: "https://github.com/tether-works/IgnisDisc/releases",
-  setupDownloadUrl: "https://github.com/tether-works/IgnisDisc/releases/download/v1.17/IgnisDisc-Setup.exe",
-  portableDownloadUrl: "https://github.com/tether-works/IgnisDisc/releases/download/v1.17/IgnisDisc-Portable-win-x64.zip"
+  setupDownloadUrl: "https://github.com/tether-works/IgnisDisc/releases/download/v1.18/IgnisDisc-Setup.exe",
+  portableDownloadUrl: "https://github.com/tether-works/IgnisDisc/releases/download/v1.18/IgnisDisc-Portable-win-x64.zip"
 };
 
 document.addEventListener("DOMContentLoaded", () => {
