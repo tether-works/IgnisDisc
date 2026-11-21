@@ -202,6 +202,18 @@ if (Test-Path $PublicHtmlPath) {
     }
 }
 
+# web/public/details.html (test notes & technical details page): same version badge, footer and stylesheet stamp.
+$DetailsHtmlPath = Join-Path $RepoRoot "web\public\details.html"
+if (Test-Path $DetailsHtmlPath) {
+    $dhtml = Get-Content $DetailsHtmlPath -Raw
+    $newDhtml = [regex]::Replace($dhtml, 'id="navVersion">v[^<]+</span>', "id=`"navVersion`">v$NewVersion</span>")
+    $newDhtml = [regex]::Replace($newDhtml, '<strong>IgnisDisc v[^<]+</strong>', "<strong>IgnisDisc v$NewVersion</strong>")
+    $newDhtml = [regex]::Replace($newDhtml, '(/styles\.css\?v=)[^"]+', "`${1}$NewVersion")
+    if ($newDhtml -ne $dhtml) {
+        Set-FileText $DetailsHtmlPath $newDhtml "web/public/details.html (version badge & stylesheet)"
+    }
+}
+
 # ---------------------------------------------------------------------------
 # 8. web/tetherworks/index.html
 # ---------------------------------------------------------------------------
