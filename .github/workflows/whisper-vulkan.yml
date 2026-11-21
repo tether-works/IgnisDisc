@@ -1,0 +1,164 @@
+name: whisper.cpp Vulkan build
+
+# Builds the Windows x64 Vulkan version of whisper.cpp from the official tagged source, for the optional
+# "Generate subtitles" download on PCs with AMD or Intel graphics. whisper.cpp publishes Windows GPU builds only
+# for NVIDIA (CUDA); its source also has a Vulkan back end, which runs on any GPU whose driver supports Vulkan 1.2.
+# The build uses the same options as whisper.cpp's own Windows x64 release, plus GGML_VULKAN=ON.
+#
+# Run by hand. The archive is kept as a workflow artifact with a build provenance attestation. With
+# "publish" set, it is also attached to a pre-release that is never marked latest; the app pins that file's SHA-256.
+
+on:
+  workflow_dispatch:
+    inputs:
+      publish:
+        description: Attach the archive to the whisper-vulkan pre-release
+        type: boolean
+        default: false
+  push:
+    branches:
+      - whisper-vulkan-build
+    paths:
+      - .github/workflows/whisper-vulkan.yml
+
+permissions:
+  contents: read
+
+env:
+  WHISPER_VERSION: 1.9.5
+  # Commit of the official v1.9.5 tag (also tagged b5454) in ggml-org/whisper.cpp.
+  WHISPER_COMMIT: d1be6fde11ac6e0407606b4e42fe72d34add8037
+  VULKAN_SDK_VERSION: 1.4.363.1
+  # SHA-256 LunarG publishes for vulkansdk-windows-X64-1.4.363.1.exe (https://vulkan.lunarg.com/sdk/sha/...).
+  VULKAN_SDK_SHA256: c02932bd9a968b22d404536108adaacac908c081cd6b0113f5bfefc523dd0a6a
+  ARCHIVE_NAME: whisper-bin-win-vulkan-x64.zip
+
+jobs:
+  build:
+    name: Build whisper.cpp (Vulkan, x64)
+    runs-on: windows-2022
+    timeout-minutes: 60
+    permissions:
+      contents: read
+      id-token: write
+      attestations: write
+    outputs:
+      sha256: ${{ steps.pack.outputs.sha256 }}
+
+    steps:
+      - name: Check out whisper.cpp at the release commit
+        uses: actions/checkout@v4
+        with:
+          repository: ggml-org/whisper.cpp
+          ref: ${{ env.WHISPER_COMMIT }}
+          path: whisper.cpp
+
+      - name: Install the Vulkan SDK (hash checked)
+        shell: pwsh
+        run: |
+          $installer = Join-Path $env:RUNNER_TEMP "vulkansdk-windows-X64-$env:VULKAN_SDK_VERSION.exe"
+          curl.exe -fsSL -o $installer "https://sdk.lunarg.com/sdk/download/$env:VULKAN_SDK_VERSION/windows/vulkansdk-windows-X64-$env:VULKAN_SDK_VERSION.exe"
+          $hash = (Get-FileHash $installer -Algorithm SHA256).Hash.ToLowerInvariant()
+          if ($hash -ne $env:VULKAN_SDK_SHA256) { throw "Vulkan SDK installer SHA-256 $hash does not match $env:VULKAN_SDK_SHA256" }
+          $signature = Get-AuthenticodeSignature $installer
+          if ($signature.Status -ne 'Valid' -or $signature.SignerCertificate.Subject -notlike '*LunarG*') { throw "Vulkan SDK installer signature: $($signature.Status)" }
+          $root = "C:\VulkanSDK\$env:VULKAN_SDK_VERSION"
+          $p = Start-Process $installer -ArgumentList '--root', $root, '--accept-licenses', '--default-answer', '--confirm-command', 'install' -Wait -PassThru
+          if ($p.ExitCode -ne 0 -or -not (Test-Path "$root\Bin\glslc.exe")) { throw "Vulkan SDK install failed (exit $($p.ExitCode))" }
+          Add-Content $env:GITHUB_ENV "VULKAN_SDK=$root"
+          Add-Content $env:GITHUB_PATH "$root\Bin"
+
+      - name: Configure
+        shell: pwsh
+        working-directory: whisper.cpp
+        run: >
+          cmake -S . -B build -A x64
+          -DCMAKE_BUILD_TYPE=Release
+          -DBUILD_SHARED_LIBS=ON
+          -DWHISPER_SDL2=OFF
+          -DGGML_NATIVE=OFF
+          -DGGML_BACKEND_DL=ON
+          -DGGML_CPU_ALL_VARIANTS=ON
+          -DGGML_VULKAN=ON
+
+      - name: Build
+        shell: pwsh
+        working-directory: whisper.cpp
+        # All targets: with GGML_BACKEND_DL the back ends (ggml-vulkan.dll, ggml-cpu-*.dll) are separate modules
+        # that whisper-cli loads at run time, so building whisper-cli alone would leave them out.
+        run: cmake --build build --config Release --parallel
+
+      - name: Smoke test (load the Vulkan back end, no GPU on the runner)
+        shell: pwsh
+        working-directory: whisper.cpp/build/bin/Release
+        run: |
+          if (-not (Test-Path ggml-vulkan.dll)) { throw "ggml-vulkan.dll was not built" }
+          & .\whisper-cli.exe --help *> help.txt
+          if ($LASTEXITCODE -ne 0) { Get-Content help.txt; throw "whisper-cli --help exited $LASTEXITCODE" }
+          Remove-Item help.txt
+
+      - name: Pack archive
+        id: pack
+        shell: pwsh
+        run: |
+          $stage = Join-Path $env:RUNNER_TEMP 'whisper-vulkan'
+          New-Item -ItemType Directory -Force $stage | Out-Null
+          Copy-Item whisper.cpp/build/bin/Release/whisper-cli.exe $stage
+          Copy-Item whisper.cpp/build/bin/Release/*.dll $stage
+          Copy-Item whisper.cpp/LICENSE (Join-Path $stage 'LICENSE-whisper.cpp.txt')
+          $info = @(
+            "whisper.cpp $env:WHISPER_VERSION, Windows x64, Vulkan back end."
+            "Source: https://github.com/ggml-org/whisper.cpp commit $env:WHISPER_COMMIT (tag v$env:WHISPER_VERSION)."
+            "Built by https://github.com/$env:GITHUB_REPOSITORY/actions/runs/$env:GITHUB_RUN_ID from workflow commit $env:GITHUB_SHA."
+            "Vulkan SDK $env:VULKAN_SDK_VERSION (LunarG). CMake options: BUILD_SHARED_LIBS=ON WHISPER_SDL2=OFF GGML_NATIVE=OFF GGML_BACKEND_DL=ON GGML_CPU_ALL_VARIANTS=ON GGML_VULKAN=ON."
+            "Needs a GPU driver with Vulkan 1.2 or newer; vulkan-1.dll comes with the driver and is not included."
+            "whisper.cpp is MIT licensed; see LICENSE-whisper.cpp.txt."
+          )
+          Set-Content (Join-Path $stage 'BUILD-INFO.txt') $info -Encoding utf8
+          Compress-Archive -Path (Join-Path $stage '*') -DestinationPath $env:ARCHIVE_NAME
+          $hash = (Get-FileHash $env:ARCHIVE_NAME -Algorithm SHA256).Hash.ToLowerInvariant()
+          $size = (Get-Item $env:ARCHIVE_NAME).Length
+          "sha256=$hash" >> $env:GITHUB_OUTPUT
+          "| File | Bytes | SHA-256 |`n|---|---|---|`n| $env:ARCHIVE_NAME | $size | ``$hash`` |" >> $env:GITHUB_STEP_SUMMARY
+          Get-ChildItem $stage | Format-Table Name, Length
+
+      - name: Attest build provenance
+        uses: actions/attest-build-provenance@v2
+        with:
+          subject-path: ${{ env.ARCHIVE_NAME }}
+
+      - name: Upload artifact
+        uses: actions/upload-artifact@v4
+        with:
+          name: whisper-vulkan-x64
+          path: ${{ env.ARCHIVE_NAME }}
+          if-no-files-found: error
+
+  publish:
+    name: Attach to the whisper-vulkan pre-release
+    needs: build
+    if: github.event_name == 'workflow_dispatch' && inputs.publish
+    runs-on: ubuntu-latest
+    permissions:
+      contents: write
+    steps:
+      - name: Download artifact
+        uses: actions/download-artifact@v4
+        with:
+          name: whisper-vulkan-x64
+
+      - name: Check hash and publish
+        env:
+          GH_TOKEN: ${{ github.token }}
+          EXPECTED: ${{ needs.build.outputs.sha256 }}
+        run: |
+          actual=$(sha256sum "$ARCHIVE_NAME" | cut -d' ' -f1)
+          test "$actual" = "$EXPECTED"
+          tag="whisper-vulkan-$WHISPER_VERSION"
+          if gh release view "$tag" -R "$GITHUB_REPOSITORY" > /dev/null 2>&1; then
+            echo "Release $tag already exists; published files are never replaced." >&2
+            exit 1
+          fi
+          gh release create "$tag" "$ARCHIVE_NAME" -R "$GITHUB_REPOSITORY" --target "$GITHUB_SHA" --prerelease --latest=false \
+            --title "whisper.cpp $WHISPER_VERSION Vulkan build (subtitle tool download)" \
+            --notes "Optional download used by IgnisDisc's Generate subtitles on PCs with AMD or Intel graphics. Built from ggml-org/whisper.cpp commit $WHISPER_COMMIT by run $GITHUB_SERVER_URL/$GITHUB_REPOSITORY/actions/runs/$GITHUB_RUN_ID. SHA-256: $actual. whisper.cpp is MIT licensed."
