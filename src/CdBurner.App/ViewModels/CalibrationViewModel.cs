@@ -7,6 +7,7 @@ using System.IO;
 using System.Windows.Input;
 using CdBurner.App.Mvvm;
 using CdBurner.Lithography.Calibration;
+using CdBurner.Lithography.Imaging;
 
 namespace CdBurner.App.ViewModels;
 
@@ -86,6 +87,8 @@ public sealed class CalibrationViewModel : ObservableObject
     private int _photoHeight;
     private double _physicalOuterRadiusMm = 60;
     private CalibrationPhotoTransform? _transform;
+    private DiscPhotoRectificationKind _rectificationKind = DiscPhotoRectificationKind.Standard;
+    private double _holeRadiusUsedMm = HoleRadiusMm;
     private CalibrationPhotoTransform? _transformBeforeEdit;
     private bool _rectificationConfirmed;
     private CalibrationClickMode _clickMode = CalibrationClickMode.OuterRim;
@@ -109,6 +112,7 @@ public sealed class CalibrationViewModel : ObservableObject
     {
         OpenRecordCommand = new RelayCommand(BrowseRecord);
         OpenPhotoCommand = new RelayCommand(BrowsePhoto);
+        FindEdgesCommand = new AsyncRelayCommand(FindDiscEdgesAsync);
         RectifyCommand = new RelayCommand(() => Rectify());
         UndoCommand = new RelayCommand(Undo);
         NewSegmentCommand = new RelayCommand(StartNewSegment);
@@ -119,6 +123,7 @@ public sealed class CalibrationViewModel : ObservableObject
 
     public ICommand OpenRecordCommand { get; }
     public ICommand OpenPhotoCommand { get; }
+    public AsyncRelayCommand FindEdgesCommand { get; }
     public ICommand RectifyCommand { get; }
     public ICommand UndoCommand { get; }
     public ICommand NewSegmentCommand { get; }
@@ -309,7 +314,10 @@ public sealed class CalibrationViewModel : ObservableObject
             _rectificationConfirmed = photo.RectificationConfirmed;
             if (photo.RectificationConfirmed)
             {
-                CalibrationPhotoFitResult result = CalibrationPhotoRectifier.Fit(_outer, _hole, _physicalOuterRadiusMm, HoleRadiusMm);
+                DiscPhotoRectification rectification = DiscPhotoRectifier.Fit(_outer, _hole, _physicalOuterRadiusMm);
+                CalibrationPhotoFitResult result = rectification.Fit;
+                _rectificationKind = rectification.Kind;
+                _holeRadiusUsedMm = rectification.HoleRadiusMm;
                 _transform = result.Succeeded ? result.Transform : null;
                 RectifyMessage = result.Succeeded
                     ? result.Message
@@ -402,7 +410,95 @@ public sealed class CalibrationViewModel : ObservableObject
         _transform = null;
         _transformBeforeEdit = null;
         _rectificationConfirmed = false;
+        _rectificationKind = DiscPhotoRectificationKind.Standard;
+        _holeRadiusUsedMm = HoleRadiusMm;
         RectifyMessage = string.Empty;
+    }
+
+    // ---------------------------------------------------------------- finding the disc edges
+
+    /// <summary>What the background search hands back: the cut-out photo and the outlines inside it.</summary>
+    private sealed record EdgeSearch(byte[] CroppedPng, int Width, int Height, DiscPhotoDetection Found,
+        CalibrationPoint[] Outer, CalibrationPoint[] Hole);
+
+    /// <summary>
+    /// Finds the outer rim and the centre hole in the open photo, cuts the photo down to the disc, marks both outlines
+    /// and rectifies, so the person only has to check the drawn circles and click the measurement points. Falls back to
+    /// the click workflow (photo and any points left as they were) when no clear rim is found.
+    /// </summary>
+    public async Task<bool> FindDiscEdgesAsync()
+    {
+        if (_photoPng is null)
+        {
+            StatusMessage = "Open a photo first.";
+            return false;
+        }
+
+        byte[] png = _photoPng;
+        IsBusy = true;
+        StatusMessage = "Looking for the disc edges...";
+        EdgeSearch? search;
+        try
+        {
+            search = await Task.Run(() => SearchEdges(png));
+        }
+        catch (Exception ex) when (ex is InvalidDataException or IOException or ArgumentException or NotSupportedException
+            or OverflowException or OutOfMemoryException)
+        {
+            IsBusy = false;
+            StatusMessage = "The disc edges could not be searched for automatically (" + ex.Message + "). Click the outer rim and the centre hole instead.";
+            return false;
+        }
+
+        IsBusy = false;
+        if (search is null)
+        {
+            StatusMessage = "No clear circular disc edge was found. Click at least five points around the outer rim and the centre hole instead, or retake the photo from straight above with the disc filling the frame.";
+            return false;
+        }
+
+        // The cut-out is the photo from here on: outlines, points and the saved record all use its pixels.
+        ClearPhotoState();
+        _recordPhoto = null;
+        _photoPng = search.CroppedPng;
+        _photoWidth = search.Width;
+        _photoHeight = search.Height;
+        _outer.AddRange(search.Outer);
+        _hole.AddRange(search.Hole);
+        bool rectified = Rectify();
+        string holeText = search.Hole.Length > 0
+            ? string.Create(CultureInfo.InvariantCulture, $", hole edge at {search.Found.HoleFraction * _physicalOuterRadiusMm:0.#} mm from the centre.")
+            : ", no hole edge found.";
+        string found = string.Create(CultureInfo.InvariantCulture,
+            $"Found the disc and cut the photo down to it ({search.Width} x {search.Height} pixels): rim from {search.Found.RimEdgePoints} edge readings, scatter {search.Found.RimScatterPixels:0.#} px")
+            + holeText;
+        if (rectified)
+        {
+            RectifyMessage = found + " " + RectifyMessage;
+            StatusMessage = found + " " + StageInstructions;
+        }
+        else
+        {
+            ClickMode = CalibrationClickMode.OuterRim;
+            StatusMessage = found + " Rectify did not accept the outlines (" + RectifyMessage + ") Correct them by clicking, or retake the photo.";
+        }
+
+        OnPropertyChanged(nameof(RectifyMessage));
+        return rectified;
+    }
+
+    /// <summary>The slow part, run off the UI thread: decode, detect, cut out, re-encode.</summary>
+    private static EdgeSearch? SearchEdges(byte[] png)
+    {
+        BgraRaster photo = PngRaster.Read(new MemoryStream(png, writable: false));
+        DiscPhotoDetection? found = DiscPhotoDetector.Detect(photo);
+        if (found is null) return null;
+        (BgraRaster cropped, int left, int top) = DiscPhotoDetector.CropToDisc(photo, found);
+        CalibrationPoint Shift(CalibrationPoint p) => new(p.X - left, p.Y - top);
+        using var stream = new MemoryStream();
+        PngRaster.Write(stream, cropped);
+        return new EdgeSearch(stream.ToArray(), cropped.Width, cropped.Height, found,
+            found.OuterPoints.Select(Shift).ToArray(), found.HolePoints.Select(Shift).ToArray());
     }
 
     // ---------------------------------------------------------------- clicking
@@ -611,7 +707,8 @@ public sealed class CalibrationViewModel : ObservableObject
             return false;
         }
 
-        CalibrationPhotoFitResult result = CalibrationPhotoRectifier.Fit(_outer, _hole, _physicalOuterRadiusMm, HoleRadiusMm);
+        DiscPhotoRectification rectification = DiscPhotoRectifier.Fit(_outer, _hole, _physicalOuterRadiusMm);
+        CalibrationPhotoFitResult result = rectification.Fit;
         RectifyMessage = result.Message;
         if (!result.Succeeded || result.Transform is null)
         {
@@ -625,6 +722,8 @@ public sealed class CalibrationViewModel : ObservableObject
         if (_transformBeforeEdit is { } previous) MoveMeasurements(previous, result.Transform);
         _transformBeforeEdit = null;
         _transform = result.Transform;
+        _rectificationKind = rectification.Kind;
+        _holeRadiusUsedMm = rectification.HoleRadiusMm;
         _rectificationConfirmed = true;
         ClickMode = CalibrationClickMode.Measure;
         StatusMessage = "Rectified. Check that the drawn outlines follow the disc edges, then click the measurement points.";
@@ -839,7 +938,8 @@ public sealed class CalibrationViewModel : ObservableObject
         if (dialog.ShowDialog() != true) return;
         try
         {
-            LoadPhoto(CalibrationPhotoFile.LoadAsPng(dialog.FileName, MaxPhotoSide));
+            // The disc edges are found at once; clicking is only for correcting them.
+            if (LoadPhoto(CalibrationPhotoFile.LoadAsPng(dialog.FileName, MaxPhotoSide))) _ = FindDiscEdgesAsync();
         }
         catch (Exception ex) when (ex is IOException or UnauthorizedAccessException or NotSupportedException
             or ArgumentException or InvalidOperationException or System.Runtime.InteropServices.COMException)
@@ -893,7 +993,11 @@ public sealed class CalibrationViewModel : ObservableObject
         double size = Math.Max(5, Math.Max(_photoWidth, _photoHeight) / 120.0);
         if (_transform is { } transform)
         {
-            foreach (double radius in new[] { _physicalOuterRadiusMm, HoleRadiusMm })
+            // A rim-only rectification did not use the hole outline, so no hole circle is drawn as if it had been.
+            double[] drawn = _rectificationKind == DiscPhotoRectificationKind.RimOnly
+                ? [_physicalOuterRadiusMm]
+                : [_physicalOuterRadiusMm, _holeRadiusUsedMm];
+            foreach (double radius in drawn)
             {
                 for (int i = 0; i < OutlineDots; i++)
                 {

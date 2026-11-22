@@ -47,12 +47,18 @@
                            Foreground="{DynamicResource TextSecondaryBrush}" />
 
                 <TextBlock Text="2. Photo and rectification" FontWeight="SemiBold" Margin="0,0,0,4" />
-                <Button Content="Open photo..." Command="{Binding OpenPhotoCommand}" HorizontalAlignment="Left"
-                        AutomationProperties.Name="Open photo of the burned disc" />
+                <TextBlock Text="Opening a photo finds the disc, cuts the photo down to it, marks the outer rim and the centre hole and rectifies. Click only to correct the circles."
+                           TextWrapping="Wrap" Margin="0,0,0,6" Foreground="{DynamicResource TextSecondaryBrush}" />
+                <StackPanel Orientation="Horizontal">
+                    <Button Content="Open photo..." Command="{Binding OpenPhotoCommand}" Margin="0,0,6,0"
+                            AutomationProperties.Name="Open photo of the burned disc" />
+                    <Button Content="Find disc edges again" Command="{Binding FindEdgesCommand}"
+                            AutomationProperties.Name="Find the disc edges in the open photo" />
+                </StackPanel>
                 <StackPanel Margin="0,6,0,0">
-                    <RadioButton Content="Click outer rim (orange)" GroupName="CalibrationClick"
+                    <RadioButton Content="Correct outer rim by clicking (orange)" GroupName="CalibrationClick"
                                  IsChecked="{Binding IsOuterRimMode}" AutomationProperties.Name="Click outer rim" />
-                    <RadioButton Content="Click centre hole edge (blue)" GroupName="CalibrationClick"
+                    <RadioButton Content="Correct centre hole edge by clicking (blue)" GroupName="CalibrationClick"
                                  IsChecked="{Binding IsCenterHoleMode}" AutomationProperties.Name="Click centre hole edge" />
                     <RadioButton Content="Click measurement points (green)" GroupName="CalibrationClick"
                                  IsChecked="{Binding IsMeasureMode}" AutomationProperties.Name="Click measurement points" />
