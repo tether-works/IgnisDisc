@@ -117,6 +117,9 @@ internal sealed class CdImageSampler
         if ((ulong)firstByte >= totalBytes || (ulong)secondByte >= totalBytes
             || (ulong)thirdByte >= totalBytes || (ulong)fourthByte >= totalBytes)
             return SampleFourScalar(firstByte, secondByte, thirdByte, fourthByte);
+        // A measured turn table is applied in CdDiscParameters.PolarFromByte, which only the scalar path asks.
+        if (_parameters.TurnCorrection is not null)
+            return SampleFourScalar(firstByte, secondByte, thirdByte, fourthByte);
         // Each lane keeps the original operation order. In particular, division
         // is not replaced by multiplication with a cached reciprocal or FMA.
         Vector256<double> indices = Vector256.Create(

@@ -2,11 +2,13 @@
 // Copyright (c) 2026 Disc Image Studio contributors
 // Ported to IgnisDisc from DiscImageStudio src/DiscImageStudio.Cd/CdDiscParameters.cs at commit 619ec7505ac8955f35fe2f353ebda74b6ea90dda:
 // https://github.com/JiaFeiMiao-K-Cat/DiscImageStudio/blob/619ec7505ac8955f35fe2f353ebda74b6ea90dda/src/DiscImageStudio.Cd/CdDiscParameters.cs
-// IgnisDisc change: namespace only. See THIRD-PARTY-NOTICES.md.
+// IgnisDisc changes: namespace; an optional measured turn table (Geometry/MeasuredTurnCorrection.cs) that, when set,
+// gives every byte's angle. Without one the arithmetic is unchanged. See THIRD-PARTY-NOTICES.md.
 
 using System.Runtime.CompilerServices;
 using CdBurner.Lithography;
 using CdBurner.Lithography.Calibration;
+using CdBurner.Lithography.Geometry;
 
 namespace CdBurner.Lithography.Cd;
 
@@ -34,6 +36,12 @@ public sealed record CdDiscParameters(
             p.PitchLinear, p.PitchQuadratic, p.PitchCubic));
 
     public const int BytesPerSector = 2352;
+
+    /// <summary>
+    /// A measured turn table for this disc, or null. When set, the angle of every byte comes from the constant-pitch
+    /// spiral plus this table; the pitch coefficients must then be zero and the track must start at sector 0.
+    /// </summary>
+    public MeasuredTurnCorrection? TurnCorrection { get; init; }
 
     /// <summary>ECMA-130 CLV scanning speed; the UI no longer exposes it as a parameter.</summary>
     public const double StandardLinearVelocityMmPerSecond = 1200.0;
@@ -106,6 +114,12 @@ public sealed record CdDiscParameters(
         _ = GeometryBytes;
         _ = TotalBytes;
         DvdTrackGeometry.ValidatePitchCoefficients(PitchLinear, PitchQuadratic, PitchCubic);
+        if (TurnCorrection is not null && (PitchLinear != 0 || PitchQuadratic != 0 || PitchCubic != 0))
+        {
+            throw new ArgumentException(
+                "A measured turn table replaces the pitch coefficients; give one or the other.", nameof(TurnCorrection));
+        }
+
         _ = VariablePitchGeometry;
     }
 
@@ -132,6 +146,17 @@ public sealed record CdDiscParameters(
 
     public (double RadiusMm, double ThetaRadians) PolarFromByte(long globalByte)
     {
+        if (TurnCorrection is { } correction)
+        {
+            // Radius from the constant-pitch spiral (a few hundredths of a millimetre are enough there); the angle
+            // from the same spiral at the offset address plus the measured correction in turns.
+            double sector = ((double)globalByte / BytesPerSector) + correction.AddressOffsetSectors;
+            double shiftedRadius = Math.Sqrt(Math.Max(
+                (InnerRadiusMm * InnerRadiusMm) + (sector / Sectors * RadiusSquaredRange), 0.0));
+            return (RadiusFromByte(globalByte),
+                ThetaFromRadius(shiftedRadius) + (2.0 * Math.PI * correction.TurnsAt(sector)));
+        }
+
         if (VariablePitchGeometry is { } geometry)
         {
             var point = geometry.AtArcLengthFast(ArcLengthFromByte(globalByte));

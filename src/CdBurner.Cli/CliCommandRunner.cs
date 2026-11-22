@@ -3987,6 +3987,9 @@ public static partial class CliCommandRunner
             stdout.WriteLine("      --overwrite                Replace existing output files.");
             stdout.WriteLine("      --disc-preset, --disc-presets-file, --drive-model, --media-id, --store, --inner-radius-mm, --outer-radius-mm, --sectors, --pitch-*");
             stdout.WriteLine("                                 Disc geometry, as for 'disc-art calibrate target' (a saved calibration for the drive and disc is used automatically).");
+            stdout.WriteLine("      --turn-map <file.json>     Experimental, CD picture-only discs: take every angle from a table of the disc's spiral measured by read timing");
+            stdout.WriteLine("                                 (it replaces the radii and pitch coefficients). 'disc-art preview' does not know the table and shows the picture twisted.");
+            stdout.WriteLine("      --turn-map-offset <sectors> With --turn-map: sectors added to an address before its angle is looked up (default 0).");
             stdout.WriteLine();
             stdout.WriteLine("  disc-art preview --image <file.iso|.wav|.raw> --output <file.png> [--size <px>] [--json]");
             stdout.WriteLine("      Renders what a drive would show from an image made by 'disc-art generate', using its description file. DVD and CD only; BD is not available yet.");

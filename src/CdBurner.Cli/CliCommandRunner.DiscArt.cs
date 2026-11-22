@@ -7,6 +7,7 @@ using CdBurner.Hardware.NativeWriting;
 using CdBurner.Lithography;
 using CdBurner.Lithography.Calibration;
 using CdBurner.Lithography.DiscArt;
+using CdBurner.Lithography.Geometry;
 
 namespace CdBurner.Cli;
 
@@ -49,6 +50,44 @@ public static partial class CliCommandRunner
         }
 
         (CalibrationParameters parameters, string source) = ResolveCalibrationParameters(cmd, kind);
+        MeasuredTurnCorrection? turnCorrection = null;
+        if (cmd.GetOption("turn-map") is { } turnMapPath)
+        {
+            // Experimental: the disc's spiral as measured by read timing replaces the radii and pitch coefficients.
+            if (kind != CalibrationDiscKind.Cd)
+            {
+                throw new CommandLineException("--turn-map is for CDs (--media cd) for now.");
+            }
+
+            try
+            {
+                turnCorrection = MeasuredTurnCorrection.Load(Path.GetFullPath(turnMapPath))
+                    .WithAddressOffset(OptionalDouble(cmd, "turn-map-offset") ?? 0);
+            }
+            catch (Exception ex) when (ex is IOException or UnauthorizedAccessException or InvalidDataException
+                or ArgumentException or System.Text.Json.JsonException)
+            {
+                throw new CommandLineException($"Cannot read the turn map: {ex.Message}");
+            }
+
+            if (Math.Abs((parameters.LinearDensity / 75.0) - turnCorrection.SectorLengthMm) > 1e-9)
+            {
+                throw new CommandLineException(string.Create(CultureInfo.InvariantCulture,
+                    $"The turn map assumes {turnCorrection.SectorLengthMm} mm per sector, the disc parameters {parameters.LinearDensity / 75.0} mm."));
+            }
+
+            parameters = parameters with
+            {
+                InnerRadiusMm = turnCorrection.InnerRadiusMm,
+                OuterRadiusMm = turnCorrection.OuterRadiusMmAt(parameters.Sectors),
+                PitchLinear = 0,
+                PitchQuadratic = 0,
+                PitchCubic = 0,
+            };
+            source += string.Create(CultureInfo.InvariantCulture,
+                $", angles from the measured turn map '{Path.GetFileName(turnMapPath)}' ({turnCorrection.StationCount} stations, offset {turnCorrection.AddressOffsetSectors} sectors)");
+        }
+
         ToneProfile tone = (cmd.GetOption("tone") ?? "photo").ToLowerInvariant() switch
         {
             "photo" => ToneProfile.Photo,
@@ -155,7 +194,8 @@ public static partial class CliCommandRunner
                 ? new DiscArtRimHeader(
                     cmd.GetOption("label") is { Length: > 0 } title ? title : Path.GetFileNameWithoutExtension(picture),
                     DateOnly.FromDateTime(DateTime.Now))
-                : null);
+                : null,
+            CdTurnCorrection: turnCorrection);
 
         string media = MediaName(kind);
         try

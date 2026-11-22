@@ -10,6 +10,7 @@ using CdBurner.Lithography.Cd;
 using CdBurner.Lithography.Dvd;
 using CdBurner.Lithography.Dvd.Encoding;
 using CdBurner.Lithography.Dvd.Solver;
+using CdBurner.Lithography.Geometry;
 using CdBurner.Lithography.Imaging;
 using CdBurner.Lithography.Rosetta;
 
@@ -42,7 +43,8 @@ public sealed record DiscArtRequest(
     DiscArtTitleRingRequest? TitleRing = null, // DVD: title and date in large letters in the outer edge of the drawn area
     int? CdPreGapSeconds = null,               // CD with BaseCuePath, experimental: the picture fills track 1's pre-gap
                                                // (INDEX 00) for this many seconds instead of becoming the last track
-    DiscArtRimHeader? RimHeader = null);       // the Rosetta rim header at the outer edge of the picture; null: none
+    DiscArtRimHeader? RimHeader = null,        // the Rosetta rim header at the outer edge of the picture; null: none
+    MeasuredTurnCorrection? CdTurnCorrection = null); // CD picture-only disc, experimental: angles from a measured turn table
 
 /// <summary>
 /// Asks for the Rosetta rim header at the outer edge of the picture: title, date and the first 16 hexadecimal digits of
@@ -1268,6 +1270,18 @@ public static class DiscArtImageBuilder
     {
         DiscArtRequest r = p.Request;
         (_, CdDiscParameters track) = CdParameters(r.Disc, r.StartAngleDegrees, p.Plan);
+        if (r.CdTurnCorrection is { } correction)
+        {
+            // The table is indexed by sector address on the disc, so the picture track must start at sector 0.
+            if (r.BaseCuePath is not null || r.CdPreGapSeconds is not null)
+            {
+                throw new ArgumentException("A measured turn table works only for a disc that holds the picture alone.");
+            }
+
+            track = track with { TurnCorrection = correction };
+            track.Validate();
+        }
+
         bool wave = p.OutputPath.EndsWith(".wav", StringComparison.OrdinalIgnoreCase);
         using var file = new FileStream(partial, FileMode.Create, FileAccess.Write, FileShare.None,
             bufferSize: 1024 * 1024, FileOptions.SequentialScan);
