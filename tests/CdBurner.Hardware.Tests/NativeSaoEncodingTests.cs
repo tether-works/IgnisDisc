@@ -237,14 +237,15 @@ public class NativeSaoEncodingTests
     }
 
     [Fact]
-    public void WriteParameters_SetsSaoAndKeepsTheDrivesOtherFields()
+    public void WriteParameters_SetsSaoAndClearsWhatAnotherKindOfBurnLeftBehind()
     {
         byte[] page = new byte[0x34];
         page[0] = 0x85; page[1] = 0x32;
         page[2] = 0x21; // LS_V + TAO
-        page[3] = 0xC4; // multi-session 11, track mode 4
+        page[3] = 0xE5; // multi-session 11, fixed packets, track mode 5 (as a DVD incremental burn leaves it)
         page[4] = 0x08; // Mode 1
-        page[5] = 0x07; // link size
+        page[5] = 0x10; // link size 16
+        page[13] = 0x10; // packet size 16
         page[15] = 0x96;
         byte[] modeSense = new byte[8 + page.Length];
         BinaryPrimitives.WriteUInt16BigEndian(modeSense, (ushort)(modeSense.Length - 2));
@@ -257,13 +258,33 @@ public class NativeSaoEncodingTests
         Assert.Equal(new byte[8], list.AsSpan(0, 8).ToArray()); // header: lengths zero, no block descriptor
         Assert.Equal(0x05, list[8]);                            // PS cleared
         Assert.Equal(0x32, list[9]);
-        Assert.Equal(0x20 | 0x40 | 0x10 | 0x02, list[10]);      // LS_V kept, BUFE, Test Write, SAO
-        Assert.Equal(0x04, list[11]);                           // multi-session 00, track mode kept
+        Assert.Equal(0x40 | 0x10 | 0x02, list[10]);             // LS_V off, BUFE, Test Write, SAO
+        Assert.Equal(0x04, list[11]);                           // multi-session 00, fixed packets off, track mode 4
         Assert.Equal(0x03, list[12]);                           // raw + raw P-W for the CD-Text lead-in
-        Assert.Equal(0x07, list[13]);                           // link size kept
+        Assert.Equal(0x00, list[13]);                           // link size 0
+        Assert.Equal(new byte[4], list.AsSpan(8 + 10, 4).ToArray()); // packet size 0
         Assert.Equal(0x96, list[8 + 15]);                       // audio pause length kept
         Assert.Equal(0x00, sao.WithRawDataBlockType().DataBlockType);
         Assert.True(sao.TestWrite);
+    }
+
+    [Fact]
+    public void WriteParameters_AfterADvdDiscAtOnceBurn_AreThePageTheDriveAcceptsForACd()
+    {
+        // GP60NB50 command logs. 2026-11-21, CD-R after a DVD-R Disc-At-Once burn: MODE SENSE gave 05 32 42 05 08 ...
+        // and the page sent back with track mode 5 was refused (5/26/00). 2026-11-10: 05 32 42 04 03 ... was accepted.
+        byte[] page = new byte[0x34];
+        page[0] = 0x05; page[1] = 0x32;
+        page[2] = 0x42; // BUFE + write type 2
+        page[3] = 0x05; // track mode 5
+        page[4] = 0x08; // Mode 1
+        page[15] = 0x96;
+
+        byte[] sent = WriteParametersPage.FromPageBytes(page)
+            .ForSessionAtOnce(testWrite: false, bufferUnderrunFree: true, cdTextLeadIn: true).Bytes.ToArray();
+
+        Assert.Equal(new byte[] { 0x05, 0x32, 0x42, 0x04, 0x03, 0x00, 0x00, 0x00 }, sent.AsSpan(0, 8).ToArray());
+        Assert.Equal(new byte[] { 0x00, 0x96 }, sent.AsSpan(14, 2).ToArray());
     }
 
     [Fact]

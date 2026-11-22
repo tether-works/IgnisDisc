@@ -159,6 +159,16 @@ public sealed class VirtualMmcDrive : IScsiTransport
     /// <summary>MODE SELECT with data block type 3 fails with 5/26/00.</summary>
     public bool RejectsDataBlockType3 { get; set; }
 
+    /// <summary>
+    /// Puts the drive's write parameters page in the state a DVD-R Disc-At-Once burn leaves behind (write type 2, track
+    /// mode 5, data block type 8). A real drive keeps the page across a disc change, so the next burn starts from it.
+    /// </summary>
+    public void LeaveDvdDiscAtOnceWriteParameters()
+    {
+        _modePage05 = WriteParametersPage.FromPageBytes(_modePage05)
+            .ForDvdDiscAtOnce(testWrite: false, bufferUnderrunFree: true).Bytes.ToArray();
+    }
+
     /// <summary>A CD-Text lead-in cue entry with a time other than 00:00:00 fails with 5/26/00.</summary>
     public bool RejectsLeadInTimeInCueSheet { get; set; }
 
@@ -983,6 +993,13 @@ public sealed class VirtualMmcDrive : IScsiTransport
             (page[3] & 0x0F) != WriteParametersPage.TrackModeData)
         {
             return Sense(0x05, 0x26, 0x00); // Mode 1 blocks need a data track mode
+        }
+        if (!IsDvd && writeType == WriteParametersPage.WriteTypeSessionAtOnce && blockType <= WriteParametersPage.DataBlockTypeRawWithRawPw &&
+            (page[3] & 0x0F) == WriteParametersPage.TrackModeDvd)
+        {
+            // Measured on the GP60NB50 (2026-11-21, CD-R): Session-at-Once with raw blocks and track mode 5, the mode a
+            // DVD-R Disc-At-Once burn had left in the page, is refused for data block type 3 and 0 alike.
+            return Sense(0x05, 0x26, 0x00);
         }
         if (blockType == WriteParametersPage.DataBlockTypeMode2Form1 &&
             (writeType != WriteParametersPage.WriteTypeTrackAtOnce || WritesLikeDvd || (page[3] & 0x0F) != WriteParametersPage.TrackModeData ||

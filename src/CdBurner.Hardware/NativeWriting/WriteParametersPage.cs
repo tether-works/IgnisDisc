@@ -71,19 +71,28 @@ public sealed class WriteParametersPage
     /// <summary>
     /// A copy of this page set up for a Session-at-Once audio disc. Closed afterwards by default;
     /// <paramref name="leaveOpen"/> sets multi-session 11b so the drive leaves room for another session (the first
-    /// session of a CD-Extra disc). Everything else the drive reported (link size, packet size, MCN/ISRC fields, …)
-    /// is kept as it was.
+    /// session of a CD-Extra disc).
+    /// <para>
+    /// The drive keeps this page from one burn to the next, also across a disc change, so every field another kind of
+    /// burn sets is set here and not taken over: track mode 4 with fixed packets and copy off, link size valid off, link
+    /// size 0, packet size 0. Those are the values the GP60NB50 accepted for every Session-at-Once CD (2026-11-08 and
+    /// later, its power-on page holds them). With track mode 5 left behind by a DVD-R Disc-At-Once burn the same drive
+    /// answered 5/26/00 to this page for both data block types (2026-11-21). The fields a CD burn does not touch
+    /// (audio pause length, catalog number and ISRC fields, sub-header) stay as the drive reported them.
+    /// </para>
     /// </summary>
     public WriteParametersPage ForSessionAtOnce(bool testWrite, bool bufferUnderrunFree, bool cdTextLeadIn, bool leaveOpen = false, byte sessionFormat = SessionFormatCdDaOrCdRom)
     {
         byte[] p = (byte[])_page.Clone();
         p[0] &= 0x3F;                                   // clear PS (and the reserved bit) for MODE SELECT
-        p[2] = (byte)((p[2] & 0xA0) | WriteTypeSessionAtOnce); // keep LS_V and the reserved bit 7
+        p[2] = (byte)((p[2] & 0x80) | WriteTypeSessionAtOnce); // keep the reserved bit 7; LS_V off
         if (testWrite) p[2] |= 0x10;
         if (bufferUnderrunFree) p[2] |= 0x40;
-        p[3] = (byte)((p[3] & 0x3F) | ((leaveOpen ? MultiSessionNextAllowed : MultiSessionClosed) << 6));
+        p[3] = (byte)(((leaveOpen ? MultiSessionNextAllowed : MultiSessionClosed) << 6) | TrackModeData); // FP and Copy off
         p[4] = (byte)((p[4] & 0xF0) | (cdTextLeadIn ? DataBlockTypeRawWithRawPw : DataBlockTypeRaw));
+        p[5] = 0;                                       // link size: unused
         p[8] = sessionFormat;                           // session format: 0x00 CD-DA / CD-ROM, 0x20 CD-ROM XA
+        p[10] = p[11] = p[12] = p[13] = 0;              // packet size: unused
         return new WriteParametersPage(p);
     }
 

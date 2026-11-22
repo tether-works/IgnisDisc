@@ -65,6 +65,24 @@ public class NativeSaoWriterTests
         Assert.Equal(0x03, drive.CurrentModePage05[4] & 0x0F);
     }
 
+    [Theory]
+    [InlineData(true)]
+    [InlineData(false)]
+    public void WriteParametersLeftByADvdBurn_DoNotStopACdBurn(bool cdText)
+    {
+        // The drive keeps mode page 05h across a disc change. A DVD-R Disc-At-Once burn leaves track mode 5 in it,
+        // and the GP60NB50 refuses a Session-at-Once CD page that still carries it (2026-11-21).
+        var drive = new VirtualMmcDrive();
+        drive.LeaveDvdDiscAtOnceWriteParameters();
+        Assert.Equal(WriteParametersPage.TrackModeDvd, drive.CurrentModePage05[3] & 0x0F);
+
+        var result = Run(drive, Request(cdText: cdText));
+
+        Assert.True(result.Success, result.Message);
+        Assert.Equal(WriteParametersPage.TrackModeData, drive.CurrentModePage05[3] & 0x0F);
+        Assert.Equal(WriteParametersPage.WriteTypeSessionAtOnce, drive.CurrentModePage05[2] & 0x0F);
+    }
+
     [Fact]
     public void TestWrite_WithoutCdText_StartsAtLbaMinus150()
     {
