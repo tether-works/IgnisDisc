@@ -17,6 +17,7 @@
             <converters:BooleanToVisibilityConverter x:Key="BooleanToVisibilityConverter" />
             <converters:InverseBooleanToVisibilityConverter x:Key="InverseBooleanToVisibilityConverter" />
             <converters:InverseBooleanConverter x:Key="InverseBooleanConverter" />
+            <converters:RadioButtonBooleanConverter x:Key="RadioButtonBooleanConverter" />
             <converters:NullToVisibilityConverter x:Key="NullToVisibilityConverter" />
             <converters:BooleanToBrushConverter x:Key="BooleanToBrushConverter" />
             <converters:FileSystemPresetToStringConverter x:Key="FileSystemPresetToStringConverter" />

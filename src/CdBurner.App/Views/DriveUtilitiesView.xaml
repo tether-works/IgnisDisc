@@ -15,6 +15,7 @@
         <converters:InverseBooleanToVisibilityConverter x:Key="InvBoolToVis" />
         <converters:InverseBooleanToVisibilityConverter x:Key="InverseBooleanToVisibilityConverter" />
         <converters:InverseBooleanConverter x:Key="InverseBooleanConverter" />
+        <converters:RadioButtonBooleanConverter x:Key="RadioButtonBooleanConverter" />
         <converters:BooleanToBrushConverter x:Key="BooleanToBrushConverter" />
         <converters:NullToVisibilityConverter x:Key="NullToVis" />
         <converters:SectorHealthStatusToBrushConverter x:Key="HealthToBrush" />
@@ -273,12 +274,12 @@
                         <StackPanel Orientation="Horizontal" Margin="0,0,0,12">
                             <RadioButton Content="Quick Erase (TOC / PMA Blank)"
                                          AutomationProperties.Name="Quick Erase (TOC / PMA Blank)"
-                                         IsChecked="{Binding IsFullEraseSelected, Converter={StaticResource InverseBooleanConverter}}"
+                                         IsChecked="{Binding IsFullEraseSelected, Converter={StaticResource RadioButtonBooleanConverter}, ConverterParameter=False}"
                                          GroupName="EraseTypeGroup"
                                          Margin="0,0,16,0" />
                             <RadioButton Content="Full Erase (Complete Zero-Fill)"
                                          AutomationProperties.Name="Full Erase (Complete Zero-Fill)"
-                                         IsChecked="{Binding IsFullEraseSelected}"
+                                         IsChecked="{Binding IsFullEraseSelected, Converter={StaticResource RadioButtonBooleanConverter}, ConverterParameter=True}"
                                          GroupName="EraseTypeGroup" />
                         </StackPanel>
 

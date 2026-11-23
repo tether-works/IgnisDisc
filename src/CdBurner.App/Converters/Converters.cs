@@ -185,7 +185,8 @@ public class InverseBooleanToVisibilityConverter : IValueConverter
 }
 
 /// <summary>
-/// Inverts a boolean value (true &lt;-&gt; false) for TwoWay radio button and IsEnabled bindings.
+/// Inverts a boolean value (true &lt;-&gt; false) for OneWay properties (such as IsEnabled) or single-control TwoWay bindings.
+/// For mutually exclusive <see cref="System.Windows.Controls.RadioButton"/> groups, use <see cref="RadioButtonBooleanConverter"/>.
 /// </summary>
 public class InverseBooleanConverter : IValueConverter
 {
@@ -201,6 +202,56 @@ public class InverseBooleanConverter : IValueConverter
     {
         bool b = value is bool flag && flag;
         return !b;
+    }
+}
+
+/// <summary>
+/// Converts a boolean property for mutually exclusive TwoWay <see cref="System.Windows.Controls.RadioButton"/> bindings.
+/// Compares the source boolean against <c>ConverterParameter</c> ("True"/"False"/"Inverse", defaulting to true)
+/// and returns <see cref="Binding.DoNothing"/> when unchecked so group updates never write stale values back.
+/// </summary>
+public class RadioButtonBooleanConverter : IValueConverter
+{
+    public static readonly RadioButtonBooleanConverter Instance = new();
+
+    public object Convert(object? value, Type targetType, object? parameter, CultureInfo culture)
+    {
+        bool current = value is bool flag && flag;
+        bool expected = ParseExpected(parameter);
+        return current == expected;
+    }
+
+    public object ConvertBack(object? value, Type targetType, object? parameter, CultureInfo culture)
+    {
+        if (value is bool isChecked && isChecked)
+        {
+            return ParseExpected(parameter);
+        }
+
+        return Binding.DoNothing;
+    }
+
+    private static bool ParseExpected(object? parameter)
+    {
+        if (parameter is bool b)
+        {
+            return b;
+        }
+
+        if (parameter is string s)
+        {
+            if (s.Equals("Inverse", StringComparison.OrdinalIgnoreCase))
+            {
+                return false;
+            }
+
+            if (bool.TryParse(s, out bool parsed))
+            {
+                return parsed;
+            }
+        }
+
+        return true;
     }
 }
 
