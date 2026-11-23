@@ -19,6 +19,9 @@ public class VirtualDiscRecorder : IDiscRecorderBackend, IAudioSubChannelProvide
     /// </summary>
     public DriveMediaReport SimulatedDriveMediaReport { get; set; } = DriveMediaReport.Empty;
 
+    /// <summary>Optional hook for tests to configure the <see cref="VirtualMmcDrive"/> created for this recorder.</summary>
+    public Action<VirtualMmcDrive>? ConfigureVirtualDrive { get; set; }
+
     public DriveMediaReport ReadDriveMediaReport() => SimulatedDriveMediaReport;
     private string? _exclusiveClientName;
     private VirtualDiscMedium? _trayMedium;

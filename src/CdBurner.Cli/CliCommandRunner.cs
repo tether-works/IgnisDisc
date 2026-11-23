@@ -3818,6 +3818,8 @@ public static partial class CliCommandRunner
         stdout.WriteLine("      Writes a calibration target to burn (CD: .wav/.raw, DVD/BD: .iso) and its calibration record.");
         stdout.WriteLine("  disc-art calibrate fit --points <record.calibration.json> [--candidate <n>] [--drive-model <text> --media-id <text>] [--json]");
         stdout.WriteLine("      Fits the points measured on a photo of the burned target and can save the result per drive model and media ID.");
+        stdout.WriteLine("  disc-art measure --drive <id> --output <file.json> [--from <sector>] [--to <sector>] [--spacing <sectors>] [--json]");
+        stdout.WriteLine("      Experimental, read-only (CD): maps a written disc's spiral by read timing and writes a turn table for '--turn-map' (capture CSV beside it).");
         stdout.WriteLine();
         stdout.WriteLine("General Options:");
         stdout.WriteLine("  --help, -h       Show help information.");
@@ -4060,6 +4062,14 @@ public static partial class CliCommandRunner
             stdout.WriteLine();
             stdout.WriteLine("  disc-art calibrate list [--store <file>] [--json]");
             stdout.WriteLine("      Lists the saved calibrations.");
+            stdout.WriteLine();
+            stdout.WriteLine("  disc-art measure --drive <id> --output <file.json> [--from <sector>] [--to <sector>] [--spacing <sectors>] [--json]");
+            stdout.WriteLine("      Experimental, read-only (CD): maps a written disc's spiral by read timing (one-sector READ CD alternating with an anchor, no writes, no SET CD SPEED)");
+            stdout.WriteLine("      and writes the turn table JSON for 'disc-art generate --turn-map' with the raw timing capture CSV beside it.");
+            stdout.WriteLine("      Refuses without writing anything if the disc holds fewer than 20,000 readable sectors, the spin rate is unsteady, or the chain margin exceeds 0.25 turn.");
+            stdout.WriteLine("      --from <sector>            First station sector (default: 2,000 into the readable area).");
+            stdout.WriteLine("      --to <sector>              Last station sector (default: 2,000 before the readable end).");
+            stdout.WriteLine("      --spacing <sectors>        Distance between stations (default: 3,000).");
             return;
         }
         if (string.Equals(subcommand, "rosetta", StringComparison.OrdinalIgnoreCase) ||

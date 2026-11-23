@@ -281,6 +281,20 @@ public sealed class VirtualMmcDrive : IScsiTransport
 
     private int _lastReadAudioLba;
 
+    // ---- Read-timing simulation ----
+
+    /// <summary>Optional CAV spiral/cache timing model for <c>READ CD</c> timing captures.</summary>
+    public SimulatedDriveTimingModel? TimingModel { get; set; }
+
+    /// <summary>Simulated high-resolution clock in microseconds, advanced by <see cref="TimingModel"/> on <c>READ CD</c>.</summary>
+    public double SimulatedClockMicroseconds { get; private set; }
+
+    private int _timingHeadLba;
+    private int _timingCacheStart = -1;
+    private int _timingCacheEnd = -1;
+    private Random? _timingRandom;
+    private SimulatedDriveTimingModel? _timingRandomOwner;
+
     // ---- Track-at-Once data writing ----
 
     /// <summary>READ TRACK INFORMATION fails with 5/20/00, as on drives that do not offer it.</summary>
@@ -772,7 +786,7 @@ public sealed class VirtualMmcDrive : IScsiTransport
             NativeWriteCommands.OpCodeWrite10 => TimedWrite(cdb, dataBuffer, timeout),
             NativeWriteCommands.OpCodeReadBufferCapacity => ReadBufferCapacity(dataBuffer),
             0x35 => SynchronizeCache(),
-            0xBE => ReadCd(cdb, dataBuffer),
+            0xBE => ReadCdTimed(cdb, dataBuffer),
             0x28 => Read10(cdb, dataBuffer),
             0x43 => ReadToc(cdb, dataBuffer),
             0x42 => ReadSubChannel(cdb, dataBuffer),
@@ -1292,6 +1306,68 @@ public sealed class VirtualMmcDrive : IScsiTransport
             C2ReadCommands++;
         }
         return Good((uint)(count * size));
+    }
+
+    private ScsiExecutionResult ReadCdTimed(ReadOnlySpan<byte> cdb, Span<byte> data)
+    {
+        var result = ReadCd(cdb, data);
+        if (TimingModel is not { } timing)
+        {
+            return result;
+        }
+
+        if (!result.IsSuccess)
+        {
+            SimulatedClockMicroseconds += timing.SeekBaseMicroseconds;
+            return result;
+        }
+
+        int lba = BinaryPrimitives.ReadInt32BigEndian(cdb.Slice(2, 4));
+        int count = Math.Max(1, (cdb[6] << 16) | (cdb[7] << 8) | cdb[8]);
+        if (lba >= _timingCacheStart && lba + count <= _timingCacheEnd)
+        {
+            SimulatedClockMicroseconds += timing.CacheHitMicroseconds;
+            return result;
+        }
+
+        if (_timingRandom is null || !ReferenceEquals(_timingRandomOwner, timing))
+        {
+            _timingRandom = new Random(timing.RandomSeed);
+            _timingRandomOwner = timing;
+        }
+
+        double seekUs = timing.SeekBaseMicroseconds + (timing.SeekPerSectorMicroseconds * Math.Abs(lba - _timingHeadLba));
+        double readyUs = SimulatedClockMicroseconds + seekUs;
+        double period = timing.RotationPeriodMicroseconds;
+
+        static double Mod1(double v) => v - Math.Floor(v);
+        double targetPhase = Mod1(timing.InitialPhaseTurns + timing.SpiralTurnsAt(lba));
+        double readyPhase = Mod1(readyUs / period);
+        double deltaPhase = targetPhase - readyPhase;
+        if (deltaPhase <= 1e-9)
+        {
+            deltaPhase += 1.0;
+        }
+
+        double arrivalUs = readyUs + (deltaPhase * period);
+        if (timing.UnsteadyCycleFraction > 0.0 && _timingRandom.NextDouble() < timing.UnsteadyCycleFraction)
+        {
+            arrivalUs += 0.06 * period;
+        }
+
+        if (timing.JitterStdDevMicroseconds > 0.0)
+        {
+            double u1 = Math.Max(1e-12, 1.0 - _timingRandom.NextDouble());
+            double u2 = _timingRandom.NextDouble();
+            double z = Math.Sqrt(-2.0 * Math.Log(u1)) * Math.Cos(2.0 * Math.PI * u2);
+            arrivalUs += z * timing.JitterStdDevMicroseconds;
+        }
+
+        SimulatedClockMicroseconds = Math.Max(SimulatedClockMicroseconds + 100.0, arrivalUs);
+        _timingHeadLba = lba;
+        _timingCacheStart = lba;
+        _timingCacheEnd = lba + Math.Max(0, timing.CacheAheadSectors);
+        return result;
     }
 
     /// <summary>

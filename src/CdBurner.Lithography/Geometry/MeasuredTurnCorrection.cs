@@ -113,6 +113,9 @@ public sealed class MeasuredTurnCorrection
     /// <summary>Number of stations in the table.</summary>
     public int StationCount => _sector.Length;
 
+    internal IReadOnlyList<double> StationSectors => _sector;
+    internal IReadOnlyList<double> CorrectionTurns => _turns;
+
     /// <summary>First and last measured sector address.</summary>
     public (double First, double Last) MeasuredRange => (_sector[0], _sector[^1]);
 

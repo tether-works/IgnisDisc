@@ -27,9 +27,11 @@ public static partial class CliCommandRunner
                 return await HandleDiscArtBurnAsync(cmd, stdout, stderr, deviceService, burnEngine).ConfigureAwait(false);
             case "calibrate":
                 return HandleDiscArtCalibrate(cmd, stdout, stderr);
+            case "measure":
+                return HandleDiscArtMeasure(cmd, stdout, stderr, deviceService);
             default:
                 throw new CommandLineException(DiscArtGenerateUsage + "\n" + DiscArtPreviewUsage + "\n" + DiscArtBurnUsage
-                    + "\n" + DiscArtCalibrateUsage);
+                    + "\n" + DiscArtCalibrateUsage + "\n" + DiscArtMeasureUsage);
         }
     }
 
