@@ -37,13 +37,13 @@ public static class LegacyDiscImageConverter
     private static readonly byte[] MdsSignature = "MEDIA DESCRIPTOR"u8.ToArray();
 
     /// <summary>
-    /// Returns true if the file path has a supported legacy disc image extension (.nrg, .mdf, .mds, .ccd, .img).
+    /// Returns true if the file path has a supported legacy or raw binary disc image extension (.bin, .nrg, .mdf, .mds, .ccd, .img, .cdi).
     /// </summary>
     public static bool IsLegacyImageFile(string? filePath)
     {
         if (string.IsNullOrWhiteSpace(filePath)) return false;
         string ext = Path.GetExtension(filePath).ToLowerInvariant();
-        return ext is ".nrg" or ".mdf" or ".mds" or ".ccd" or ".img" or ".cdi";
+        return ext is ".bin" or ".nrg" or ".mdf" or ".mds" or ".ccd" or ".img" or ".cdi";
     }
 
     /// <summary>
@@ -256,15 +256,13 @@ public static class LegacyDiscImageConverter
     /// Converts a CDRWIN (.bin + .cue) image pair into a standard 2,048-byte Mode 1 / Mode 2 Form 1 ISO 9660 file (.iso).
     /// Extracts the first data track from the CUE sheet, streaming 2,048-byte user data sectors and stripping headers/trailers.
     /// </summary>
-    public static async Task<int> ConvertBinCueToIsoAsync(
-        string cuePath,
-        string outputIsoPath,
-        IProgress<double>? progress = null,
-        CancellationToken cancellationToken = default)
-    {
-        ArgumentException.ThrowIfNullOrWhiteSpace(cuePath);
-        ArgumentException.ThrowIfNullOrWhiteSpace(outputIsoPath);
+    private static readonly byte[] RawCdSyncPattern =
+    [
+        0x00, 0xFF, 0xFF, 0xFF, 0xFF, 0xFF, 0xFF, 0xFF, 0xFF, 0xFF, 0xFF, 0x00
+    ];
 
+    private static LegacyDiscImageInfo InspectCueDataTrack(string cuePath)
+    {
         if (!File.Exists(cuePath))
         {
             throw new FileNotFoundException($"CUE sheet file not found: '{cuePath}'.", cuePath);
@@ -357,17 +355,45 @@ public static class LegacyDiscImageConverter
             sectorCount = Math.Max(0, totalFrames - startFrame);
         }
 
+        long payloadOffset = (long)startFrame * sectorSize;
+        long payloadLength = (long)sectorCount * sectorSize;
+        return new LegacyDiscImageInfo(
+            SourceFilePath: cuePath,
+            BinaryPayloadPath: binPath,
+            FormatName: $"CDRWIN CUE Data Track ({dataTrack.DataType})",
+            PayloadOffsetBytes: payloadOffset,
+            PayloadLengthBytes: payloadLength,
+            SectorSizeBytes: sectorSize,
+            SectorCount: sectorCount,
+            IsRaw2352: sectorSize != OpticalConstants.DataSectorSize,
+            IsAudioDisc: false,
+            TrackCount: dataFile.Tracks.Count);
+    }
+
+    public static async Task<int> ConvertBinCueToIsoAsync(
+        string cuePath,
+        string outputIsoPath,
+        IProgress<double>? progress = null,
+        CancellationToken cancellationToken = default)
+    {
+        ArgumentException.ThrowIfNullOrWhiteSpace(cuePath);
+        ArgumentException.ThrowIfNullOrWhiteSpace(outputIsoPath);
+
+        var info = InspectCueDataTrack(cuePath);
+
         string? outDir = Path.GetDirectoryName(outputIsoPath);
         if (!string.IsNullOrEmpty(outDir) && !Directory.Exists(outDir))
         {
             Directory.CreateDirectory(outDir);
         }
 
-        await using var src = new FileStream(binPath, FileMode.Open, FileAccess.Read, FileShare.Read, 65536, useAsync: true);
-        src.Position = (long)startFrame * sectorSize;
+        await using var src = new FileStream(info.BinaryPayloadPath, FileMode.Open, FileAccess.Read, FileShare.Read, 65536, useAsync: true);
+        src.Position = info.PayloadOffsetBytes;
 
         await using var dest = new FileStream(outputIsoPath, FileMode.Create, FileAccess.Write, FileShare.None, 65536, useAsync: true);
 
+        int sectorSize = info.SectorSizeBytes;
+        int sectorCount = info.SectorCount;
         byte[] sectorBuf = new byte[sectorSize];
         int writtenSectors = 0;
 
@@ -389,6 +415,11 @@ public static class LegacyDiscImageConverter
                 Array.Clear(sectorBuf, readTotal, sectorSize - readTotal);
             }
 
+            if (IsMode2Form2Sector(sectorBuf, sectorSize))
+            {
+                throw new InvalidDataException($"'{Path.GetFileName(cuePath)}' contains Mode 2 Form 2 sectors (2,324 bytes/sector), which cannot be converted to a 2,048-byte ISO.");
+            }
+
             int userOffset = GetUserDataOffset(sectorBuf, sectorSize);
             await dest.WriteAsync(sectorBuf.AsMemory(userOffset, OpticalConstants.DataSectorSize), cancellationToken).ConfigureAwait(false);
             writtenSectors++;
@@ -405,6 +436,16 @@ public static class LegacyDiscImageConverter
     }
 
     /// <summary>
+    /// Opens a read-only, seekable 2,048-byte user-data view of the first data track in a CUE sheet,
+    /// stripping raw 2,352 / 2,336 / 2,448-byte headers and ECC trailers and refusing Mode 2 Form 2 or audio tracks.
+    /// </summary>
+    public static Stream OpenCueIsoUserDataStream(string cuePath)
+    {
+        ArgumentException.ThrowIfNullOrWhiteSpace(cuePath);
+        return OpenIsoUserDataStream(InspectCueDataTrack(cuePath));
+    }
+
+    /// <summary>
     /// Opens a read-only, seekable view of the image's 2,048-byte user data (exactly what an .iso of the disc would contain),
     /// transforming raw sectors on the fly. Nothing is buffered beyond one sector, so 4.7 GB / 8.5 GB DVD images burn and
     /// verify without hitting the 2 GB <see cref="MemoryStream"/> limit or needing an intermediate temp file.
@@ -418,6 +459,7 @@ public static class LegacyDiscImageConverter
                 $"'{Path.GetFileName(info.SourceFilePath)}' is a Red Book Audio image; it has no 2048-byte data sectors to burn as an ISO.");
         }
 
+        EnsureNoMode2Form2Sectors(info);
         return new LegacyIsoUserDataStream(info);
     }
 
@@ -425,6 +467,62 @@ public static class LegacyDiscImageConverter
     /// Inspects <paramref name="filePath"/> and opens its 2,048-byte user-data view.
     /// </summary>
     public static Stream OpenIsoUserDataStream(string filePath) => OpenIsoUserDataStream(Inspect(filePath));
+
+    internal static bool IsMode2Form2Sector(ReadOnlySpan<byte> sector, int sectorSize)
+    {
+        if (sectorSize == SectorSize2336)
+        {
+            return sector.Length >= 8 && (sector[2] & 0x20) != 0 && sector[2] == sector[6];
+        }
+        if (sectorSize is OpticalConstants.RawSectorSize or SectorSize2448)
+        {
+            return sector.Length >= 24 && sector[15] == 2 && (sector[18] & 0x20) != 0 && sector[18] == sector[22];
+        }
+        return false;
+    }
+
+    private static void EnsureNoMode2Form2Sectors(LegacyDiscImageInfo info)
+    {
+        if (info.SectorSizeBytes is not (SectorSize2336 or OpticalConstants.RawSectorSize or SectorSize2448) || info.SectorCount <= 0)
+        {
+            return;
+        }
+
+        int size = info.SectorSizeBytes;
+        const int batchSectors = 64;
+        byte[] buffer = new byte[size * batchSectors];
+        using var fs = new FileStream(info.BinaryPayloadPath, FileMode.Open, FileAccess.Read, FileShare.Read, 1 << 16, FileOptions.SequentialScan);
+        fs.Position = Math.Clamp(info.PayloadOffsetBytes, 0, fs.Length);
+
+        int remaining = info.SectorCount;
+        while (remaining > 0)
+        {
+            int toReadSectors = Math.Min(batchSectors, remaining);
+            int targetBytes = toReadSectors * size;
+            int got = 0;
+            while (got < targetBytes)
+            {
+                int r = fs.Read(buffer, got, targetBytes - got);
+                if (r <= 0) break;
+                got += r;
+            }
+
+            int completeSectors = got / size;
+            if (completeSectors == 0) break;
+
+            for (int i = 0; i < completeSectors; i++)
+            {
+                if (IsMode2Form2Sector(buffer.AsSpan(i * size, size), size))
+                {
+                    throw new InvalidDataException(
+                        $"'{Path.GetFileName(info.SourceFilePath)}' contains Mode 2 Form 2 sectors (2,324 bytes/sector), which cannot be burned as a 2,048-byte ISO stream.");
+                }
+            }
+
+            remaining -= completeSectors;
+            if (got < targetBytes) break;
+        }
+    }
 
     /// <summary>
     /// Returns where the 2,048-byte user payload starts inside one stored sector:
@@ -489,6 +587,11 @@ public static class LegacyDiscImageConverter
             }
             else
             {
+                if (IsMode2Form2Sector(sectorBuf, srcSectorSize))
+                {
+                    throw new InvalidDataException(
+                        $"'{Path.GetFileName(info.SourceFilePath)}' contains Mode 2 Form 2 sectors (2,324 bytes/sector), which cannot be converted to a 2,048-byte ISO.");
+                }
                 // Raw sector: strip sync/header (+ Mode 2 subheader) and EDC/ECC, keeping the 2048-byte user payload.
                 int userOffset = GetUserDataOffset(sectorBuf, srcSectorSize);
                 await destinationIsoStream.WriteAsync(sectorBuf.AsMemory(userOffset, OpticalConstants.DataSectorSize), ct).ConfigureAwait(false);
@@ -1149,7 +1252,7 @@ public static class LegacyDiscImageConverter
     }
 
     /// <summary>
-    /// Probes the PVD geometry; without an ISO 9660 descriptor (e.g. pure UDF) falls back to a size-divisibility guess.
+    /// Probes the PVD geometry; without an ISO 9660 descriptor (e.g. pure UDF) falls back to raw CD sync check or size-divisibility guess.
     /// </summary>
     private static (int SectorSize, long Offset, long Length) ProbeOrGuessGeometry(FileStream fs)
     {
@@ -1159,8 +1262,51 @@ public static class LegacyDiscImageConverter
             return (size, pregap, len - pregap);
         }
 
+        if (len >= OpticalConstants.RawSectorSize && len % OpticalConstants.RawSectorSize == 0 && HasRawCdSyncPattern(fs))
+        {
+            return (OpticalConstants.RawSectorSize, 0, len);
+        }
+
         bool isRaw = len % OpticalConstants.RawSectorSize == 0 && len % OpticalConstants.DataSectorSize != 0;
         return (isRaw ? OpticalConstants.RawSectorSize : OpticalConstants.DataSectorSize, 0, len);
+    }
+
+    /// <summary>
+    /// Returns true when the seekable stream begins with the 12-byte CD-ROM raw sector sync header
+    /// (and a second sync header at byte 2,352 when the stream is at least two raw sectors long).
+    /// </summary>
+    public static bool HasRawCdSyncPattern(Stream stream)
+    {
+        if (!stream.CanSeek || stream.Length < OpticalConstants.RawSectorSize)
+        {
+            return false;
+        }
+
+        long savedPos = stream.Position;
+        try
+        {
+            Span<byte> sync = stackalloc byte[12];
+            stream.Position = 0;
+            if (stream.Read(sync) != 12 || !sync.SequenceEqual(RawCdSyncPattern))
+            {
+                return false;
+            }
+
+            if (stream.Length >= OpticalConstants.RawSectorSize * 2)
+            {
+                stream.Position = OpticalConstants.RawSectorSize;
+                if (stream.Read(sync) != 12 || !sync.SequenceEqual(RawCdSyncPattern))
+                {
+                    return false;
+                }
+            }
+
+            return true;
+        }
+        finally
+        {
+            stream.Position = savedPos;
+        }
     }
 
     /// <summary>
@@ -1242,6 +1388,12 @@ public static class LegacyDiscImageConverter
                 }
 
                 _cachedSector = sectorIndex;
+            }
+
+            if (IsMode2Form2Sector(_sector.AsSpan(0, size), size))
+            {
+                throw new InvalidDataException(
+                    $"'{Path.GetFileName(_info.SourceFilePath)}' contains Mode 2 Form 2 sectors (2,324 bytes/sector), which cannot be burned as a 2,048-byte ISO stream.");
             }
 
             int userOffset = GetUserDataOffset(_sector.AsSpan(0, size), size);

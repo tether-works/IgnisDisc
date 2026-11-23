@@ -105,6 +105,12 @@ public sealed class DiscCopyOptions
     /// Without it the copy stops.
     /// </summary>
     public Func<string, CancellationToken, Task<bool>>? ConfirmSuspectAudioAsync { get; set; }
+
+    /// <summary>
+    /// When true, allows replacing existing data on rewritable target media (such as DVD+RW or BD-RE).
+    /// Off by default so a non-blank target disc is not overwritten without explicit opt-in.
+    /// </summary>
+    public bool AllowOverwrite { get; set; }
 }
 
 /// <summary>
@@ -522,17 +528,21 @@ public sealed class DiscCopyService
                         // The data writer takes 2,048-byte user data, so extract it on the fly; writing the raw bytes
                         // as data would produce an unreadable disc.
                         await using var fs = LegacyDiscImageConverter.OpenIsoUserDataStream(stagedPath);
-                        burnRes = await _burnEngine.BurnDataStreamAsync(
+                        var rawDataRes = await _dataBurnService.BurnStreamAsync(
                             targetRecorder,
                             fs,
                             new DataBurnOptions
                             {
                                 CloseDisc = true,
                                 Speed = options.WriteSpeed,
-                                OverwriteExistingData = true
+                                OverwriteExistingData = options.AllowOverwrite
                             },
                             progress,
                             ct).ConfigureAwait(false);
+
+                        burnRes = rawDataRes.Success
+                            ? BurnOperationResult.Succeeded(rawDataRes.SectorsWritten, rawDataRes.TotalTime, rawDataRes.AverageSpeedMultiplier)
+                            : BurnOperationResult.Failed(rawDataRes.ErrorMessage ?? "Burn failed.");
                     }
                     else
                     {
@@ -544,7 +554,7 @@ public sealed class DiscCopyService
                                 VolumeLabel = "DISC_COPY",
                                 CloseDisc = true,
                                 Speed = options.WriteSpeed,
-                                OverwriteExistingData = true
+                                OverwriteExistingData = options.AllowOverwrite
                             },
                             progress,
                             ct).ConfigureAwait(false);

@@ -750,7 +750,7 @@ public static partial class CliCommandRunner
         DataBurnResult result;
         if (LegacyDiscImageConverter.IsLegacyImageFile(isoPath))
         {
-            // .nrg / .mdf / .mds / .ccd / .img: stream the 2048-byte user data directly (no temp .iso, no 2 GB limit).
+            // .bin / .nrg / .mdf / .mds / .ccd / .img / .cdi: stream the 2048-byte user data directly (no temp .iso, no 2 GB limit).
             await using var legacyStream = LegacyDiscImageConverter.OpenIsoUserDataStream(isoPath);
             result = await burnService.BurnStreamAsync(recorder, legacyStream, burnOptions).ConfigureAwait(false);
         }

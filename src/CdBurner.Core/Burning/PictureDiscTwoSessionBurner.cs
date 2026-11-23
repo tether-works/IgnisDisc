@@ -138,6 +138,11 @@ public sealed class PictureDiscTwoSessionBurner
         options ??= new DataBurnOptions();
 
         // ---- checks: nothing is written until every one has passed ----
+        if (options.Simulate)
+        {
+            return Refused("Test write (Simulate) is not supported when burning a two-session picture disc. Nothing was written to the disc.");
+        }
+
         if (layout.Placement != PictureDiscFilesPlacement.OuterFiles || layout.Medium != PictureDiscMedium.Dvd)
         {
             return Refused("Only a DVD image with the picture inside and the files at the outer edge is burned in two sessions.");

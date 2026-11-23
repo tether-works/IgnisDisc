@@ -447,10 +447,6 @@ public class DataBurnService
                         cancellationToken);
                     if (!verifyResult.Success)
                     {
-                        if (ejectRequested)
-                        {
-                            try { recorder.EjectMedia(); } catch { }
-                        }
                         return DataBurnResult.Failed(verifyResult.ErrorMessage ?? "Post-burn verification failed.");
                     }
                     verified = true;
@@ -473,10 +469,6 @@ public class DataBurnService
                 verificationNote = verifyResult.Note;
                 if (!verifyResult.Success)
                 {
-                    if (ejectRequested)
-                    {
-                        try { recorder.EjectMedia(); } catch { }
-                    }
                     return DataBurnResult.Failed(verifyResult.ErrorMessage ?? "Post-burn verification failed.");
                 }
                 verified = true;

@@ -31,6 +31,7 @@ public class ImageStudioViewModel : ObservableObject
     private readonly DiscVerificationService _verificationService;
     private readonly DiscCopyService _copyService;
     private readonly BurnQueueService _burnQueueService;
+    private readonly Action? _shutdownInitiator;
     private PostBurnAction _selectedPostBurnAction = PostBurnAction.None;
 
     private string _sourceImagePath = string.Empty;
@@ -707,10 +708,12 @@ public class ImageStudioViewModel : ObservableObject
     /// </summary>
     public ImageStudioViewModel(
         IDiscDeviceService? deviceService = null,
-        IBurnEngineBackend? burnEngine = null)
+        IBurnEngineBackend? burnEngine = null,
+        Action? shutdownInitiator = null)
     {
         _deviceService = deviceService ?? new DiscDeviceManager(enablePhysicalEnumeration: false);
         _burnEngine = burnEngine ?? new VirtualBurnEngine();
+        _shutdownInitiator = shutdownInitiator;
         _dataBurnService = new DataBurnService(_burnEngine);
         _audioBurnService = new AudioCdBurnService(_burnEngine, new MediaFoundationAudioDecoder());
         _ripperService = new DiscRipperService();
@@ -892,13 +895,6 @@ public class ImageStudioViewModel : ObservableObject
             {
                 StatusMessage = $"Failed to parse CUE sheet: {ex.Message}";
             }
-        }
-        else if (ext == ".bin")
-        {
-            var fi = new FileInfo(SourceImagePath);
-            ImageSizeBytes = fi.Length;
-            ImageSectorCount = OpticalConstants.BytesToSectors(ImageSizeBytes, OpticalConstants.RawSectorSize);
-            DetectedImageFormat = "Raw BIN Image (2352-byte sectors)";
         }
         else if (LegacyDiscImageConverter.IsLegacyImageFile(SourceImagePath))
         {
@@ -1438,15 +1434,23 @@ public class ImageStudioViewModel : ObservableObject
                     progress,
                     linkedToken);
             }
-            else // .bin or raw stream
+            else // generic stream (non-legacy extension): refuse raw 2,352-byte or unaligned streams
             {
                 await using var fs = new FileStream(SourceImagePath, FileMode.Open, FileAccess.Read, FileShare.Read);
-                burnResult = await dataEngine.BurnDataStreamAsync(
-                    recorder,
-                    fs,
-                    new DataBurnOptions { CloseDisc = true, Speed = SelectedWriteSpeed, OverwriteExistingData = replaceAllowed },
-                    progress,
-                    linkedToken);
+                if (fs.Length % OpticalConstants.DataSectorSize != 0 || LegacyDiscImageConverter.HasRawCdSyncPattern(fs))
+                {
+                    burnResult = BurnOperationResult.Failed(
+                        $"Cannot burn '{Path.GetFileName(SourceImagePath)}' as a 2,048-byte data image: raw 2,352-byte or unaligned binary streams cannot be written as ISO user data.");
+                }
+                else
+                {
+                    burnResult = await dataEngine.BurnDataStreamAsync(
+                        recorder,
+                        fs,
+                        new DataBurnOptions { VolumeLabel = Path.GetFileNameWithoutExtension(SourceImagePath), CloseDisc = true, Speed = SelectedWriteSpeed, OverwriteExistingData = replaceAllowed },
+                        progress,
+                        linkedToken);
+                }
             }
 
             EndOperationProgress();
@@ -1459,6 +1463,7 @@ public class ImageStudioViewModel : ObservableObject
                 BurnProgress = 100.0;
 
                 // Automatic verification; a direct burn is always read back.
+                bool postBurnAllowed = true;
                 if (dataPictureResult is { HasPictureZone: true } picResult)
                 {
                     if (!string.IsNullOrWhiteSpace(picResult.VerificationNote))
@@ -1469,12 +1474,28 @@ public class ImageStudioViewModel : ObservableObject
                 else if (VerifyAfterBurn || directEngine?.LastResult is { DiscRecorded: true })
                 {
                     StatusMessage = Strings.StatusImageStudioBurnCompleteVerifyingDiscBitFor;
-                    await VerifyDiscAgainstImageAsync(recorder.UniqueId, linkedToken);
+                    var verifyResult = await VerifyDiscAgainstImageAsync(recorder.UniqueId, linkedToken);
                     StatusMessage = VerificationStatusText + how;
+                    if (linkedToken.IsCancellationRequested)
+                    {
+                        var cancelled = BurnOperationResult.CancelledResult(StatusMessage);
+                        LastBurnResult = cancelled;
+                        return cancelled;
+                    }
+                    if (!verifyResult.IsMatch && !verifyResult.IsSkipped)
+                    {
+                        postBurnAllowed = false;
+                        burnResult = BurnOperationResult.Failed(StatusMessage);
+                        LastBurnResult = burnResult;
+                    }
                 }
 
                 // After verification, never before it: ejecting first would leave nothing to verify.
-                PostBurnActionExecutor.Execute(SelectedPostBurnAction, recorder);
+                // Never run after-burn actions when verification failed or was cancelled.
+                if (postBurnAllowed)
+                {
+                    PostBurnActionExecutor.Execute(SelectedPostBurnAction, recorder, shutdownInitiator: _shutdownInitiator);
+                }
             }
             else
             {
@@ -1605,9 +1626,16 @@ public class ImageStudioViewModel : ObservableObject
             return BurnOperationResult.Succeeded(lba, TimeSpan.FromMilliseconds(50), 24.0);
         }
 
-        // Generic stream burn fallback
-        await using var stream = new FileStream(binPath, FileMode.Open, FileAccess.Read, FileShare.Read);
-        return await _burnEngine.BurnDataStreamAsync(recorder, stream, new DataBurnOptions { CloseDisc = true, Speed = SelectedWriteSpeed }, progress, ct);
+        // Physical / non-virtual stream burn fallback: extract 2,048-byte user data (refuses Form 2 / audio)
+        try
+        {
+            await using var stream = LegacyDiscImageConverter.OpenCueIsoUserDataStream(cuePath);
+            return await _burnEngine.BurnDataStreamAsync(recorder, stream, new DataBurnOptions { CloseDisc = true, Speed = SelectedWriteSpeed }, progress, ct);
+        }
+        catch (Exception ex) when (ex is InvalidDataException or InvalidOperationException or NotSupportedException or FileNotFoundException)
+        {
+            return BurnOperationResult.Failed(ex.Message);
+        }
     }
 
     #endregion

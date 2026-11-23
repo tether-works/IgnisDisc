@@ -359,9 +359,9 @@ public class BurnQueueService
 
         stopwatch.Stop();
 
-        // Run the after-burn action once the queue has run to its end. Never after the user cancelled:
-        // someone who just pressed Cancel is at the computer and must not have it shut down.
-        if (postBurnAction != PostBurnAction.None && !cancelled)
+        // Run the after-burn action only when every item in the queue succeeded. Never after a cancel or failure:
+        // someone who pressed Cancel or has a failed disc must not have the PC shut down or the disc discarded.
+        if (postBurnAction != PostBurnAction.None && !cancelled && failed == 0)
         {
             PostBurnActionExecutor.Execute(postBurnAction, recorder, soundPlayer, shutdownInitiator);
         }

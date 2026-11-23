@@ -227,6 +227,27 @@ public sealed class PictureDiscTwoSessionBurnTests : IDisposable
         Assert.True(medium.IsBlank);
     }
 
+    [Fact]
+    public async Task SimulateTrue_IsRefusedBeforeWriting()
+    {
+        var (image, layout, _) = MakeImage(40_000, PictureDiscTwoSessionBurner.DvdFilesSessionReserveSectors);
+        using var medium = new VirtualDiscMedium(DiscMediaType.DvdPlusR, 40_000);
+        var (engine, recorder) = Setup(medium);
+
+        var result = await new PictureDiscTwoSessionBurner(new DataBurnService(engine)).BurnAsync(
+            recorder,
+            image,
+            layout,
+            new DataBurnOptions { Simulate = true });
+
+        Assert.False(result.Success);
+        Assert.True(result.NothingWritten);
+        Assert.Contains("Simulate", result.ErrorMessage, StringComparison.OrdinalIgnoreCase);
+        Assert.Null(engine.LastResult);
+        Assert.True(medium.IsBlank);
+        Assert.Empty(medium.Sessions);
+    }
+
     // ---- helpers ------------------------------------------------------------------------------------------------
 
     private static void AssertTwoSessions(VirtualDiscMedium medium, string image, PictureDiscLayout layout,
