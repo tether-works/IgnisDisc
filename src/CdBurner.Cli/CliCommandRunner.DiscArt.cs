@@ -166,6 +166,16 @@ public static partial class CliCommandRunner
                 string other => throw new CommandLineException($"Unknown --fit '{other}'. Use ring or disc."),
             });
 
+        string? rawLabel = cmd.GetOption("label");
+        string effectiveLabel = !string.IsNullOrWhiteSpace(rawLabel) ? rawLabel.Trim() : "DISC_ART";
+        string rimTitle = !string.IsNullOrWhiteSpace(rawLabel)
+            ? rawLabel.Trim()
+            : Path.GetFileNameWithoutExtension(picture);
+        if (string.IsNullOrWhiteSpace(rimTitle))
+        {
+            rimTitle = "DISC_ART";
+        }
+
         var request = new DiscArtRequest(
             kind switch
             {
@@ -180,7 +190,7 @@ public static partial class CliCommandRunner
             OptionalDouble(cmd, "start-angle") ?? 0,
             files is null ? null : Path.GetFullPath(files),
             filesOuter ? PictureDiscFilesPlacement.OuterFiles : PictureDiscFilesPlacement.InnerFiles,
-            cmd.GetOption("label") is { Length: > 0 } label ? label : "DISC_ART",
+            effectiveLabel,
             baseCue is null ? null : Path.GetFullPath(baseCue),
             CdInterleave: !cmd.HasFlag("no-interleave"),
             DvdReadCompatibility: cmd.HasFlag("read-compat"),
@@ -191,9 +201,7 @@ public static partial class CliCommandRunner
             TitleRing: titleRing,
             CdPreGapSeconds: preGapSeconds,
             RimHeader: cmd.HasFlag("rim-header")
-                ? new DiscArtRimHeader(
-                    cmd.GetOption("label") is { Length: > 0 } title ? title : Path.GetFileNameWithoutExtension(picture),
-                    DateOnly.FromDateTime(DateTime.Now))
+                ? new DiscArtRimHeader(rimTitle, DateOnly.FromDateTime(DateTime.Now))
                 : null,
             CdTurnCorrection: turnCorrection);
 

@@ -55,7 +55,9 @@ public static partial class CliCommandRunner
         "overwrite", "strict-verify", "no-verify", "no-secure", "allow-damaged", "no-fill", "keep-folders",
         "generate-subtitles", "no-menu", "dual-layer", "fit-to-disc", "no-ffmpeg", "no-cd-text", "normalize", "peak-normalize", "rms-level",
         "no-burnfree", "append", "delete-backups", "confirm-shutdown", "windows-writer", "no-interleave",
-        "no-cover-lookup", "no-folder-image", "recursive", "no-rim", "rim-header"
+        "no-cover-lookup", "no-folder-image", "recursive", "no-rim", "rim-header",
+        "sha256sums", "blake3sums", "native", "test-write", "test-first", "recovery-session", "blue-book",
+        "allow-suspect", "repair", "repair-from-recovery", "no-replaygain", "health-certificate", "files-outer", "read-compat"
     };
 
     private static void WriteJsonResult(TextWriter stdout, object payload)
@@ -126,13 +128,51 @@ public static partial class CliCommandRunner
 
             if (parsed.HasFlag("help") || parsed.HasFlag("h") || args.Length == 0)
             {
+                if (parsed.IsJson)
+                {
+                    using var sw = new StringWriter();
+                    PrintHelp(sw);
+                    WriteJsonResult(stdout, new
+                    {
+                        success = true,
+                        usage = "ignisdisc-cli <command> [options]",
+                        notice = LegalBanner.VersionNotice,
+                        commands = SupportedCommandNames,
+                        help = sw.ToString()
+                    });
+                    return 0;
+                }
+
                 PrintHelp(stdout);
                 return args.Length == 0 ? 1 : 0;
+            }
+
+            try
+            {
+                ValidateTopLevelOptions(parsed);
+            }
+            catch (CommandLineException cle)
+            {
+                return HandleError(parsed, stdout, stderr, cle.Message);
             }
         }
 
         if (parsed.HasFlag("help") || parsed.HasFlag("h"))
         {
+            if (parsed.IsJson)
+            {
+                using var sw = new StringWriter();
+                PrintSubcommandHelp(parsed.Subcommand, sw);
+                WriteJsonResult(stdout, new
+                {
+                    success = true,
+                    command = parsed.Subcommand,
+                    notice = LegalBanner.VersionNotice,
+                    help = sw.ToString()
+                });
+                return 0;
+            }
+
             PrintSubcommandHelp(parsed.Subcommand, stdout);
             return 0;
         }
@@ -193,6 +233,7 @@ public static partial class CliCommandRunner
         HttpClient? customHttpClient = null)
     {
         string subcommand = cmd.Subcommand?.ToLowerInvariant() ?? string.Empty;
+        ValidateCommandOptions(cmd, subcommand);
 
         return subcommand switch
         {
@@ -1477,6 +1518,10 @@ public static partial class CliCommandRunner
             throw new CommandLineException("--log-dir needs --native.");
         }
         string? keep = cmd.GetOption("keep-image");
+        if (keep != null && string.IsNullOrWhiteSpace(keep))
+        {
+            throw new CommandLineException("--keep-image needs a folder: --keep-image <folder>");
+        }
 
         var sourceStatus = source.QueryMediaStatus();
         if (!sourceStatus.MediaPresent || sourceStatus.IsBlank)
@@ -3483,8 +3528,14 @@ public static partial class CliCommandRunner
         string? csvOutputPath = cmd.GetOption("csv") ?? cmd.GetOption("output");
 
         int blockSize = 256;
-        if (!string.IsNullOrWhiteSpace(blockSizeStr) && int.TryParse(blockSizeStr, NumberStyles.Integer, CultureInfo.InvariantCulture, out int bs) && bs > 0)
+        if (blockSizeStr != null)
         {
+            if (string.IsNullOrWhiteSpace(blockSizeStr) ||
+                !int.TryParse(blockSizeStr.Trim(), NumberStyles.Integer, CultureInfo.InvariantCulture, out int bs) ||
+                bs <= 0)
+            {
+                throw new CommandLineException($"Invalid --block-size '{blockSizeStr}'. Expected a positive integer number of sectors.");
+            }
             blockSize = bs;
         }
 
@@ -3505,7 +3556,7 @@ public static partial class CliCommandRunner
         {
             var jsonResult = new
             {
-                success = true,
+                success = report.DamagedBlocks == 0,
                 driveId = recorder.UniqueId,
                 totalSectorsScanned = report.TotalSectorsScanned,
                 goodBlocks = report.GoodBlocks,
@@ -4155,6 +4206,45 @@ public static partial class CliCommandRunner
             !arg.StartsWith('-') ||
             double.TryParse(arg, NumberStyles.Float, CultureInfo.InvariantCulture, out _);
 
+        private static bool IsCopyDiscCommand(string? subcommand) =>
+            string.Equals(subcommand, "copy-disc", StringComparison.OrdinalIgnoreCase) ||
+            string.Equals(subcommand, "copydisc", StringComparison.OrdinalIgnoreCase) ||
+            string.Equals(subcommand, "copy", StringComparison.OrdinalIgnoreCase);
+
+        private static bool IsRecoverCommand(string? subcommand) =>
+            string.Equals(subcommand, "recover", StringComparison.OrdinalIgnoreCase) ||
+            string.Equals(subcommand, "archive-recover", StringComparison.OrdinalIgnoreCase);
+
+        private static bool KeepImageTakesValue(string[] args, int currentIndex, string? currentSubcommand)
+        {
+            if (!string.IsNullOrEmpty(currentSubcommand))
+            {
+                return IsCopyDiscCommand(currentSubcommand);
+            }
+
+            // When --keep-image appears before the subcommand, inspect the rest of args to see whether
+            // this is 'copy-disc --keep-image <folder>' or 'recover --keep-image'.
+            if (currentIndex + 1 < args.Length && IsRecoverCommand(args[currentIndex + 1].Trim()))
+            {
+                return false;
+            }
+
+            for (int j = currentIndex + 1; j < args.Length; j++)
+            {
+                string token = args[j].Trim();
+                if (IsRecoverCommand(token))
+                {
+                    return false;
+                }
+                if (IsCopyDiscCommand(token))
+                {
+                    return true;
+                }
+            }
+
+            return false;
+        }
+
         public static CommandLineArgs Parse(string[] args)
         {
             var parsed = new CommandLineArgs();
@@ -4181,22 +4271,39 @@ public static partial class CliCommandRunner
                         key = trimmed;
                     }
 
+                    bool isKeepImage = string.Equals(key, "keep-image", StringComparison.OrdinalIgnoreCase);
+                    bool isFlag = isKeepImage
+                        ? !KeepImageTakesValue(args, i, parsed.Subcommand)
+                        : KnownFlags.Contains(key);
+                    bool isValueOption = isKeepImage
+                        ? !isFlag
+                        : KnownValueOptions.Contains(key);
+
                     if (inlineVal != null)
                     {
                         parsed.Options[key] = inlineVal;
                     }
-                    else if (KnownFlags.Contains(key))
+                    else if (isFlag)
                     {
                         parsed.Flags.Add(key);
                     }
-                    else if (i + 1 < args.Length && IsOptionValue(args[i + 1]))
+                    else if (isValueOption)
                     {
-                        parsed.Options[key] = args[++i].Trim();
+                        if (i + 1 < args.Length && IsOptionValue(args[i + 1]))
+                        {
+                            parsed.Options[key] = args[++i].Trim();
+                        }
+                        else
+                        {
+                            // Value option without value: handler reports missing value cleanly.
+                            parsed.Options[key] = string.Empty;
+                        }
                     }
                     else
                     {
-                        // Option without value
-                        parsed.Options[key] = string.Empty;
+                        // Unknown switch: do not consume the following argument so subcommands and
+                        // --json still parse and validation reports the unknown option cleanly.
+                        parsed.Flags.Add(key);
                     }
                 }
                 else
