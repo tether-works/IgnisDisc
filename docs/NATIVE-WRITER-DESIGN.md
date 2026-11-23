@@ -26,7 +26,9 @@
 (see Test hardware) the test write has run on CD-R and CD-RW, and two real audio writes have run and read back
 identical: two tracks with CD-Text on a CD-RW, and four tracks on a CD-R with CD-Text, catalog and ISRC codes,
 pre-emphasis and copy bits, audio in pre-gaps and audio in front of track 1. A mixed-mode CD (a data track, then two
-audio tracks) has been written on a CD-RW and read back identical. One drive model only; no disc has
+audio tracks) has been written on a CD-RW and read back identical, and again on a CD-R with the write-offset
+correction on (2026-11-21, results table). Audio writes and DVD writes have run on one drive model only (a second drive, the
+Lite-On iHAS124, has written a data CD-R); no disc has
 been played in a stand-alone CD player yet.
 
 Data discs have also run on the same drive (results table): Track-at-Once on CD-RW (24 MB and 690 MB, every sector read
@@ -34,12 +36,12 @@ back); a DVD-R written in one pass, a DVD-R left open and given a second session
 write; a used and a new DVD+RW; a DVD+R finalized by the drive; three added sessions on a CD-RW, a CD-R and a DVD+R and
 four on a DVD-R, every file of every session identical; a 60 s DVD-Video test disc on a DVD+RW, read back and decoded
 in full; and a dual-layer DVD+R with the layer break where IgnisDisc was told to put it (the Ubuntu 26.04 image, 6.5 GB,
-SHA-256 of the disc equal to the image). Also real: a two-film DVD-9 on a dual-layer DVD+R with the break on the second film's first cell, played on an Xbox Series X across the layer change. Real since 2026-11-15: DVD-RW closed (Disc-At-Once), left open (incremental) and in restricted overwrite mode (expanded with 13h). A second session added to a real DVD-RW the same day. Still simulator only: DVD-RAM, dual-layer DVD-R, Blu-ray, a Mode 2 / XA data track in a mixed-mode CD, the write-offset correction on a mixed-mode CD, the open audio session with a data
+SHA-256 of the disc equal to the image). Also real: a two-film DVD-9 on a dual-layer DVD+R with the break on the second film's first cell, played on an Xbox Series X across the layer change. Real since 2026-11-15: DVD-RW closed (Disc-At-Once), left open (incremental) and in restricted overwrite mode (expanded with 13h). A second session added to a real DVD-RW the same day. Still simulator only: DVD-RAM, dual-layer DVD-R, Blu-ray, a Mode 2 / XA data track in a mixed-mode CD, the open audio session with a data
 session after it (CD-Extra) and copying an Enhanced CD whole, the Audio CD recovery session, CD picture tracks, the radial spread of archive recovery data, the archive
-`HEALTH.json` certificates, the `eject` and `load` commands, and every picture-disc write: `disc-art burn` (including
+`HEALTH.json` certificates, the `eject` command and `load` on any tray but the Lite-On iHAS124's motorised one (which closed itself on `load`, 2026-11-19 to 21), and the picture-disc options not covered by the burns noted below: `disc-art burn` (including
 the two-session burn of a picture with the files at the outer edge on DVD-R and DVD+R, the rim header drawn on CD, DVD and BD-R picture discs, and the experimental audio CD
 picture in the pre-gap before track 1), the picture fill on data, DVD-Video and audio CD burns, and the Rosetta hybrid
-DVD-R. One picture disc has been burned on a real drive, without a calibration, and its picture did not show (2026-11-18, results table).
+DVD-R. Picture discs have run on the GP60NB50 on CD-RW (2026-11-18 without a calibration, no picture; 2026-11-22 placed from a turn table measured by read timing, first recognisable picture), on CD-R (2026-11-22, read-back passed) and on one DVD-R (2026-11-21, a coarse calibration target; write accepted, read-back check stopped at the first sector); see the results table for what each showed.
 
 Phases 5–6 below are still plans.
 
@@ -247,7 +249,7 @@ speed in kB over 1,000 ms), then `SET CD SPEED` if the drive refuses that.
   and makes the disc readable elsewhere; a refusal is logged, not fatal. Sectors past a shorter new image keep their
   old contents, as with any overwrite; the new file system ends before them. `DataBurnService` now verifies from
   sector 0 whenever an overwrite-only disc's data is replaced.
-- *DVD-RW in restricted overwrite mode and DVD-RAM* (built 2026-11-11; DVD-RW real 2026-11-15, DVD-RAM simulator only; shared with DVD+RW in
+- *DVD-RW in restricted overwrite mode and DVD-RAM* (built 2026-11-11; DVD-RW real 2026-11-15, DVD-RAM simulator only and, since 2026-11-21, not to be tried on a real disc; shared with DVD+RW in
   `NativeTaoDataWriter.Overwritable.cs`). DVD-RW: 32 KiB alignment, so the image is padded to whole 16-sector
   blocks. `READ FORMAT CAPACITIES` decides the state (cookbook): formatted with format 13h or 11h still offering
   blocks = partly formatted, expanded first with `FORMAT UNIT` type 13h (list byte 1 0x82, byte 3 = 8, blocks 0,
@@ -438,7 +440,7 @@ Results:
 Media on hand: CD-RW, CD-R, DVD-R, DVD+RW, DVD+R, DVD-RW (Ritek) and DVD+R DL (Verbatim, used 2026-11-14). Ordered: BD-R, BD-RE and M-DISC BD-R, and a Blu-ray writer (LG BP50NB40). No DVD-RAM, BD-R DL or BDXL yet.
 
 Second DVD writer, Lite-On iHAS124 (internal SATA, firmware CL9E), connected 2026-11-19, probed read-only the same
-day, and used for its first CD-R data burns on 2026-11-20 (rows above; DVD not tried on it). It names itself `ATAPI` / `iHAS124   F` in INQUIRY, lists CD-R/RW, DVD±R, DVD±RW
+day, and used for its first CD-R data burns on 2026-11-20 (rows above). On 2026-11-21 it was probed read-only with a blank DVD-R, DVD+R, DVD-RW and CD-RW (write speeds 16x, 12x, 8x, 6x on DVD-R and DVD+R, 2x on DVD-RW, 10x on CD-RW; ready 10 to 18 s after `load`; each blank reads as one sector). No DVD or audio disc has been written on it. It names itself `ATAPI` / `iHAS124   F` in INQUIRY, lists CD-R/RW, DVD±R, DVD±RW
 and DVD±R DL profiles (no DVD-RAM, no Blu-ray), and reports a motorised tray with the Load bit set: `load`
 closed the open tray by itself and the drive came ready. For a FORNET CD-R its write speed list holds a single
 entry, 16x CLV, where the GP60NB50 offers 24x, 16x and 10x.
