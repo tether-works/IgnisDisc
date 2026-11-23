@@ -62,7 +62,8 @@
                         <ComboBox Grid.Column="1"
                                   AutomationProperties.Name="Default Target Optical Drive"
                                   ItemsSource="{Binding AvailableRecorders}"
-                                  SelectedItem="{Binding SelectedRecorder}">
+                                  SelectedItem="{Binding SelectedRecorder}"
+                                  VerticalAlignment="Center">
                             <ComboBox.ItemTemplate>
                                 <DataTemplate>
                                     <StackPanel Orientation="Horizontal">
@@ -91,7 +92,8 @@
                                   ItemsSource="{Binding AvailableSpeeds}"
                                   DisplayMemberPath="Label"
                                   SelectedValuePath="Value"
-                                  SelectedValue="{Binding DefaultWriteSpeedMultiplier}" />
+                                  SelectedValue="{Binding DefaultWriteSpeedMultiplier}"
+                                  VerticalAlignment="Center" />
                         <TextBlock Grid.Column="2"
                                    Text="Recommended uses the fastest speed the drive writes at a constant linear velocity for the inserted disc, up to 16x for CD and 8x for DVD. A speed the drive does not offer becomes the nearest one it does."
                                    TextWrapping="Wrap"
@@ -255,7 +257,8 @@
                         <ComboBox Grid.Column="1"
                                   AutomationProperties.Name="Visual Theme Mode"
                                   ItemsSource="{Binding AvailableThemes}"
-                                  SelectedItem="{Binding ThemeMode}" />
+                                  SelectedItem="{Binding ThemeMode}"
+                                  VerticalAlignment="Center" />
                     </Grid>
 
                     <!-- Virtual Drive Simulator Toggle -->

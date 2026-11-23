@@ -45,54 +45,53 @@
                     Padding="16,10"
                     Margin="0,0,0,12">
                 <Grid>
-                    <Grid.ColumnDefinitions>
-                        <ColumnDefinition Width="Auto" />
-                        <ColumnDefinition Width="280" />
-                        <ColumnDefinition Width="Auto" />
-                        <ColumnDefinition Width="*" />
-                    </Grid.ColumnDefinitions>
+                    <Grid.RowDefinitions>
+                        <RowDefinition Height="Auto" />
+                        <RowDefinition Height="Auto" />
+                    </Grid.RowDefinitions>
 
-                    <TextBlock Grid.Column="0"
-                               Text="Target Drive:"
-                               VerticalAlignment="Center"
-                               FontWeight="SemiBold"
-                               Foreground="{DynamicResource TextSecondaryBrush}"
-                               Margin="0,0,10,0" />
+                    <WrapPanel Grid.Row="0" Orientation="Horizontal" VerticalAlignment="Center">
+                        <StackPanel Orientation="Horizontal" VerticalAlignment="Center" Margin="0,2,10,2">
+                            <TextBlock Text="Target Drive:"
+                                       VerticalAlignment="Center"
+                                       FontWeight="SemiBold"
+                                       Foreground="{DynamicResource TextSecondaryBrush}"
+                                       Margin="0,0,10,0" />
 
-                    <ComboBox Grid.Column="1"
-                              AutomationProperties.Name="Target Drive"
-                              ItemsSource="{Binding AvailableRecorders}"
-                              SelectedItem="{Binding SelectedRecorder}">
-                        <ComboBox.ItemTemplate>
-                            <DataTemplate>
-                                <StackPanel Orientation="Horizontal">
-                                    <TextBlock Text="{Binding VolumePath}" FontWeight="Bold" Foreground="{DynamicResource AccentBrush}" Margin="0,0,6,0" />
-                                    <TextBlock Text="{Binding ProductId}" Foreground="{DynamicResource TextPrimaryBrush}" />
-                                </StackPanel>
-                            </DataTemplate>
-                        </ComboBox.ItemTemplate>
-                    </ComboBox>
+                            <ComboBox Width="250"
+                                      AutomationProperties.Name="Target Drive"
+                                      ItemsSource="{Binding AvailableRecorders}"
+                                      SelectedItem="{Binding SelectedRecorder}">
+                                <ComboBox.ItemTemplate>
+                                    <DataTemplate>
+                                        <StackPanel Orientation="Horizontal">
+                                            <TextBlock Text="{Binding VolumePath}" FontWeight="Bold" Foreground="{DynamicResource AccentBrush}" Margin="0,0,6,0" />
+                                            <TextBlock Text="{Binding ProductId}" Foreground="{DynamicResource TextPrimaryBrush}" />
+                                        </StackPanel>
+                                    </DataTemplate>
+                                </ComboBox.ItemTemplate>
+                            </ComboBox>
+                        </StackPanel>
 
-                    <StackPanel Grid.Column="2" Orientation="Horizontal" Margin="10,0,0,0">
-                        <Button Content="↻ Refresh Capabilities"
+                        <Button Content="&#x21BB; Refresh Capabilities"
                                 AutomationProperties.Name="Refresh Capabilities"
                                 Command="{Binding RefreshCapabilitiesCommand}"
-                                Margin="0,0,8,0"
+                                Margin="0,2,8,2"
                                 Padding="12,5" />
-                        <Button Content="📋 Compatibility Report"
+                        <Button Content="&#x1F4CB; Compatibility Report"
                                 AutomationProperties.Name="Generate Compatibility Report"
                                 Command="{Binding GenerateCompatibilityReportCommand}"
+                                Margin="0,2,0,2"
                                 Padding="12,5" />
-                    </StackPanel>
+                    </WrapPanel>
 
-                    <TextBlock Grid.Column="3"
+                    <TextBlock Grid.Row="1"
                                Text="{Binding StatusMessage}"
                                VerticalAlignment="Center"
-                               HorizontalAlignment="Right"
                                Foreground="{DynamicResource TextSecondaryBrush}"
                                FontSize="12"
-                               TextTrimming="CharacterEllipsis"
-                               Margin="16,0,0,0" />
+                               TextWrapping="Wrap"
+                               Margin="0,6,0,0" />
                 </Grid>
             </Border>
 
@@ -271,17 +270,18 @@
                                    Foreground="{DynamicResource TextSecondaryBrush}"
                                    Margin="0,0,0,10" />
 
-                        <StackPanel Orientation="Horizontal" Margin="0,0,0,12">
+                        <WrapPanel Orientation="Horizontal" Margin="0,0,0,12">
                             <RadioButton Content="Quick Erase (TOC / PMA Blank)"
                                          AutomationProperties.Name="Quick Erase (TOC / PMA Blank)"
                                          IsChecked="{Binding IsFullEraseSelected, Converter={StaticResource RadioButtonBooleanConverter}, ConverterParameter=False}"
                                          GroupName="EraseTypeGroup"
-                                         Margin="0,0,16,0" />
+                                         Margin="0,2,16,2" />
                             <RadioButton Content="Full Erase (Complete Zero-Fill)"
                                          AutomationProperties.Name="Full Erase (Complete Zero-Fill)"
                                          IsChecked="{Binding IsFullEraseSelected, Converter={StaticResource RadioButtonBooleanConverter}, ConverterParameter=True}"
-                                         GroupName="EraseTypeGroup" />
-                        </StackPanel>
+                                         GroupName="EraseTypeGroup"
+                                         Margin="0,2,0,2" />
+                        </WrapPanel>
 
                         <StackPanel Orientation="Horizontal" Margin="0,0,0,16">
                             <Button Content="Erase Rewritable Disc"
@@ -314,28 +314,23 @@
                                    TextWrapping="Wrap"
                                    Margin="0,0,0,10" />
 
-                        <Grid Margin="0,0,0,12">
-                            <Grid.ColumnDefinitions>
-                                <ColumnDefinition Width="130" />
-                                <ColumnDefinition Width="160" />
-                                <ColumnDefinition Width="Auto" />
-                            </Grid.ColumnDefinitions>
-                            <TextBlock Grid.Column="0"
-                                       Text="Target Book Type:"
+                        <WrapPanel Orientation="Horizontal" Margin="0,0,0,12" VerticalAlignment="Center">
+                            <TextBlock Text="Target Book Type:"
                                        VerticalAlignment="Center"
-                                       Foreground="{DynamicResource TextSecondaryBrush}" />
-                            <ComboBox Grid.Column="1"
+                                       Foreground="{DynamicResource TextSecondaryBrush}"
+                                       Margin="0,2,10,2" />
+                            <ComboBox Width="150"
                                       AutomationProperties.Name="Target Book Type"
                                       ItemsSource="{Binding AvailableBookTypes}"
-                                      SelectedItem="{Binding SelectedBookType}" />
-                            <Button Grid.Column="2"
-                                    Content="Apply Bitsetting"
+                                      SelectedItem="{Binding SelectedBookType}"
+                                      Margin="0,2,10,2" />
+                            <Button Content="Apply Bitsetting"
                                     AutomationProperties.Name="Apply Bitsetting"
                                     Command="{Binding ApplyBookTypeCommand}"
                                     IsEnabled="{Binding IsBusy, Converter={StaticResource InverseBooleanConverter}}"
-                                    Margin="10,0,0,0"
+                                    Margin="0,2,0,2"
                                     Padding="14,5" />
-                        </Grid>
+                        </WrapPanel>
                     </StackPanel>
                 </Border>
             </Grid>
@@ -360,24 +355,25 @@
 
                     <!-- Scanner Header & Controls -->
                     <Grid Grid.Row="0" Margin="0,0,0,12">
-                        <Grid.ColumnDefinitions>
-                            <ColumnDefinition Width="*" />
-                            <ColumnDefinition Width="Auto" />
-                            <ColumnDefinition Width="Auto" />
-                            <ColumnDefinition Width="Auto" />
-                        </Grid.ColumnDefinitions>
+                        <Grid.RowDefinitions>
+                            <RowDefinition Height="Auto" />
+                            <RowDefinition Height="Auto" />
+                        </Grid.RowDefinitions>
 
-                        <StackPanel Grid.Column="0">
-                            <TextBlock Text="🔬 Sector Surface Scanner &amp; Transfer Benchmark"
+                        <StackPanel Grid.Row="0">
+                            <TextBlock Text="&#x1F52C; Sector Surface Scanner &amp; Transfer Benchmark"
                                        FontSize="15"
                                        FontWeight="SemiBold"
+                                       TextWrapping="Wrap"
                                        Foreground="{DynamicResource TextPrimaryBrush}" />
                             <TextBlock Text="Scans optical medium sectors, verifies ECC integrity, and identifies Slow or Damaged blocks."
                                        FontSize="12"
+                                       TextWrapping="Wrap"
                                        Foreground="{DynamicResource TextSecondaryBrush}"
                                        Margin="0,2,0,0" />
                             <TextBlock Text="Check disc reads a CD once, as a player does, and says where it may click or skip."
                                        FontSize="12"
+                                       TextWrapping="Wrap"
                                        Foreground="{DynamicResource TextSecondaryBrush}"
                                        Margin="0,2,0,0" />
                             <TextBlock Text="{Binding DiscHealthSummary}"
@@ -387,50 +383,51 @@
                                        FontSize="13"
                                        FontWeight="SemiBold"
                                        Foreground="{DynamicResource TextPrimaryBrush}"
-                                       Margin="0,8,12,0" />
+                                       Margin="0,8,0,0" />
                         </StackPanel>
 
-                        <TextBlock Grid.Column="1"
-                                   Text="Block Size (Sectors):"
-                                   VerticalAlignment="Center"
-                                   Foreground="{DynamicResource TextSecondaryBrush}"
-                                   Margin="0,0,8,0" />
+                        <WrapPanel Grid.Row="1" Orientation="Horizontal" VerticalAlignment="Center" Margin="0,10,0,0">
+                            <StackPanel Orientation="Horizontal" VerticalAlignment="Center" Margin="0,2,12,2">
+                                <TextBlock Text="Block Size (Sectors):"
+                                           VerticalAlignment="Center"
+                                           Foreground="{DynamicResource TextSecondaryBrush}"
+                                           Margin="0,0,8,0" />
 
-                        <ComboBox Grid.Column="2"
-                                  Width="90"
-                                  AutomationProperties.Name="Block Size (Sectors)"
-                                  ItemsSource="{Binding AvailableBlockSizes}"
-                                  SelectedItem="{Binding ScanBlockSizeSectors}"
-                                  VerticalAlignment="Center" />
+                                <ComboBox Width="90"
+                                          AutomationProperties.Name="Block Size (Sectors)"
+                                          ItemsSource="{Binding AvailableBlockSizes}"
+                                          SelectedItem="{Binding ScanBlockSizeSectors}"
+                                          VerticalAlignment="Center" />
+                            </StackPanel>
 
-                        <StackPanel Grid.Column="3" Orientation="Horizontal" VerticalAlignment="Center" Margin="12,0,0,0">
                             <Button Content="Check disc"
                                     AutomationProperties.Name="Check disc"
                                     ToolTip="Reads every sector of the CD once with C2 error pointers and says where it may skip. Writes nothing."
                                     Command="{Binding CheckDiscCommand}"
                                     IsEnabled="{Binding IsBusy, Converter={StaticResource InverseBooleanConverter}}"
                                     Padding="16,6"
-                                    Margin="0,0,8,0" />
+                                    Margin="0,2,8,2" />
                             <Button Content="Start Surface Scan"
                                     AutomationProperties.Name="Start Surface Scan"
                                     Command="{Binding StartSurfaceScanCommand}"
                                     IsEnabled="{Binding IsBusy, Converter={StaticResource InverseBooleanConverter}}"
                                     Padding="16,6"
+                                    Margin="0,2,8,2"
                                     Background="{DynamicResource AccentBrush}"
                                     Foreground="{DynamicResource AccentForegroundBrush}" />
-                            <Button Content="📈 Export Scan CSV"
+                            <Button Content="&#x1F4C8; Export Scan CSV"
                                     AutomationProperties.Name="Export Scan CSV"
                                     Command="{Binding ExportScanCsvCommand}"
                                     Padding="12,6"
-                                    Margin="8,0,0,0" />
-                            <Button Content="🛑 Cancel Scan"
+                                    Margin="0,2,8,2" />
+                            <Button Content="&#x1F6D1; Cancel Scan"
                                     AutomationProperties.Name="Cancel Scan"
                                     Command="{Binding CancelCommand}"
                                     Style="{StaticResource DangerButtonStyle}"
                                     Visibility="{Binding IsBusy, Converter={StaticResource BoolToVis}}"
                                     Padding="14,6"
-                                    Margin="8,0,0,0" />
-                        </StackPanel>
+                                    Margin="0,2,0,2" />
+                        </WrapPanel>
                     </Grid>
 
                     <!-- Progress Bar -->

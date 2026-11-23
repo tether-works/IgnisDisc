@@ -273,8 +273,11 @@
                     Background="{DynamicResource RailBackgroundBrush}"
                     BorderBrush="{DynamicResource CardBorderBrush}"
                     BorderThickness="0,0,1,0"
-                    Padding="4,12">
-                <StackPanel KeyboardNavigation.TabNavigation="Local">
+                    Padding="0">
+                <ScrollViewer VerticalScrollBarVisibility="Auto"
+                              HorizontalScrollBarVisibility="Disabled"
+                              AutomationProperties.Name="Navigation Rail">
+                    <StackPanel KeyboardNavigation.TabNavigation="Local" Margin="4,12">
                     <TextBlock Text="OPTICAL MASTERING"
                                FontSize="10"
                                FontWeight="Bold"
@@ -408,7 +411,8 @@
                             <TextBlock Text="Settings" />
                         </StackPanel>
                     </RadioButton>
-                </StackPanel>
+                    </StackPanel>
+                </ScrollViewer>
             </Border>
 
             <!-- Main ContentHost -->
@@ -428,31 +432,43 @@
                 Padding="16,8">
             <Grid>
                 <Grid.ColumnDefinitions>
+                    <ColumnDefinition Width="*" MinWidth="160" />
+                    <ColumnDefinition Width="1.3*" MinWidth="240" />
                     <ColumnDefinition Width="Auto" />
-                    <ColumnDefinition Width="*" />
-                    <ColumnDefinition Width="Auto" />
-                    <ColumnDefinition Width="Auto" />
+                    <ColumnDefinition Width="*" MinWidth="180" />
                 </Grid.ColumnDefinitions>
 
                 <!-- Left: Drive Summary -->
-                <StackPanel Grid.Column="0" Orientation="Horizontal" VerticalAlignment="Center">
-                    <TextBlock Text="{Binding DriveStatusSummary}"
+                <Grid Grid.Column="0" VerticalAlignment="Center">
+                    <Grid.ColumnDefinitions>
+                        <ColumnDefinition Width="Auto" MaxWidth="200" />
+                        <ColumnDefinition Width="Auto" />
+                        <ColumnDefinition Width="*" />
+                    </Grid.ColumnDefinitions>
+                    <TextBlock Grid.Column="0"
+                               Text="{Binding DriveStatusSummary}"
+                               ToolTip="{Binding DriveStatusSummary}"
+                               TextTrimming="CharacterEllipsis"
                                FontSize="12"
                                Foreground="{DynamicResource TextSecondaryBrush}"
                                VerticalAlignment="Center" />
-                    <TextBlock Text="|"
+                    <TextBlock Grid.Column="1"
+                               Text="|"
                                FontSize="12"
                                Foreground="{DynamicResource TextMutedBrush}"
                                Margin="8,0"
                                VerticalAlignment="Center" />
-                    <TextBlock Text="{Binding MediaDetailsText}"
+                    <TextBlock Grid.Column="2"
+                               Text="{Binding MediaDetailsText}"
+                               ToolTip="{Binding MediaDetailsText}"
+                               TextTrimming="CharacterEllipsis"
                                FontSize="12"
                                Foreground="{DynamicResource TextSecondaryBrush}"
                                VerticalAlignment="Center" />
-                </StackPanel>
+                </Grid>
 
                 <!-- Center: Segmented Capacity Progress Bar -->
-                <Grid Grid.Column="1" Margin="24,0" VerticalAlignment="Center">
+                <Grid Grid.Column="1" Margin="16,0" VerticalAlignment="Center">
                     <Grid.RowDefinitions>
                         <RowDefinition Height="Auto" />
                         <RowDefinition Height="Auto" />

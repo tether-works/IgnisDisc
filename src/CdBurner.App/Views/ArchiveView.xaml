@@ -76,64 +76,58 @@
                     </Grid>
 
                     <!-- Media & Redundancy -->
-                    <Grid Margin="0,0,0,10">
-                        <Grid.ColumnDefinitions>
-                            <ColumnDefinition Width="130" />
-                            <ColumnDefinition Width="220" />
-                            <ColumnDefinition Width="32" />
-                            <ColumnDefinition Width="Auto" />
-                            <ColumnDefinition Width="160" />
-                            <ColumnDefinition Width="Auto" />
-                        </Grid.ColumnDefinitions>
-
+                    <WrapPanel Orientation="Horizontal" Margin="0,0,0,10" VerticalAlignment="Center">
                         <!-- Media selection -->
-                        <TextBlock Grid.Column="0"
-                                   Text="Media Type:"
-                                   VerticalAlignment="Center"
-                                   Foreground="{DynamicResource TextSecondaryBrush}"
-                                   FontWeight="SemiBold" />
-                        <ComboBox Grid.Column="1"
-                                  AutomationProperties.Name="Media Type"
-                                  ItemsSource="{Binding MediaOptions}"
-                                  SelectedItem="{Binding SelectedMedia}"
-                                  DisplayMemberPath="Name"
-                                  VerticalAlignment="Center" />
+                        <StackPanel Orientation="Horizontal" VerticalAlignment="Center" Margin="0,2,20,2">
+                            <TextBlock Text="Media Type:"
+                                       Width="130"
+                                       VerticalAlignment="Center"
+                                       Foreground="{DynamicResource TextSecondaryBrush}"
+                                       FontWeight="SemiBold" />
+                            <ComboBox Width="220"
+                                      AutomationProperties.Name="Media Type"
+                                      ItemsSource="{Binding MediaOptions}"
+                                      SelectedItem="{Binding SelectedMedia}"
+                                      DisplayMemberPath="Name"
+                                      VerticalAlignment="Center" />
+                        </StackPanel>
 
                         <!-- Redundancy -->
-                        <TextBlock Grid.Column="3"
-                                   Text="Recovery Data:"
-                                   VerticalAlignment="Center"
-                                   Foreground="{DynamicResource TextSecondaryBrush}"
-                                   FontWeight="SemiBold"
-                                   Margin="0,0,10,0" />
-                        <Slider Grid.Column="4"
-                                AutomationProperties.Name="Minimum recovery data"
-                                ToolTip="The least recovery data each disc gets. Free space left on a disc is filled with more, so it survives more damage."
-                                Minimum="0"
-                                Maximum="30"
-                                Value="{Binding RedundancyPercent}"
-                                IsEnabled="{Binding Par2Available}"
-                                SmallChange="1"
-                                LargeChange="5"
-                                IsSnapToTickEnabled="True"
-                                TickFrequency="5"
-                                VerticalAlignment="Center" />
-                        <TextBlock Grid.Column="5"
-                                   Text="{Binding RedundancyPercent, StringFormat='min {0}% PAR2'}"
-                                   VerticalAlignment="Center"
-                                   Foreground="{DynamicResource TextPrimaryBrush}"
-                                   FontWeight="SemiBold"
-                                   Margin="8,0,0,0"
-                                   MinWidth="60" />
-                    </Grid>
+                        <StackPanel Orientation="Horizontal" VerticalAlignment="Center" Margin="0,2,0,2">
+                            <TextBlock Text="Recovery Data:"
+                                       VerticalAlignment="Center"
+                                       Foreground="{DynamicResource TextSecondaryBrush}"
+                                       FontWeight="SemiBold"
+                                       Margin="0,0,10,0" />
+                            <Slider Width="160"
+                                    AutomationProperties.Name="Minimum recovery data"
+                                    ToolTip="The least recovery data each disc gets. Free space left on a disc is filled with more, so it survives more damage."
+                                    Minimum="0"
+                                    Maximum="30"
+                                    Value="{Binding RedundancyPercent}"
+                                    IsEnabled="{Binding Par2Available}"
+                                    SmallChange="1"
+                                    LargeChange="5"
+                                    IsSnapToTickEnabled="True"
+                                    TickFrequency="5"
+                                    VerticalAlignment="Center" />
+                            <TextBlock Text="{Binding RedundancyPercent, StringFormat='min {0}% PAR2'}"
+                                       VerticalAlignment="Center"
+                                       Foreground="{DynamicResource TextPrimaryBrush}"
+                                       FontWeight="SemiBold"
+                                       Margin="8,0,0,0"
+                                       MinWidth="60" />
+                        </StackPanel>
+                    </WrapPanel>
 
                     <!-- Par2 Status Text & 1-Click Install -->
-                    <StackPanel Orientation="Horizontal" Margin="130,0,0,10" VerticalAlignment="Center">
+                    <WrapPanel Orientation="Horizontal" Margin="0,0,0,10" VerticalAlignment="Center">
                         <TextBlock Text="{Binding Par2StatusText}"
                                    Foreground="{DynamicResource TextMutedBrush}"
                                    FontSize="12"
                                    VerticalAlignment="Center"
-                                   TextWrapping="Wrap" />
+                                   TextWrapping="Wrap"
+                                   Margin="0,2,10,2" />
                         <Button Content="⬇ Install par2 (1-Click)"
                                 AutomationProperties.Name="Install par2 (1-Click)"
                                 Command="{Binding InstallPar2Command}"
@@ -141,9 +135,9 @@
                                 ToolTip="Downloads par2cmdline-turbo (par2.exe, SHA-256 checked) into %LOCALAPPDATA%\Programs\par2cmdline and enables PAR2 recovery data; replaces an older par2cmdline there"
                                 Padding="10,3"
                                 FontSize="11.5"
-                                Margin="10,0,0,0"
+                                Margin="0,2,0,2"
                                 VerticalAlignment="Center" />
-                    </StackPanel>
+                    </WrapPanel>
 
                     <!-- Staging Folder -->
                     <Grid Margin="0,0,0,12">
@@ -218,61 +212,50 @@
                     Padding="16"
                     Margin="0,0,0,12">
                 <StackPanel>
-                    <Grid Margin="0,0,0,12">
-                        <Grid.ColumnDefinitions>
-                            <ColumnDefinition Width="Auto" />
-                            <ColumnDefinition Width="Auto" />
-                            <ColumnDefinition Width="260" />
-                            <ColumnDefinition Width="Auto" />
-                            <ColumnDefinition Width="Auto" />
-                            <ColumnDefinition Width="*" />
-                        </Grid.ColumnDefinitions>
-
-                        <TextBlock Grid.Column="0"
-                                   Text="💿 Planned &amp; Staged Discs"
+                    <WrapPanel Orientation="Horizontal" Margin="0,0,0,12" VerticalAlignment="Center">
+                        <TextBlock Text="&#x1F4BF; Planned &amp; Staged Discs"
                                    FontSize="15"
                                    FontWeight="SemiBold"
                                    Foreground="{DynamicResource TextPrimaryBrush}"
                                    VerticalAlignment="Center"
-                                   Margin="0,0,24,0" />
+                                   Margin="0,2,20,2" />
 
-                        <TextBlock Grid.Column="1"
-                                   Text="Target Burner:"
-                                   FontWeight="SemiBold"
-                                   Foreground="{DynamicResource TextSecondaryBrush}"
-                                   VerticalAlignment="Center"
-                                   Margin="0,0,8,0" />
+                        <StackPanel Orientation="Horizontal" VerticalAlignment="Center" Margin="0,2,16,2">
+                            <TextBlock Text="Target Burner:"
+                                       FontWeight="SemiBold"
+                                       Foreground="{DynamicResource TextSecondaryBrush}"
+                                       VerticalAlignment="Center"
+                                       Margin="0,0,8,0" />
 
-                        <ComboBox Grid.Column="2"
-                                  AutomationProperties.Name="Target Burner Drive"
-                                  ItemsSource="{Binding AvailableRecorders}"
-                                  SelectedItem="{Binding SelectedRecorder}"
-                                  VerticalAlignment="Center">
-                            <ComboBox.ItemTemplate>
-                                <DataTemplate>
-                                    <StackPanel Orientation="Horizontal">
-                                        <TextBlock Text="{Binding VolumePath}" FontWeight="Bold" Foreground="{DynamicResource AccentBrush}" Margin="0,0,6,0" />
-                                        <TextBlock Text="{Binding ProductId}" Foreground="{DynamicResource TextPrimaryBrush}" />
-                                    </StackPanel>
-                                </DataTemplate>
-                            </ComboBox.ItemTemplate>
-                        </ComboBox>
+                            <ComboBox Width="250"
+                                      AutomationProperties.Name="Target Burner Drive"
+                                      ItemsSource="{Binding AvailableRecorders}"
+                                      SelectedItem="{Binding SelectedRecorder}"
+                                      VerticalAlignment="Center">
+                                <ComboBox.ItemTemplate>
+                                    <DataTemplate>
+                                        <StackPanel Orientation="Horizontal">
+                                            <TextBlock Text="{Binding VolumePath}" FontWeight="Bold" Foreground="{DynamicResource AccentBrush}" Margin="0,0,6,0" />
+                                            <TextBlock Text="{Binding ProductId}" Foreground="{DynamicResource TextPrimaryBrush}" />
+                                        </StackPanel>
+                                    </DataTemplate>
+                                </ComboBox.ItemTemplate>
+                            </ComboBox>
+                        </StackPanel>
 
-                        <CheckBox Grid.Column="3"
-                                  Content="Verify after burning"
+                        <CheckBox Content="Verify after burning"
                                   AutomationProperties.Name="Verify after burning"
                                   IsChecked="{Binding VerifyAfterBurn}"
                                   VerticalAlignment="Center"
-                                  Margin="16,0,0,0" />
+                                  Margin="0,2,16,2" />
 
-                        <CheckBox Grid.Column="4"
-                                  Content="Direct drive commands (experimental)"
+                        <CheckBox Content="Direct drive commands (experimental)"
                                   AutomationProperties.Name="Direct drive commands (experimental)"
                                   IsChecked="{Binding UseDirectDriveCommands}"
                                   ToolTip="Burn each disc with IgnisDisc's own drive commands instead of the Windows writer, at a speed taken from the drive's own list for the disc, then read the disc back to check it. Covers blank CD-R, CD-RW, DVD-R, DVD-RW, DVD+R (single and dual layer), DVD+RW, DVD-RAM, and single-layer BD-R and BD-RE so far; other discs are burned by the Windows writer as before."
                                   VerticalAlignment="Center"
-                                  Margin="16,0,0,0" />
-                    </Grid>
+                                  Margin="0,2,0,2" />
+                    </WrapPanel>
 
                     <!-- Discs List -->
                     <Border Background="{DynamicResource SurfaceBackgroundBrush}"
@@ -355,20 +338,21 @@
 
                     <!-- Verify Path -->
                     <Grid Margin="0,0,0,10">
+                        <Grid.RowDefinitions>
+                            <RowDefinition Height="Auto" />
+                            <RowDefinition Height="Auto" />
+                        </Grid.RowDefinitions>
                         <Grid.ColumnDefinitions>
                             <ColumnDefinition Width="130" />
                             <ColumnDefinition Width="*" />
-                            <ColumnDefinition Width="Auto" />
-                            <ColumnDefinition Width="Auto" />
-                            <ColumnDefinition Width="Auto" />
                         </Grid.ColumnDefinitions>
 
-                        <TextBlock Grid.Column="0"
+                        <TextBlock Grid.Row="0" Grid.Column="0"
                                    Text="Verify Path:"
                                    VerticalAlignment="Center"
                                    Foreground="{DynamicResource TextSecondaryBrush}"
                                    FontWeight="SemiBold" />
-                        <TextBox Grid.Column="1"
+                        <TextBox Grid.Row="0" Grid.Column="1"
                                  AutomationProperties.Name="Verify Path"
                                  Text="{Binding VerifyPath, UpdateSourceTrigger=PropertyChanged}"
                                  VerticalAlignment="Center"
@@ -376,25 +360,24 @@
                                  Background="{DynamicResource ControlBackgroundBrush}"
                                  Foreground="{DynamicResource TextPrimaryBrush}"
                                  BorderBrush="{DynamicResource ControlBorderBrush}" />
-                        <Button Grid.Column="2"
-                                Content="Browse..."
-                                AutomationProperties.Name="Browse Verify Path"
-                                Command="{Binding BrowseVerifyFolderCommand}"
-                                Margin="8,0,0,0"
-                                Padding="12,4" />
-                        <Button Grid.Column="3"
-                                Content="✔ Verify folder"
-                                AutomationProperties.Name="Verify folder"
-                                Command="{Binding VerifyCommand}"
-                                Style="{StaticResource AccentButtonStyle}"
-                                Margin="8,0,0,0"
-                                Padding="12,4" />
-                        <Button Grid.Column="4"
-                                Content="💿 Verify disc in drive"
-                                AutomationProperties.Name="Verify disc in drive"
-                                Command="{Binding VerifyDriveCommand}"
-                                Margin="8,0,0,0"
-                                Padding="12,4" />
+                        <WrapPanel Grid.Row="1" Grid.Column="1" Orientation="Horizontal" Margin="0,8,0,0">
+                            <Button Content="Browse..."
+                                    AutomationProperties.Name="Browse Verify Path"
+                                    Command="{Binding BrowseVerifyFolderCommand}"
+                                    Margin="0,2,8,2"
+                                    Padding="12,4" />
+                            <Button Content="&#x2714; Verify folder"
+                                    AutomationProperties.Name="Verify folder"
+                                    Command="{Binding VerifyCommand}"
+                                    Style="{StaticResource AccentButtonStyle}"
+                                    Margin="0,2,8,2"
+                                    Padding="12,4" />
+                            <Button Content="&#x1F4BF; Verify disc in drive"
+                                    AutomationProperties.Name="Verify disc in drive"
+                                    Command="{Binding VerifyDriveCommand}"
+                                    Margin="0,2,0,2"
+                                    Padding="12,4" />
+                        </WrapPanel>
                     </Grid>
 
                     <!-- Verification Summary & Repair Button -->

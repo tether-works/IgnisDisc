@@ -23,20 +23,21 @@
             <!-- ========================================================================= -->
             <!-- TAB 1: AUDIO CD MASTERING STUDIO                                         -->
             <!-- ========================================================================= -->
-            <TabItem Header="🎵 Audio CD Master" Padding="12,6" FontSize="13">
-                <Grid Margin="0,8,0,0">
-                    <Grid.RowDefinitions>
-                        <!-- Row 0: CD-Text Metadata & Recording Mode Card -->
-                        <RowDefinition Height="Auto" />
-                        <!-- Row 1: Duration Bar & Capacity Meter -->
-                        <RowDefinition Height="Auto" />
-                        <!-- Row 2: Track Actions Toolbar -->
-                        <RowDefinition Height="Auto" />
-                        <!-- Row 3: Tracks DataGrid; never squeezed below a few rows, so files can be dropped and seen -->
-                        <RowDefinition Height="*" MinHeight="150" />
-                        <!-- Row 4: Bottom Burn Bar -->
-                        <RowDefinition Height="Auto" />
-                    </Grid.RowDefinitions>
+            <TabItem Header="&#x1F3B5; Audio CD Master" Padding="12,6" FontSize="13">
+                <ScrollViewer VerticalScrollBarVisibility="Auto" HorizontalScrollBarVisibility="Disabled">
+                    <Grid Margin="0,8,0,0">
+                        <Grid.RowDefinitions>
+                            <!-- Row 0: CD-Text Metadata & Recording Mode Card -->
+                            <RowDefinition Height="Auto" />
+                            <!-- Row 1: Duration Bar & Capacity Meter -->
+                            <RowDefinition Height="Auto" />
+                            <!-- Row 2: Track Actions Toolbar -->
+                            <RowDefinition Height="Auto" />
+                            <!-- Row 3: Tracks DataGrid; never squeezed below a few rows, so files can be dropped and seen -->
+                            <RowDefinition Height="*" MinHeight="150" />
+                            <!-- Row 4: Bottom Burn Bar -->
+                            <RowDefinition Height="Auto" />
+                        </Grid.RowDefinitions>
 
                     <!-- ROW 0: CD-TEXT METADATA & RECORDING MODE -->
                     <Border Grid.Row="0"
@@ -91,44 +92,47 @@
                                      BorderBrush="{DynamicResource ControlBorderBrush}" />
 
                             <!-- Songwriter & UPC/EAN Sub-row -->
-                            <StackPanel Grid.Row="1" Grid.Column="0" Grid.ColumnSpan="2"
-                                        Orientation="Horizontal"
-                                        Margin="0,8,0,0"
-                                        VerticalAlignment="Center">
-                                <TextBlock Text="Songwriter:"
-                                           VerticalAlignment="Center"
-                                           Foreground="{DynamicResource TextSecondaryBrush}"
-                                           Margin="0,0,8,0" />
-                                <TextBox Width="150"
-                                         AutomationProperties.Name="Album Songwriter"
-                                         Text="{Binding AlbumSongwriter, UpdateSourceTrigger=PropertyChanged}"
-                                         Padding="6,4"
-                                         Background="{DynamicResource ControlBackgroundBrush}"
-                                         Foreground="{DynamicResource TextPrimaryBrush}"
-                                         BorderBrush="{DynamicResource ControlBorderBrush}"
-                                         Margin="0,0,16,0" />
+                            <WrapPanel Grid.Row="1" Grid.Column="0" Grid.ColumnSpan="5"
+                                       Orientation="Horizontal"
+                                       Margin="0,8,0,0"
+                                       VerticalAlignment="Center">
+                                <StackPanel Orientation="Horizontal" VerticalAlignment="Center" Margin="0,2,16,2">
+                                    <TextBlock Text="Songwriter:"
+                                               VerticalAlignment="Center"
+                                               Foreground="{DynamicResource TextSecondaryBrush}"
+                                               Margin="0,0,8,0" />
+                                    <TextBox Width="150"
+                                             AutomationProperties.Name="Album Songwriter"
+                                             Text="{Binding AlbumSongwriter, UpdateSourceTrigger=PropertyChanged}"
+                                             Padding="6,4"
+                                             Background="{DynamicResource ControlBackgroundBrush}"
+                                             Foreground="{DynamicResource TextPrimaryBrush}"
+                                             BorderBrush="{DynamicResource ControlBorderBrush}" />
+                                </StackPanel>
 
-                                <TextBlock Text="UPC/EAN:"
-                                           VerticalAlignment="Center"
-                                           Foreground="{DynamicResource TextSecondaryBrush}"
-                                           Margin="0,0,8,0" />
-                                <TextBox Width="120"
-                                         AutomationProperties.Name="UPC/EAN"
-                                         Text="{Binding UpcEanCode, UpdateSourceTrigger=PropertyChanged}"
-                                         MaxLength="15"
-                                         Padding="6,4"
-                                         ToolTip="{Binding UpcEanProblem, TargetNullValue='Catalog number written to the disc by direct drive commands: 13 digits (EAN-13) or 12 (UPC-A). Leave empty if you have none.'}"
-                                         Background="{DynamicResource ControlBackgroundBrush}"
-                                         Foreground="{DynamicResource TextPrimaryBrush}"
-                                         BorderBrush="{DynamicResource ControlBorderBrush}" />
+                                <StackPanel Orientation="Horizontal" VerticalAlignment="Center" Margin="0,2,8,2">
+                                    <TextBlock Text="UPC/EAN:"
+                                               VerticalAlignment="Center"
+                                               Foreground="{DynamicResource TextSecondaryBrush}"
+                                               Margin="0,0,8,0" />
+                                    <TextBox Width="120"
+                                             AutomationProperties.Name="UPC/EAN"
+                                             Text="{Binding UpcEanCode, UpdateSourceTrigger=PropertyChanged}"
+                                             MaxLength="15"
+                                             Padding="6,4"
+                                             ToolTip="{Binding UpcEanProblem, TargetNullValue='Catalog number written to the disc by direct drive commands: 13 digits (EAN-13) or 12 (UPC-A). Leave empty if you have none.'}"
+                                             Background="{DynamicResource ControlBackgroundBrush}"
+                                             Foreground="{DynamicResource TextPrimaryBrush}"
+                                             BorderBrush="{DynamicResource ControlBorderBrush}" />
+                                </StackPanel>
                                 <TextBlock Text="{Binding UpcEanProblem}"
                                            AutomationProperties.Name="UPC/EAN problem"
                                            Foreground="{DynamicResource CapacityWarningBrush}"
                                            TextWrapping="Wrap"
                                            MaxWidth="320"
                                            VerticalAlignment="Center"
-                                           Margin="8,0,0,0" />
-                            </StackPanel>
+                                           Margin="0,2,0,2" />
+                            </WrapPanel>
 
                             <!-- Recording Mode & DSP Options: a full-width row that wraps, so no option is cut off -->
                             <WrapPanel Grid.Row="2" Grid.Column="0" Grid.ColumnSpan="5"
@@ -356,63 +360,57 @@
                             BorderThickness="1,1,1,0"
                             CornerRadius="6,6,0,0"
                             Padding="12,8">
-                        <Grid>
-                            <Grid.ColumnDefinitions>
-                                <ColumnDefinition Width="Auto" />
-                                <ColumnDefinition Width="*" />
-                            </Grid.ColumnDefinitions>
+                        <WrapPanel Orientation="Horizontal" VerticalAlignment="Center">
+                            <Button Content="&#x1F3B5;+ Add Audio / FLAC / CUE / Playlist..."
+                                    AutomationProperties.Name="Add Audio / FLAC / CUE / Playlist"
+                                    Command="{Binding AddAudioFilesCommand}"
+                                    ToolTip="Add FLAC, WAV, MP3, M4A/AAC, OGG, WMA, CUE sheets, or M3U/M3U8/PLS playlists"
+                                    Margin="0,2,6,2" />
+                            <Button Content="&#x25B6;&#xFE0F; Preview"
+                                    AutomationProperties.Name="Preview"
+                                    Command="{Binding PreviewSelectedTrackCommand}"
+                                    ToolTip="Listen to a Red Book preview of the selected track"
+                                    Margin="0,2,4,2" />
+                            <Button Content="&#x23F9;&#xFE0F; Stop"
+                                    AutomationProperties.Name="Stop Preview"
+                                    Command="{Binding StopPreviewCommand}"
+                                    Visibility="{Binding IsPreviewPlaying, Converter={StaticResource BoolToVis}}"
+                                    ToolTip="Stop audio preview playback"
+                                    Margin="0,2,8,2" />
+                            <Button Content="&#x274C; Remove"
+                                    AutomationProperties.Name="Remove"
+                                    Command="{Binding RemoveTrackCommand}"
+                                    ToolTip="Remove selected audio track"
+                                    Margin="0,2,6,2" />
+                            <Button Content="&#x1F5D1;&#xFE0F; Clear All"
+                                    AutomationProperties.Name="Clear All"
+                                    Command="{Binding ClearAllTracksCommand}"
+                                    ToolTip="Remove all tracks from compilation"
+                                    Margin="0,2,10,2" />
+                            <Button Content="&#x2B06;&#xFE0F;"
+                                    AutomationProperties.Name="Move Track Up"
+                                    Command="{Binding MoveTrackUpCommand}"
+                                    ToolTip="Move selected track earlier in sequence"
+                                    Margin="0,2,4,2" />
+                            <Button Content="&#x2B07;&#xFE0F;"
+                                    AutomationProperties.Name="Move Track Down"
+                                    Command="{Binding MoveTrackDownCommand}"
+                                    ToolTip="Move selected track later in sequence"
+                                    Margin="0,2,10,2" />
+                            <Button Content="&#x1F5A8;&#xFE0F; Export Cover &amp; Tracklist..."
+                                    AutomationProperties.Name="Export Cover &amp; Tracklist"
+                                    Command="{Binding ExportCoverSheetCommand}"
+                                    ToolTip="Generate a printable 120mm x 120mm CD Jewel Case Front Booklet, 150mm x 118mm Rear Tray Inlay, and Track Sheet"
+                                    Margin="0,2,12,2" />
 
-                            <StackPanel Grid.Column="0" Orientation="Horizontal">
-                                <Button Content="🎵+ Add Audio / FLAC / CUE / Playlist..."
-                                        AutomationProperties.Name="Add Audio / FLAC / CUE / Playlist"
-                                        Command="{Binding AddAudioFilesCommand}"
-                                        ToolTip="Add FLAC, WAV, MP3, M4A/AAC, OGG, WMA, CUE sheets, or M3U/M3U8/PLS playlists"
-                                        Margin="0,0,6,0" />
-                                <Button Content="▶️ Preview"
-                                        AutomationProperties.Name="Preview"
-                                        Command="{Binding PreviewSelectedTrackCommand}"
-                                        ToolTip="Listen to a Red Book preview of the selected track"
-                                        Margin="0,0,4,0" />
-                                <Button Content="⏹️ Stop"
-                                        AutomationProperties.Name="Stop Preview"
-                                        Command="{Binding StopPreviewCommand}"
-                                        Visibility="{Binding IsPreviewPlaying, Converter={StaticResource BoolToVis}}"
-                                        ToolTip="Stop audio preview playback"
-                                        Margin="0,0,8,0" />
-                                <Button Content="❌ Remove"
-                                        AutomationProperties.Name="Remove"
-                                        Command="{Binding RemoveTrackCommand}"
-                                        ToolTip="Remove selected audio track"
-                                        Margin="0,0,6,0" />
-                                <Button Content="🗑️ Clear All"
-                                        AutomationProperties.Name="Clear All"
-                                        Command="{Binding ClearAllTracksCommand}"
-                                        ToolTip="Remove all tracks from compilation"
-                                        Margin="0,0,10,0" />
-                                <Button Content="⬆️"
-                                        AutomationProperties.Name="Move Track Up"
-                                        Command="{Binding MoveTrackUpCommand}"
-                                        ToolTip="Move selected track earlier in sequence"
-                                        Margin="0,0,4,0" />
-                                <Button Content="⬇️"
-                                        AutomationProperties.Name="Move Track Down"
-                                        Command="{Binding MoveTrackDownCommand}"
-                                        ToolTip="Move selected track later in sequence"
-                                        Margin="0,0,10,0" />
-                                <Button Content="🖨️ Export Cover &amp; Tracklist..."
-                                        AutomationProperties.Name="Export Cover &amp; Tracklist"
-                                        Command="{Binding ExportCoverSheetCommand}"
-                                        ToolTip="Generate a printable 120mm x 120mm CD Jewel Case Front Booklet, 150mm x 118mm Rear Tray Inlay, and Track Sheet" />
-                            </StackPanel>
-
-                            <TextBlock Grid.Column="1"
-                                       Text="FLAC, WAV, MP3, M4A, OGG, CUE, M3U/M3U8/PLS  →  Red Book CD-DA"
+                            <TextBlock Text="FLAC, WAV, MP3, M4A, OGG, CUE, M3U/M3U8/PLS  &#x2192;  Red Book CD-DA"
                                        FontStyle="Italic"
                                        FontSize="11"
+                                       TextWrapping="Wrap"
                                        Foreground="{DynamicResource TextMutedBrush}"
-                                       HorizontalAlignment="Right"
-                                       VerticalAlignment="Center" />
-                        </Grid>
+                                       VerticalAlignment="Center"
+                                       Margin="0,2,0,2" />
+                        </WrapPanel>
                     </Border>
 
                     <!-- ROW 3: TRACKS DATAGRID -->
@@ -516,50 +514,36 @@
                             Padding="16,10"
                             Margin="0,0,0,0">
                         <Grid>
-                            <Grid.ColumnDefinitions>
-                                <ColumnDefinition Width="*" />
-                                <ColumnDefinition Width="Auto" />
-                                <ColumnDefinition Width="Auto" />
-                            </Grid.ColumnDefinitions>
+                            <Grid.RowDefinitions>
+                                <RowDefinition Height="Auto" />
+                                <RowDefinition Height="Auto" />
+                            </Grid.RowDefinitions>
 
-                            <StackPanel Grid.Column="0" VerticalAlignment="Center">
-                                <TextBlock Text="{Binding StatusMessage}"
-                                           FontWeight="SemiBold"
-                                           Foreground="{DynamicResource TextPrimaryBrush}" />
-                                <ProgressBar Height="6"
-                                             AutomationProperties.Name="Burn Progress"
-                                             Minimum="0"
-                                             Maximum="100"
-                                             Value="{Binding BurnProgress}"
-                                             Margin="0,6,16,0"
-                                             Visibility="{Binding IsBusy, Converter={StaticResource BoolToVis}}" />
-                            </StackPanel>
+                            <WrapPanel Grid.Row="0" Orientation="Horizontal" HorizontalAlignment="Right" VerticalAlignment="Center">
+                                <StackPanel Orientation="Horizontal" VerticalAlignment="Center" Margin="0,2,14,2">
+                                    <TextBlock Text="Burn To:"
+                                               FontWeight="SemiBold"
+                                               VerticalAlignment="Center"
+                                               Foreground="{DynamicResource TextSecondaryBrush}"
+                                               Margin="0,0,8,0" />
+                                    <ComboBox Width="250"
+                                              AutomationProperties.Name="Burn To Optical Drive"
+                                              ItemsSource="{Binding AvailableRecorders}"
+                                              SelectedItem="{Binding SelectedRecorder}"
+                                              ToolTip="Select the optical drive to burn this Audio CD to">
+                                        <ComboBox.ItemTemplate>
+                                            <DataTemplate>
+                                                <StackPanel Orientation="Horizontal">
+                                                    <TextBlock Text="{Binding VolumePath}" FontWeight="Bold" Foreground="{DynamicResource AccentBrush}" Margin="0,0,6,0" />
+                                                    <TextBlock Text="{Binding VendorId}" Foreground="{DynamicResource TextPrimaryBrush}" Margin="0,0,4,0" />
+                                                    <TextBlock Text="{Binding ProductId}" Foreground="{DynamicResource TextPrimaryBrush}" />
+                                                </StackPanel>
+                                            </DataTemplate>
+                                        </ComboBox.ItemTemplate>
+                                    </ComboBox>
+                                </StackPanel>
 
-                            <StackPanel Grid.Column="1" Orientation="Horizontal" VerticalAlignment="Center" Margin="0,0,14,0">
-                                <TextBlock Text="Burn To:"
-                                           FontWeight="SemiBold"
-                                           VerticalAlignment="Center"
-                                           Foreground="{DynamicResource TextSecondaryBrush}"
-                                           Margin="0,0,8,0" />
-                                <ComboBox Width="260"
-                                          AutomationProperties.Name="Burn To Optical Drive"
-                                          ItemsSource="{Binding AvailableRecorders}"
-                                          SelectedItem="{Binding SelectedRecorder}"
-                                          ToolTip="Select the optical drive to burn this Audio CD to">
-                                    <ComboBox.ItemTemplate>
-                                        <DataTemplate>
-                                            <StackPanel Orientation="Horizontal">
-                                                <TextBlock Text="{Binding VolumePath}" FontWeight="Bold" Foreground="{DynamicResource AccentBrush}" Margin="0,0,6,0" />
-                                                <TextBlock Text="{Binding VendorId}" Foreground="{DynamicResource TextPrimaryBrush}" Margin="0,0,4,0" />
-                                                <TextBlock Text="{Binding ProductId}" Foreground="{DynamicResource TextPrimaryBrush}" />
-                                            </StackPanel>
-                                        </DataTemplate>
-                                    </ComboBox.ItemTemplate>
-                                </ComboBox>
-                            </StackPanel>
-
-                            <StackPanel Grid.Column="2" Orientation="Horizontal" VerticalAlignment="Center">
-                                <Button Content="🛑 Cancel Burn"
+                                <Button Content="&#x1F6D1; Cancel Burn"
                                         AutomationProperties.Name="Cancel Burn"
                                         Command="{Binding CancelBurnCommand}"
                                         Style="{StaticResource DangerButtonStyle}"
@@ -567,32 +551,50 @@
                                         Visibility="{Binding IsBusy, Converter={StaticResource BoolToVis}}"
                                         Padding="18,10"
                                         FontSize="14"
-                                        Margin="0,0,8,0" />
-                                <Button Content="🔥 Burn Audio CD"
+                                        Margin="0,2,8,2" />
+                                <Button Content="&#x1F525; Burn Audio CD"
                                         AutomationProperties.Name="Burn Audio CD"
                                         Command="{Binding StartAudioBurnCommand}"
                                         Style="{StaticResource AccentButtonStyle}"
                                         Visibility="{Binding IsBusy, Converter={StaticResource InverseBoolToVis}}"
                                         Padding="24,10"
                                         FontSize="14"
-                                        FontWeight="SemiBold" />
+                                        FontWeight="SemiBold"
+                                        Margin="0,2,0,2" />
+                            </WrapPanel>
+
+                            <StackPanel Grid.Row="1" VerticalAlignment="Center" Margin="0,8,0,0">
+                                <TextBlock Text="{Binding StatusMessage}"
+                                           FontWeight="SemiBold"
+                                           TextTrimming="CharacterEllipsis"
+                                           ToolTip="{Binding StatusMessage}"
+                                           Foreground="{DynamicResource TextPrimaryBrush}" />
+                                <ProgressBar Height="6"
+                                             AutomationProperties.Name="Burn Progress"
+                                             Minimum="0"
+                                             Maximum="100"
+                                             Value="{Binding BurnProgress}"
+                                             Margin="0,6,0,0"
+                                             Visibility="{Binding IsBusy, Converter={StaticResource BoolToVis}}" />
                             </StackPanel>
                         </Grid>
                     </Border>
-                </Grid>
+                    </Grid>
+                </ScrollViewer>
             </TabItem>
 
             <!-- ========================================================================= -->
             <!-- TAB 2: AUDIO CD RIPPER (DIGITAL AUDIO EXTRACTION)                         -->
             <!-- ========================================================================= -->
-            <TabItem Header="💿 Audio CD Ripper" Padding="12,6" FontSize="13">
-                <Grid Margin="0,16,0,0">
-                    <Grid.RowDefinitions>
-                        <RowDefinition Height="Auto" />
-                        <RowDefinition Height="Auto" />
-                        <RowDefinition Height="*" />
-                        <RowDefinition Height="Auto" />
-                    </Grid.RowDefinitions>
+            <TabItem Header="&#x1F4BF; Audio CD Ripper" Padding="12,6" FontSize="13">
+                <ScrollViewer VerticalScrollBarVisibility="Auto" HorizontalScrollBarVisibility="Disabled">
+                    <Grid Margin="0,16,0,0">
+                        <Grid.RowDefinitions>
+                            <RowDefinition Height="Auto" />
+                            <RowDefinition Height="Auto" />
+                            <RowDefinition Height="*" MinHeight="120" />
+                            <RowDefinition Height="Auto" />
+                        </Grid.RowDefinitions>
 
                     <!-- Ripper Destination Folder Card -->
                     <Border Grid.Row="0"
@@ -1017,50 +1019,36 @@
                             Padding="16,10"
                             Margin="0,12,0,0">
                         <Grid>
-                            <Grid.ColumnDefinitions>
-                                <ColumnDefinition Width="*" />
-                                <ColumnDefinition Width="Auto" />
-                                <ColumnDefinition Width="Auto" />
-                            </Grid.ColumnDefinitions>
+                            <Grid.RowDefinitions>
+                                <RowDefinition Height="Auto" />
+                                <RowDefinition Height="Auto" />
+                            </Grid.RowDefinitions>
 
-                            <StackPanel Grid.Column="0" VerticalAlignment="Center">
-                                <TextBlock Text="{Binding StatusMessage}"
-                                           FontWeight="SemiBold"
-                                           Foreground="{DynamicResource TextPrimaryBrush}" />
-                                <ProgressBar Height="6"
-                                             AutomationProperties.Name="Rip Progress"
-                                             Minimum="0"
-                                             Maximum="100"
-                                             Value="{Binding BurnProgress}"
-                                             Margin="0,6,16,0"
-                                             Visibility="{Binding IsBusy, Converter={StaticResource BoolToVis}}" />
-                            </StackPanel>
+                            <WrapPanel Grid.Row="0" Orientation="Horizontal" HorizontalAlignment="Right" VerticalAlignment="Center">
+                                <StackPanel Orientation="Horizontal" VerticalAlignment="Center" Margin="0,2,14,2">
+                                    <TextBlock Text="Rip From:"
+                                               FontWeight="SemiBold"
+                                               VerticalAlignment="Center"
+                                               Foreground="{DynamicResource TextSecondaryBrush}"
+                                               Margin="0,0,8,0" />
+                                    <ComboBox Width="250"
+                                              AutomationProperties.Name="Rip From Optical Drive"
+                                              ItemsSource="{Binding AvailableRecorders}"
+                                              SelectedItem="{Binding SelectedRecorder}"
+                                              ToolTip="Select the optical drive containing the Audio CD to rip">
+                                        <ComboBox.ItemTemplate>
+                                            <DataTemplate>
+                                                <StackPanel Orientation="Horizontal">
+                                                    <TextBlock Text="{Binding VolumePath}" FontWeight="Bold" Foreground="{DynamicResource AccentBrush}" Margin="0,0,6,0" />
+                                                    <TextBlock Text="{Binding VendorId}" Foreground="{DynamicResource TextPrimaryBrush}" Margin="0,0,4,0" />
+                                                    <TextBlock Text="{Binding ProductId}" Foreground="{DynamicResource TextPrimaryBrush}" />
+                                                </StackPanel>
+                                            </DataTemplate>
+                                        </ComboBox.ItemTemplate>
+                                    </ComboBox>
+                                </StackPanel>
 
-                            <StackPanel Grid.Column="1" Orientation="Horizontal" VerticalAlignment="Center" Margin="0,0,14,0">
-                                <TextBlock Text="Rip From:"
-                                           FontWeight="SemiBold"
-                                           VerticalAlignment="Center"
-                                           Foreground="{DynamicResource TextSecondaryBrush}"
-                                           Margin="0,0,8,0" />
-                                <ComboBox Width="260"
-                                          AutomationProperties.Name="Rip From Optical Drive"
-                                          ItemsSource="{Binding AvailableRecorders}"
-                                          SelectedItem="{Binding SelectedRecorder}"
-                                          ToolTip="Select the optical drive containing the Audio CD to rip">
-                                    <ComboBox.ItemTemplate>
-                                        <DataTemplate>
-                                            <StackPanel Orientation="Horizontal">
-                                                <TextBlock Text="{Binding VolumePath}" FontWeight="Bold" Foreground="{DynamicResource AccentBrush}" Margin="0,0,6,0" />
-                                                <TextBlock Text="{Binding VendorId}" Foreground="{DynamicResource TextPrimaryBrush}" Margin="0,0,4,0" />
-                                                <TextBlock Text="{Binding ProductId}" Foreground="{DynamicResource TextPrimaryBrush}" />
-                                            </StackPanel>
-                                        </DataTemplate>
-                                    </ComboBox.ItemTemplate>
-                                </ComboBox>
-                            </StackPanel>
-
-                            <StackPanel Grid.Column="2" Orientation="Horizontal" VerticalAlignment="Center">
-                                <Button Content="🛑 Cancel Rip"
+                                <Button Content="&#x1F6D1; Cancel Rip"
                                         AutomationProperties.Name="Cancel Rip"
                                         Command="{Binding CancelBurnCommand}"
                                         Style="{StaticResource DangerButtonStyle}"
@@ -1068,8 +1056,8 @@
                                         Visibility="{Binding IsBusy, Converter={StaticResource BoolToVis}}"
                                         Padding="18,10"
                                         FontSize="14"
-                                        Margin="0,0,8,0" />
-                                <Button Content="💿 Rip Audio CD"
+                                        Margin="0,2,8,2" />
+                                <Button Content="&#x1F4BF; Rip Audio CD"
                                         AutomationProperties.Name="Rip Audio CD"
                                         Command="{Binding RipAudioCdCommand}"
                                         Style="{StaticResource AccentButtonStyle}"
@@ -1077,11 +1065,28 @@
                                         Padding="24,10"
                                         FontSize="14"
                                         FontWeight="SemiBold"
-                                        VerticalAlignment="Center" />
+                                        VerticalAlignment="Center"
+                                        Margin="0,2,0,2" />
+                            </WrapPanel>
+
+                            <StackPanel Grid.Row="1" VerticalAlignment="Center" Margin="0,8,0,0">
+                                <TextBlock Text="{Binding StatusMessage}"
+                                           FontWeight="SemiBold"
+                                           TextTrimming="CharacterEllipsis"
+                                           ToolTip="{Binding StatusMessage}"
+                                           Foreground="{DynamicResource TextPrimaryBrush}" />
+                                <ProgressBar Height="6"
+                                             AutomationProperties.Name="Rip Progress"
+                                             Minimum="0"
+                                             Maximum="100"
+                                             Value="{Binding BurnProgress}"
+                                             Margin="0,6,0,0"
+                                             Visibility="{Binding IsBusy, Converter={StaticResource BoolToVis}}" />
                             </StackPanel>
                         </Grid>
                     </Border>
-                </Grid>
+                    </Grid>
+                </ScrollViewer>
             </TabItem>
 
             <!-- ========================================================================= -->

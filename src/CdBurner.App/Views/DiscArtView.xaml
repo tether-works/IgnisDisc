@@ -26,7 +26,7 @@
             <TabItem Header="Picture Disc" Padding="12,6" FontSize="13">
                 <Grid Margin="0,12,0,0">
         <Grid.ColumnDefinitions>
-            <ColumnDefinition Width="360" />
+            <ColumnDefinition Width="340" />
             <ColumnDefinition Width="*" />
         </Grid.ColumnDefinitions>
 
@@ -246,36 +246,38 @@
         <!-- Previews, actions and status -->
         <Grid Grid.Column="1">
             <Grid.RowDefinitions>
+                <RowDefinition Height="*" MinHeight="150" />
                 <RowDefinition Height="Auto" />
                 <RowDefinition Height="Auto" />
-                <RowDefinition Height="*" />
             </Grid.RowDefinitions>
 
-            <StackPanel Grid.Row="0" Orientation="Horizontal">
-                <StackPanel Margin="0,0,16,0">
-                    <TextBlock Text="Placement" FontWeight="SemiBold" Margin="0,0,0,4"
-                               Foreground="{DynamicResource TextPrimaryBrush}" />
-                    <Border BorderThickness="1" BorderBrush="{DynamicResource CardBorderBrush}" Background="Black">
-                        <Image x:Name="DiscSurface" Width="360" Height="360" Stretch="Fill"
-                               RenderOptions.BitmapScalingMode="NearestNeighbor" Cursor="SizeAll"
-                               Source="{Binding PlacementPreviewPng, Converter={StaticResource PngToImage}}"
-                               MouseLeftButtonDown="DiscSurface_MouseLeftButtonDown"
-                               MouseMove="DiscSurface_MouseMove"
-                               MouseLeftButtonUp="DiscSurface_MouseLeftButtonUp"
-                               MouseWheel="DiscSurface_MouseWheel"
-                               AutomationProperties.Name="Placement preview" />
-                    </Border>
-                </StackPanel>
-                <StackPanel>
-                    <TextBlock Text="Read back from the image" FontWeight="SemiBold" Margin="0,0,0,4"
-                               Foreground="{DynamicResource TextPrimaryBrush}" />
-                    <Border BorderThickness="1" BorderBrush="{DynamicResource CardBorderBrush}" Background="Black">
-                        <Image x:Name="ReadbackSurface" Width="360" Height="360" Stretch="Uniform"
-                               Source="{Binding ReadbackPreviewPng, Converter={StaticResource PngToImage}}"
-                               AutomationProperties.Name="Read-back preview of the generated image" />
-                    </Border>
-                </StackPanel>
-            </StackPanel>
+            <ScrollViewer Grid.Row="0" VerticalScrollBarVisibility="Auto" HorizontalScrollBarVisibility="Auto">
+                <WrapPanel Orientation="Horizontal">
+                    <StackPanel Margin="0,0,16,8">
+                        <TextBlock Text="Placement" FontWeight="SemiBold" Margin="0,0,0,4"
+                                   Foreground="{DynamicResource TextPrimaryBrush}" />
+                        <Border BorderThickness="1" BorderBrush="{DynamicResource CardBorderBrush}" Background="Black">
+                            <Image x:Name="DiscSurface" Width="360" Height="360" Stretch="Fill"
+                                   RenderOptions.BitmapScalingMode="NearestNeighbor" Cursor="SizeAll"
+                                   Source="{Binding PlacementPreviewPng, Converter={StaticResource PngToImage}}"
+                                   MouseLeftButtonDown="DiscSurface_MouseLeftButtonDown"
+                                   MouseMove="DiscSurface_MouseMove"
+                                   MouseLeftButtonUp="DiscSurface_MouseLeftButtonUp"
+                                   MouseWheel="DiscSurface_MouseWheel"
+                                   AutomationProperties.Name="Placement preview" />
+                        </Border>
+                    </StackPanel>
+                    <StackPanel Margin="0,0,0,8">
+                        <TextBlock Text="Read back from the image" FontWeight="SemiBold" Margin="0,0,0,4"
+                                   Foreground="{DynamicResource TextPrimaryBrush}" />
+                        <Border BorderThickness="1" BorderBrush="{DynamicResource CardBorderBrush}" Background="Black">
+                            <Image x:Name="ReadbackSurface" Width="360" Height="360" Stretch="Uniform"
+                                   Source="{Binding ReadbackPreviewPng, Converter={StaticResource PngToImage}}"
+                                   AutomationProperties.Name="Read-back preview of the generated image" />
+                        </Border>
+                    </StackPanel>
+                </WrapPanel>
+            </ScrollViewer>
 
             <TextBlock Grid.Row="1" Text="{Binding PlanSummary}" TextWrapping="Wrap" Margin="0,8,0,0"
                        AutomationProperties.Name="Picture disc plan summary">
@@ -291,15 +293,15 @@
                 </TextBlock.Style>
             </TextBlock>
 
-            <StackPanel Grid.Row="2" Margin="0,12,0,0">
-                <StackPanel Orientation="Horizontal">
-                    <Button Content="Generate image" Command="{Binding GenerateCommand}" Margin="0,0,6,0"
+            <StackPanel Grid.Row="2" Margin="0,10,0,0">
+                <WrapPanel Orientation="Horizontal">
+                    <Button Content="Generate image" Command="{Binding GenerateCommand}" Margin="0,2,6,2"
                             AutomationProperties.Name="Generate picture disc image" />
-                    <Button Content="Burn..." Command="{Binding BurnCommand}" Margin="0,0,6,0"
+                    <Button Content="Burn..." Command="{Binding BurnCommand}" Margin="0,2,6,2"
                             AutomationProperties.Name="Burn picture disc image" />
-                    <Button Content="Cancel" Command="{Binding CancelCommand}"
+                    <Button Content="Cancel" Command="{Binding CancelCommand}" Margin="0,2,0,2"
                             AutomationProperties.Name="Cancel generating" />
-                </StackPanel>
+                </WrapPanel>
                 <ProgressBar Value="{Binding Progress, Mode=OneWay}" Maximum="100" Height="6" Margin="0,8,0,0"
                              Visibility="{Binding IsBusy, Converter={StaticResource BoolToVis}}" />
                 <TextBlock Text="{Binding StatusMessage}" TextWrapping="Wrap" Margin="0,8,0,0" FontWeight="SemiBold"
@@ -449,62 +451,64 @@
                     </ScrollViewer>
 
                     <!-- Right column: live layout-computed capacity preview, media advice, actions -->
-                    <StackPanel Grid.Column="1">
-                        <Border Background="{DynamicResource CardBackgroundBrush}"
-                                BorderBrush="{DynamicResource CardBorderBrush}"
-                                BorderThickness="1"
-                                CornerRadius="8"
-                                Padding="14"
-                                Margin="0,0,0,12">
-                            <StackPanel>
-                                <TextBlock Text="Layout-computed capacity preview" FontWeight="SemiBold" FontSize="14" Margin="0,0,0,6"
-                                           Foreground="{DynamicResource TextPrimaryBrush}" />
-                                <TextBlock Text="{Binding RosettaCapacitySummary}"
-                                           TextWrapping="Wrap"
-                                           Foreground="{DynamicResource TextPrimaryBrush}"
-                                           AutomationProperties.Name="Rosetta layout capacity preview" />
-                                <TextBlock Text="{Binding RosettaVaultSummary}"
-                                           TextWrapping="Wrap"
-                                           Margin="0,6,0,0"
-                                           Foreground="{DynamicResource TextSecondaryBrush}"
-                                           AutomationProperties.Name="Rosetta vault capacity preview" />
-                            </StackPanel>
-                        </Border>
+                    <ScrollViewer Grid.Column="1" VerticalScrollBarVisibility="Auto" HorizontalScrollBarVisibility="Disabled">
+                        <StackPanel>
+                            <Border Background="{DynamicResource CardBackgroundBrush}"
+                                    BorderBrush="{DynamicResource CardBorderBrush}"
+                                    BorderThickness="1"
+                                    CornerRadius="8"
+                                    Padding="14"
+                                    Margin="0,0,0,12">
+                                <StackPanel>
+                                    <TextBlock Text="Layout-computed capacity preview" FontWeight="SemiBold" FontSize="14" Margin="0,0,0,6"
+                                               Foreground="{DynamicResource TextPrimaryBrush}" />
+                                    <TextBlock Text="{Binding RosettaCapacitySummary}"
+                                               TextWrapping="Wrap"
+                                               Foreground="{DynamicResource TextPrimaryBrush}"
+                                               AutomationProperties.Name="Rosetta layout capacity preview" />
+                                    <TextBlock Text="{Binding RosettaVaultSummary}"
+                                               TextWrapping="Wrap"
+                                               Margin="0,6,0,0"
+                                               Foreground="{DynamicResource TextSecondaryBrush}"
+                                               AutomationProperties.Name="Rosetta vault capacity preview" />
+                                </StackPanel>
+                            </Border>
 
-                        <Border Background="{DynamicResource CardBackgroundBrush}"
-                                BorderBrush="{DynamicResource CardBorderBrush}"
-                                BorderThickness="1"
-                                CornerRadius="8"
-                                Padding="14"
-                                Margin="0,0,0,12">
-                            <StackPanel>
-                                <TextBlock Text="Optical &amp; media advice (physics &amp; layout check)" FontWeight="SemiBold" FontSize="14" Margin="0,0,0,6"
-                                           Foreground="{DynamicResource TextPrimaryBrush}" />
-                                <TextBlock Text="{Binding RosettaMediaAdvice}"
-                                           TextWrapping="Wrap"
-                                           Foreground="{DynamicResource TextSecondaryBrush}"
-                                           AutomationProperties.Name="Rosetta media advice" />
-                                <TextBlock Text="{Binding RosettaMediumAvailabilityText}"
-                                           TextWrapping="Wrap"
-                                           Margin="0,8,0,0"
-                                           Foreground="{DynamicResource CapacityWarningBrush}"
-                                           AutomationProperties.Name="Rosetta medium availability" />
-                            </StackPanel>
-                        </Border>
+                            <Border Background="{DynamicResource CardBackgroundBrush}"
+                                    BorderBrush="{DynamicResource CardBorderBrush}"
+                                    BorderThickness="1"
+                                    CornerRadius="8"
+                                    Padding="14"
+                                    Margin="0,0,0,12">
+                                <StackPanel>
+                                    <TextBlock Text="Optical &amp; media advice (physics &amp; layout check)" FontWeight="SemiBold" FontSize="14" Margin="0,0,0,6"
+                                               Foreground="{DynamicResource TextPrimaryBrush}" />
+                                    <TextBlock Text="{Binding RosettaMediaAdvice}"
+                                               TextWrapping="Wrap"
+                                               Foreground="{DynamicResource TextSecondaryBrush}"
+                                               AutomationProperties.Name="Rosetta media advice" />
+                                    <TextBlock Text="{Binding RosettaMediumAvailabilityText}"
+                                               TextWrapping="Wrap"
+                                               Margin="0,8,0,0"
+                                               Foreground="{DynamicResource CapacityWarningBrush}"
+                                               AutomationProperties.Name="Rosetta medium availability" />
+                                </StackPanel>
+                            </Border>
 
-                        <StackPanel Orientation="Horizontal">
-                            <Button Content="Generate Rosetta ISO" Command="{Binding RosettaGenerateCommand}" Margin="0,0,6,0"
-                                    AutomationProperties.Name="Generate Rosetta ISO" />
-                            <Button Content="Burn..." Command="{Binding RosettaBurnCommand}" Margin="0,0,6,0"
-                                    AutomationProperties.Name="Burn Rosetta ISO" />
-                            <Button Content="Cancel" Command="{Binding CancelCommand}"
-                                    AutomationProperties.Name="Cancel Rosetta generation" />
+                            <WrapPanel Orientation="Horizontal">
+                                <Button Content="Generate Rosetta ISO" Command="{Binding RosettaGenerateCommand}" Margin="0,2,6,2"
+                                        AutomationProperties.Name="Generate Rosetta ISO" />
+                                <Button Content="Burn..." Command="{Binding RosettaBurnCommand}" Margin="0,2,6,2"
+                                        AutomationProperties.Name="Burn Rosetta ISO" />
+                                <Button Content="Cancel" Command="{Binding CancelCommand}" Margin="0,2,0,2"
+                                        AutomationProperties.Name="Cancel Rosetta generation" />
+                            </WrapPanel>
+                            <ProgressBar Value="{Binding Progress, Mode=OneWay}" Maximum="100" Height="6" Margin="0,8,0,0"
+                                         Visibility="{Binding IsBusy, Converter={StaticResource BoolToVis}}" />
+                            <TextBlock Text="{Binding StatusMessage}" TextWrapping="Wrap" Margin="0,8,0,0" FontWeight="SemiBold"
+                                       Foreground="{DynamicResource TextPrimaryBrush}" />
                         </StackPanel>
-                        <ProgressBar Value="{Binding Progress, Mode=OneWay}" Maximum="100" Height="6" Margin="0,8,0,0"
-                                     Visibility="{Binding IsBusy, Converter={StaticResource BoolToVis}}" />
-                        <TextBlock Text="{Binding StatusMessage}" TextWrapping="Wrap" Margin="0,8,0,0" FontWeight="SemiBold"
-                                   Foreground="{DynamicResource TextPrimaryBrush}" />
-                    </StackPanel>
+                    </ScrollViewer>
                 </Grid>
             </TabItem>
         </TabControl>

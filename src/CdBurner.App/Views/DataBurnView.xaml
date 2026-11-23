@@ -25,19 +25,20 @@
         </ObjectDataProvider>
     </UserControl.Resources>
 
-    <Grid Margin="16">
-        <Grid.RowDefinitions>
-            <!-- Row 0: Top Settings & Profiles Panel -->
-            <RowDefinition Height="Auto" />
-            <!-- Row 1: El Torito Boot Configuration (Expander) -->
-            <RowDefinition Height="Auto" />
-            <!-- Row 2: File Explorer Toolbar -->
-            <RowDefinition Height="Auto" />
-            <!-- Row 3: Compilation Tree DataGrid -->
-            <RowDefinition Height="*" />
-            <!-- Row 4: Bottom Action & Status Bar -->
-            <RowDefinition Height="Auto" />
-        </Grid.RowDefinitions>
+    <ScrollViewer VerticalScrollBarVisibility="Auto" HorizontalScrollBarVisibility="Disabled">
+        <Grid Margin="16">
+            <Grid.RowDefinitions>
+                <!-- Row 0: Top Settings & Profiles Panel -->
+                <RowDefinition Height="Auto" />
+                <!-- Row 1: El Torito Boot Configuration (Expander) -->
+                <RowDefinition Height="Auto" />
+                <!-- Row 2: File Explorer Toolbar -->
+                <RowDefinition Height="Auto" />
+                <!-- Row 3: Compilation Tree DataGrid -->
+                <RowDefinition Height="*" MinHeight="150" />
+                <!-- Row 4: Bottom Action & Status Bar -->
+                <RowDefinition Height="Auto" />
+            </Grid.RowDefinitions>
 
         <!-- ========================================================================= -->
         <!-- ROW 0: TOP SETTINGS & FILESYSTEM PROFILE CARD                             -->
@@ -54,54 +55,49 @@
                     <RowDefinition Height="Auto" />
                     <RowDefinition Height="Auto" />
                 </Grid.RowDefinitions>
-                <Grid.ColumnDefinitions>
-                    <ColumnDefinition Width="Auto" />
-                    <ColumnDefinition Width="220" />
-                    <ColumnDefinition Width="24" />
-                    <ColumnDefinition Width="Auto" />
-                    <ColumnDefinition Width="260" />
-                    <ColumnDefinition Width="*" />
-                    <ColumnDefinition Width="Auto" />
-                </Grid.ColumnDefinitions>
 
-                <!-- Volume Label -->
-                <TextBlock Grid.Column="0"
-                           Text="Volume Label:"
-                           VerticalAlignment="Center"
-                           FontWeight="SemiBold"
-                           Foreground="{DynamicResource TextSecondaryBrush}"
-                           Margin="0,0,8,0" />
-                <TextBox Grid.Column="1"
-                         AutomationProperties.Name="Volume Label"
-                         Text="{Binding VolumeLabel, UpdateSourceTrigger=PropertyChanged}"
-                         MaxLength="32"
-                         VerticalAlignment="Center"
-                         Padding="6,4"
-                         Background="{DynamicResource ControlBackgroundBrush}"
-                         Foreground="{DynamicResource TextPrimaryBrush}"
-                         BorderBrush="{DynamicResource ControlBorderBrush}" />
+                <WrapPanel Grid.Row="0" Orientation="Horizontal" VerticalAlignment="Center">
+                    <!-- Volume Label -->
+                    <StackPanel Orientation="Horizontal" VerticalAlignment="Center" Margin="0,2,20,2">
+                        <TextBlock Text="Volume Label:"
+                                   VerticalAlignment="Center"
+                                   FontWeight="SemiBold"
+                                   Foreground="{DynamicResource TextSecondaryBrush}"
+                                   Margin="0,0,8,0" />
+                        <TextBox Width="200"
+                                 AutomationProperties.Name="Volume Label"
+                                 Text="{Binding VolumeLabel, UpdateSourceTrigger=PropertyChanged}"
+                                 MaxLength="32"
+                                 VerticalAlignment="Center"
+                                 Padding="6,4"
+                                 Background="{DynamicResource ControlBackgroundBrush}"
+                                 Foreground="{DynamicResource TextPrimaryBrush}"
+                                 BorderBrush="{DynamicResource ControlBorderBrush}" />
+                    </StackPanel>
 
-                <!-- Filesystem Preset Profile -->
-                <TextBlock Grid.Column="3"
-                           Text="Filesystem Profile:"
-                           VerticalAlignment="Center"
-                           FontWeight="SemiBold"
-                           Foreground="{DynamicResource TextSecondaryBrush}"
-                           Margin="0,0,8,0" />
-                <ComboBox Grid.Column="4"
-                          AutomationProperties.Name="Filesystem Profile"
-                          ItemsSource="{Binding Source={StaticResource FileSystemPresets}}"
-                          SelectedItem="{Binding SelectedFileSystemPreset}"
-                          VerticalAlignment="Center">
-                    <ComboBox.ItemTemplate>
-                        <DataTemplate>
-                            <TextBlock Text="{Binding Converter={StaticResource PresetToString}}" />
-                        </DataTemplate>
-                    </ComboBox.ItemTemplate>
-                </ComboBox>
+                    <!-- Filesystem Preset Profile -->
+                    <StackPanel Orientation="Horizontal" VerticalAlignment="Center" Margin="0,2,0,2">
+                        <TextBlock Text="Filesystem Profile:"
+                                   VerticalAlignment="Center"
+                                   FontWeight="SemiBold"
+                                   Foreground="{DynamicResource TextSecondaryBrush}"
+                                   Margin="0,0,8,0" />
+                        <ComboBox Width="250"
+                                  AutomationProperties.Name="Filesystem Profile"
+                                  ItemsSource="{Binding Source={StaticResource FileSystemPresets}}"
+                                  SelectedItem="{Binding SelectedFileSystemPreset}"
+                                  VerticalAlignment="Center">
+                            <ComboBox.ItemTemplate>
+                                <DataTemplate>
+                                    <TextBlock Text="{Binding Converter={StaticResource PresetToString}}" />
+                                </DataTemplate>
+                            </ComboBox.ItemTemplate>
+                        </ComboBox>
+                    </StackPanel>
+                </WrapPanel>
 
                 <!-- Options Checkboxes: their own row, wrapping on narrow windows -->
-                <WrapPanel Grid.Row="1" Grid.Column="0" Grid.ColumnSpan="7" Orientation="Horizontal" Margin="0,10,0,0">
+                <WrapPanel Grid.Row="1" Orientation="Horizontal" Margin="0,10,0,0">
                     <CheckBox Content="Close / Finalize Disc"
                               AutomationProperties.Name="Close / Finalize Disc"
                               IsChecked="{Binding CloseDisc}"
@@ -254,44 +250,35 @@
                 BorderThickness="1,1,1,0"
                 CornerRadius="6,6,0,0"
                 Padding="12,8">
-            <Grid>
-                <Grid.ColumnDefinitions>
-                    <ColumnDefinition Width="Auto" />
-                    <ColumnDefinition Width="*" />
-                    <ColumnDefinition Width="Auto" />
-                </Grid.ColumnDefinitions>
+            <WrapPanel Orientation="Horizontal" VerticalAlignment="Center">
+                <Button Content="&#x1F4C1;+ Add Files"
+                        AutomationProperties.Name="Add Files"
+                        Command="{Binding AddFilesCommand}"
+                        ToolTip="Add individual files to current virtual folder"
+                        Margin="0,2,6,2" />
+                <Button Content="&#x1F4C2;+ Add Folder"
+                        AutomationProperties.Name="Add Folder"
+                        Command="{Binding AddFolderCommand}"
+                        ToolTip="Add local directory and contents to compilation"
+                        Margin="0,2,6,2" />
+                <Button Content="&#x2795; New Folder"
+                        AutomationProperties.Name="New Folder"
+                        Command="{Binding CreateVirtualFolderCommand}"
+                        ToolTip="Create virtual folder inside current directory"
+                        Margin="0,2,6,2" />
+                <Button Content="&#x274C; Remove"
+                        AutomationProperties.Name="Remove"
+                        Command="{Binding RemoveSelectedItemCommand}"
+                        ToolTip="Remove selected item from compilation"
+                        Margin="0,2,12,2" />
+                <Button Content="&#x2B06;&#xFE0F; Up"
+                        AutomationProperties.Name="Navigate Up"
+                        Command="{Binding NavigateUpFolderCommand}"
+                        ToolTip="Navigate up to parent folder"
+                        Margin="0,2,12,2" />
 
-                <!-- Left Action Buttons -->
-                <StackPanel Grid.Column="0" Orientation="Horizontal">
-                    <Button Content="📁+ Add Files"
-                            AutomationProperties.Name="Add Files"
-                            Command="{Binding AddFilesCommand}"
-                            ToolTip="Add individual files to current virtual folder"
-                            Margin="0,0,6,0" />
-                    <Button Content="📂+ Add Folder"
-                            AutomationProperties.Name="Add Folder"
-                            Command="{Binding AddFolderCommand}"
-                            ToolTip="Add local directory and contents to compilation"
-                            Margin="0,0,6,0" />
-                    <Button Content="➕ New Folder"
-                            AutomationProperties.Name="New Folder"
-                            Command="{Binding CreateVirtualFolderCommand}"
-                            ToolTip="Create virtual folder inside current directory"
-                            Margin="0,0,6,0" />
-                    <Button Content="❌ Remove"
-                            AutomationProperties.Name="Remove"
-                            Command="{Binding RemoveSelectedItemCommand}"
-                            ToolTip="Remove selected item from compilation"
-                            Margin="0,0,12,0" />
-                    <Button Content="⬆️ Up"
-                            AutomationProperties.Name="Navigate Up"
-                            Command="{Binding NavigateUpFolderCommand}"
-                            ToolTip="Navigate up to parent folder"
-                            Margin="0,0,6,0" />
-                </StackPanel>
-
-                <!-- Center: Breadcrumb Path -->
-                <StackPanel Grid.Column="1" Orientation="Horizontal" VerticalAlignment="Center" Margin="12,0">
+                <!-- Breadcrumb Path -->
+                <StackPanel Orientation="Horizontal" VerticalAlignment="Center" Margin="0,2,14,2">
                     <TextBlock Text="Folder:"
                                Foreground="{DynamicResource TextMutedBrush}"
                                FontWeight="SemiBold"
@@ -301,13 +288,13 @@
                                FontWeight="Bold" />
                 </StackPanel>
 
-                <!-- Right: Import Previous Session -->
-                <Button Grid.Column="2"
-                        Content="📥 Import Session"
+                <!-- Import Previous Session -->
+                <Button Content="&#x1F4E5; Import Session"
                         AutomationProperties.Name="Import Session"
                         Command="{Binding ImportPreviousSessionCommand}"
-                        ToolTip="Import previous session directory tree from optical media" />
-            </Grid>
+                        ToolTip="Import previous session directory tree from optical media"
+                        Margin="0,2,0,2" />
+            </WrapPanel>
         </Border>
 
         <!-- ========================================================================= -->
@@ -382,20 +369,89 @@
                 CornerRadius="0,0,6,6"
                 Padding="16,10">
             <Grid>
-                <Grid.ColumnDefinitions>
-                    <ColumnDefinition Width="Auto" />
-                    <ColumnDefinition Width="*" />
-                    <ColumnDefinition Width="Auto" />
-                </Grid.ColumnDefinitions>
                 <Grid.RowDefinitions>
+                    <RowDefinition Height="Auto" />
                     <RowDefinition Height="Auto" />
                     <RowDefinition Height="Auto" />
                 </Grid.RowDefinitions>
 
+                <!-- Top Row: Master Actions (wraps cleanly on narrow windows) -->
+                <WrapPanel Grid.Row="0" Orientation="Horizontal" HorizontalAlignment="Right" VerticalAlignment="Center">
+                    <StackPanel Orientation="Horizontal" VerticalAlignment="Center" Margin="0,2,12,2">
+                        <TextBlock Text="Burn To:"
+                                   FontWeight="SemiBold"
+                                   VerticalAlignment="Center"
+                                   Foreground="{DynamicResource TextSecondaryBrush}"
+                                   Margin="0,0,8,0" />
+                        <ComboBox Width="240"
+                                  AutomationProperties.Name="Burn To Optical Drive"
+                                  ItemsSource="{Binding AvailableRecorders}"
+                                  SelectedItem="{Binding SelectedRecorder}"
+                                  ToolTip="Select the optical drive to burn this Data Disc to">
+                            <ComboBox.ItemTemplate>
+                                <DataTemplate>
+                                    <StackPanel Orientation="Horizontal">
+                                        <TextBlock Text="{Binding VolumePath}" FontWeight="Bold" Foreground="{DynamicResource AccentBrush}" Margin="0,0,6,0" />
+                                        <TextBlock Text="{Binding VendorId}" Foreground="{DynamicResource TextPrimaryBrush}" Margin="0,0,4,0" />
+                                        <TextBlock Text="{Binding ProductId}" Foreground="{DynamicResource TextPrimaryBrush}" />
+                                    </StackPanel>
+                                </DataTemplate>
+                            </ComboBox.ItemTemplate>
+                        </ComboBox>
+                    </StackPanel>
+
+                    <Button Content="&#x1F4BE; Export ISO..."
+                            AutomationProperties.Name="Export ISO"
+                            Command="{Binding ExportIsoCommand}"
+                            ToolTip="Compile and build ISO disc image to disk"
+                            Margin="0,2,10,2" />
+                    <Button Content="&#x1F6D1; Cancel Burn"
+                            AutomationProperties.Name="Cancel Burn"
+                            Command="{Binding CancelBurnCommand}"
+                            Style="{StaticResource DangerButtonStyle}"
+                            ToolTip="Cancel the ongoing burn and stop the drive"
+                            Visibility="{Binding IsBusy, Converter={StaticResource BoolToVis}}"
+                            Margin="0,2,10,2"
+                            MinWidth="110" />
+                    <Button Content="&#x1F525; Burn to Disc"
+                            AutomationProperties.Name="Burn to Disc"
+                            Command="{Binding StartDataBurnCommand}"
+                            Style="{StaticResource AccentButtonStyle}"
+                            ToolTip="Burn compilation to selected optical recorder"
+                            Visibility="{Binding IsBusy, Converter={StaticResource InverseBoolToVis}}"
+                            Margin="0,2,0,2"
+                            MinWidth="120" />
+                </WrapPanel>
+
+                <!-- Second Row: File metrics, status line & progress bar -->
+                <StackPanel Grid.Row="1" VerticalAlignment="Center" Margin="0,8,0,0">
+                    <WrapPanel Orientation="Horizontal" VerticalAlignment="Center">
+                        <TextBlock Text="{Binding TotalFilesCount, StringFormat='{}{0} file(s)'}"
+                                   FontWeight="SemiBold"
+                                   Foreground="{DynamicResource TextPrimaryBrush}" />
+                        <TextBlock Text="|" Foreground="{DynamicResource TextMutedBrush}" Margin="8,0" />
+                        <TextBlock Text="{Binding CapacityUsedMbText}"
+                                   Foreground="{DynamicResource TextSecondaryBrush}" />
+                        <TextBlock Text="|" Foreground="{DynamicResource TextMutedBrush}" Margin="8,0" />
+                        <TextBlock Text="{Binding StatusMessage}"
+                                   FontStyle="Italic"
+                                   TextTrimming="CharacterEllipsis"
+                                   ToolTip="{Binding StatusMessage}"
+                                   Foreground="{DynamicResource TextMutedBrush}" />
+                    </WrapPanel>
+
+                    <ProgressBar AutomationProperties.Name="Burn Progress"
+                                 Height="6"
+                                 Minimum="0"
+                                 Maximum="100"
+                                 Value="{Binding BurnProgress}"
+                                 Margin="0,6,0,0"
+                                 Visibility="{Binding IsBusy, Converter={StaticResource BoolToVis}}" />
+                </StackPanel>
+
                 <!-- Multi-layer discs only (DVD±R DL, BD DL, BDXL): what lands on each layer and where the drive
                      changes layer. Hidden for single-layer discs. -->
-                <TextBlock Grid.Row="1"
-                           Grid.ColumnSpan="3"
+                <TextBlock Grid.Row="2"
                            Margin="0,8,0,0"
                            TextTrimming="CharacterEllipsis"
                            Foreground="{DynamicResource TextSecondaryBrush}"
@@ -412,78 +468,8 @@
                         </Style>
                     </TextBlock.Style>
                 </TextBlock>
-
-                <!-- Left: File metrics & status line -->
-                <StackPanel Grid.Column="0" Orientation="Horizontal" VerticalAlignment="Center">
-                    <TextBlock Text="{Binding TotalFilesCount, StringFormat='{}{0} file(s)'}"
-                               FontWeight="SemiBold"
-                               Foreground="{DynamicResource TextPrimaryBrush}" />
-                    <TextBlock Text="|" Foreground="{DynamicResource TextMutedBrush}" Margin="8,0" />
-                    <TextBlock Text="{Binding CapacityUsedMbText}"
-                               Foreground="{DynamicResource TextSecondaryBrush}" />
-                    <TextBlock Text="|" Foreground="{DynamicResource TextMutedBrush}" Margin="8,0" />
-                    <TextBlock Text="{Binding StatusMessage}"
-                               FontStyle="Italic"
-                               Foreground="{DynamicResource TextMutedBrush}" />
-                </StackPanel>
-
-                <!-- Center: Progress Bar when active -->
-                <ProgressBar Grid.Column="1"
-                             AutomationProperties.Name="Burn Progress"
-                             Height="6"
-                             Minimum="0"
-                             Maximum="100"
-                             Value="{Binding BurnProgress}"
-                             Margin="24,0"
-                             VerticalAlignment="Center"
-                             Visibility="{Binding IsBusy, Converter={StaticResource BoolToVis}}" />
-
-                <!-- Right: Master Actions -->
-                <StackPanel Grid.Column="2" Orientation="Horizontal" VerticalAlignment="Center">
-                    <TextBlock Text="Burn To:"
-                               FontWeight="SemiBold"
-                               VerticalAlignment="Center"
-                               Foreground="{DynamicResource TextSecondaryBrush}"
-                               Margin="0,0,8,0" />
-                    <ComboBox Width="250"
-                              AutomationProperties.Name="Burn To Optical Drive"
-                              ItemsSource="{Binding AvailableRecorders}"
-                              SelectedItem="{Binding SelectedRecorder}"
-                              ToolTip="Select the optical drive to burn this Data Disc to"
-                              Margin="0,0,12,0">
-                        <ComboBox.ItemTemplate>
-                            <DataTemplate>
-                                <StackPanel Orientation="Horizontal">
-                                    <TextBlock Text="{Binding VolumePath}" FontWeight="Bold" Foreground="{DynamicResource AccentBrush}" Margin="0,0,6,0" />
-                                    <TextBlock Text="{Binding VendorId}" Foreground="{DynamicResource TextPrimaryBrush}" Margin="0,0,4,0" />
-                                    <TextBlock Text="{Binding ProductId}" Foreground="{DynamicResource TextPrimaryBrush}" />
-                                </StackPanel>
-                            </DataTemplate>
-                        </ComboBox.ItemTemplate>
-                    </ComboBox>
-
-                    <Button Content="💾 Export ISO..."
-                            AutomationProperties.Name="Export ISO"
-                            Command="{Binding ExportIsoCommand}"
-                            ToolTip="Compile and build ISO disc image to disk"
-                            Margin="0,0,10,0" />
-                    <Button Content="🛑 Cancel Burn"
-                            AutomationProperties.Name="Cancel Burn"
-                            Command="{Binding CancelBurnCommand}"
-                            Style="{StaticResource DangerButtonStyle}"
-                            ToolTip="Cancel the ongoing burn and stop the drive"
-                            Visibility="{Binding IsBusy, Converter={StaticResource BoolToVis}}"
-                            Margin="0,0,10,0"
-                            MinWidth="110" />
-                    <Button Content="🔥 Burn to Disc"
-                            AutomationProperties.Name="Burn to Disc"
-                            Command="{Binding StartDataBurnCommand}"
-                            Style="{StaticResource AccentButtonStyle}"
-                            ToolTip="Burn compilation to selected optical recorder"
-                            Visibility="{Binding IsBusy, Converter={StaticResource InverseBoolToVis}}"
-                            MinWidth="120" />
-                </StackPanel>
             </Grid>
         </Border>
-    </Grid>
+        </Grid>
+    </ScrollViewer>
 </UserControl>
