@@ -293,9 +293,7 @@
                             <Button Content="🛑 Cancel"
                                     AutomationProperties.Name="Cancel Erase"
                                     Command="{Binding CancelCommand}"
-                                    Background="#D83B01"
-                                    Foreground="White"
-                                    FontWeight="Bold"
+                                    Style="{StaticResource DangerButtonStyle}"
                                     Visibility="{Binding IsBusy, Converter={StaticResource BoolToVis}}"
                                     Padding="14,6"
                                     Margin="8,0,0,0" />
@@ -428,9 +426,7 @@
                             <Button Content="🛑 Cancel Scan"
                                     AutomationProperties.Name="Cancel Scan"
                                     Command="{Binding CancelCommand}"
-                                    Background="#D83B01"
-                                    Foreground="White"
-                                    FontWeight="Bold"
+                                    Style="{StaticResource DangerButtonStyle}"
                                     Visibility="{Binding IsBusy, Converter={StaticResource BoolToVis}}"
                                     Padding="14,6"
                                     Margin="8,0,0,0" />

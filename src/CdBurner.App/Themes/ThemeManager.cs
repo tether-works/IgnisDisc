@@ -92,7 +92,7 @@ public static class ThemeManager
             return;
         }
 
-        if (!Application.Current.Dispatcher.CheckAccess())
+        if (CdBurner.App.Mvvm.UiDispatch.ShouldMarshalTo(Application.Current.Dispatcher))
         {
             try
             {

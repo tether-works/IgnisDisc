@@ -1,11 +1,11 @@
 {
   "schemaVersion": 4,
-  "fallbackLanguage": "zh-CN",
+  "fallbackLanguage": "en",
   "cdPresets": [
     {
       "id": "cd-80",
-      "displayName": "标准 80min CD",
-      "description": "ECMA-130 名义几何：扫描速度 1200 mm/s、螺距 1.5 µm；120 mm 盘、约 80 分钟，359,675 扇区。用户数据区从直径 49.6 mm（绝对时间 00:00:00，含 2 秒前间隙）到 116 mm；LBA 0 位于 24.825 mm，终点 58.0 mm。",
+      "displayName": "Standard 80 min CD",
+      "description": "ECMA-130 nominal geometry: 1200 mm/s scanning velocity, 1.5 µm track pitch; 120 mm disc, ~80 minutes, 359,675 sectors. User data zone from 49.6 mm diameter (absolute time 00:00:00, including 2-second pre-gap) to 116 mm; LBA 0 at 24.825 mm, ending at 58.0 mm.",
       "sectors": 359675,
       "usableSectors": 359673,
       "innerRadiusMm": 24.825,
@@ -16,8 +16,8 @@
     },
     {
       "id": "ritek-medical-aqua",
-      "displayName": "铼德医疗水蓝盘（实测）",
-      "description": "实测参数：内半径 24.911275 mm、外半径 57.931155 mm、359,845 扇区；扫描速度采用 1200 mm/s。",
+      "displayName": "Ritek Medical Aqua CD-R (Measured)",
+      "description": "Measured parameters: inner radius 24.911275 mm, outer radius 57.931155 mm, 359,845 sectors; scanning velocity 1200 mm/s.",
       "sectors": 359845,
       "usableSectors": 359843,
       "innerRadiusMm": 24.911275,
@@ -28,8 +28,8 @@
     },
     {
       "id": "verbatim-azo-43438",
-      "displayName": "威宝 CD-R AZO (43438)（实测）",
-      "description": "实测参数：内半径 24.837775 mm、外半径 58.020875 mm、359,848 扇区；扫描速度采用 1200 mm/s。",
+      "displayName": "Verbatim CD-R AZO (43438) (Measured)",
+      "description": "Measured parameters: inner radius 24.837775 mm, outer radius 58.020875 mm, 359,848 sectors; scanning velocity 1200 mm/s.",
       "sectors": 359848,
       "usableSectors": 359846,
       "innerRadiusMm": 24.837775,
@@ -40,8 +40,8 @@
     },
     {
       "id": "cd-74",
-      "displayName": "标准 74min CD",
-      "description": "ECMA-130／ISO/IEC 10149 标准速度 1200 mm/s；120 mm 盘、约 74 分钟，333,000 扇区（24.5–56.8 mm）。",
+      "displayName": "Standard 74 min CD",
+      "description": "ECMA-130 / ISO/IEC 10149 standard velocity 1200 mm/s; 120 mm disc, ~74 minutes, 333,000 sectors (24.5-56.8 mm).",
       "sectors": 333000,
       "usableSectors": 332998,
       "innerRadiusMm": 24.5,
@@ -54,8 +54,8 @@
   "dvdPresets": [
     {
       "id": "dvd-5-120mm",
-      "displayName": "标准 12cm 单层 DVD",
-      "description": "ISO/IEC 16448 标准单层 120 mm DVD（DVD-5）数据区：24–58 mm，共 2,295,104 个扇区。",
+      "displayName": "Standard 12 cm single-layer DVD",
+      "description": "ISO/IEC 16448 standard single-layer 120 mm DVD (DVD-5) data zone: 24-58 mm, 2,295,104 sectors.",
       "totalSectors": 2295104,
       "usableSectors": 2295104,
       "innerRadiusMm": 24.0,
@@ -66,8 +66,8 @@
     },
     {
       "id": "verbatim-dvd-r-azo-43533",
-      "displayName": "威宝 DVD-R AZO (43533)（实测）",
-      "description": "威宝 DVD-R AZO 43533 已验证标定参数：23.9914606277–57.9648936579 mm，共 2,297,888 个扇区；采用三次轨距分布。",
+      "displayName": "Verbatim DVD-R AZO (43533) (Measured)",
+      "description": "Verbatim DVD-R AZO 43533 verified calibration parameters: 23.9914606277-57.9648936579 mm, 2,297,888 sectors; cubic track-pitch distribution.",
       "totalSectors": 2297888,
       "usableSectors": 2297888,
       "innerRadiusMm": 23.991460627731737,
@@ -81,8 +81,8 @@
     },
     {
       "id": "verbatim-dvd-r-azo-43523",
-      "displayName": "威宝 DVD-R AZO (43523)（实测）",
-      "description": "威宝 DVD-R AZO 43523 实测标定参数：23.9914606277–57.9648936579 mm，共 2,297,888 个扇区；采用三次轨距分布；参数与 43533 一致。",
+      "displayName": "Verbatim DVD-R AZO (43523) (Measured)",
+      "description": "Verbatim DVD-R AZO 43523 measured calibration parameters: 23.9914606277-57.9648936579 mm, 2,297,888 sectors; cubic track-pitch distribution; matches 43533 parameters.",
       "totalSectors": 2297888,
       "usableSectors": 2297888,
       "innerRadiusMm": 23.991460627731737,
@@ -97,8 +97,8 @@
     },
     {
       "id": "verbatim-dvd-plus-r-azo-43498",
-      "displayName": "威宝 DVD+R AZO (43498)（实测）",
-      "description": "威宝 DVD+R AZO (43498) 实测标定参数：23.954070–57.981456 mm，共 2,295,104 个扇区；采用三次轨距分布。",
+      "displayName": "Verbatim DVD+R AZO (43498) (Measured)",
+      "description": "Verbatim DVD+R AZO (43498) measured calibration parameters: 23.954070-57.981456 mm, 2,295,104 sectors; cubic track-pitch distribution.",
       "totalSectors": 2295104,
       "usableSectors": 2295104,
       "innerRadiusMm": 23.954070288547207,
@@ -113,8 +113,8 @@
     },
     {
       "id": "philips-dvd-plus-r",
-      "displayName": "PHILIPS DVD+R（实测）",
-      "description": "PHILIPS DVD+R 实测标定参数：24.157724–57.881039 mm，共 2,295,104 个扇区；采用三次轨距分布。",
+      "displayName": "PHILIPS DVD+R (Measured)",
+      "description": "PHILIPS DVD+R measured calibration parameters: 24.157724-57.881039 mm, 2,295,104 sectors; cubic track-pitch distribution.",
       "totalSectors": 2295104,
       "usableSectors": 2295104,
       "innerRadiusMm": 24.157723798864616,
@@ -129,8 +129,8 @@
     },
     {
       "id": "ritek-dvd-plus-r-e-series",
-      "displayName": "铼德 DVD+R E时代系列（实测）",
-      "description": "铼德 DVD+R E时代系列实测标定参数：24.0482013258–58.0264881612 mm，共 2,295,104 个扇区；采用三次轨距分布。",
+      "displayName": "Ritek DVD+R E-Series (Measured)",
+      "description": "Ritek DVD+R E-Series measured calibration parameters: 24.0482013258-58.0264881612 mm, 2,295,104 sectors; cubic track-pitch distribution.",
       "totalSectors": 2295104,
       "usableSectors": 2295104,
       "innerRadiusMm": 24.048201325754512,
@@ -145,8 +145,8 @@
     },
     {
       "id": "ritek-dvd-r-e-series",
-      "displayName": "铼德 DVD-R E时代系列（实测）",
-      "description": "铼德 DVD-R E时代系列实测标定参数：24.0631091841–58.2337337546 mm，共 2,298,496 个扇区；采用三次轨距分布。",
+      "displayName": "Ritek DVD-R E-Series (Measured)",
+      "description": "Ritek DVD-R E-Series measured calibration parameters: 24.0631091841-58.2337337546 mm, 2,298,496 sectors; cubic track-pitch distribution.",
       "totalSectors": 2298496,
       "usableSectors": 2297888,
       "innerRadiusMm": 24.063109184084034,
@@ -161,8 +161,8 @@
     },
     {
       "id": "dvd-5-80mm",
-      "displayName": "标准 8cm 单层 DVD",
-      "description": "ISO/IEC 16448 标准单层 80 mm DVD 数据区：24–38 mm，共 714,544 个扇区。",
+      "displayName": "Standard 8 cm single-layer DVD",
+      "description": "ISO/IEC 16448 standard single-layer 80 mm DVD data zone: 24-38 mm, 714,544 sectors.",
       "totalSectors": 714544,
       "usableSectors": 713936,
       "innerRadiusMm": 24.0,
@@ -175,8 +175,8 @@
   "bluRayPresets": [
     {
       "id": "bd-r-sl-25gb",
-      "displayName": "标准 25GB 单层 BD",
-      "description": "ISO/IEC 30190 标准单层 BD-R 数据区：24–58 mm，共 12,219,392 个扇区。",
+      "displayName": "Standard 25 GB single-layer BD",
+      "description": "ISO/IEC 30190 standard single-layer BD-R data zone: 24-58 mm, 12,219,392 sectors.",
       "totalSectors": 12219392,
       "usableSectors": 12219392,
       "innerRadiusMm": 24.0,
@@ -185,8 +185,8 @@
     },
     {
       "id": "bd-r-ritek-10x",
-      "displayName": "铼德 BD-R 10x（实测）",
-      "description": "实测参数：内半径 23.988221 mm、外半径 58.023235 mm、12,219,392 扇区。",
+      "displayName": "Ritek BD-R 10x (Measured)",
+      "description": "Measured parameters: inner radius 23.988221 mm, outer radius 58.023235 mm, 12,219,392 sectors.",
       "totalSectors": 12219392,
       "usableSectors": 12219392,
       "innerRadiusMm": 23.98822105616562,
@@ -195,8 +195,8 @@
     },
     {
       "id": "bd-r-ritek-12x",
-      "displayName": "铼德 BD-R 12x（实测）",
-      "description": "实测参数：内半径 23.987950 mm、外半径 58.022360 mm、12,219,392 扇区。",
+      "displayName": "Ritek BD-R 12x (Measured)",
+      "description": "Measured parameters: inner radius 23.987950 mm, outer radius 58.022360 mm, 12,219,392 sectors.",
       "totalSectors": 12219392,
       "usableSectors": 12219392,
       "innerRadiusMm": 23.98795,
@@ -206,8 +206,8 @@
     },
     {
       "id": "bd-r-verbatim-64099",
-      "displayName": "威宝 BD-R (64099)（实测）",
-      "description": "实测参数：内半径 23.987042 mm、外半径 57.987960 mm、12,219,392 扇区。",
+      "displayName": "Verbatim BD-R (64099) (Measured)",
+      "description": "Measured parameters: inner radius 23.987042 mm, outer radius 57.987960 mm, 12,219,392 sectors.",
       "totalSectors": 12219392,
       "usableSectors": 12219392,
       "innerRadiusMm": 23.987042157339335,
@@ -216,8 +216,8 @@
     },
     {
       "id": "bd-r-verbatim-64293",
-      "displayName": "威宝 BD-R (64293)（实测）",
-      "description": "实测参数：内半径 23.987042 mm、外半径 57.987960 mm、12,219,392 扇区；参数与 64099 一致。",
+      "displayName": "Verbatim BD-R (64293) (Measured)",
+      "description": "Measured parameters: inner radius 23.987042 mm, outer radius 57.987960 mm, 12,219,392 sectors; matches 64099 parameters.",
       "totalSectors": 12219392,
       "usableSectors": 12219392,
       "innerRadiusMm": 23.987042157339335,

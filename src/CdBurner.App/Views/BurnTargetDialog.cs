@@ -45,34 +45,36 @@ public sealed class BurnTargetDialog : Window
         ResizeMode = ResizeMode.NoResize;
         ShowInTaskbar = false;
 
-        Background = TryFindBrush("SurfaceBackgroundBrush", Color.FromRgb(18, 18, 24));
-        Foreground = TryFindBrush("TextPrimaryBrush", Colors.White);
+        SetThemeBrush(this, BackgroundProperty, "SurfaceBackgroundBrush", Color.FromRgb(18, 18, 24));
+        SetThemeBrush(this, ForegroundProperty, "TextPrimaryBrush", Colors.White);
 
         var rootBorder = new Border
         {
-            Padding = new Thickness(22),
-            Background = Background
+            Padding = new Thickness(22)
         };
+        SetThemeBrush(rootBorder, Border.BackgroundProperty, "SurfaceBackgroundBrush", Color.FromRgb(18, 18, 24));
 
         var mainStack = new StackPanel();
 
         // Title header
-        mainStack.Children.Add(new TextBlock
+        var titleBlock = new TextBlock
         {
             Text = $"🔥 {burnOperationTitle}",
             FontSize = 18,
             FontWeight = FontWeights.Bold,
-            Foreground = TryFindBrush("TextPrimaryBrush", Colors.White),
             Margin = new Thickness(0, 0, 0, 4)
-        });
+        };
+        SetThemeBrush(titleBlock, TextBlock.ForegroundProperty, "TextPrimaryBrush", Colors.White);
+        mainStack.Children.Add(titleBlock);
 
-        mainStack.Children.Add(new TextBlock
+        var subtitleBlock = new TextBlock
         {
             Text = "Verify and confirm which optical drive you want to burn to:",
             FontSize = 13,
-            Foreground = TryFindBrush("TextSecondaryBrush", Color.FromRgb(176, 184, 196)),
             Margin = new Thickness(0, 0, 0, 14)
-        });
+        };
+        SetThemeBrush(subtitleBlock, TextBlock.ForegroundProperty, "TextSecondaryBrush", Color.FromRgb(176, 184, 196));
+        mainStack.Children.Add(subtitleBlock);
 
         // Drive selector row
         var selectorLabel = new TextBlock
@@ -80,9 +82,9 @@ public sealed class BurnTargetDialog : Window
             Text = "Burn To Optical Drive:",
             FontSize = 12,
             FontWeight = FontWeights.SemiBold,
-            Foreground = TryFindBrush("TextSecondaryBrush", Color.FromRgb(176, 184, 196)),
             Margin = new Thickness(0, 0, 0, 6)
         };
+        SetThemeBrush(selectorLabel, TextBlock.ForegroundProperty, "TextSecondaryBrush", Color.FromRgb(176, 184, 196));
         mainStack.Children.Add(selectorLabel);
 
         var driveRowGrid = new Grid { Margin = new Thickness(0, 0, 0, 12) };
@@ -142,13 +144,13 @@ public sealed class BurnTargetDialog : Window
         // Drive & Media Info Card
         var infoCard = new Border
         {
-            Background = TryFindBrush("CardBackgroundBrush", Color.FromRgb(26, 27, 38)),
-            BorderBrush = TryFindBrush("CardBorderBrush", Color.FromRgb(46, 50, 68)),
             BorderThickness = new Thickness(1),
             CornerRadius = new CornerRadius(8),
             Padding = new Thickness(14, 12, 14, 12),
             Margin = new Thickness(0, 0, 0, 12)
         };
+        SetThemeBrush(infoCard, Border.BackgroundProperty, "CardBackgroundBrush", Color.FromRgb(26, 27, 38));
+        SetThemeBrush(infoCard, Border.BorderBrushProperty, "CardBorderBrush", Color.FromRgb(46, 50, 68));
 
         var infoStack = new StackPanel();
 
@@ -170,9 +172,9 @@ public sealed class BurnTargetDialog : Window
         _mediaStatusText = new TextBlock
         {
             FontSize = 13,
-            Foreground = TryFindBrush("TextPrimaryBrush", Colors.White),
             TextWrapping = TextWrapping.Wrap
         };
+        SetThemeBrush(_mediaStatusText, TextBlock.ForegroundProperty, "TextPrimaryBrush", Colors.White);
         infoStack.Children.Add(_mediaStatusText);
 
         infoCard.Child = infoStack;
@@ -181,20 +183,20 @@ public sealed class BurnTargetDialog : Window
         // Warning banner (shown when Virtual Drive is selected or when Physical Drive has no blank disc)
         _warningBorder = new Border
         {
-            Background = new SolidColorBrush(Color.FromArgb(45, 245, 158, 11)),
-            BorderBrush = new SolidColorBrush(Color.FromRgb(245, 158, 11)),
             BorderThickness = new Thickness(1),
             CornerRadius = new CornerRadius(6),
             Padding = new Thickness(12, 8, 12, 8),
             Margin = new Thickness(0, 0, 0, 16),
             Visibility = Visibility.Collapsed
         };
+        SetThemeBrush(_warningBorder, Border.BackgroundProperty, "WarningBannerBackgroundBrush", Color.FromRgb(51, 38, 17));
+        SetThemeBrush(_warningBorder, Border.BorderBrushProperty, "WarningBannerBorderBrush", Color.FromRgb(245, 158, 11));
         _warningText = new TextBlock
         {
             FontSize = 12,
-            Foreground = new SolidColorBrush(Color.FromRgb(252, 211, 77)),
             TextWrapping = TextWrapping.Wrap
         };
+        SetThemeBrush(_warningText, TextBlock.ForegroundProperty, "WarningBannerForegroundBrush", Color.FromRgb(253, 230, 138));
         _warningBorder.Child = _warningText;
         mainStack.Children.Add(_warningBorder);
 
@@ -228,10 +230,10 @@ public sealed class BurnTargetDialog : Window
             Width = 155,
             Height = 36,
             IsDefault = true,
-            FontWeight = FontWeights.Bold,
-            Background = TryFindBrush("AccentBrush", Color.FromRgb(255, 107, 53)),
-            Foreground = TryFindBrush("AccentForegroundBrush", Colors.White)
+            FontWeight = FontWeights.Bold
         };
+        SetThemeBrush(_burnButton, Button.BackgroundProperty, "AccentBrush", Color.FromRgb(0, 120, 212));
+        SetThemeBrush(_burnButton, Button.ForegroundProperty, "AccentForegroundBrush", Colors.White);
         AutomationProperties.SetName(_burnButton, "Confirm and Start Burn");
         _burnButton.Click += (_, _) =>
         {
@@ -300,6 +302,8 @@ public sealed class BurnTargetDialog : Window
         var rec = SelectedDrive;
         if (rec == null)
         {
+            SetThemeBrush(_driveBadgeBorder, Border.BackgroundProperty, "ControlBackgroundBrush", Color.FromRgb(47, 47, 47));
+            SetThemeBrush(_driveBadgeText, TextBlock.ForegroundProperty, "TextSecondaryBrush", Color.FromRgb(166, 166, 166));
             _driveBadgeText.Text = "NO DRIVE SELECTED";
             _mediaStatusText.Text = "No optical drive is currently selected.";
             _warningBorder.Visibility = Visibility.Collapsed;
@@ -319,8 +323,8 @@ public sealed class BurnTargetDialog : Window
 
         if (rec.IsVirtual)
         {
-            _driveBadgeBorder.Background = new SolidColorBrush(Color.FromArgb(50, 245, 158, 11));
-            _driveBadgeText.Foreground = new SolidColorBrush(Color.FromRgb(252, 211, 77));
+            SetThemeBrush(_driveBadgeBorder, Border.BackgroundProperty, "WarningBannerBackgroundBrush", Color.FromRgb(51, 38, 17));
+            SetThemeBrush(_driveBadgeText, TextBlock.ForegroundProperty, "WarningBannerForegroundBrush", Color.FromRgb(253, 230, 138));
             _driveBadgeText.Text = "VIRTUAL SIMULATOR DRIVE";
 
             double mb = status.TotalCapacityBytes / (1024.0 * 1024.0);
@@ -334,8 +338,8 @@ public sealed class BurnTargetDialog : Window
         }
         else
         {
-            _driveBadgeBorder.Background = new SolidColorBrush(Color.FromArgb(50, 16, 185, 129));
-            _driveBadgeText.Foreground = new SolidColorBrush(Color.FromRgb(52, 211, 153));
+            SetThemeBrush(_driveBadgeBorder, Border.BackgroundProperty, "SuccessBadgeBackgroundBrush", Color.FromRgb(19, 51, 38));
+            SetThemeBrush(_driveBadgeText, TextBlock.ForegroundProperty, "SuccessBadgeForegroundBrush", Color.FromRgb(110, 231, 183));
             _driveBadgeText.Text = $"PHYSICAL OPTICAL DRIVE ({rec.VolumePath})";
 
             if (status.MediaPresent && status.MediaType != DiscMediaType.NoMedia)
@@ -392,13 +396,15 @@ public sealed class BurnTargetDialog : Window
         }
     }
 
-    private static Brush TryFindBrush(string key, Color fallback)
+    private static void SetThemeBrush(FrameworkElement target, DependencyProperty property, string key, Color fallback)
     {
-        if (Application.Current?.TryFindResource(key) is Brush b)
+        if (Application.Current?.TryFindResource(key) is Brush)
         {
-            return b;
+            target.SetResourceReference(property, key);
+            return;
         }
-        return new SolidColorBrush(fallback);
+
+        target.SetValue(property, new SolidColorBrush(fallback));
     }
 
     /// <summary>

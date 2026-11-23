@@ -31,6 +31,19 @@
     <SolidColorBrush x:Key="CapacityWarningBrush" Color="#D97706" />
     <SolidColorBrush x:Key="CapacityOverburnBrush" Color="#DC2626" />
 
+    <!-- Destructive / Cancel Action Brushes -->
+    <SolidColorBrush x:Key="DangerBrush" Color="#C42B1C" />
+    <SolidColorBrush x:Key="DangerHoverBrush" Color="#B02518" />
+    <SolidColorBrush x:Key="DangerPressedBrush" Color="#991F14" />
+    <SolidColorBrush x:Key="DangerForegroundBrush" Color="#FFFFFF" />
+
+    <!-- Status Banner & Badge Brushes -->
+    <SolidColorBrush x:Key="WarningBannerBackgroundBrush" Color="#FEF3C7" />
+    <SolidColorBrush x:Key="WarningBannerBorderBrush" Color="#D97706" />
+    <SolidColorBrush x:Key="WarningBannerForegroundBrush" Color="#78350F" />
+    <SolidColorBrush x:Key="SuccessBadgeBackgroundBrush" Color="#D1FAE5" />
+    <SolidColorBrush x:Key="SuccessBadgeForegroundBrush" Color="#065F46" />
+
     <!-- Control Elements & Interactive State Brushes -->
     <SolidColorBrush x:Key="ControlBackgroundBrush" Color="#FFFFFF" />
     <SolidColorBrush x:Key="ControlBorderBrush" Color="#CBD5E1" />

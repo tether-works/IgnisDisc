@@ -664,9 +664,7 @@
                     <Button Content="🛑 Cancel"
                             AutomationProperties.Name="Cancel"
                             Command="{Binding CancelCommand}"
-                            Background="#D83B01"
-                            Foreground="White"
-                            FontWeight="Bold"
+                            Style="{StaticResource DangerButtonStyle}"
                             ToolTip="Cancel ongoing DVD authoring or burn"
                             Visibility="{Binding IsBusy, Converter={StaticResource BoolToVis}}"
                             Margin="0,0,10,0" />

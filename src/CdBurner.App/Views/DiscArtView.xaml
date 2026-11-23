@@ -33,38 +33,49 @@
         <!-- Controls -->
         <ScrollViewer Grid.Column="0" VerticalScrollBarVisibility="Auto" HorizontalScrollBarVisibility="Disabled" Margin="0,0,12,0">
             <StackPanel IsEnabled="{Binding IsBusy, Converter={StaticResource Not}}">
-                <TextBlock Text="1. Picture and disc" FontWeight="SemiBold" Margin="0,0,0,4" />
+                <TextBlock Text="1. Picture and disc" FontWeight="SemiBold" Margin="0,0,0,4"
+                           Foreground="{DynamicResource TextPrimaryBrush}" />
                 <Button Content="Open picture (PNG)..." Command="{Binding OpenPictureCommand}" HorizontalAlignment="Left"
                         AutomationProperties.Name="Open picture" />
                 <TextBlock Text="{Binding PicturePath}" TextWrapping="Wrap" Margin="0,4,0,6"
                            Foreground="{DynamicResource TextSecondaryBrush}" />
                 <StackPanel Orientation="Horizontal">
                     <RadioButton Content="CD" GroupName="DiscArtMedium" IsChecked="{Binding IsCd}" Margin="0,0,12,0"
+                                 Foreground="{DynamicResource TextPrimaryBrush}"
                                  AutomationProperties.Name="CD picture track" />
                     <RadioButton Content="DVD" GroupName="DiscArtMedium" IsChecked="{Binding IsDvd}" Margin="0,0,12,0"
+                                 Foreground="{DynamicResource TextPrimaryBrush}"
                                  AutomationProperties.Name="DVD picture disc" />
                     <RadioButton Content="BD" GroupName="DiscArtMedium" IsChecked="{Binding IsBluRay}"
+                                 Foreground="{DynamicResource TextPrimaryBrush}"
                                  AutomationProperties.Name="BD picture disc" />
                 </StackPanel>
-                <TextBlock Text="Disc preset or saved calibration" Margin="0,6,0,2" />
+                <TextBlock Text="Disc preset or saved calibration" Margin="0,6,0,2"
+                           Foreground="{DynamicResource TextSecondaryBrush}" />
                 <ComboBox ItemsSource="{Binding DiscChoices}" SelectedItem="{Binding SelectedDisc}"
                           AutomationProperties.Name="Disc preset or saved calibration" />
 
-                <TextBlock Text="2. Placement" FontWeight="SemiBold" Margin="0,12,0,4" />
-                <TextBlock Text="{Binding Scale, StringFormat=Scale {0:0.00}}" />
+                <TextBlock Text="2. Placement" FontWeight="SemiBold" Margin="0,12,0,4"
+                           Foreground="{DynamicResource TextPrimaryBrush}" />
+                <TextBlock Text="{Binding Scale, StringFormat=Scale {0:0.00}}"
+                           Foreground="{DynamicResource TextPrimaryBrush}" />
                 <Slider Minimum="0.1" Maximum="4" Value="{Binding Scale}" SmallChange="0.01" LargeChange="0.1"
                         AutomationProperties.Name="Picture scale" />
-                <TextBlock Text="{Binding OffsetXMm, StringFormat=Move right {0:0.0} mm}" />
+                <TextBlock Text="{Binding OffsetXMm, StringFormat=Move right {0:0.0} mm}"
+                           Foreground="{DynamicResource TextPrimaryBrush}" />
                 <Slider Minimum="-60" Maximum="60" Value="{Binding OffsetXMm}" SmallChange="0.5" LargeChange="5"
                         AutomationProperties.Name="Move picture right in millimetres" />
-                <TextBlock Text="{Binding OffsetYMm, StringFormat=Move down {0:0.0} mm}" />
+                <TextBlock Text="{Binding OffsetYMm, StringFormat=Move down {0:0.0} mm}"
+                           Foreground="{DynamicResource TextPrimaryBrush}" />
                 <Slider Minimum="-60" Maximum="60" Value="{Binding OffsetYMm}" SmallChange="0.5" LargeChange="5"
                         AutomationProperties.Name="Move picture down in millimetres" />
-                <TextBlock Text="{Binding RotationDegrees, StringFormat=Rotate clockwise {0:0} degrees}" />
+                <TextBlock Text="{Binding RotationDegrees, StringFormat=Rotate clockwise {0:0} degrees}"
+                           Foreground="{DynamicResource TextPrimaryBrush}" />
                 <Slider Minimum="-180" Maximum="180" Value="{Binding RotationDegrees}" SmallChange="1" LargeChange="15"
                         AutomationProperties.Name="Rotate picture clockwise in degrees" />
                 <StackPanel Orientation="Horizontal" Margin="0,4,0,0">
                     <CheckBox Content="Fit to the drawn ring" IsChecked="{Binding FitToRing}" Margin="0,0,12,0"
+                              Foreground="{DynamicResource TextPrimaryBrush}"
                               AutomationProperties.Name="Fit picture to the drawn ring" />
                     <Button Content="Reset" Command="{Binding ResetPlacementCommand}"
                             AutomationProperties.Name="Reset placement" />
@@ -72,28 +83,34 @@
                 <TextBlock Text="Drag the preview to move the picture; the mouse wheel scales it." TextWrapping="Wrap"
                            Margin="0,4,0,0" Foreground="{DynamicResource TextSecondaryBrush}" />
 
-                <TextBlock Text="3. Tone" FontWeight="SemiBold" Margin="0,12,0,4" />
+                <TextBlock Text="3. Tone" FontWeight="SemiBold" Margin="0,12,0,4"
+                           Foreground="{DynamicResource TextPrimaryBrush}" />
                 <StackPanel Orientation="Horizontal">
                     <Button Content="Photo" Command="{Binding PhotoToneCommand}" Margin="0,0,6,0"
                             AutomationProperties.Name="Photo tone preset" />
                     <Button Content="Black and white" Command="{Binding BinaryToneCommand}"
                             AutomationProperties.Name="Black and white tone preset" />
                 </StackPanel>
-                <TextBlock Text="{Binding DitherStrength, StringFormat=Dither {0:0.00}}" Margin="0,6,0,0" />
+                <TextBlock Text="{Binding DitherStrength, StringFormat=Dither {0:0.00}}" Margin="0,6,0,0"
+                           Foreground="{DynamicResource TextPrimaryBrush}" />
                 <Slider Minimum="0" Maximum="1" Value="{Binding DitherStrength}" SmallChange="0.05" LargeChange="0.25"
                         AutomationProperties.Name="Dither strength" />
-                <TextBlock Text="{Binding Brightness, StringFormat=Brightness {0:+0;-0;0}}" />
+                <TextBlock Text="{Binding Brightness, StringFormat=Brightness {0:+0;-0;0}}"
+                           Foreground="{DynamicResource TextPrimaryBrush}" />
                 <Slider Minimum="-64" Maximum="64" Value="{Binding Brightness}" SmallChange="1" LargeChange="8"
                         AutomationProperties.Name="Brightness" />
                 <CheckBox Content="sRGB linear light" IsChecked="{Binding SrgbLinearization}"
+                          Foreground="{DynamicResource TextPrimaryBrush}"
                           AutomationProperties.Name="sRGB linear light" />
                 <CheckBox Content="Four grey levels (CD only)" IsChecked="{Binding FourLevels}" IsEnabled="{Binding IsCd}"
+                          Foreground="{DynamicResource TextPrimaryBrush}"
                           AutomationProperties.Name="Four grey levels" />
                 <TextBlock Text="{Binding ToneSummary}" TextWrapping="Wrap" Margin="0,4,0,0"
                            Foreground="{DynamicResource TextSecondaryBrush}" />
 
                 <StackPanel IsEnabled="{Binding CanCarryFiles}">
-                    <TextBlock Text="4. Files and art band (DVD / BD)" FontWeight="SemiBold" Margin="0,12,0,4" />
+                    <TextBlock Text="4. Files and art band (DVD / BD)" FontWeight="SemiBold" Margin="0,12,0,4"
+                               Foreground="{DynamicResource TextPrimaryBrush}" />
                     <StackPanel Orientation="Horizontal">
                         <Button Content="Files folder..." Command="{Binding ChooseFilesFolderCommand}" Margin="0,0,6,0"
                                 AutomationProperties.Name="Choose files folder" />
@@ -104,11 +121,14 @@
                                Foreground="{DynamicResource TextSecondaryBrush}" />
                     <CheckBox Content="Files at the outer edge" IsChecked="{Binding FilesOuter}"
                               IsEnabled="{Binding HasFiles}" Margin="0,4,0,0"
+                              Foreground="{DynamicResource TextPrimaryBrush}"
                               AutomationProperties.Name="Files at the outer edge" />
-                    <TextBlock Text="Volume label" Margin="0,6,0,2" />
+                    <TextBlock Text="Volume label" Margin="0,6,0,2"
+                               Foreground="{DynamicResource TextSecondaryBrush}" />
                     <TextBox Text="{Binding VolumeLabel, UpdateSourceTrigger=PropertyChanged}"
                              AutomationProperties.Name="Volume label" />
-                    <TextBlock Text="Art band, inner and outer radius in mm (empty: whole disc)" TextWrapping="Wrap" Margin="0,6,0,2" />
+                    <TextBlock Text="Art band, inner and outer radius in mm (empty: whole disc)" TextWrapping="Wrap" Margin="0,6,0,2"
+                               Foreground="{DynamicResource TextSecondaryBrush}" />
                     <StackPanel Orientation="Horizontal">
                         <TextBox Text="{Binding ArtInnerRadiusText, UpdateSourceTrigger=LostFocus}" Width="80" Margin="0,0,6,0"
                                  AutomationProperties.Name="Art band inner radius in millimetres" />
@@ -119,8 +139,10 @@
 
                 <StackPanel Margin="0,12,0,0" ToolTip="{Binding TitleRingToolTip}" ToolTipService.ShowOnDisabled="True">
                     <TextBlock Text="5. Title ring (DVD only)" FontWeight="SemiBold" Margin="0,0,0,4"
+                               Foreground="{DynamicResource TextPrimaryBrush}"
                                IsEnabled="{Binding CanDrawTitleRing}" />
                     <TextBlock Text="Title (empty: no title ring)" Margin="0,0,0,2"
+                               Foreground="{DynamicResource TextSecondaryBrush}"
                                IsEnabled="{Binding CanDrawTitleRing}" />
                     <TextBox Text="{Binding TitleRingText, UpdateSourceTrigger=PropertyChanged}"
                              IsEnabled="{Binding CanDrawTitleRing}"
@@ -130,6 +152,7 @@
                     <StackPanel Orientation="Horizontal" Margin="0,6,0,0">
                         <StackPanel Margin="0,0,8,0">
                             <TextBlock Text="Date (yyyy-MM-dd or none)" Margin="0,0,0,2"
+                                       Foreground="{DynamicResource TextSecondaryBrush}"
                                        IsEnabled="{Binding CanDrawTitleRing}" />
                             <TextBox Text="{Binding TitleRingDateText, UpdateSourceTrigger=PropertyChanged}"
                                      Width="140"
@@ -140,6 +163,7 @@
                         </StackPanel>
                         <StackPanel>
                             <TextBlock Text="Height in mm (2 to 10)" Margin="0,0,0,2"
+                                       Foreground="{DynamicResource TextSecondaryBrush}"
                                        IsEnabled="{Binding CanDrawTitleRing}" />
                             <TextBox Text="{Binding TitleRingHeightText, UpdateSourceTrigger=LostFocus}"
                                      Width="80"
@@ -157,9 +181,11 @@
                 </StackPanel>
 
                 <StackPanel Margin="0,12,0,0">
-                    <TextBlock Text="6. Band 0 rim header (CD / DVD / BD)" FontWeight="SemiBold" Margin="0,0,0,4" />
+                    <TextBlock Text="6. Band 0 rim header (CD / DVD / BD)" FontWeight="SemiBold" Margin="0,0,0,4"
+                               Foreground="{DynamicResource TextPrimaryBrush}" />
                     <CheckBox Content="Include Band 0 rim header (title, date, SHA-256, 5° ticks)"
                               IsChecked="{Binding IncludeRimHeader}"
+                              Foreground="{DynamicResource TextPrimaryBrush}"
                               ToolTip="Draws the Band 0 rim header (title, date, SHA-256 prefix, 5-degree angle ticks and how-to-read diagrams) at the outer edge of the picture. Scales down to 50 x 75 um glyph cells (CD) or 26 x 34 um (DVD / BD) and refuses narrower rings."
                               AutomationProperties.Name="Include Band 0 rim header" />
                     <TextBlock Text="Draws title, date, SHA-256 prefix, 5° ticks and reading diagrams at the rim (min 50 x 75 um CD, 26 x 34 um DVD / BD)."
@@ -174,7 +200,8 @@
 
                 <StackPanel Margin="0,12,0,0">
                     <StackPanel IsEnabled="{Binding IsCd}">
-                        <TextBlock Text="7. Audio CD CUE and pre-gap (CD only)" FontWeight="SemiBold" Margin="0,0,0,4" />
+                        <TextBlock Text="7. Audio CD CUE and pre-gap (CD only)" FontWeight="SemiBold" Margin="0,0,0,4"
+                                   Foreground="{DynamicResource TextPrimaryBrush}" />
                         <StackPanel Orientation="Horizontal">
                             <Button Content="Audio CD CUE..." Command="{Binding ChooseBaseCueCommand}" Margin="0,0,6,0"
                                     AutomationProperties.Name="Choose audio CD CUE sheet" />
@@ -187,10 +214,12 @@
                                   IsChecked="{Binding HidePictureInPreGap}"
                                   IsEnabled="{Binding CanUsePreGap}"
                                   Margin="0,6,0,0"
+                                  Foreground="{DynamicResource TextPrimaryBrush}"
                                   ToolTip="{Binding PreGapWarning}"
                                   ToolTipService.ShowOnDisabled="True"
                                   AutomationProperties.Name="Hide the picture in the pre-gap (experimental)" />
                         <TextBlock Text="Pre-gap length in seconds (60 to 1200, default 300)" Margin="0,6,0,2"
+                                   Foreground="{DynamicResource TextSecondaryBrush}"
                                    IsEnabled="{Binding CanEditPreGapSeconds}" />
                         <TextBox Text="{Binding PreGapSecondsText, UpdateSourceTrigger=PropertyChanged}"
                                  Width="100" HorizontalAlignment="Left"
@@ -202,7 +231,8 @@
                                AutomationProperties.Name="Pre-gap picture experimental warning" />
                 </StackPanel>
 
-                <TextBlock Text="8. Image and burn" FontWeight="SemiBold" Margin="0,12,0,4" />
+                <TextBlock Text="8. Image and burn" FontWeight="SemiBold" Margin="0,12,0,4"
+                           Foreground="{DynamicResource TextPrimaryBrush}" />
                 <TextBlock Text="{Binding OutputHint}" TextWrapping="Wrap" Foreground="{DynamicResource TextSecondaryBrush}" />
                 <StackPanel Orientation="Horizontal" Margin="0,4,0,0">
                     <Button Content="Save as..." Command="{Binding ChooseOutputCommand}" Margin="0,0,6,0"
@@ -223,7 +253,8 @@
 
             <StackPanel Grid.Row="0" Orientation="Horizontal">
                 <StackPanel Margin="0,0,16,0">
-                    <TextBlock Text="Placement" FontWeight="SemiBold" Margin="0,0,0,4" />
+                    <TextBlock Text="Placement" FontWeight="SemiBold" Margin="0,0,0,4"
+                               Foreground="{DynamicResource TextPrimaryBrush}" />
                     <Border BorderThickness="1" BorderBrush="{DynamicResource CardBorderBrush}" Background="Black">
                         <Image x:Name="DiscSurface" Width="360" Height="360" Stretch="Fill"
                                RenderOptions.BitmapScalingMode="NearestNeighbor" Cursor="SizeAll"
@@ -236,7 +267,8 @@
                     </Border>
                 </StackPanel>
                 <StackPanel>
-                    <TextBlock Text="Read back from the image" FontWeight="SemiBold" Margin="0,0,0,4" />
+                    <TextBlock Text="Read back from the image" FontWeight="SemiBold" Margin="0,0,0,4"
+                               Foreground="{DynamicResource TextPrimaryBrush}" />
                     <Border BorderThickness="1" BorderBrush="{DynamicResource CardBorderBrush}" Background="Black">
                         <Image x:Name="ReadbackSurface" Width="360" Height="360" Stretch="Uniform"
                                Source="{Binding ReadbackPreviewPng, Converter={StaticResource PngToImage}}"
@@ -270,7 +302,8 @@
                 </StackPanel>
                 <ProgressBar Value="{Binding Progress, Mode=OneWay}" Maximum="100" Height="6" Margin="0,8,0,0"
                              Visibility="{Binding IsBusy, Converter={StaticResource BoolToVis}}" />
-                <TextBlock Text="{Binding StatusMessage}" TextWrapping="Wrap" Margin="0,8,0,0" FontWeight="SemiBold" />
+                <TextBlock Text="{Binding StatusMessage}" TextWrapping="Wrap" Margin="0,8,0,0" FontWeight="SemiBold"
+                           Foreground="{DynamicResource TextPrimaryBrush}" />
             </StackPanel>
         </Grid>
                 </Grid>
@@ -286,26 +319,33 @@
                     <!-- Left column: medium, Rosetta presets, archive inputs -->
                     <ScrollViewer Grid.Column="0" VerticalScrollBarVisibility="Auto" HorizontalScrollBarVisibility="Disabled" Margin="0,0,12,0">
                         <StackPanel IsEnabled="{Binding IsBusy, Converter={StaticResource Not}}">
-                            <TextBlock Text="1. Medium and disc geometry" FontWeight="SemiBold" Margin="0,0,0,4" />
+                            <TextBlock Text="1. Medium and disc geometry" FontWeight="SemiBold" Margin="0,0,0,4"
+                                       Foreground="{DynamicResource TextPrimaryBrush}" />
                             <StackPanel Orientation="Horizontal">
                                 <RadioButton Content="DVD-R" GroupName="RosettaMedium" IsChecked="{Binding IsDvd}" Margin="0,0,12,0"
+                                             Foreground="{DynamicResource TextPrimaryBrush}"
                                              ToolTip="{Binding RosettaMediaAdvice}"
                                              AutomationProperties.Name="Rosetta DVD-R medium" />
                                 <RadioButton Content="CD-R" GroupName="RosettaMedium" IsChecked="{Binding IsCd}" Margin="0,0,12,0"
+                                             Foreground="{DynamicResource TextPrimaryBrush}"
                                              ToolTip="{Binding RosettaMediaAdvice}"
                                              AutomationProperties.Name="Rosetta CD-R medium" />
                                 <RadioButton Content="BD-R" GroupName="RosettaMedium" IsChecked="{Binding IsBluRay}"
+                                             Foreground="{DynamicResource TextPrimaryBrush}"
                                              ToolTip="{Binding RosettaMediaAdvice}"
                                              AutomationProperties.Name="Rosetta BD-R medium" />
                             </StackPanel>
-                            <TextBlock Text="Disc preset or saved calibration" Margin="0,6,0,2" />
+                            <TextBlock Text="Disc preset or saved calibration" Margin="0,6,0,2"
+                                       Foreground="{DynamicResource TextSecondaryBrush}" />
                             <ComboBox ItemsSource="{Binding DiscChoices}" SelectedItem="{Binding SelectedDisc}"
                                       AutomationProperties.Name="Rosetta disc geometry" />
 
-                            <TextBlock Text="2. Rosetta glyph-cell preset" FontWeight="SemiBold" Margin="0,12,0,4" />
+                            <TextBlock Text="2. Rosetta glyph-cell preset" FontWeight="SemiBold" Margin="0,12,0,4"
+                                       Foreground="{DynamicResource TextPrimaryBrush}" />
                             <RadioButton Content="{Binding RosettaHobbyistLabel}"
                                          GroupName="RosettaPreset"
                                          IsChecked="{Binding IsRosettaHobbyistSelected}"
+                                         Foreground="{DynamicResource TextPrimaryBrush}"
                                          ToolTip="{Binding RosettaHobbyistToolTip}"
                                          ToolTipService.ShowOnDisabled="True"
                                          Margin="0,2,0,4"
@@ -314,6 +354,7 @@
                                          GroupName="RosettaPreset"
                                          IsChecked="{Binding IsRosettaHighDensitySelected}"
                                          IsEnabled="{Binding CanSelectRosettaHighDensity}"
+                                         Foreground="{DynamicResource TextPrimaryBrush}"
                                          ToolTip="{Binding RosettaHighDensityToolTip}"
                                          ToolTipService.ShowOnDisabled="True"
                                          Margin="0,2,0,4"
@@ -322,6 +363,7 @@
                                          GroupName="RosettaPreset"
                                          IsChecked="{Binding IsRosettaExperimentalBluRaySelected}"
                                          IsEnabled="{Binding CanSelectRosettaExperimentalBluRay}"
+                                         Foreground="{DynamicResource TextPrimaryBrush}"
                                          ToolTip="{Binding RosettaExperimentalBluRayToolTip}"
                                          ToolTipService.ShowOnDisabled="True"
                                          Margin="0,2,0,4"
@@ -342,16 +384,20 @@
                                        Foreground="{DynamicResource CapacityWarningBrush}"
                                        AutomationProperties.Name="Rosetta preset constraint message" />
 
-                            <TextBlock Text="3. Archive text and layout" FontWeight="SemiBold" Margin="0,12,0,4" />
-                            <TextBlock Text="Archive title" Margin="0,0,0,2" />
+                            <TextBlock Text="3. Archive text and layout" FontWeight="SemiBold" Margin="0,12,0,4"
+                                       Foreground="{DynamicResource TextPrimaryBrush}" />
+                            <TextBlock Text="Archive title" Margin="0,0,0,2"
+                                       Foreground="{DynamicResource TextSecondaryBrush}" />
                             <TextBox Text="{Binding RosettaTitle, UpdateSourceTrigger=PropertyChanged}"
                                      AutomationProperties.Name="Rosetta archive title" />
-                            <TextBlock Text="Archive date (yyyy-MM-dd)" Margin="0,6,0,2" />
+                            <TextBlock Text="Archive date (yyyy-MM-dd)" Margin="0,6,0,2"
+                                       Foreground="{DynamicResource TextSecondaryBrush}" />
                             <TextBox Text="{Binding RosettaDateText, UpdateSourceTrigger=PropertyChanged}"
                                      Width="140" HorizontalAlignment="Left"
                                      AutomationProperties.Name="Rosetta archive date" />
 
-                            <TextBlock Text="Text folder (.txt / .md, optional for capacity preview)" TextWrapping="Wrap" Margin="0,8,0,2" />
+                            <TextBlock Text="Text folder (.txt / .md, optional for capacity preview)" TextWrapping="Wrap" Margin="0,8,0,2"
+                                       Foreground="{DynamicResource TextSecondaryBrush}" />
                             <StackPanel Orientation="Horizontal">
                                 <Button Content="Text folder..." Command="{Binding RosettaChooseTextFolderCommand}" Margin="0,0,6,0"
                                         AutomationProperties.Name="Choose Rosetta text folder" />
@@ -362,7 +408,8 @@
                                        Foreground="{DynamicResource TextSecondaryBrush}" />
 
                             <StackPanel IsEnabled="{Binding IsDvd}">
-                                <TextBlock Text="Extra vault files folder (optional, DVD-R only)" TextWrapping="Wrap" Margin="0,8,0,2" />
+                                <TextBlock Text="Extra vault files folder (optional, DVD-R only)" TextWrapping="Wrap" Margin="0,8,0,2"
+                                           Foreground="{DynamicResource TextSecondaryBrush}" />
                                 <StackPanel Orientation="Horizontal">
                                     <Button Content="Files folder..." Command="{Binding RosettaChooseFilesFolderCommand}" Margin="0,0,6,0"
                                             AutomationProperties.Name="Choose Rosetta files folder" />
@@ -373,22 +420,26 @@
                                            Foreground="{DynamicResource TextSecondaryBrush}" />
                             </StackPanel>
 
-                            <TextBlock Text="Pages inner radius in mm (default 38)" Margin="0,8,0,2" />
+                            <TextBlock Text="Pages inner radius in mm (default 38)" Margin="0,8,0,2"
+                                       Foreground="{DynamicResource TextSecondaryBrush}" />
                             <TextBox Text="{Binding RosettaPagesInnerRadiusText, UpdateSourceTrigger=PropertyChanged}"
                                      Width="100" HorizontalAlignment="Left"
                                      AutomationProperties.Name="Rosetta pages inner radius in millimetres" />
                             <CheckBox Content="Include naked-eye rim header (title, date, SHA-256 prefix)"
                                       IsChecked="{Binding RosettaIncludeRimHeader}"
+                                      Foreground="{DynamicResource TextPrimaryBrush}"
                                       Margin="0,6,0,0"
                                       AutomationProperties.Name="Include Rosetta rim header" />
 
-                            <TextBlock Text="{Binding RosettaRedundancyPercent, StringFormat=Vault PAR2 redundancy: {0}%}" Margin="0,8,0,0" />
+                            <TextBlock Text="{Binding RosettaRedundancyPercent, StringFormat=Vault PAR2 redundancy: {0}%}" Margin="0,8,0,0"
+                                       Foreground="{DynamicResource TextPrimaryBrush}" />
                             <Slider Minimum="0" Maximum="30" Value="{Binding RosettaRedundancyPercent}" SmallChange="5" LargeChange="10"
                                     IsSnapToTickEnabled="True" TickFrequency="5"
                                     IsEnabled="{Binding IsDvd}"
                                     AutomationProperties.Name="Rosetta PAR2 redundancy" />
 
-                            <TextBlock Text="4. Image and burn (DVD-R)" FontWeight="SemiBold" Margin="0,12,0,4" />
+                            <TextBlock Text="4. Image and burn (DVD-R)" FontWeight="SemiBold" Margin="0,12,0,4"
+                                       Foreground="{DynamicResource TextPrimaryBrush}" />
                             <Button Content="Save Rosetta .iso as..." Command="{Binding RosettaChooseOutputCommand}"
                                     HorizontalAlignment="Left" IsEnabled="{Binding IsDvd}"
                                     AutomationProperties.Name="Choose Rosetta output image" />
@@ -406,7 +457,8 @@
                                 Padding="14"
                                 Margin="0,0,0,12">
                             <StackPanel>
-                                <TextBlock Text="Layout-computed capacity preview" FontWeight="SemiBold" FontSize="14" Margin="0,0,0,6" />
+                                <TextBlock Text="Layout-computed capacity preview" FontWeight="SemiBold" FontSize="14" Margin="0,0,0,6"
+                                           Foreground="{DynamicResource TextPrimaryBrush}" />
                                 <TextBlock Text="{Binding RosettaCapacitySummary}"
                                            TextWrapping="Wrap"
                                            Foreground="{DynamicResource TextPrimaryBrush}"
@@ -426,7 +478,8 @@
                                 Padding="14"
                                 Margin="0,0,0,12">
                             <StackPanel>
-                                <TextBlock Text="Optical &amp; media advice (physics &amp; layout check)" FontWeight="SemiBold" FontSize="14" Margin="0,0,0,6" />
+                                <TextBlock Text="Optical &amp; media advice (physics &amp; layout check)" FontWeight="SemiBold" FontSize="14" Margin="0,0,0,6"
+                                           Foreground="{DynamicResource TextPrimaryBrush}" />
                                 <TextBlock Text="{Binding RosettaMediaAdvice}"
                                            TextWrapping="Wrap"
                                            Foreground="{DynamicResource TextSecondaryBrush}"
@@ -449,7 +502,8 @@
                         </StackPanel>
                         <ProgressBar Value="{Binding Progress, Mode=OneWay}" Maximum="100" Height="6" Margin="0,8,0,0"
                                      Visibility="{Binding IsBusy, Converter={StaticResource BoolToVis}}" />
-                        <TextBlock Text="{Binding StatusMessage}" TextWrapping="Wrap" Margin="0,8,0,0" FontWeight="SemiBold" />
+                        <TextBlock Text="{Binding StatusMessage}" TextWrapping="Wrap" Margin="0,8,0,0" FontWeight="SemiBold"
+                                   Foreground="{DynamicResource TextPrimaryBrush}" />
                     </StackPanel>
                 </Grid>
             </TabItem>

@@ -21,7 +21,16 @@ public sealed class DiscPresetJsonStoreTests : IDisposable
         DiscPresetJsonDocument builtIn = DiscPresetJsonStore.LoadBuiltIn();
 
         Assert.Equal(DiscPresetJsonStore.CurrentSchemaVersion, builtIn.SchemaVersion);
-        Assert.Equal("zh-CN", builtIn.FallbackLanguage);
+        Assert.Equal("en", builtIn.FallbackLanguage);
+        Assert.Equal(
+            "Standard 12 cm single-layer DVD",
+            builtIn.DvdPresets.Single(p => p.Id == "dvd-5-120mm").DisplayName);
+        foreach (string text in builtIn.CdPresets.SelectMany(p => new[] { p.DisplayName, p.Description })
+            .Concat(builtIn.DvdPresets.SelectMany(p => new[] { p.DisplayName, p.Description }))
+            .Concat((builtIn.BluRayPresets ?? []).SelectMany(p => new[] { p.DisplayName, p.Description })))
+        {
+            Assert.False(text.Any(ch => ch is >= '\u4E00' and <= '\u9FFF'), $"Preset text was not translated: {text}");
+        }
         Assert.Equal(
             ["cd-80", "ritek-medical-aqua", "verbatim-azo-43438", "cd-74"],
             builtIn.CdPresets.Select(p => p.Id).ToArray());
