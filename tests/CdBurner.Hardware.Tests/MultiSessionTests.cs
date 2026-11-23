@@ -329,4 +329,163 @@ public class MultiSessionTests
         // which is around 25-30 sectors (< 70 KB), definitely NOT 500 KB!
         Assert.True(s2Stream.Length < 100 * 1024, $"Appended session stream was {s2Stream.Length} bytes, expected < 100 KB.");
     }
+
+    [Fact]
+    public async Task MultiSession_Beyond4096Sectors_ImportsOpensStreamsAfterReturn_AndBurnsSubsequentSession()
+    {
+        using var recorder = new VirtualDiscRecorder();
+        using var medium = VirtualDiscMedium.CreateBlankDvdR47();
+        recorder.InsertMedia(medium);
+        var engine = new VirtualBurnEngine(recorder);
+
+        // Session 1: > 4,096 sectors (9 MiB = 4,608 sectors) + a second file in a subdirectory
+        byte[] largePayload = new byte[9 * 1024 * 1024 + 321];
+        for (int i = 0; i < largePayload.Length; i += 2048)
+        {
+            largePayload[i] = (byte)((i / 2048) % 251);
+        }
+        largePayload[^1] = 0x5A;
+
+        byte[] nestedPayload = "after-4096-sector-boundary"u8.ToArray();
+
+        var root1 = CompilationDirectory.CreateRoot();
+        root1.AddFile("large_s1.bin", largePayload);
+        root1.AddDirectory("Deep").AddFile("nested.txt", nestedPayload);
+
+        using var s1Stream = IsoUdfImageBuilder.BuildToMemoryStream(root1, new IsoBuildOptions("S1_LARGE", IncludeUdf: false));
+        Assert.True(s1Stream.Length > 4096 * OpticalConstants.DataSectorSize);
+
+        var burn1 = await engine.BurnDataStreamAsync(recorder, s1Stream, new DataBurnOptions { CloseDisc = false }, null, CancellationToken.None);
+        Assert.True(burn1.Success, burn1.ErrorMessage);
+
+        // Import via fast-path; returned CompilationFile streams must remain readable after ImportFromRecorderAsync returns.
+        var imported = await MultiSessionManager.ImportFromRecorderAsync(recorder, engine);
+        var importedLarge = imported.FindFileByVirtualPath("/large_s1.bin");
+        var importedNested = imported.FindFileByVirtualPath("/Deep/nested.txt");
+        Assert.NotNull(importedLarge);
+        Assert.NotNull(importedNested);
+
+        using (var largeStream = importedLarge.OpenRead())
+        {
+            Assert.Equal(largePayload.Length, largeStream.Length);
+            Assert.True(largeStream.CanSeek);
+
+            // Seek across the 4,096-sector boundary (8 MiB) and read tail byte
+            largeStream.Position = 4096L * OpticalConstants.DataSectorSize;
+            Assert.Equal(4096 % 251, largeStream.ReadByte());
+            largeStream.Seek(-1, SeekOrigin.End);
+            Assert.Equal(0x5A, largeStream.ReadByte());
+        }
+
+        using (var nestedStream = importedNested.OpenRead())
+        {
+            byte[] actualNested = new byte[nestedPayload.Length];
+            nestedStream.ReadExactly(actualNested);
+            Assert.Equal(nestedPayload, actualNested);
+        }
+
+        // Burn Session 2 using the imported tree + new file
+        byte[] s2Bytes = "session-2-file"u8.ToArray();
+        imported.AddDirectory("S2").AddFile("added.txt", s2Bytes);
+        int nextWritable = recorder.QueryMediaStatus().NextWritableLba;
+        using var s2Stream = MultiSessionManager.BuildAppendedSessionStream(imported, nextWritable, new IsoBuildOptions("S2_LARGE", IncludeUdf: false));
+
+        var burn2 = await engine.BurnDataStreamAsync(recorder, s2Stream, new DataBurnOptions { CloseDisc = true }, null, CancellationToken.None);
+        Assert.True(burn2.Success, burn2.ErrorMessage);
+
+        using var discStream = medium.CreateReadStream();
+        using var reader = MultiSessionManager.OpenSessionReader(discStream, sessionStartLba: nextWritable);
+        var readBackNested = reader.FindFile("/Deep/nested.txt");
+        var readBackAdded = reader.FindFile("/S2/added.txt");
+        Assert.NotNull(readBackNested);
+        Assert.NotNull(readBackAdded);
+        Assert.Equal(nestedPayload, reader.ReadFileBytes(readBackNested));
+        Assert.Equal(s2Bytes, reader.ReadFileBytes(readBackAdded));
+    }
+
+    [Fact]
+    public async Task MultiSession_FallbackRecorder_Beyond4096Sectors_ExercisesSessionOffsetStreamAndOpenRead()
+    {
+        using var innerRecorder = new VirtualDiscRecorder();
+        using var medium = VirtualDiscMedium.CreateBlankDvdR47();
+        innerRecorder.InsertMedia(medium);
+        var engine = new VirtualBurnEngine(innerRecorder);
+
+        // Session 1 (> 4,096 sectors so Session 2 starts past LBA 4,096)
+        byte[] s1Data = new byte[4200 * OpticalConstants.DataSectorSize];
+        s1Data[0] = 0x11;
+        s1Data[^1] = 0x22;
+        var root1 = CompilationDirectory.CreateRoot();
+        root1.AddFile("s1.bin", s1Data);
+
+        using var s1Stream = IsoUdfImageBuilder.BuildToMemoryStream(root1, new IsoBuildOptions("S1", IncludeUdf: false));
+        Assert.True((await engine.BurnDataStreamAsync(innerRecorder, s1Stream, new DataBurnOptions { CloseDisc = false }, null, CancellationToken.None)).Success);
+
+        // Session 2 starting at NextWritableLba (> 4,096), also > 4,096 sectors itself
+        int session2Start = innerRecorder.QueryMediaStatus().NextWritableLba;
+        Assert.True(session2Start > 4096);
+
+        byte[] s2Data = new byte[4300 * OpticalConstants.DataSectorSize + 77];
+        s2Data[0] = 0x33;
+        s2Data[4100 * OpticalConstants.DataSectorSize] = 0x44;
+        s2Data[^1] = 0x55;
+
+        using (var s1Disc = medium.CreateReadStream())
+        {
+            var merged = MultiSessionManager.ImportSessionTree(s1Disc, 0);
+            merged.AddFile("s2_large.bin", s2Data);
+            using var s2Stream = MultiSessionManager.BuildAppendedSessionStream(merged, session2Start, new IsoBuildOptions("S2", IncludeUdf: false));
+            Assert.True((await engine.BurnDataStreamAsync(innerRecorder, s2Stream, new DataBurnOptions { CloseDisc = false }, null, CancellationToken.None)).Success);
+        }
+
+        // Wrap recorder without CreateReadStream() to exercise the fallback ReadSectorsAsync + SessionOffsetStream path
+        var fallbackRecorder = new NoFastStreamRecorderAdapter(innerRecorder);
+        var imported = await MultiSessionManager.ImportFromRecorderAsync(fallbackRecorder, engine);
+
+        var importedS1 = imported.FindFileByVirtualPath("/s1.bin");
+        var importedS2 = imported.FindFileByVirtualPath("/s2_large.bin");
+        Assert.NotNull(importedS1);
+        Assert.NotNull(importedS2);
+        Assert.Equal(s1Data.Length, importedS1.SizeBytes);
+        Assert.Equal(s2Data.Length, importedS2.SizeBytes);
+
+        // OpenRead works after ImportFromRecorderAsync returns on the fallback path too
+        using (var s2Read = importedS2.OpenRead())
+        {
+            Assert.Equal(s2Data.Length, s2Read.Length);
+            Assert.Equal(0x33, s2Read.ReadByte());
+            s2Read.Position = 4100L * OpticalConstants.DataSectorSize;
+            Assert.Equal(0x44, s2Read.ReadByte());
+            s2Read.Seek(-1, SeekOrigin.End);
+            Assert.Equal(0x55, s2Read.ReadByte());
+        }
+    }
+
+    private sealed class NoFastStreamRecorderAdapter : IDiscRecorderBackend, IDiscTocProvider
+    {
+        private readonly VirtualDiscRecorder _inner;
+        public NoFastStreamRecorderAdapter(VirtualDiscRecorder inner) => _inner = inner;
+        public string UniqueId => _inner.UniqueId;
+        public string VendorId => _inner.VendorId;
+        public string ProductId => _inner.ProductId;
+        public string ProductRevision => _inner.ProductRevision;
+        public string VolumePath => _inner.VolumePath;
+        public bool IsVirtual => _inner.IsVirtual;
+        public DriveCapabilitiesDto GetCapabilities() => _inner.GetCapabilities();
+        public MediaStatusDto QueryMediaStatus() => _inner.QueryMediaStatus();
+        public IReadOnlyList<DiscTocTrack> ReadTableOfContents()
+        {
+            var medium = _inner.CurrentMedium;
+            if (medium == null) return Array.Empty<DiscTocTrack>();
+            return medium.Sessions
+                .SelectMany(s => s.Tracks)
+                .Select(t => new DiscTocTrack(t.TrackNumber, t.StartLba, t.SectorCount, t.IsAudio))
+                .ToList();
+        }
+        public void EjectMedia() => _inner.EjectMedia();
+        public void CloseTray() => _inner.CloseTray();
+        public bool AcquireExclusiveAccess(string clientName) => _inner.AcquireExclusiveAccess(clientName);
+        public void ReleaseExclusiveAccess() => _inner.ReleaseExclusiveAccess();
+        public void Dispose() { }
+    }
 }

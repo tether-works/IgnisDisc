@@ -22,6 +22,8 @@ public sealed class UdfTreeReader
     private readonly long _sectors;
     private int _partitionStart;
     private List<(long Start, long Length)>? _metadataExtents;
+    private HashSet<Address>? _visitedIcbs;
+    private HashSet<long>? _visitedExtents;
 
     private UdfTreeReader(Stream image)
     {
@@ -35,13 +37,14 @@ public sealed class UdfTreeReader
     /// <summary>
     /// Reads the tree, or returns null when no usable UDF volume is found. Never throws for damaged data.
     /// </summary>
-    public static IsoDirectoryEntry? TryRead(Stream image, List<string>? skipped = null)
+    public static IsoDirectoryEntry? TryRead(Stream image, List<string>? skipped = null, int sessionStartLba = 0)
     {
         ArgumentNullException.ThrowIfNull(image);
+        ArgumentOutOfRangeException.ThrowIfNegative(sessionStartLba);
         var reader = new UdfTreeReader(image);
         try
         {
-            var root = reader.Read();
+            var root = reader.Read(sessionStartLba);
             skipped?.AddRange(reader.Skipped);
             return root;
         }
@@ -51,9 +54,10 @@ public sealed class UdfTreeReader
         }
     }
 
-    private IsoDirectoryEntry? Read()
+    private IsoDirectoryEntry? Read(int sessionStartLba)
     {
-        foreach (long anchor in new[] { 256L, _sectors - 1, _sectors - 257 })
+        long sessionAnchor = (long)sessionStartLba + 256;
+        foreach (long anchor in new[] { sessionAnchor, _sectors - 1, _sectors - 257 })
         {
             if (anchor < 0 || anchor >= _sectors || !TryTag(ReadSector(anchor), (uint)anchor, 2, out var avdp))
             {
@@ -75,8 +79,9 @@ public sealed class UdfTreeReader
         // Every anchor unreadable: look for the descriptor sequence itself near the start of the volume. A UDF
         // descriptor tag records the sector it was written to (ECMA-167 3/7.2.8, Tag Location), and the tag checksum
         // must match, so a Primary Volume Descriptor (tag 1) found at the sector its tag names starts a sequence.
-        long scanEnd = Math.Min(_sectors, VdsScanSectors);
-        for (long lba = 17; lba < scanEnd; lba++)
+        long scanStart = (long)sessionStartLba + 17;
+        long scanEnd = Math.Min(_sectors, (long)sessionStartLba + VdsScanSectors);
+        for (long lba = scanStart; lba < scanEnd; lba++)
         {
             if (TryTag(ReadSector(lba), (uint)lba, 1, out _))
             {
@@ -115,6 +120,8 @@ public sealed class UdfTreeReader
 
         _partitionStart = partitionStart;
         _metadataExtents = null;
+        _visitedIcbs = new HashSet<Address>();
+        _visitedExtents = new HashSet<long>();
 
         // Partition maps: type 1 (physical) and, for UDF 2.50+, type 2 "*UDF Metadata Partition".
         int mapCount = (int)BinaryPrimitives.ReadUInt32LittleEndian(lvd.AsSpan(268));
@@ -155,9 +162,15 @@ public sealed class UdfTreeReader
 
     private bool ReadDirectory(Address icb, IsoDirectoryEntry into, string path, int depth)
     {
-        if (depth > 64 || !TryEntry(icb, out var entry) || entry.FileType != 4)
+        if (depth > 64 || !(_visitedIcbs?.Add(icb) ?? true) || !TryEntry(icb, out var entry) || entry.FileType != 4)
         {
             Skipped.Add($"{(path == "" ? "/" : path)}: directory unreadable");
+            return false;
+        }
+
+        if (entry.Extents.Count > 0 && !(_visitedExtents?.Add(entry.Extents[0].Start) ?? true))
+        {
+            Skipped.Add($"{(path == "" ? "/" : path)}: cyclic directory extent");
             return false;
         }
 
@@ -353,11 +366,32 @@ public sealed class UdfTreeReader
     private static string? DecodeName(ReadOnlySpan<byte> d)
     {
         if (d.Length < 2) return null;
-        return d[0] switch
+        string? raw = d[0] switch
         {
             8 => Encoding.Latin1.GetString(d[1..]),
             16 => Encoding.BigEndianUnicode.GetString(d[1..]),
             _ => null
         };
+        if (string.IsNullOrEmpty(raw))
+        {
+            return null;
+        }
+
+        string cleaned = raw.Replace("\0", string.Empty);
+        if (string.IsNullOrEmpty(cleaned) || cleaned.Trim('/', '\\').Length == 0)
+        {
+            return null;
+        }
+
+        foreach (string segment in cleaned.Split(['/', '\\'], StringSplitOptions.RemoveEmptyEntries))
+        {
+            if (segment is "." or "..")
+            {
+                return null;
+            }
+        }
+
+        string sanitized = cleaned.Replace('/', '_').Replace('\\', '_');
+        return string.IsNullOrEmpty(sanitized) || sanitized is "." or ".." ? null : sanitized;
     }
 }

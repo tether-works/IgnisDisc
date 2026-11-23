@@ -25,6 +25,7 @@ public abstract class IsoEntry
 /// </summary>
 public class IsoFileEntry : IsoEntry
 {
+    internal IReadOnlyList<(int StartLba, long SizeBytes)>? Extents { get; init; }
 }
 
 /// <summary>
@@ -214,7 +215,12 @@ public sealed class IsoImageReader : IDisposable
             {
                 HasIso9660 = true;
                 PvdVolumeLabel = Encoding.ASCII.GetString(pvd.AsSpan(40, 32)).Trim();
-                TotalSectors = BinaryPrimitives.ReadInt32LittleEndian(pvd.AsSpan(80, 4));
+                uint rawTotalSectors = BinaryPrimitives.ReadUInt32LittleEndian(pvd.AsSpan(80, 4));
+                if (rawTotalSectors > int.MaxValue)
+                {
+                    throw new InvalidDataException($"Invalid ISO 9660 volume space size: {rawTotalSectors} sectors.");
+                }
+                TotalSectors = (int)rawTotalSectors;
 
                 uint isoRootLba = BinaryPrimitives.ReadUInt32LittleEndian(pvd.AsSpan(156 + 2, 4));
                 uint isoRootLength = BinaryPrimitives.ReadUInt32LittleEndian(pvd.AsSpan(156 + 10, 4));
@@ -284,8 +290,7 @@ public sealed class IsoImageReader : IDisposable
                 _stream.Position = avdpLba * OpticalConstants.DataSectorSize;
                 _stream.ReadExactly(avdpSector);
 
-                ushort tagId = BinaryPrimitives.ReadUInt16LittleEndian(avdpSector.AsSpan(0, 2));
-                if (tagId == 0x0002) // TAG_AVDP
+                if (IsValidEcma167Avdp(avdpSector, (uint)avdpLba))
                 {
                     HasUdf = true;
                 }
@@ -395,21 +400,15 @@ public sealed class IsoImageReader : IDisposable
             return Array.Empty<byte>();
         }
 
-        if (fileEntry.SizeBytes < 0 ||
-            fileEntry.SizeBytes > Array.MaxLength ||
-            fileEntry.StartLba < 0 ||
-            (long)fileEntry.StartLba * OpticalConstants.DataSectorSize + fileEntry.SizeBytes > _stream.Length)
+        if (fileEntry.SizeBytes < 0 || fileEntry.SizeBytes > Array.MaxLength)
         {
             throw new InvalidDataException(
-                $"File entry '{fileEntry.VirtualPath}' extent (LBA {fileEntry.StartLba}, size {fileEntry.SizeBytes}) exceeds ISO stream bounds ({_stream.Length} bytes).");
+                $"File entry '{fileEntry.VirtualPath}' extent (LBA {fileEntry.StartLba}, size {fileEntry.SizeBytes}) exceeds maximum readable byte array bounds.");
         }
 
+        using Stream stream = OpenFileStream(fileEntry);
         byte[] data = new byte[fileEntry.SizeBytes];
-        lock (_stream)
-        {
-            _stream.Position = (long)fileEntry.StartLba * OpticalConstants.DataSectorSize;
-            _stream.ReadExactly(data);
-        }
+        stream.ReadExactly(data);
         return data;
     }
 
@@ -428,12 +427,54 @@ public sealed class IsoImageReader : IDisposable
     }
 
     /// <summary>
-    /// Opens a readable stream for a given file entry.
+    /// Opens a readable, seekable streaming handle for a given file entry without buffering the file in memory.
     /// </summary>
     public Stream OpenFileStream(IsoFileEntry fileEntry)
     {
-        byte[] bytes = ReadFileBytes(fileEntry);
-        return new MemoryStream(bytes, writable: false);
+        ArgumentNullException.ThrowIfNull(fileEntry);
+
+        if (fileEntry.SizeBytes == 0)
+        {
+            return Stream.Null;
+        }
+
+        if (fileEntry.Extents is { Count: > 1 } extents)
+        {
+            bool contiguous = true;
+            long expectedNextOffset = (long)extents[0].StartLba * OpticalConstants.DataSectorSize;
+            for (int i = 0; i < extents.Count; i++)
+            {
+                var (extLba, extSize) = extents[i];
+                long extOffset = (long)extLba * OpticalConstants.DataSectorSize;
+                if (extSize < 0 || extLba < 0 || extOffset > _stream.Length - extSize)
+                {
+                    throw new InvalidDataException(
+                        $"File entry '{fileEntry.VirtualPath}' extent (LBA {extLba}, size {extSize}) exceeds ISO stream bounds ({_stream.Length} bytes).");
+                }
+
+                if (i > 0 && extOffset != expectedNextOffset)
+                {
+                    contiguous = false;
+                }
+                expectedNextOffset = extOffset + extSize;
+            }
+
+            if (!contiguous)
+            {
+                return new MultiExtentSegmentStream(_stream, extents);
+            }
+        }
+
+        long startOffset = (long)fileEntry.StartLba * OpticalConstants.DataSectorSize;
+        if (fileEntry.SizeBytes < 0 ||
+            fileEntry.StartLba < 0 ||
+            startOffset > _stream.Length - fileEntry.SizeBytes)
+        {
+            throw new InvalidDataException(
+                $"File entry '{fileEntry.VirtualPath}' extent (LBA {fileEntry.StartLba}, size {fileEntry.SizeBytes}) exceeds ISO stream bounds ({_stream.Length} bytes).");
+        }
+
+        return new BoundedSegmentStream(_stream, startOffset, fileEntry.SizeBytes, leaveOpen: true);
     }
 
     #region Internal Parsing Helpers
@@ -495,6 +536,28 @@ public sealed class IsoImageReader : IDisposable
 
         int offset = 0;
         int bytesRead = buffer.Length;
+        PendingMultiExtent? pendingMultiExtent = null;
+
+        void FlushPendingMultiExtent()
+        {
+            if (pendingMultiExtent == null)
+            {
+                return;
+            }
+
+            dirEntry.Children.Add(new IsoFileEntry
+            {
+                Name = pendingMultiExtent.Name,
+                VirtualPath = pendingMultiExtent.VirtualPath,
+                StartLba = pendingMultiExtent.FirstStartLba,
+                SizeBytes = pendingMultiExtent.TotalSizeBytes,
+                RecordingTimeUtc = pendingMultiExtent.RecordingTimeUtc,
+                IsDirectory = false,
+                IsHidden = pendingMultiExtent.IsHidden,
+                Extents = pendingMultiExtent.Extents.Count > 1 ? pendingMultiExtent.Extents : null
+            });
+            pendingMultiExtent = null;
+        }
 
         while (offset < bytesRead)
         {
@@ -523,6 +586,7 @@ public sealed class IsoImageReader : IDisposable
             byte flags = recordSpan[25];
             bool isDir = (flags & 0x02) != 0;
             bool isHidden = (flags & 0x01) != 0;
+            bool isMultiExtent = (flags & 0x80) != 0;
             byte identLen = recordSpan[32];
 
             if (identLen > 0 && offset + 33 + identLen <= bytesRead)
@@ -544,11 +608,15 @@ public sealed class IsoImageReader : IDisposable
                         ? Encoding.BigEndianUnicode.GetString(identSpan)
                         : Encoding.ASCII.GetString(identSpan);
 
-                    // Strip version suffix if present (;1)
-                    int semi = entryName.LastIndexOf(';');
-                    if (semi >= 0)
+                    // Strip version suffix (;1) and trailing padding dots only for ISO 9660 names;
+                    // Joliet filenames can legitimately contain ';' and trailing '.'.
+                    if (!isJoliet)
                     {
-                        entryName = entryName[..semi].TrimEnd('.');
+                        int semi = entryName.LastIndexOf(';');
+                        if (semi >= 0)
+                        {
+                            entryName = entryName[..semi].TrimEnd('.');
+                        }
                     }
 
                     entryName = entryName.Replace("/", string.Empty).Replace("\\", string.Empty).Replace("\0", string.Empty);
@@ -562,6 +630,7 @@ public sealed class IsoImageReader : IDisposable
 
                     if (isDir)
                     {
+                        FlushPendingMultiExtent();
                         var subDir = ParseDirectoryExtent(
                             childLba,
                             childSize,
@@ -575,19 +644,35 @@ public sealed class IsoImageReader : IDisposable
                         subDir.IsHidden = isHidden;
                         dirEntry.Children.Add(subDir);
                     }
+                    else if (pendingMultiExtent != null && string.Equals(pendingMultiExtent.Name, entryName, StringComparison.Ordinal))
+                    {
+                        pendingMultiExtent.AddExtent((int)childLba, childSize);
+                        if (!isMultiExtent)
+                        {
+                            FlushPendingMultiExtent();
+                        }
+                    }
                     else
                     {
-                        var file = new IsoFileEntry
+                        FlushPendingMultiExtent();
+                        if (isMultiExtent)
                         {
-                            Name = entryName,
-                            VirtualPath = childPath,
-                            StartLba = (int)childLba,
-                            SizeBytes = childSize,
-                            RecordingTimeUtc = recTime,
-                            IsDirectory = false,
-                            IsHidden = isHidden
-                        };
-                        dirEntry.Children.Add(file);
+                            pendingMultiExtent = new PendingMultiExtent(entryName, childPath, recTime, isHidden, (int)childLba, childSize);
+                        }
+                        else
+                        {
+                            var file = new IsoFileEntry
+                            {
+                                Name = entryName,
+                                VirtualPath = childPath,
+                                StartLba = (int)childLba,
+                                SizeBytes = childSize,
+                                RecordingTimeUtc = recTime,
+                                IsDirectory = false,
+                                IsHidden = isHidden
+                            };
+                            dirEntry.Children.Add(file);
+                        }
                     }
                 }
             }
@@ -595,7 +680,93 @@ public sealed class IsoImageReader : IDisposable
             offset += recordLen;
         }
 
+        FlushPendingMultiExtent();
         return dirEntry;
+    }
+
+    private sealed class PendingMultiExtent
+    {
+        public string Name { get; }
+        public string VirtualPath { get; }
+        public DateTime RecordingTimeUtc { get; }
+        public bool IsHidden { get; }
+        public int FirstStartLba { get; }
+        public long TotalSizeBytes { get; private set; }
+        public List<(int StartLba, long SizeBytes)> Extents { get; } = new();
+
+        public PendingMultiExtent(string name, string virtualPath, DateTime recordingTimeUtc, bool isHidden, int startLba, long sizeBytes)
+        {
+            Name = name;
+            VirtualPath = virtualPath;
+            RecordingTimeUtc = recordingTimeUtc;
+            IsHidden = isHidden;
+            FirstStartLba = startLba;
+            AddExtent(startLba, sizeBytes);
+        }
+
+        public void AddExtent(int startLba, long sizeBytes)
+        {
+            Extents.Add((startLba, sizeBytes));
+            TotalSizeBytes += sizeBytes;
+        }
+    }
+
+    private static bool IsValidEcma167Avdp(ReadOnlySpan<byte> sector, uint expectedLocation)
+    {
+        if (sector.Length < 512)
+        {
+            return false;
+        }
+
+        ushort tagId = BinaryPrimitives.ReadUInt16LittleEndian(sector.Slice(0, 2));
+        if (tagId != 0x0002) // TAG_AVDP
+        {
+            return false;
+        }
+
+        byte sum = 0;
+        for (int i = 0; i < 16; i++)
+        {
+            if (i != 4)
+            {
+                sum = (byte)(sum + sector[i]);
+            }
+        }
+        if (sum != sector[4])
+        {
+            return false;
+        }
+
+        uint tagLocation = BinaryPrimitives.ReadUInt32LittleEndian(sector.Slice(12, 4));
+        if (tagLocation != expectedLocation)
+        {
+            return false;
+        }
+
+        ushort expectedCrc = BinaryPrimitives.ReadUInt16LittleEndian(sector.Slice(8, 2));
+        ushort crcLength = BinaryPrimitives.ReadUInt16LittleEndian(sector.Slice(10, 2));
+        if (crcLength == 0 || 16 + crcLength > sector.Length)
+        {
+            return false;
+        }
+
+        return CalculateEcma167Crc(sector.Slice(16, crcLength)) == expectedCrc;
+    }
+
+    private static ushort CalculateEcma167Crc(ReadOnlySpan<byte> data)
+    {
+        ushort crc = 0;
+        foreach (byte b in data)
+        {
+            crc ^= (ushort)(b << 8);
+            for (int bit = 0; bit < 8; bit++)
+            {
+                crc = (crc & 0x8000) != 0
+                    ? (ushort)((crc << 1) ^ 0x1021)
+                    : (ushort)(crc << 1);
+            }
+        }
+        return crc;
     }
 
     private static DateTime ParseIsoDate(ReadOnlySpan<byte> span)
