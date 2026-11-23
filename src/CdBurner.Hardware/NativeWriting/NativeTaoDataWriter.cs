@@ -92,6 +92,12 @@ public sealed record NativeDataWriteResult
     /// <summary>How the disc was written, for logs and JSON (for example "disc-at-once (DVD-R)").</summary>
     public string WriteMode { get; init; } = "track-at-once, mode 1";
 
+    /// <summary>True when the session or disc was closed after writing.</summary>
+    public bool SessionClosed { get; init; }
+
+    /// <summary>True when the drive's table of contents was read back and matched what was written.</summary>
+    public bool TocChecked { get; init; }
+
     /// <summary>The drive's kB/s for 1x on this disc: 176.4 on CD (audio units, as drives count), 1,385 on DVD, 4,495.5 on
     /// Blu-ray.</summary>
     public double OneXKiloBytesPerSecond => IsBluRay ? 4495.5 : IsDvd ? 1385.0 : 176.4;
@@ -365,7 +371,19 @@ public sealed partial class NativeTaoDataWriter
         WaitUntilReady(FlushTimeout, CancellationToken.None, state, "while closing the session");
 
         // 8. A quick look at what the drive now reports: the data track where it was written.
-        string tocNote = append is { } added ? CheckAddedSession(added, state.ImageSectors, request.Mode2Form1) : CheckTableOfContents(startLba, state.ImageSectors);
+        string tocNote;
+        if (append is { } added)
+        {
+            tocNote = CheckAddedSession(added, state.ImageSectors, request.Mode2Form1);
+        }
+        else
+        {
+            (bool tocOk, tocNote) = CheckTableOfContents(startLba, state.ImageSectors);
+            if (!tocOk)
+            {
+                throw Stop($"The data was written, but the drive's table of contents did not match what was planned: {tocNote}");
+            }
+        }
         reporter.Report(trackSectors, "Done");
         return new NativeDataWriteResult
         {
@@ -379,7 +397,9 @@ public sealed partial class NativeTaoDataWriter
             SpeedSetKiloBytesPerSecond = state.SpeedSet,
             DriveSpeedsKiloBytesPerSecond = state.DriveSpeeds,
             DiscRecorded = true,
-            WriteMode = state.WriteMode
+            WriteMode = state.WriteMode,
+            SessionClosed = true,
+            TocChecked = true
         };
     }
 
@@ -520,7 +540,7 @@ public sealed partial class NativeTaoDataWriter
     }
 
     /// <summary>READ TOC format 0 after closing: track 1 must be a data track at the start LBA, ending after the image.</summary>
-    private string CheckTableOfContents(int startLba, int imageSectors)
+    private (bool Ok, string Note) CheckTableOfContents(int startLba, int imageSectors)
     {
         byte[] buffer = new byte[804];
         var r = _transport.ExecuteCommand(MmcCommandBuilder.BuildReadTocPmaAtipCdb(0x00, 1, (ushort)buffer.Length), buffer,
@@ -528,7 +548,7 @@ public sealed partial class NativeTaoDataWriter
         if (!r.IsSuccess || r.DataTransferLength < 20)
         {
             _note($"READ TOC after closing failed: {Describe(r)}");
-            return "The drive did not return the table of contents.";
+            return (false, "The drive did not return the table of contents.");
         }
 
         // Format 0: a 4-byte header (data length in bytes 0-1), then 8-byte descriptors, the lead-out (AAh) last.
@@ -551,7 +571,7 @@ public sealed partial class NativeTaoDataWriter
         }
         if (found < 0)
         {
-            return "The table of contents lists no tracks.";
+            return (false, "The table of contents lists no tracks.");
         }
 
         var track = buffer.AsSpan(4 + 8 * found, 8);
@@ -560,11 +580,11 @@ public sealed partial class NativeTaoDataWriter
         _note($"TOC: {entries - 1} track(s); track {track[2]} {(data ? "data" : "audio")} at LBA {trackStart}, lead-out at {leadOutLba}.");
         if (!data || trackStart != startLba || leadOutLba < startLba + imageSectors)
         {
-            return $"Unexpected table of contents (track {track[2]} {(data ? "data" : "audio")} at {trackStart}, lead-out {leadOutLba}).";
+            return (false, $"Unexpected table of contents (track {track[2]} {(data ? "data" : "audio")} at {trackStart}, lead-out {leadOutLba}).");
         }
-        return entries == 2
+        return (true, entries == 2
             ? $"Table of contents: one data track, {leadOutLba - trackStart:N0} sectors."
-            : $"Table of contents: {entries - 1} tracks, the last a data track of {leadOutLba - trackStart:N0} sectors.";
+            : $"Table of contents: {entries - 1} tracks, the last a data track of {leadOutLba - trackStart:N0} sectors.");
     }
 
     /// <summary>Where a new session goes on an open disc: the invisible track's number, start and free space, and the

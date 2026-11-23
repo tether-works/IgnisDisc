@@ -207,7 +207,8 @@ public sealed class PictureDiscTwoSessionBurner
         DataBurnResult picture;
         using (var pictureStream = new FileRangeStream(imagePath, 0, (long)layout.PictureEndLba * Sector))
         {
-            picture = await _service.BurnStreamAsync(recorder, pictureStream, SessionOptions(options, closeDisc: false),
+            picture = await _service.BurnStreamAsync(recorder, pictureStream,
+                SessionOptions(options, closeDisc: false, new SectorRange(0, layout.PictureEndLba)),
                 SessionProgress(progress, "Session 1 of 2 (picture): "), cancellationToken).ConfigureAwait(false);
         }
 
@@ -377,7 +378,7 @@ public sealed class PictureDiscTwoSessionBurner
         + $"so the files would end at sector {end:N0}, but the disc has {capacity:N0}. "
         + "Generate the image again with fewer files or for this disc. Nothing was written to the disc.";
 
-    private static DataBurnOptions SessionOptions(DataBurnOptions template, bool closeDisc) => new()
+    private static DataBurnOptions SessionOptions(DataBurnOptions template, bool closeDisc, SectorRange? pictureZone = null) => new()
     {
         Speed = template.Speed,
         Simulate = false,
@@ -387,6 +388,7 @@ public sealed class PictureDiscTwoSessionBurner
         VolumeLabel = template.VolumeLabel,
         OverwriteExistingData = false,
         DisableBufferUnderrunFree = template.DisableBufferUnderrunFree,
+        PictureZone = pictureZone,
     };
 
     private static PictureDiscTwoSessionResult Refused(string message) => new()

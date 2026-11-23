@@ -1,5 +1,6 @@
 using System.Text.Json;
 using CdBurner.Core.Images;
+using CdBurner.Core.Iso;
 using CdBurner.Core.Primitives;
 
 namespace CdBurner.Core.Audio;
@@ -110,6 +111,12 @@ public record AudioCdTrackItem(
     /// (identified by its <c>.disc-art.json</c> sidecar), rather than ordinary music.
     /// </summary>
     public bool HiddenAudioIsPreGapPicture { get; init; }
+
+    /// <summary>
+    /// True when this track holds a CD-DA surface picture track generated with <c>disc-art</c>
+    /// (identified by its <c>.disc-art.json</c> sidecar), rather than music.
+    /// </summary>
+    public bool IsPictureTrack { get; init; }
 
     /// <summary>CUE "FLAGS PRE": the track was mastered with pre-emphasis.</summary>
     public bool PreEmphasis { get; init; }
@@ -811,6 +818,7 @@ public class AudioCdCompilation
                     index00Lead = prevFrames > idx00Frame ? prevFrames - idx00Frame : 0;
                 }
 
+                bool isPictureTrack = DiscArtSidecarInfo.IsPictureTrack(audioFilePath);
                 AddTrack(new AudioCdTrackItem(
                     TrackNumber: trackNum,
                     SourceFilePath: audioFilePath,
@@ -829,6 +837,7 @@ public class AudioCdCompilation
                     HiddenAudioFrames = hiddenFrames,
                     HiddenAudioPcmStreamFactory = hiddenFactory,
                     HiddenAudioIsPreGapPicture = hiddenIsPreGapPicture,
+                    IsPictureTrack = isPictureTrack,
                     PreEmphasis = trk.Flags.Contains("PRE"),
                     CopyPermitted = trk.Flags.Contains("DCP")
                 });
@@ -898,6 +907,7 @@ public class AudioCdCompilation
                         hiddenFactory = Slice(0, hiddenFrames);
                     }
 
+                    bool isPictureTrack = DiscArtSidecarInfo.IsPictureTrack(audioFilePath);
                     AddTrack(new AudioCdTrackItem(
                         TrackNumber: trackNum,
                         SourceFilePath: audioFilePath,
@@ -918,6 +928,7 @@ public class AudioCdCompilation
                         HiddenAudioFrames = hiddenFrames,
                         HiddenAudioPcmStreamFactory = hiddenFrames > 0 ? hiddenFactory : null,
                         HiddenAudioIsPreGapPicture = hiddenFrames > 0 && hiddenIsPreGapPicture,
+                        IsPictureTrack = isPictureTrack,
                         PreEmphasis = trk.Flags.Contains("PRE"),
                         CopyPermitted = trk.Flags.Contains("DCP")
                     });
@@ -956,37 +967,7 @@ public class AudioCdCompilation
         return (frames, rawHtoa
             ? RawCdAudioFile.CreateSliceFactory(htoaPath, htoaStart, frames, string.Equals(htoaType, "MOTOROLA", StringComparison.OrdinalIgnoreCase))
             : new SingleFileAlbumSource(htoaPath, audioDecoder).CreateSliceFactory(htoaStart, frames),
-            IsPreGapPictureSidecar(htoaPath));
-    }
-
-    private static bool IsPreGapPictureSidecar(string audioPath)
-    {
-        string sidecarPath = Path.GetFullPath(audioPath) + ".disc-art.json";
-        if (!File.Exists(sidecarPath))
-        {
-            return false;
-        }
-
-        try
-        {
-            using var doc = JsonDocument.Parse(File.ReadAllText(sidecarPath));
-            JsonElement root = doc.RootElement;
-            if (!root.TryGetProperty("format", out JsonElement format)
-                || !string.Equals(format.GetString(), "ignisdisc-disc-art-v1", StringComparison.Ordinal))
-            {
-                return false;
-            }
-
-            return root.TryGetProperty("plan", out JsonElement plan)
-                && plan.TryGetProperty("cdPreGapSectors", out JsonElement preGap)
-                && preGap.ValueKind == JsonValueKind.Number
-                && preGap.TryGetInt64(out long sectors)
-                && sectors > 0;
-        }
-        catch (Exception ex) when (ex is JsonException or IOException or UnauthorizedAccessException)
-        {
-            return false;
-        }
+            DiscArtSidecarInfo.IsPreGapPicture(htoaPath));
     }
 
     private static int ProbeAudioFrames(string path, string fileType, IAudioDecoder? decoder)

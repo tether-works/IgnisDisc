@@ -119,11 +119,7 @@ public sealed class NativeAudioBurnEngine : IBurnEngineBackend, IAudioDiscVerifi
                 // A data disc: the drive reports its sessions and, while it is open, where the next one starts, and
                 // reads them back, as a real drive would.
                 var sessions = medium.Sessions.Select(s =>
-                {
-                    byte[] data = new byte[s.SectorCount * OpticalConstants.DataSectorSize];
-                    medium.ReadSectors(s.StartLba, s.SectorCount, data, OpticalConstants.DataSectorSize);
-                    return (s.StartLba, data);
-                }).ToList();
+                    (s.StartLba, ReadSessionBytesForDriveInit(medium, s.StartLba, s.SectorCount))).ToList();
                 drive.LoadDataSessions(sessions, medium.IsFinalized ? null : medium.NextWritableLba);
             }
             else if (sequential && !medium.IsBlank && medium.Sessions.Count >= 1
@@ -139,11 +135,7 @@ public sealed class NativeAudioBurnEngine : IBurnEngineBackend, IAudioDiscVerifi
                 if (medium.Sessions.Count > 1)
                 {
                     var appended = medium.Sessions.Skip(1).Select(s =>
-                    {
-                        byte[] data = new byte[s.SectorCount * OpticalConstants.DataSectorSize];
-                        medium.ReadSectors(s.StartLba, s.SectorCount, data, OpticalConstants.DataSectorSize);
-                        return (s.StartLba, data);
-                    }).ToList();
+                        (s.StartLba, ReadSessionBytesForDriveInit(medium, s.StartLba, s.SectorCount))).ToList();
                     drive.LoadAppendedDataSessions(appended, medium.IsFinalized ? null : medium.NextWritableLba);
                 }
             }
@@ -174,8 +166,37 @@ public sealed class NativeAudioBurnEngine : IBurnEngineBackend, IAudioDiscVerifi
                 drive.BackgroundFormatStatus = medium.IsBlank ? 0 : 3;
                 drive.FormatCapacitiesResponse = VirtualMmcDrive.BuildDvdPlusRwFormatCapacities(drive.CapacitySectors ?? 0, formatted: !medium.IsBlank);
             }
+            foreach (int badLba in medium.SimulatedBadLbas)
+            {
+                drive.ReadErrorLbas.Add(badLba);
+            }
+            foreach (int diffLba in medium.SimulatedReadDifferenceLbas)
+            {
+                drive.ReadBackDifferenceLbas.Add(diffLba);
+            }
         }
         return drive;
+    }
+
+    private static byte[] ReadSessionBytesForDriveInit(VirtualDiscMedium medium, int startLba, int sectorCount)
+    {
+        byte[] data = new byte[sectorCount * OpticalConstants.DataSectorSize];
+        for (int i = 0; i < sectorCount; i++)
+        {
+            int lba = startLba + i;
+            if (medium.SimulatedBadLbas.Contains(lba))
+            {
+                continue;
+            }
+            try
+            {
+                medium.ReadSector(lba, data.AsSpan(i * OpticalConstants.DataSectorSize, OpticalConstants.DataSectorSize), OpticalConstants.DataSectorSize);
+            }
+            catch (IOException)
+            {
+            }
+        }
+        return data;
     }
 
     public Task<BurnOperationResult> BurnAudioTracksAsync(
@@ -330,7 +351,8 @@ public sealed class NativeAudioBurnEngine : IBurnEngineBackend, IAudioDiscVerifi
             {
                 preGap = Math.Max(preGap, OpticalConstants.CdLeadInFrames + gapAudio); // two seconds after the data (Yellow Book)
             }
-            saoTracks.Add(new SaoTrack(i + 1, sectors, preGap, t.Isrc, gapAudio, t.PreEmphasis, t.CopyPermitted));
+            saoTracks.Add(new SaoTrack(i + 1, sectors, preGap, t.Isrc, gapAudio, t.PreEmphasis, t.CopyPermitted,
+                IsPictureTrack: t.IsPictureTrack, IsPreGapPicture: t.IsPreGapPicture));
         }
 
         int? speed = options.Speed is { Multiplier: > 0 } s ? (int)Math.Round(s.Multiplier * 176.4) : null;
@@ -507,7 +529,17 @@ public sealed class NativeAudioBurnEngine : IBurnEngineBackend, IAudioDiscVerifi
 
         if (result.Success)
         {
-            return BurnOperationResult.Succeeded(result.LeadInSectorsWritten + result.DataSectorsWritten + result.AudioSectorsWritten, result.Elapsed, result.AverageWriteMultiplier);
+            return new BurnOperationResult
+            {
+                Success = true,
+                Status = BurnStatus.Succeeded,
+                SectorsWritten = result.LeadInSectorsWritten + result.DataSectorsWritten + result.AudioSectorsWritten,
+                TotalTime = result.Elapsed,
+                AverageSpeedMultiplier = result.AverageWriteMultiplier,
+                WritesAccepted = result.DiscRecorded,
+                SessionClosed = result.DiscRecorded && result.DiscLeftOpen != false && result.DiscClosed != false,
+                TocChecked = result.Verification?.TocChecked ?? false
+            };
         }
 
         string message = result.StoppedBeforeWriting ? $"{result.Message} Nothing was written to the disc." : result.Message;

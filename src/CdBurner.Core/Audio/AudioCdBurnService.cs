@@ -656,6 +656,7 @@ public class AudioCdBurnService
                     PreGapPcmStreamFactory = preGapFactory,
                     PreGapAudioFrames = preGapAudioFrames,
                     IsPreGapPicture = isPreGapPicture,
+                    IsPictureTrack = trackItem.IsPictureTrack,
                     PreEmphasis = trackItem.PreEmphasis,
                     CopyPermitted = trackItem.CopyPermitted
                 });

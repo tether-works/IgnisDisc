@@ -1387,8 +1387,11 @@ public class ImageStudioViewModel : ObservableObject
             LastDirectBurnEngine = directEngine;
             IBurnEngineBackend dataEngine = directEngine ?? _burnEngine;
 
+            bool hasPictureZone = false;
+            DataBurnResult? dataPictureResult = null;
             if (ext == ".iso")
             {
+                hasPictureZone = DiscArtSidecarInfo.TryReadPictureZone(SourceImagePath, out SectorRange pictureZone, out _);
                 var dataService = directEngine != null ? new DataBurnService(directEngine) : _dataBurnService;
                 var dataResult = await dataService.BurnIsoFileAsync(
                     recorder,
@@ -1398,10 +1401,13 @@ public class ImageStudioViewModel : ObservableObject
                         VolumeLabel = Path.GetFileNameWithoutExtension(SourceImagePath),
                         CloseDisc = true,
                         Speed = SelectedWriteSpeed,
-                        OverwriteExistingData = replaceAllowed
+                        OverwriteExistingData = replaceAllowed,
+                        VerifyAfterBurn = hasPictureZone && (VerifyAfterBurn || directEngine != null),
+                        PictureZone = hasPictureZone ? pictureZone : null
                     },
                     progress,
                     linkedToken);
+                dataPictureResult = hasPictureZone ? dataResult : null;
 
                 burnResult = dataResult.Success
                     ? BurnOperationResult.Succeeded(dataResult.SectorsWritten, dataResult.TotalTime, dataResult.AverageSpeedMultiplier)
@@ -1453,7 +1459,14 @@ public class ImageStudioViewModel : ObservableObject
                 BurnProgress = 100.0;
 
                 // Automatic verification; a direct burn is always read back.
-                if (VerifyAfterBurn || directEngine?.LastResult is { DiscRecorded: true })
+                if (dataPictureResult is { HasPictureZone: true } picResult)
+                {
+                    if (!string.IsNullOrWhiteSpace(picResult.VerificationNote))
+                    {
+                        StatusMessage = $"{picResult.VerificationNote}{how}";
+                    }
+                }
+                else if (VerifyAfterBurn || directEngine?.LastResult is { DiscRecorded: true })
                 {
                     StatusMessage = Strings.StatusImageStudioBurnCompleteVerifyingDiscBitFor;
                     await VerifyDiscAgainstImageAsync(recorder.UniqueId, linkedToken);

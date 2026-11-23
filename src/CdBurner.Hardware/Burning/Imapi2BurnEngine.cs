@@ -249,7 +249,17 @@ public class Imapi2BurnEngine : IBurnEngineBackend, ISecureAudioReader
                 }
             }
 
-            return BurnOperationResult.Succeeded(sectorsWritten, sw.Elapsed, speedMultiplier);
+            return new BurnOperationResult
+            {
+                Success = true,
+                Status = BurnStatus.Succeeded,
+                SectorsWritten = sectorsWritten,
+                TotalTime = sw.Elapsed,
+                AverageSpeedMultiplier = speedMultiplier,
+                WritesAccepted = !options.Simulate,
+                SessionClosed = !options.Simulate,
+                TocChecked = false
+            };
         }
         catch (OperationCanceledException oce)
         {

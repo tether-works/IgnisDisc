@@ -325,6 +325,10 @@ public sealed partial class NativeTaoDataWriter
         if (mode == DvdWriteMode.DiscAtOnce)
         {
             _note("Disc-At-Once: the drive closed the disc after SYNCHRONIZE CACHE; no CLOSE command is sent.");
+            if (ReadDiscInformation() is { Status: not 2 } after)
+            {
+                throw Stop($"The data was written Disc-At-Once, but the drive did not close the disc (disc status {after.Status}). The disc may not be readable.");
+            }
             closing = "The data was written Disc-At-Once and the disc closed.";
         }
         else
@@ -362,13 +366,27 @@ public sealed partial class NativeTaoDataWriter
         }
 
         // 8. A quick look at what the drive now reports.
-        string tocNote = append is { } added ? CheckAddedSession(added, state.ImageSectors) : CheckTableOfContents(startLba, state.ImageSectors);
+        string tocNote;
+        if (append is { } added)
+        {
+            tocNote = CheckAddedSession(added, state.ImageSectors);
+        }
+        else
+        {
+            (bool tocOk, tocNote) = CheckTableOfContents(startLba, state.ImageSectors);
+            if (!tocOk)
+            {
+                throw Stop($"The data was written, but the drive's table of contents did not match what was planned: {tocNote}");
+            }
+        }
         reporter.Report(trackSectors, "Done");
         return DvdResult(state, clock, writing, trackSectors) with
         {
             Success = true,
             Message = closing + " " + tocNote,
-            DiscRecorded = true
+            DiscRecorded = true,
+            SessionClosed = true,
+            TocChecked = true
         };
     }
 

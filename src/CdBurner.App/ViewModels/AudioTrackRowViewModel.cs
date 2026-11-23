@@ -67,6 +67,9 @@ public class AudioTrackRowViewModel : ObservableObject
     /// <summary>True when <see cref="HiddenAudioPcmStreamFactory"/> holds a byte-level pre-gap picture.</summary>
     public bool HiddenAudioIsPreGapPicture { get; set; }
 
+    /// <summary>True when this row holds a CD-DA surface picture track generated with <c>disc-art</c>.</summary>
+    public bool IsPictureTrack { get; set; }
+
     /// <summary>The decoded single-file album this row is a slice of, so its buffer is released after a burn.</summary>
     public CdBurner.Core.Audio.SingleFileAlbumSource? AlbumSource { get; set; }
 

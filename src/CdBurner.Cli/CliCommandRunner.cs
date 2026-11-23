@@ -772,6 +772,11 @@ public static partial class CliCommandRunner
                 totalTime = result.TotalTime.ToString(),
                 totalTimeSeconds = result.TotalTime.TotalSeconds,
                 averageSpeedMultiplier = result.AverageSpeedMultiplier,
+                writesAccepted = result.WritesAccepted,
+                sessionClosed = result.SessionClosed,
+                tocChecked = result.TocChecked,
+                filesCompared = result.FilesCompared,
+                pictureAreaCompared = result.HasPictureZone ? result.PictureAreaCompared : (bool?)null,
                 verified = result.Verified,
                 verificationNote = result.VerificationNote,
                 directWrite = NativeDataJson(nativeEngine),
@@ -945,6 +950,11 @@ public static partial class CliCommandRunner
                 totalTime = result.TotalTime.ToString(),
                 totalTimeSeconds = result.TotalTime.TotalSeconds,
                 averageSpeedMultiplier = result.AverageSpeedMultiplier,
+                writesAccepted = result.WritesAccepted,
+                sessionClosed = result.SessionClosed,
+                tocChecked = result.TocChecked,
+                filesCompared = result.FilesCompared,
+                pictureAreaCompared = result.HasPictureZone ? result.PictureAreaCompared : (bool?)null,
                 verified = result.Verified,
                 verificationNote = result.VerificationNote,
                 warning = result.Warning,
@@ -1287,6 +1297,12 @@ public static partial class CliCommandRunner
 
         var verification = nativeEngine?.LastResult?.Verification;
         var recoveryManifest = audioBurnService.LastRecoveryManifest;
+        bool? audioVerified = verification == null
+            ? null
+            : (verification.Passed && (!verification.HasPictureArea || verification.AudioCompared || verification.DataTrackCompared));
+        bool? fillPictureAreaCompared = pictureSession?.StartLba != null && audioBurnService.LastDataSessionSectors > 0
+            ? false
+            : (bool?)null;
 
         if (cmd.IsJson)
         {
@@ -1329,7 +1345,14 @@ public static partial class CliCommandRunner
                 discStillBlank = nativeEngine?.LastResult?.DiscStillBlankAfterTestWrite,
                 testWritePassedFirst = nativeEngine?.LastTestWritePassed,
                 discRecorded = nativeEngine?.LastResult?.DiscRecorded,
-                verified = verification?.Passed,
+                writesAccepted = nativeEngine != null ? nativeEngine.LastResult?.DiscRecorded : (bool?)(result.Success && !testWrite),
+                sessionClosed = nativeEngine != null ? (nativeEngine.LastResult is { DiscRecorded: true, DiscLeftOpen: not false, DiscClosed: not false }) : (bool?)(result.Success && !testWrite),
+                tocChecked = verification?.TocChecked,
+                cdTextChecked = verification?.CdTextChecked,
+                audioCompared = verification?.AudioCompared,
+                dataTrackCompared = verification?.DataTrackCompared,
+                pictureAreaCompared = verification is { HasPictureArea: true } ? verification.PictureAreaCompared : fillPictureAreaCompared,
+                verified = audioVerified,
                 verifyMessage = verification?.Message,
                 readBackOffsetSamples = verification?.OffsetSamples,
                 samplesCompared = verification?.SamplesCompared,
@@ -1817,6 +1840,11 @@ public static partial class CliCommandRunner
                 totalTimeSeconds = result.TotalTime.TotalSeconds,
                 averageSpeedMultiplier = result.AverageSpeedMultiplier,
                 testWrite,
+                writesAccepted = result.WritesAccepted,
+                sessionClosed = result.SessionClosed,
+                tocChecked = result.TocChecked,
+                filesCompared = result.FilesCompared,
+                pictureAreaCompared = result.HasPictureZone ? result.PictureAreaCompared : (bool?)null,
                 verified = result.Verified,
                 verificationNote = result.VerificationNote,
                 layerBreak = layerBreak == null ? null : new
@@ -3284,6 +3312,11 @@ public static partial class CliCommandRunner
                 success = result.Success,
                 driveId = recorder.UniqueId,
                 cueSheet = Path.GetFullPath(cuePath),
+                tocChecked = v?.TocChecked,
+                cdTextChecked = v?.CdTextChecked,
+                audioCompared = v?.AudioCompared,
+                dataTrackCompared = v?.DataTrackCompared,
+                pictureAreaCompared = v is { HasPictureArea: true } ? v.PictureAreaCompared : (bool?)null,
                 message = v?.Message ?? result.ErrorMessage,
                 offsetSamples = v?.OffsetSamples,
                 samplesCompared = v?.SamplesCompared,

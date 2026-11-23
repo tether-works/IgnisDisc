@@ -134,13 +134,19 @@ public sealed partial class NativeTaoDataWriter
             }
         }
 
-        string tocNote = CheckTableOfContents(0, state.ImageSectors);
+        (bool tocOk, string tocNote) = CheckTableOfContents(0, state.ImageSectors);
+        if (!tocOk)
+        {
+            throw Stop($"The data was written, but the drive's table of contents did not match what was planned: {tocNote}");
+        }
         reporter.Report(trackSectors, "Done");
         return DvdResult(state, clock, writing, trackSectors) with
         {
             Success = true,
             Message = closing + " " + tocNote,
-            DiscRecorded = true
+            DiscRecorded = true,
+            SessionClosed = true,
+            TocChecked = true
         };
     }
 }

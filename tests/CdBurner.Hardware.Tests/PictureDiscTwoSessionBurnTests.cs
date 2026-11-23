@@ -233,8 +233,13 @@ public sealed class PictureDiscTwoSessionBurnTests : IDisposable
         Dictionary<string, byte[]> files, int expectedStart, PictureDiscTwoSessionResult result)
     {
         Assert.Equal(expectedStart, result.FilesSessionStartLba);
-        Assert.True(result.PictureSession!.Verified);
+        Assert.False(result.PictureSession!.Verified);
+        Assert.False(result.PictureSession.PictureAreaCompared);
+        Assert.True(result.PictureSession.WritesAccepted);
+        Assert.True(result.PictureSession.SessionClosed);
+        Assert.True(result.PictureSession.TocChecked);
         Assert.True(result.FilesSession!.Verified);
+        Assert.True(result.FilesSession.FilesCompared);
 
         // Two sessions: the picture from sector 0, the files where the drive put the next one; disc closed.
         Assert.Equal(2, medium.Sessions.Count);

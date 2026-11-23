@@ -119,7 +119,17 @@ public sealed class NativeDataBurnEngine : IBurnEngineBackend, IWriterMediaStatu
         imageStream.Position = start;
         if (result.Success)
         {
-            return BurnOperationResult.Succeeded(result.DataSectorsWritten, result.Elapsed, result.AverageWriteMultiplier);
+            return new BurnOperationResult
+            {
+                Success = true,
+                Status = BurnStatus.Succeeded,
+                SectorsWritten = result.DataSectorsWritten,
+                TotalTime = result.Elapsed,
+                AverageSpeedMultiplier = result.AverageWriteMultiplier,
+                WritesAccepted = result.DiscRecorded,
+                SessionClosed = result.SessionClosed,
+                TocChecked = result.TocChecked
+            };
         }
 
         string message = result.StoppedBeforeWriting ? $"{result.Message} Nothing was written to the disc." : result.Message;
@@ -318,6 +328,22 @@ public sealed class NativeDataBurnEngine : IBurnEngineBackend, IWriterMediaStatu
         medium.IsFinalized = !overwriteOnly && drive.DiscStatus == 2;
         medium.NextWritableLba = !overwriteOnly && drive.NextSessionAddress is int next ? next : start + sectors;
         medium.UsedSectors = Math.Max(medium.UsedSectors, start + sectors);
+        if (drive.ReadErrorAtLba is int readErr)
+        {
+            medium.SimulatedBadLbas.Add(readErr);
+        }
+        foreach (int badLba in drive.ReadErrorLbas)
+        {
+            medium.SimulatedBadLbas.Add(badLba);
+        }
+        if (drive.ReadBackDifferenceAtLba is int readDiff)
+        {
+            medium.SimulatedReadDifferenceLbas.Add(readDiff);
+        }
+        foreach (int diffLba in drive.ReadBackDifferenceLbas)
+        {
+            medium.SimulatedReadDifferenceLbas.Add(diffLba);
+        }
     }
 
     /// <summary>Discs the direct writer adds a session to (left open by an earlier burn).</summary>

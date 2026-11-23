@@ -260,9 +260,34 @@ public class DataBurnService
             return DataBurnResult.Failed($"ISO image file not found: {isoFilePath}");
         }
 
+        if (burnOptions?.PictureZone == null && DiscArtSidecarInfo.TryReadPictureZone(isoFilePath, out SectorRange pictureZone, out _))
+        {
+            burnOptions = WithPictureZone(burnOptions, pictureZone);
+        }
+
         await using var fileStream = new FileStream(isoFilePath, FileMode.Open, FileAccess.Read, FileShare.Read);
         return await BurnStreamAsync(recorder, fileStream, burnOptions, progress, cancellationToken);
     }
+
+    private static DataBurnOptions WithPictureZone(DataBurnOptions? options, SectorRange pictureZone) =>
+        options == null
+            ? new DataBurnOptions { PictureZone = pictureZone }
+            : new DataBurnOptions
+            {
+                Speed = options.Speed,
+                Simulate = options.Simulate,
+                EjectWhenDone = options.EjectWhenDone,
+                EjectAfterBurn = options.EjectAfterBurn,
+                VerifyAfterBurn = options.VerifyAfterBurn,
+                StrictVerify = options.StrictVerify,
+                CloseDisc = options.CloseDisc,
+                VolumeLabel = options.VolumeLabel,
+                OverwriteExistingData = options.OverwriteExistingData,
+                LayerBreakSectors = options.LayerBreakSectors,
+                DisableBufferUnderrunFree = options.DisableBufferUnderrunFree,
+                CdRomXaMode2Form1 = options.CdRomXaMode2Form1,
+                PictureZone = pictureZone
+            };
 
     /// <summary>
     /// Burns an arbitrary data image stream to the target recorder.
@@ -387,30 +412,80 @@ public class DataBurnService
             leftOpenNote = NotLeftOpenMessage;
         }
 
+        bool hasPictureZone = burnOptions.PictureZone is { Count: > 0 };
         bool verified = false;
+        bool? filesCompared = burnOptions.Simulate ? null : false;
+        bool? pictureAreaCompared = hasPictureZone && !burnOptions.Simulate ? false : null;
         string? verificationNote = null;
         if (verifyRequested && !burnOptions.Simulate)
         {
             int sectorsWritten = burnResult.SectorsWritten > 0 ? burnResult.SectorsWritten : estimatedSectors;
-            var verifyResult = await VerifyBurnedDiscAsync(
-                recorder,
-                imageStream,
-                sectorsWritten,
-                initialStreamPosition,
-                burnStartLba,
-                burnOptions.StrictVerify,
-                progress,
-                cancellationToken);
-            verificationNote = verifyResult.Note;
-            if (!verifyResult.Success)
+            if (burnOptions.PictureZone is { Count: > 0 } picZone)
             {
-                if (ejectRequested)
+                int picStartRel = Math.Clamp(picZone.Start, 0, sectorsWritten);
+                int picEndRel = Math.Clamp(picZone.Start + picZone.Count, picStartRel, sectorsWritten);
+                bool hasNonPictureSectors = picStartRel > 0 || picEndRel < sectorsWritten;
+                if (!hasNonPictureSectors)
                 {
-                    try { recorder.EjectMedia(); } catch { }
+                    verified = false;
+                    filesCompared = false;
+                    pictureAreaCompared = false;
+                    verificationNote = FormatPictureOnlySummary(burnResult);
                 }
-                return DataBurnResult.Failed(verifyResult.ErrorMessage ?? "Post-burn verification failed.");
+                else
+                {
+                    var verifyResult = await VerifyNonPictureRangesAsync(
+                        recorder,
+                        imageStream,
+                        sectorsWritten,
+                        initialStreamPosition,
+                        burnStartLba,
+                        picStartRel,
+                        picEndRel,
+                        burnOptions.StrictVerify,
+                        progress,
+                        cancellationToken);
+                    if (!verifyResult.Success)
+                    {
+                        if (ejectRequested)
+                        {
+                            try { recorder.EjectMedia(); } catch { }
+                        }
+                        return DataBurnResult.Failed(verifyResult.ErrorMessage ?? "Post-burn verification failed.");
+                    }
+                    verified = true;
+                    filesCompared = true;
+                    pictureAreaCompared = false;
+                    verificationNote = JoinNotes(verifyResult.Note, "Picture area was not compared.");
+                }
             }
-            verified = true;
+            else
+            {
+                var verifyResult = await VerifyBurnedDiscAsync(
+                    recorder,
+                    imageStream,
+                    sectorsWritten,
+                    initialStreamPosition,
+                    burnStartLba,
+                    burnOptions.StrictVerify,
+                    progress,
+                    cancellationToken);
+                verificationNote = verifyResult.Note;
+                if (!verifyResult.Success)
+                {
+                    if (ejectRequested)
+                    {
+                        try { recorder.EjectMedia(); } catch { }
+                    }
+                    return DataBurnResult.Failed(verifyResult.ErrorMessage ?? "Post-burn verification failed.");
+                }
+                verified = true;
+                filesCompared = true;
+            }
+        }
+        else if (hasPictureZone && !burnOptions.Simulate)
+        {
+            verificationNote = "Picture area was not compared.";
         }
 
         if (ejectRequested)
@@ -424,15 +499,43 @@ public class DataBurnService
             }
         }
 
-        var succeeded = DataBurnResult.Succeeded(
-            burnResult.SectorsWritten,
-            burnResult.TotalTime,
-            burnResult.AverageSpeedMultiplier,
-            verified,
-            verificationNote);
-        succeeded.Warning = leftOpenNote;
+        var succeeded = new DataBurnResult
+        {
+            Success = true,
+            Status = BurnStatus.Succeeded,
+            SectorsWritten = burnResult.SectorsWritten,
+            TotalTime = burnResult.TotalTime,
+            AverageSpeedMultiplier = burnResult.AverageSpeedMultiplier,
+            WritesAccepted = burnResult.WritesAccepted,
+            SessionClosed = burnResult.SessionClosed,
+            TocChecked = burnResult.TocChecked,
+            Verified = verified,
+            VerificationNote = verificationNote,
+            HasPictureZone = hasPictureZone,
+            FilesCompared = filesCompared,
+            PictureAreaCompared = pictureAreaCompared,
+            Warning = leftOpenNote
+        };
         return succeeded;
     }
+
+    private static string FormatPictureOnlySummary(BurnOperationResult burnResult)
+    {
+        if (burnResult.WritesAccepted && burnResult.SessionClosed && burnResult.TocChecked)
+        {
+            return "All writes accepted, session closed, table of contents matches; picture area was not compared.";
+        }
+        if (burnResult.WritesAccepted && burnResult.SessionClosed)
+        {
+            return "All writes accepted, session closed; picture area was not compared.";
+        }
+        return "Picture area was not compared.";
+    }
+
+    private static string? JoinNotes(string? first, string? second) =>
+        string.IsNullOrWhiteSpace(first) ? second :
+        string.IsNullOrWhiteSpace(second) ? first :
+        $"{first} {second}";
 
     /// <summary>
     /// Shown when a burn asked to leave the disc open, but the disc came out overwrite-only. Windows' writer does this
@@ -511,6 +614,110 @@ public class DataBurnService
         {
             string where = ripResult.BadSectorsList.Count > 0 ? DescribeFiles(ripResult.BadSectorsList, fileMap) : string.Empty;
             return (false, (ripResult.ErrorMessage ?? "Failed to read burned sectors during verification.") + where, null);
+        }
+
+        if (mismatchedLbas.Count > 0)
+        {
+            return (false,
+                $"Verification failed: {mismatchedLbas.Count} sector(s) on the disc differ from the image, starting at sector {mismatchedLbas[0]}." +
+                DescribeFiles(mismatchedLbas, fileMap), null);
+        }
+
+        if (manifestCheck != null)
+        {
+            var check = manifestCheck.Finish();
+            string lists = string.Join(" and ", check.ManifestNames);
+            if (!check.Passed)
+            {
+                var bad = check.MismatchedFiles.Concat(check.MissingFiles.Select(p => p + " (missing)")).ToList();
+                return (false,
+                    $"Verification failed: {bad.Count} file(s) on the disc do not match its {lists}: " +
+                    string.Join(", ", bad.Take(10)) + (bad.Count > 10 ? ", ..." : "") + ".", null);
+            }
+            notes.Add($"All {check.FilesChecked} file(s) match the disc's {lists}." +
+                (check.FilesNotLookedUp > 0 ? $" {check.FilesNotLookedUp} file(s) with UDF-only names were checked by sector compare only." : ""));
+        }
+
+        return (true, null, notes.Count > 0 ? string.Join(" ", notes) : null);
+    }
+
+    /// <summary>
+    /// Compares every sector outside the picture zone <c>[picStartRel, picEndRel)</c> against the image and checks any
+    /// root SHA256SUMS/BLAKE3SUMS manifest without reading back or comparing the picture zone itself.
+    /// </summary>
+    private async Task<(bool Success, string? ErrorMessage, string? Note)> VerifyNonPictureRangesAsync(
+        IDiscRecorderBackend recorder,
+        Stream sourceStream,
+        int sectorCount,
+        long initialStreamPosition,
+        int startLba,
+        int picStartRel,
+        int picEndRel,
+        bool strict,
+        IProgress<BurnProgressSnapshot>? progress,
+        CancellationToken cancellationToken)
+    {
+        var notes = new List<string>();
+        var (fileMap, manifestCheck, manifestError) = await Task.Run(
+            () => ReadDiscLayout(recorder, startLba, sectorCount, strict, cancellationToken), cancellationToken).ConfigureAwait(false);
+        if (manifestError != null)
+        {
+            return (false, manifestError, null);
+        }
+
+        var ranges = new List<(int OffsetRel, int Count)>(2);
+        if (picStartRel > 0)
+        {
+            ranges.Add((0, picStartRel));
+        }
+        if (picEndRel < sectorCount)
+        {
+            ranges.Add((picEndRel, sectorCount - picEndRel));
+        }
+
+        byte[] expected = new byte[OpticalConstants.DataSectorSize];
+        var mismatchedLbas = new List<int>();
+        string? cacheNote = null;
+
+        foreach (var (offsetRel, count) in ranges)
+        {
+            if (sourceStream.CanSeek)
+            {
+                sourceStream.Position = initialStreamPosition + (long)offsetRel * OpticalConstants.DataSectorSize;
+            }
+
+            var ripResult = await _burnEngine.ReadSectorsForVerifyAsync(
+                recorder,
+                startLba + offsetRel,
+                count,
+                sectorConsumer: async (lba, sectorData) =>
+                {
+                    int read = await ReadSectorFullyAsync(sourceStream, expected, cancellationToken).ConfigureAwait(false);
+                    if (read < expected.Length)
+                    {
+                        Array.Clear(expected, read, expected.Length - read);
+                    }
+                    if (!sectorData.Span.SequenceEqual(expected))
+                    {
+                        mismatchedLbas.Add(lba);
+                    }
+                    manifestCheck?.AddSector(lba, sectorData.Span);
+                },
+                progress,
+                cancellationToken,
+                strict).ConfigureAwait(false);
+
+            if (cacheNote == null && ripResult.Note != null)
+            {
+                cacheNote = ripResult.Note;
+                notes.Add(ripResult.Note);
+            }
+
+            if (!ripResult.Success)
+            {
+                string where = ripResult.BadSectorsList.Count > 0 ? DescribeFiles(ripResult.BadSectorsList, fileMap) : string.Empty;
+                return (false, (ripResult.ErrorMessage ?? "Failed to read burned sectors during verification.") + where, null);
+            }
         }
 
         if (mismatchedLbas.Count > 0)
@@ -648,6 +855,15 @@ public class DataBurnResult : BurnOperationResult
     /// </summary>
     public string? ImagePath { get; init; }
 
+    /// <summary>True when a picture zone was excluded from read-back comparison.</summary>
+    public bool HasPictureZone { get; init; }
+
+    /// <summary>Whether files on the disc were read back and compared (null when simulated).</summary>
+    public bool? FilesCompared { get; init; }
+
+    /// <summary>Whether the picture zone on the disc was compared (null when the burn has no picture zone).</summary>
+    public bool? PictureAreaCompared { get; init; }
+
     public static DataBurnResult Succeeded(
         int sectorsWritten,
         TimeSpan duration,
@@ -689,6 +905,9 @@ public class DataBurnResult : BurnOperationResult
         SectorsWritten = result.SectorsWritten,
         TotalTime = result.TotalTime,
         AverageSpeedMultiplier = result.AverageSpeedMultiplier,
+        WritesAccepted = result.WritesAccepted,
+        SessionClosed = result.SessionClosed,
+        TocChecked = result.TocChecked,
         Exception = result.Exception,
         Verified = verified
     };

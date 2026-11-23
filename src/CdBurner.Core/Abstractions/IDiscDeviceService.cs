@@ -283,6 +283,15 @@ public class BurnOperationResult
     /// <summary>Source files a burn refused because they are damaged (see <see cref="AudioBurnOptions.AllowDamagedAudio"/>).</summary>
     public IReadOnlyList<string>? DamagedAudioFiles { get; init; }
 
+    /// <summary>True when all WRITE commands for a real burn were accepted by the drive.</summary>
+    public bool WritesAccepted { get; init; }
+
+    /// <summary>True when the session or disc was closed after writing.</summary>
+    public bool SessionClosed { get; init; }
+
+    /// <summary>True when the drive's table of contents was read back and matched what was written.</summary>
+    public bool TocChecked { get; init; }
+
     public static BurnOperationResult Succeeded(int sectorsWritten, TimeSpan duration, double avgSpeed = 0.0) => new()
     {
         Success = true,
@@ -403,6 +412,12 @@ public class DataBurnOptions
     /// write Mode 1.
     /// </summary>
     public bool CdRomXaMode2Form1 { get; init; }
+
+    /// <summary>
+    /// Optional 0-based sector range within the image/stream that holds a disc-surface picture zone. Sectors inside
+    /// this range are not read back or compared during post-burn verification; sectors outside it are still verified.
+    /// </summary>
+    public SectorRange? PictureZone { get; init; }
 }
 
 /// <summary>
@@ -544,6 +559,12 @@ public class AudioTrackSource
     /// CIRC interleaving requires any write-offset shift to be a multiple of 6 stereo samples (one 24-byte frame).
     /// </summary>
     public bool IsPreGapPicture { get; init; }
+
+    /// <summary>
+    /// True when this track holds a CD-DA surface picture track (generated with <c>disc-art</c>). Its sectors are
+    /// written and checked in the table of contents, not read back and compared sample-for-sample.
+    /// </summary>
+    public bool IsPictureTrack { get; init; }
 
     /// <summary>The track was mastered with pre-emphasis (CUE "FLAGS PRE").</summary>
     public bool PreEmphasis { get; init; }

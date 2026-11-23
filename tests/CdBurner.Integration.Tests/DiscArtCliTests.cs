@@ -273,8 +273,14 @@ public sealed class DiscArtCliTests : IDisposable
         Assert.True(code == 0, error + root);
         Assert.True(root.GetProperty("success").GetBoolean());
         Assert.True(root.GetProperty("twoSessions").GetBoolean());
-        Assert.True(root.GetProperty("pictureVerified").GetBoolean());
+        Assert.True(root.GetProperty("writesAccepted").GetBoolean());
+        Assert.True(root.GetProperty("sessionClosed").GetBoolean());
+        Assert.True(root.GetProperty("tocChecked").GetBoolean());
+        Assert.False(root.GetProperty("pictureAreaCompared").GetBoolean());
+        Assert.True(root.GetProperty("filesCompared").GetBoolean());
+        Assert.False(root.GetProperty("pictureVerified").GetBoolean());
         Assert.True(root.GetProperty("filesVerified").GetBoolean());
+        Assert.Contains("picture area was not compared", root.GetProperty("verificationNote").GetString(), StringComparison.OrdinalIgnoreCase);
 
         // DVD+R on the GP60NB50: the next session starts 2,048 sectors after the last one ends (measured 2026-11-13).
         int pictureEnd = plan.GetProperty("pictureEndLba").GetInt32();
@@ -418,7 +424,13 @@ public sealed class DiscArtCliTests : IDisposable
         using JsonDocument doc = JsonDocument.Parse(output);
         Assert.True(doc.RootElement.GetProperty("success").GetBoolean());
         Assert.True(doc.RootElement.GetProperty("native").GetBoolean());
-        Assert.True(doc.RootElement.GetProperty("verified").GetBoolean());
+        Assert.True(doc.RootElement.GetProperty("writesAccepted").GetBoolean());
+        Assert.True(doc.RootElement.GetProperty("sessionClosed").GetBoolean());
+        Assert.True(doc.RootElement.GetProperty("tocChecked").GetBoolean());
+        Assert.False(doc.RootElement.GetProperty("audioCompared").GetBoolean());
+        Assert.False(doc.RootElement.GetProperty("pictureAreaCompared").GetBoolean());
+        Assert.False(doc.RootElement.GetProperty("verified").GetBoolean());
+        Assert.Contains("picture area was not compared", doc.RootElement.GetProperty("verifyMessage").GetString(), StringComparison.OrdinalIgnoreCase);
         Assert.Equal(1, doc.RootElement.GetProperty("trackCount").GetInt32());
         VirtualTrack track = Assert.Single(Assert.Single(medium.Sessions).Tracks);
         Assert.True(track.IsAudio);

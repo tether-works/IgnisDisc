@@ -213,8 +213,20 @@ public sealed class VirtualMmcDrive : IScsiTransport
     /// <summary>READ CD returns this sector with one sample changed, like a marginal burn.</summary>
     public int? ReadBackDifferenceAtLba { get; set; }
 
+    /// <summary>Additional sectors whose read-back differs by one byte without failing.</summary>
+    public HashSet<int> ReadBackDifferenceLbas { get; } = new();
+
     /// <summary>READ CD of this sector fails with 3/11/00 (unrecovered read error).</summary>
     public int? ReadErrorAtLba { get; set; }
+
+    /// <summary>Additional sectors that fail read-back with 3/11/00.</summary>
+    public HashSet<int> ReadErrorLbas { get; } = new();
+
+    /// <summary>Fail SYNCHRONIZE CACHE with a write/flush error.</summary>
+    public bool RejectsSynchronizeCache { get; set; }
+
+    /// <summary>Shift the recorded data track's start LBA and shorten lead-out in READ TOC format 0.</summary>
+    public bool WrongDataToc { get; set; }
 
     /// <summary>
     /// Sectors written correctly but hard to read, like the outer edge of a weak CD-R on the GP60NB50: the first
@@ -1175,6 +1187,33 @@ public sealed class VirtualMmcDrive : IScsiTransport
     /// (sector type 1), with a mismatched sector type, or across into the audio, they are refused with 5/64/00.
     /// </summary>
     /// <param name="rawSector">Sector i of the read as recorded: 2,352 bytes with sync and header.</param>
+    private bool HasReadErrorInRange(int lba, int count)
+    {
+        if (ReadErrorAtLba is int bad && bad >= lba && bad < lba + count)
+        {
+            return true;
+        }
+        if (ReadErrorLbas.Count > 0)
+        {
+            for (int i = 0; i < count; i++)
+            {
+                if (ReadErrorLbas.Contains(lba + i))
+                {
+                    return true;
+                }
+            }
+        }
+        return false;
+    }
+
+    private bool HasReadDifferenceAt(int lba) =>
+        ReadBackDifferenceAtLba == lba || ReadBackDifferenceLbas.Contains(lba);
+
+    /// <summary>
+    /// Shared data-sector path for READ CD of a Mode 1 or Mode 2 track: rejects sector-type mismatches (e.g. Mode 1 read
+    /// with sectorType 3, or any data read as CD-DA sectorType 1), extracts user payload (2048 bytes, or 2336 for Mode 2)
+    /// when requested, and enforces the drive's read error and difference simulation.
+    /// </summary>
     private ScsiExecutionResult ReadDataSectors(int lba, int count, int sectorType, bool withC2, byte mainChannel, Span<byte> data,
         Func<int, byte[]> rawSector)
     {
@@ -1182,7 +1221,7 @@ public sealed class VirtualMmcDrive : IScsiTransport
         {
             return Sense(0x05, 0x64, 0x00);
         }
-        if (ReadErrorAtLba is int bad && bad >= lba && bad < lba + count)
+        if (HasReadErrorInRange(lba, count))
         {
             return Sense(0x03, 0x11, 0x00);
         }
@@ -1242,6 +1281,10 @@ public sealed class VirtualMmcDrive : IScsiTransport
             else
             {
                 raw.CopyTo(destination.Slice(i * size));
+            }
+            if (HasReadDifferenceAt(lba + i))
+            {
+                destination[i * size + Math.Min(100, payloadSize - 1)] ^= 0x01;
             }
         }
         if (withC2)
@@ -1316,7 +1359,7 @@ public sealed class VirtualMmcDrive : IScsiTransport
         {
             return Sense(0x05, 0x21, 0x00);
         }
-        if (ReadErrorAtLba is int bad && bad >= lba && bad < lba + count)
+        if (HasReadErrorInRange(lba, count))
         {
             return Sense(0x03, 0x11, 0x00);
         }
@@ -1350,9 +1393,12 @@ public sealed class VirtualMmcDrive : IScsiTransport
                 program.Slice((int)from, (int)(to - from)).CopyTo(audio.Slice((int)(from - source)));
             }
 
-            if (ReadBackDifferenceAtLba is int changed && changed >= lba && changed < lba + count)
+            for (int i = 0; i < count; i++)
             {
-                audio[(changed - lba) * 2352 + 100] ^= 0x01; // written wrong: same every time, no C2 error
+                if (HasReadDifferenceAt(lba + i))
+                {
+                    audio[i * 2352 + 100] ^= 0x01; // written wrong: same every time, no C2 error
+                }
             }
         }
 
@@ -1422,7 +1468,7 @@ public sealed class VirtualMmcDrive : IScsiTransport
         {
             return Sense(0x05, 0x21, 0x00);
         }
-        if (ReadErrorAtLba is int bad && bad >= lba && bad < lba + count)
+        if (HasReadErrorInRange(lba, count))
         {
             return Sense(0x03, 0x11, 0x00);
         }
@@ -1437,7 +1483,7 @@ public sealed class VirtualMmcDrive : IScsiTransport
             }
 
             image.AsSpan(imageOffset + i * 2048, 2048).CopyTo(destination);
-            if (ReadBackDifferenceAtLba == lba + i)
+            if (HasReadDifferenceAt(lba + i))
             {
                 destination[100] ^= 0x01;
             }
@@ -1472,7 +1518,9 @@ public sealed class VirtualMmcDrive : IScsiTransport
                 int control = leadOut || DropsControlBits ? 0 : _recordedTracks[i].CueControl >> 4;
                 entry[1] = (byte)(0x10 | control); // ADR 1, then the control bits
                 entry[2] = leadOut ? SaoCueSheetBuilder.LeadOutTrackNumber : _recordedTracks[i].TrackNumber;
-                int lba = leadOut ? RecordedLeadOutLba : _recordedTracks[i].Index01Lba + (ShiftsTrackStartsInToc && i > 0 ? 1 : 0);
+                int lba = leadOut
+                    ? (WrongDataToc ? Math.Max(0, _recordedTracks[^1].Index01Lba) : RecordedLeadOutLba)
+                    : _recordedTracks[i].Index01Lba + ((ShiftsTrackStartsInToc && i > 0) || WrongDataToc ? 1 : 0);
                 BinaryPrimitives.WriteInt32BigEndian(entry.Slice(4, 4), lba);
             }
             return CopyOut(r, data);
@@ -1875,6 +1923,11 @@ public sealed class VirtualMmcDrive : IScsiTransport
 
     private ScsiExecutionResult SynchronizeCache()
     {
+        if (RejectsSynchronizeCache)
+        {
+            return Sense(0x03, 0x0C, 0x00);
+        }
+
         if ((_taoArmed || WritesLikeDvd) && _taoNextLba > 0 && _taoClosedSectors == 0)
         {
             // The drive empties its buffer and writes the run-out; the track is complete.
@@ -1891,7 +1944,7 @@ public sealed class VirtualMmcDrive : IScsiTransport
             else if (IsDvd && ReservedSectors > 0)
             {
                 // DVD-R Disc-At-Once: the drive closes the disc itself; a short track is padded to the reservation.
-                RecordDataDisc(Math.Max(_taoNextLba, ReservedSectors), runOutSectors: 0, discStatus: 2);
+                RecordDataDisc(Math.Max(_taoNextLba, ReservedSectors), runOutSectors: 0, discStatus: ClosesDiscAfterWrite ? 2 : 1);
             }
             else
             {

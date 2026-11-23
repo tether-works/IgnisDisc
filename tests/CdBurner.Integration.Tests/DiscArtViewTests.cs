@@ -245,7 +245,8 @@ public sealed class DiscArtViewTests : IDisposable
         BurnOperationResult burn = await page.BurnAsync();
         Assert.True(burn.Success, burn.ErrorMessage + " / " + page.StatusMessage);
         Assert.Equal(result.OutputPath, burned);
-        Assert.True(studio.IsChecksumMatch, studio.VerificationStatusText);
+        Assert.False(studio.IsChecksumMatch);
+        Assert.Contains("picture area was not compared", studio.StatusMessage, StringComparison.OrdinalIgnoreCase);
 
         // A CD picture track goes through the direct writer on the command line.
         burned = null;
@@ -315,8 +316,10 @@ public sealed class DiscArtViewTests : IDisposable
 
         PictureDiscTwoSessionResult twoSession = Assert.IsType<PictureDiscTwoSessionResult>(page.LastTwoSessionResult);
         Assert.True(twoSession.Success, twoSession.ErrorMessage);
-        Assert.True(twoSession.PictureSession?.Verified);
+        Assert.False(twoSession.PictureSession?.Verified);
+        Assert.False(twoSession.PictureSession?.PictureAreaCompared);
         Assert.True(twoSession.FilesSession?.Verified);
+        Assert.True(twoSession.FilesSession?.FilesCompared);
 
         int expectedStart = layout.PictureEndLba + expectedGap;
         Assert.Equal(expectedStart, twoSession.FilesSessionStartLba);

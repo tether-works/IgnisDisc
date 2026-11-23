@@ -375,8 +375,14 @@ public static partial class CliCommandRunner
                 filesSessionStartLba = result.FilesSessionStartLba,
                 filesSessionSectors = result.FilesSessionSectors,
                 capacitySectors = result.CapacitySectors,
+                writesAccepted = (result.PictureSession?.WritesAccepted ?? false) && (result.FilesSession?.WritesAccepted ?? false),
+                sessionClosed = (result.PictureSession?.SessionClosed ?? false) && (result.FilesSession?.SessionClosed ?? false),
+                tocChecked = (result.PictureSession?.TocChecked ?? false) && (result.FilesSession?.TocChecked ?? false),
+                filesCompared = result.FilesSession?.FilesCompared ?? false,
+                pictureAreaCompared = result.PictureSession?.PictureAreaCompared ?? false,
                 pictureVerified = result.PictureSession?.Verified ?? false,
                 filesVerified = result.FilesSession?.Verified ?? false,
+                verificationNote = result.PictureSession?.VerificationNote,
                 warning = result.Warning,
                 directWrite = NativeDataJson(engine),
                 error,
@@ -388,7 +394,7 @@ public static partial class CliCommandRunner
         {
             stdout.WriteLine("Two-session picture disc burned:");
             stdout.WriteLine($"  Drive:          {recorder.UniqueId}");
-            stdout.WriteLine($"  Picture:        session 1, sectors 0 to {result.PictureSectors - 1:N0}, read back: {(result.PictureSession!.Verified ? "passed" : "no")}");
+            stdout.WriteLine($"  Picture:        session 1, sectors 0 to {result.PictureSectors - 1:N0}, {(result.PictureSession!.Verified ? "read back: passed" : result.PictureSession.VerificationNote ?? "not compared")}");
             stdout.WriteLine($"  Files:          session 2, sectors {result.FilesSessionStartLba:N0} to {result.FilesSessionStartLba + result.FilesSessionSectors - 1:N0}, read back: {(result.FilesSession!.Verified ? "passed" : "no")}");
             if (result.Warning != null) stdout.WriteLine($"  Note:           {result.Warning}");
             WriteNativeDataSummary(stdout, engine);

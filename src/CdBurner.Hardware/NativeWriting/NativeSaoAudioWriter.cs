@@ -74,6 +74,10 @@ public sealed record NativeSaoWriteResult
     /// <summary>After a real write with <see cref="NativeSaoWriteRequest.LeaveSessionOpen"/>: whether READ DISC
     /// INFORMATION then reported an appendable disc (status 1). Null when not asked for or not checked.</summary>
     public bool? DiscLeftOpen { get; init; }
+
+    /// <summary>After a real closed write: whether READ DISC INFORMATION reported a closed disc (status 2). Null when
+    /// left open, a test write, or not readable.</summary>
+    public bool? DiscClosed { get; init; }
 }
 
 /// <summary>
@@ -331,8 +335,9 @@ public sealed class NativeSaoAudioWriter
                 request.ShiftSamples);
         }
 
-        // 8. A session left open must leave the disc appendable (status 1), or no second session can follow.
+        // 8. A session left open must leave the disc appendable (status 1); a closed session must close the disc (status 2).
         bool? leftOpen = null;
+        bool? discClosed = null;
         if (!request.TestWrite && request.LeaveSessionOpen)
         {
             var after = ReadDiscInformation();
@@ -341,22 +346,39 @@ public sealed class NativeSaoAudioWriter
                 ? "Disc left open for another session (disc status 1)."
                 : $"WARNING: the disc was to be left open, but the drive reports disc status {after?.Status.ToString() ?? "unknown"}.");
         }
+        else if (!request.TestWrite)
+        {
+            var after = ReadDiscInformation();
+            if (after != null)
+            {
+                discClosed = after.Value.Status == 2;
+                _note(discClosed == true
+                    ? "Disc closed (disc status 2)."
+                    : $"WARNING: the disc was to be closed, but the drive reports disc status {after.Value.Status}.");
+            }
+        }
 
         reporter.Report(totalSectors, "Done");
+        bool pictureOnlyNotice = !request.TestWrite && verification is { Passed: true, HasPictureArea: true, AudioCompared: false, DataTrackCompared: false };
         string message = request.TestWrite
             ? "Test write finished; the disc was not written." + extra
             : verification!.Passed
-                ? "The disc was written and read back correctly. " + verification.Message
+                ? (pictureOnlyNotice ? verification.Message : "The disc was written and read back correctly. " + verification.Message)
                 : "The disc was written, but the check afterwards failed: " + verification.Message;
         if (leftOpen == false)
         {
             message += " The drive closed the disc although it was to stay open, so no further session can be added.";
         }
+        if (discClosed == false)
+        {
+            message += " The drive did not close the disc.";
+        }
         return new NativeSaoWriteResult
         {
-            Success = (verification?.Passed ?? true) && leftOpen != false,
+            Success = (verification?.Passed ?? true) && leftOpen != false && discClosed != false,
             Message = message,
             DiscLeftOpen = leftOpen,
+            DiscClosed = discClosed,
             LeadInSectorsWritten = state.LeadInSectors,
             AudioSectorsWritten = state.AudioSectors,
             Elapsed = clock.Elapsed,

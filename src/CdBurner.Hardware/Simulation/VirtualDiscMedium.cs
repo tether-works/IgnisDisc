@@ -137,6 +137,11 @@ public class VirtualDiscMedium : IDisposable, IBookTypeTarget
     public HashSet<int> SimulatedBadLbas { get; } = new();
 
     /// <summary>
+    /// Set of LBA addresses whose sector data reads back with a byte difference during verification without failing.
+    /// </summary>
+    public HashSet<int> SimulatedReadDifferenceLbas { get; } = new();
+
+    /// <summary>
     /// LBAs whose audio reads (via <c>VirtualBurnEngine.ReadAudioSectorsWithC2Async</c>) report C2 errors and return damaged data,
     /// mapped to how many more reads stay damaged. <see cref="int.MaxValue"/> means permanently damaged.
     /// </summary>

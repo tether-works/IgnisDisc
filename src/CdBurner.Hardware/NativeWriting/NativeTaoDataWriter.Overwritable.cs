@@ -237,7 +237,9 @@ public sealed partial class NativeTaoDataWriter
         {
             Success = true,
             Message = written + closeNote,
-            DiscRecorded = true
+            DiscRecorded = true,
+            SessionClosed = closeNote.Length == 0,
+            TocChecked = false
         };
     }
 

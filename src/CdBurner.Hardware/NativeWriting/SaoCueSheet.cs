@@ -30,7 +30,9 @@ public sealed record SaoTrack(
     bool PreEmphasis = false,
     bool CopyPermitted = false,
     bool IsData = false,
-    SaoDataMode DataMode = SaoDataMode.None)
+    SaoDataMode DataMode = SaoDataMode.None,
+    bool IsPictureTrack = false,
+    bool IsPreGapPicture = false)
 {
     public SaoDataMode EffectiveDataMode => DataMode != SaoDataMode.None ? DataMode : (IsData ? SaoDataMode.Mode1 : SaoDataMode.None);
 }
@@ -46,6 +48,12 @@ public sealed record SaoTrackPlacement(int TrackNumber, int PreGapLba, int Index
 
     public bool PreEmphasis { get; init; }
     public bool CopyPermitted { get; init; }
+
+    /// <summary>True when this track holds a CD-DA surface picture track (not compared sample-for-sample).</summary>
+    public bool IsPictureTrack { get; init; }
+
+    /// <summary>True when this track's pre-gap holds a byte-level CD surface picture (not compared sample-for-sample).</summary>
+    public bool IsPreGapPicture { get; init; }
 
     /// <summary>A data track (Mode 1 in 2,048-byte sectors, or Mode 2 XA in 2,336-byte sectors).</summary>
     public bool IsData { get; init; }
@@ -160,7 +168,9 @@ public sealed class SaoAudioLayout
                 CopyPermitted = t.CopyPermitted,
                 IsData = isData,
                 DataMode = mode,
-                PostGapSectors = postGap
+                PostGapSectors = postGap,
+                IsPictureTrack = !isData && t.IsPictureTrack,
+                IsPreGapPicture = !isData && t.IsPreGapPicture
             });
             lba = end;
         }

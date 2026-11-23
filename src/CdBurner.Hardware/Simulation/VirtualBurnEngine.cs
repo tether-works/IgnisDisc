@@ -217,7 +217,17 @@ public class VirtualBurnEngine : IBurnEngineBackend, ISecureAudioReader
             virtualRecorder.EjectMedia();
         }
 
-        return BurnOperationResult.Succeeded(sectorsWritten, sw.Elapsed, speedMultiplier);
+        return new BurnOperationResult
+        {
+            Success = true,
+            Status = BurnStatus.Succeeded,
+            SectorsWritten = sectorsWritten,
+            TotalTime = sw.Elapsed,
+            AverageSpeedMultiplier = speedMultiplier,
+            WritesAccepted = !options.Simulate && sectorsWritten > 0,
+            SessionClosed = !options.Simulate && sectorsWritten > 0,
+            TocChecked = false
+        };
     }
 
     /// <summary>
@@ -474,7 +484,17 @@ public class VirtualBurnEngine : IBurnEngineBackend, ISecureAudioReader
             virtualRecorder.EjectMedia();
         }
 
-        return BurnOperationResult.Succeeded(sectorsWritten, sw.Elapsed, speedMultiplier);
+        return new BurnOperationResult
+        {
+            Success = true,
+            Status = BurnStatus.Succeeded,
+            SectorsWritten = sectorsWritten,
+            TotalTime = sw.Elapsed,
+            AverageSpeedMultiplier = speedMultiplier,
+            WritesAccepted = !options.Simulate && sectorsWritten > 0,
+            SessionClosed = !options.Simulate && sectorsWritten > 0,
+            TocChecked = false
+        };
     }
 
     /// <summary>
@@ -599,6 +619,10 @@ public class VirtualBurnEngine : IBurnEngineBackend, ISecureAudioReader
 
             byte[] sectorBuffer = new byte[sz];
             medium.ReadSector(currentLba, sectorBuffer, sz);
+            if (medium.SimulatedReadDifferenceLbas.Contains(currentLba))
+            {
+                sectorBuffer[Math.Min(100, sectorBuffer.Length - 1)] ^= 0x01;
+            }
 
             await sectorConsumer(currentLba, new ReadOnlyMemory<byte>(sectorBuffer));
             readCount++;

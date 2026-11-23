@@ -24,7 +24,13 @@ public sealed record NativeVerifyResult(
     int HardToReadSectors = 0,
     int WrittenWrongSectors = 0,
     int UnreadableSectors = 0,
-    string? Warning = null);
+    string? Warning = null,
+    bool TocChecked = false,
+    bool CdTextChecked = false,
+    bool DataTrackCompared = false,
+    bool AudioCompared = false,
+    bool HasPictureArea = false,
+    bool PictureAreaCompared = false);
 
 /// <summary>
 /// Reads a freshly written Session-at-Once audio disc back and compares it with what was sent: the table of contents
@@ -79,50 +85,74 @@ public sealed class NativeSaoVerifier
         ArgumentNullException.ThrowIfNull(layout);
         ArgumentNullException.ThrowIfNull(openTrackAudio);
 
+        bool hasPictureArea = layout.Tracks.Any(t => !t.IsData && (t.IsPictureTrack || (t.IsPreGapPicture && t.PreGapAudioSectors > 0)));
+        bool hasCdText = cdTextPacks is { Length: > 0 };
+
         string? problem = CheckToc(layout);
         if (problem != null)
         {
-            return Fail(problem);
+            return Fail(problem) with { HasPictureArea = hasPictureArea };
         }
         _note($"Table of contents matches: {layout.Tracks.Count} track(s), lead-out at LBA {layout.LeadOutLba}.");
 
-        if (cdTextPacks is { Length: > 0 })
+        if (hasCdText)
         {
-            problem = CheckCdText(cdTextPacks);
+            problem = CheckCdText(cdTextPacks!);
             if (problem != null)
             {
-                return Fail(problem);
+                return Fail(problem) with { TocChecked = true, HasPictureArea = hasPictureArea };
             }
-            _note($"CD-Text matches: {cdTextPacks.Length / 18} pack(s).");
+            _note($"CD-Text matches: {cdTextPacks!.Length / 18} pack(s).");
         }
 
         problem = CheckCodes(layout, mediaCatalogNumber, out string codesSummary);
         if (problem != null)
         {
-            return Fail(problem);
+            return Fail(problem) with { TocChecked = true, CdTextChecked = hasCdText, HasPictureArea = hasPictureArea };
         }
 
+        bool dataTrackCompared = false;
         if (layout.HasDataTrack)
         {
             problem = CheckDataTrack(layout.Tracks[0], openTrackAudio, cancellationToken);
             if (problem != null)
             {
-                return Fail(problem);
+                return Fail(problem) with { TocChecked = true, CdTextChecked = hasCdText, DataTrackCompared = true, HasPictureArea = hasPictureArea };
             }
+            dataTrackCompared = true;
             if (layout.AudioSectors == 0)
             {
-                return new NativeVerifyResult(true, "Read-back check passed: the data track matches.");
+                return new NativeVerifyResult(true, "Read-back check passed: the data track matches.",
+                    TocChecked: true, CdTextChecked: hasCdText, DataTrackCompared: true, HasPictureArea: hasPictureArea);
             }
         }
 
         try
         {
-            var audio = CompareAudio(layout, openTrackAudio, progress, cancellationToken);
+            NativeVerifyResult audio = hasPictureArea
+                ? CompareMusicWithPictureArea(layout, openTrackAudio, progress, cancellationToken)
+                : CompareAudio(layout, openTrackAudio, progress, cancellationToken) with { AudioCompared = true };
+
+            audio = audio with
+            {
+                TocChecked = true,
+                CdTextChecked = hasCdText,
+                DataTrackCompared = dataTrackCompared,
+                HasPictureArea = hasPictureArea,
+                PictureAreaCompared = false
+            };
+
             return audio.Passed && codesSummary.Length > 0 ? audio with { Message = audio.Message + " " + codesSummary } : audio;
         }
         catch (Exception ex) when (ex is IOException or InvalidDataException or UnauthorizedAccessException)
         {
-            return Fail($"The source audio could not be read again for the check: {ex.Message}");
+            return Fail($"The source audio could not be read again for the check: {ex.Message}") with
+            {
+                TocChecked = true,
+                CdTextChecked = hasCdText,
+                DataTrackCompared = dataTrackCompared,
+                HasPictureArea = hasPictureArea
+            };
         }
     }
 
@@ -635,6 +665,290 @@ public sealed class NativeSaoVerifier
         return new NativeVerifyResult(true, message, offset, compared);
     }
 
+    private NativeVerifyResult CompareMusicWithPictureArea(
+        SaoAudioLayout layout,
+        Func<int, Stream> openTrackAudio,
+        Action<int, int>? progress,
+        CancellationToken ct)
+    {
+        _baseLba = Math.Max(0, layout.AudioStartLba);
+        int audioEndLba = layout.LeadOutLba;
+        var musicRanges = BuildMusicRanges(layout, _baseLba, audioEndLba);
+        int musicSectorsTotal = musicRanges.Sum(r => r.EndLba - r.StartLba);
+
+        if (musicSectorsTotal == 0)
+        {
+            string picOnlyMsg = layout.HasDataTrack
+                ? $"Read-back check passed: the data track's {layout.Tracks[0].SectorCount - layout.Tracks[0].PostGapSectors:N0} sectors and table of contents match; picture area was not compared."
+                : "All writes accepted, session closed, table of contents matches; picture area was not compared.";
+            _note(picOnlyMsg);
+            return new NativeVerifyResult(true, picOnlyMsg, OffsetSamples: null, SamplesCompared: 0, AudioCompared: false);
+        }
+
+        if (_shiftSamples != 0 && Math.Abs((long)_shiftSamples) >= (long)musicSectorsTotal * SamplesPerSector)
+        {
+            return Fail("The write-offset shift is longer than the music area.") with { AudioCompared = true };
+        }
+
+        var found = FindOffsetInRanges(layout, openTrackAudio, musicRanges, out string? offsetProblem);
+        if (found is null)
+        {
+            return Fail(offsetProblem!) with { AudioCompared = true };
+        }
+        int offset = found.Value;
+        _note($"Music reads back {offset} sample(s) {(offset >= 0 ? "later" : "earlier")} than written (drive offset).");
+
+        using var expectedSource = new ProgramAreaReader(layout, openTrackAudio, shiftSamples: _shiftSamples);
+        expectedSource.Skip(_baseLba - layout.AudioStartLba);
+        int sourceLba = _baseLba;
+
+        long compared = 0;
+        long different = 0;
+        int firstDiffLba = -1;
+        var suspects = new SortedSet<int>();
+        bool tooManyToRecheck = false;
+        int sectorsDone = 0;
+
+        byte[] a = new byte[ReadSectorsPerCommand * SectorSize];
+        byte[] b = new byte[ReadSectorsPerCommand * SectorSize];
+
+        foreach (var (rStart, rEnd) in musicRanges)
+        {
+            if (rStart > sourceLba)
+            {
+                expectedSource.Skip(rStart - sourceLba);
+                sourceLba = rStart;
+            }
+            int rangeSectors = rEnd - rStart;
+            int remainingExpected = rangeSectors;
+            int nextReadLba = 0;
+            string? readProblem = null;
+
+            var expected = new ChunkReader(buffer =>
+            {
+                int want = Math.Min(ReadSectorsPerCommand, remainingExpected);
+                int sectors = 0;
+                while (sectors < want && expectedSource.ReadSector(buffer.AsSpan(sectors * SectorSize, SectorSize)))
+                {
+                    sectors++;
+                }
+                remainingExpected -= sectors;
+                sourceLba += sectors;
+                return sectors * SectorSize;
+            });
+            var actual = new ChunkReader(buffer =>
+            {
+                int sectors = Math.Min(ReadSectorsPerCommand, rangeSectors - nextReadLba);
+                if (sectors <= 0 || readProblem != null)
+                {
+                    return 0;
+                }
+                readProblem = ReadAudio(rStart + nextReadLba, sectors, buffer.AsSpan(0, sectors * SectorSize));
+                if (readProblem != null)
+                {
+                    return 0;
+                }
+                nextReadLba += sectors;
+                return sectors * SectorSize;
+            });
+
+            long rangePosition = 0;
+            if (offset > 0)
+            {
+                actual.Skip(offset * 4);
+            }
+            else if (offset < 0)
+            {
+                expected.Skip(-offset * 4);
+                rangePosition = -offset;
+            }
+
+            while (true)
+            {
+                ct.ThrowIfCancellationRequested();
+                int gotExpected = expected.Read(a);
+                int gotActual = actual.Read(b);
+                if (readProblem != null)
+                {
+                    return Fail(readProblem) with { OffsetSamples = offset, SamplesCompared = compared, AudioCompared = true };
+                }
+
+                int n = Math.Min(gotExpected, gotActual) & ~3;
+                if (n == 0)
+                {
+                    break;
+                }
+
+                if (!a.AsSpan(0, n).SequenceEqual(b.AsSpan(0, n)))
+                {
+                    for (int i = 0; i < n; i += 4)
+                    {
+                        if (BinaryPrimitives.ReadUInt32LittleEndian(a.AsSpan(i)) != BinaryPrimitives.ReadUInt32LittleEndian(b.AsSpan(i)))
+                        {
+                            different++;
+                            int discLba = rStart + (int)Math.Clamp((rangePosition + i / 4 + offset) / SamplesPerSector, 0, rangeSectors - 1);
+                            if (firstDiffLba < 0)
+                            {
+                                firstDiffLba = rStart + (int)((rangePosition + i / 4) / SamplesPerSector);
+                            }
+                            if (!tooManyToRecheck && suspects.Add(discLba) && suspects.Count > MaxRecheckSectors)
+                            {
+                                tooManyToRecheck = true;
+                            }
+                        }
+                    }
+                }
+
+                compared += n / 4;
+                rangePosition += n / 4;
+                if (gotExpected < a.Length || gotActual < b.Length)
+                {
+                    break;
+                }
+            }
+
+            sectorsDone += rangeSectors;
+            progress?.Invoke(sectorsDone, musicSectorsTotal);
+        }
+
+        if (different > 0)
+        {
+            int lba = firstDiffLba;
+            string fastPass = $"{different:N0} of {compared:N0} audio samples read back differently in the fast pass, the first in track {TrackAt(layout, lba)} near LBA {lba}.";
+            if (tooManyToRecheck)
+            {
+                return Fail($"{fastPass} That is more than {MaxRecheckSectors:N0} sectors, too many to re-read one by one.", offset, compared)
+                    with { AudioCompared = true };
+            }
+
+            _note($"{fastPass} Re-reading the {suspects.Count:N0} sector(s) involved with C2 error pointers.");
+            var recheck = Recheck(layout, openTrackAudio, offset, suspects.ToList(), ct, musicRanges);
+            return Classify(layout, recheck, offset, compared) with { AudioCompared = true };
+        }
+
+        string message = $"Read-back check passed: {layout.Tracks.Count} track(s), {DataPart(layout)}{compared:N0} music audio samples identical (drive offset {offset:+0;-0;0} samples). Picture area was not compared.";
+        _note(message);
+        return new NativeVerifyResult(true, message, offset, compared, AudioCompared: true);
+    }
+
+    private static List<(int StartLba, int EndLba)> BuildMusicRanges(SaoAudioLayout layout, int audioStartLba, int audioEndLba)
+    {
+        var excluded = new List<(int Start, int End)>();
+        foreach (var track in layout.Tracks)
+        {
+            if (track.IsData)
+            {
+                continue;
+            }
+            if (track.IsPictureTrack)
+            {
+                int s = Math.Max(audioStartLba, track.PreGapLba);
+                int e = Math.Min(audioEndLba, track.EndLba);
+                if (e > s) excluded.Add((s, e));
+            }
+            else if (track.IsPreGapPicture && track.PreGapAudioSectors > 0)
+            {
+                int s = Math.Max(audioStartLba, track.PreGapLba);
+                int e = Math.Min(audioEndLba, track.Index01Lba);
+                if (e > s) excluded.Add((s, e));
+            }
+        }
+
+        excluded.Sort((x, y) => x.Start.CompareTo(y.Start));
+        var ranges = new List<(int StartLba, int EndLba)>();
+        int cursor = audioStartLba;
+        foreach (var (es, ee) in excluded)
+        {
+            if (es > cursor)
+            {
+                ranges.Add((cursor, es));
+            }
+            cursor = Math.Max(cursor, ee);
+        }
+        if (cursor < audioEndLba)
+        {
+            ranges.Add((cursor, audioEndLba));
+        }
+        return ranges;
+    }
+
+    private int? FindOffsetInRanges(
+        SaoAudioLayout layout,
+        Func<int, Stream> openTrackAudio,
+        List<(int StartLba, int EndLba)> musicRanges,
+        out string? problem)
+    {
+        problem = null;
+        const int marginSectors = MaxOffsetSamples / SamplesPerSector;
+        byte[] window = new byte[2 * SectorSize];
+        byte[] sector = new byte[SectorSize];
+
+        using var expected = new ProgramAreaReader(layout, openTrackAudio, shiftSamples: _shiftSamples);
+        expected.Skip(_baseLba - layout.AudioStartLba);
+        int cursorLba = _baseLba;
+
+        foreach (var (rStart, rEnd) in musicRanges)
+        {
+            if (rStart > cursorLba)
+            {
+                expected.Skip(rStart - cursorLba);
+                cursorLba = rStart;
+            }
+            int rangeSectors = rEnd - rStart;
+            int probe = -1;
+            for (int index = 0; index < rangeSectors; index++)
+            {
+                if (!expected.ReadSector(sector))
+                {
+                    break;
+                }
+                cursorLba++;
+                if (index >= marginSectors && index + 2 + marginSectors <= rangeSectors && IsDistinctive(sector))
+                {
+                    sector.CopyTo(window, 0);
+                    if (expected.ReadSector(window.AsSpan(SectorSize, SectorSize)))
+                    {
+                        cursorLba++;
+                        probe = index;
+                        break;
+                    }
+                    break;
+                }
+            }
+
+            if (probe >= 0)
+            {
+                int firstLba = rStart + probe - marginSectors;
+                int sectors = 2 + 2 * marginSectors;
+                byte[] read = new byte[sectors * SectorSize];
+                string? readProblem = ReadAudio(firstLba, sectors, read);
+                if (readProblem != null)
+                {
+                    problem = readProblem;
+                    return null;
+                }
+
+                for (int distance = 0; distance <= MaxOffsetSamples; distance++)
+                {
+                    foreach (int shift in distance == 0 ? [0] : new[] { distance, -distance })
+                    {
+                        int start = (MaxOffsetSamples + shift) * 4;
+                        if (read.AsSpan(start, window.Length).SequenceEqual(window))
+                        {
+                            return shift;
+                        }
+                    }
+                }
+
+                problem = $"The audio read back near LBA {rStart + probe} does not match what was written, at any shift up to {MaxOffsetSamples} samples.";
+                return null;
+            }
+        }
+
+        _note("The music holds no stretch with a clear signal; comparing without a shift.");
+        return 0;
+    }
+
     private NativeVerifyResult Fail(string message, int offset, long compared)
     {
         _note($"Read-back check failed: {message}");
@@ -678,7 +992,13 @@ public sealed class NativeSaoVerifier
     /// reads differently at least twice while the drive flags no error in it was written wrong. Anything else never
     /// read cleanly: unreadable. Without C2 pointers the drive cannot say which, and such sectors count as unreadable.
     /// </summary>
-    private RecheckOutcome Recheck(SaoAudioLayout layout, Func<int, Stream> openTrackAudio, int offset, List<int> suspects, CancellationToken ct)
+    private RecheckOutcome Recheck(
+        SaoAudioLayout layout,
+        Func<int, Stream> openTrackAudio,
+        int offset,
+        List<int> suspects,
+        CancellationToken ct,
+        List<(int StartLba, int EndLba)>? musicRanges = null)
     {
         Dictionary<int, byte[]> expected = ExpectedDiscSectors(layout, openTrackAudio, offset, suspects);
         var matched = new HashSet<int>();
@@ -693,7 +1013,7 @@ public sealed class NativeSaoVerifier
                 break;
             }
 
-            FlushReadCache(remaining[0], layout.LeadOutLba);
+            FlushReadCache(remaining[0], layout.LeadOutLba, musicRanges);
             foreach (var (start, count) in Runs(remaining, C2SectorsPerCommand))
             {
                 ct.ThrowIfCancellationRequested();
@@ -720,8 +1040,10 @@ public sealed class NativeSaoVerifier
                 for (int i = 0; i < count; i++)
                 {
                     int lba = start + i;
-                    ReadOnlySpan<byte> audio = buffer.AsSpan(i * stride, SectorSize);
-                    if (audio.SequenceEqual(expected[lba]))
+                    (int sliceStart, int sliceLen) = ValidSampleByteRange(lba, offset, musicRanges);
+                    ReadOnlySpan<byte> audio = buffer.AsSpan(i * stride + sliceStart, sliceLen);
+                    ReadOnlySpan<byte> exp = expected[lba].AsSpan(sliceStart, sliceLen);
+                    if (audio.SequenceEqual(exp))
                     {
                         matched.Add(lba);
                     }
@@ -738,6 +1060,33 @@ public sealed class NativeSaoVerifier
         var unreadable = suspects.Where(l => !matched.Contains(l) && !wrong.Contains(l)).ToList();
         _note($"Careful re-read: {hard.Count} sector(s) read right{List(hard)}, {wrong.Count} read differently with no error reported{List(wrong)}, {unreadable.Count} never read cleanly{List(unreadable)}{(c2 ? "" : " (no C2 pointers)")}.");
         return new RecheckOutcome(hard, wrong, unreadable, c2);
+    }
+
+    private static (int Offset, int Length) ValidSampleByteRange(int lba, int offset, List<(int StartLba, int EndLba)>? musicRanges)
+    {
+        if (musicRanges == null)
+        {
+            return (0, SectorSize);
+        }
+
+        foreach (var (rStart, rEnd) in musicRanges)
+        {
+            if (lba >= rStart && lba < rEnd)
+            {
+                long disc0 = (long)lba * SamplesPerSector;
+                long disc1 = disc0 + SamplesPerSector;
+                long valid0 = (long)rStart * SamplesPerSector + Math.Max(0, offset);
+                long valid1 = (long)rEnd * SamplesPerSector + Math.Min(0, offset);
+                long s0 = Math.Max(disc0, valid0);
+                long s1 = Math.Min(disc1, valid1);
+                if (s1 <= s0)
+                {
+                    return (0, 0);
+                }
+                return ((int)(s0 - disc0) * 4, (int)(s1 - s0) * 4);
+            }
+        }
+        return (0, SectorSize);
     }
 
     /// <summary>" (LBA 1, 2, 3 …)" for the log: the first ten sector numbers of a verdict, or nothing when there are none.</summary>
@@ -828,8 +1177,34 @@ public sealed class NativeSaoVerifier
     }
 
     /// <summary>Reads about 2.4 MB half a disc away so the sectors about to be re-read are no longer in the drive's cache.</summary>
-    private void FlushReadCache(int nearLba, int endLba)
+    private void FlushReadCache(int nearLba, int endLba, List<(int StartLba, int EndLba)>? musicRanges = null)
     {
+        if (musicRanges is { Count: > 0 })
+        {
+            // Stay strictly inside music ranges so picture tracks are never touched during cache flush.
+            var best = musicRanges.OrderByDescending(r => r.EndLba - r.StartLba).First();
+            int firstInRange = best.StartLba;
+            int totalInRange = best.EndLba - firstInRange;
+            int spanInRange = Math.Min(CacheFlushSectors, totalInRange);
+            int nearInRange = Math.Clamp(nearLba - firstInRange, 0, Math.Max(0, totalInRange - 1));
+            int farInRange = Math.Clamp((nearInRange + totalInRange / 2) % Math.Max(1, totalInRange), 0, Math.Max(0, totalInRange - spanInRange));
+            if (nearInRange >= farInRange && nearInRange < farInRange + spanInRange)
+            {
+                farInRange = nearInRange >= spanInRange ? 0 : Math.Max(0, totalInRange - spanInRange);
+            }
+            farInRange += firstInRange;
+
+            byte[] rangeBuf = new byte[ReadSectorsPerCommand * SectorSize];
+            for (int done = 0; done < spanInRange; done += ReadSectorsPerCommand)
+            {
+                int count = Math.Min(ReadSectorsPerCommand, spanInRange - done);
+                _transport.ExecuteCommand(
+                    MmcCommandBuilder.BuildReadCdCdb(farInRange + done, count, expectedSectorType: 1, mainChannelSelectionBits: 0x10),
+                    rangeBuf.AsSpan(0, count * SectorSize), ScsiPassThroughNative.SCSI_IOCTL_DATA_IN, Timeout);
+            }
+            return;
+        }
+
         // Within the audio (a READ CD for audio of a data sector fails), as far from nearLba as the audio allows.
         int first = _baseLba, total = endLba - _baseLba;
         int span = Math.Min(CacheFlushSectors, total);
