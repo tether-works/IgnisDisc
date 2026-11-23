@@ -304,6 +304,11 @@ public static class LegacyDiscImageConverter
         }
 
         long fileLen = new FileInfo(binPath).Length;
+        if (fileLen == 0)
+        {
+            throw new InvalidDataException($"Binary payload file referenced in CUE sheet is empty (0 bytes): '{binPath}'.");
+        }
+
         int sectorSize = dataTrack.DataType switch
         {
             CueTrackDataType.Mode1_2048 => OpticalConstants.DataSectorSize,
@@ -312,16 +317,36 @@ public static class LegacyDiscImageConverter
             _ => OpticalConstants.DataSectorSize
         };
 
-        if (fileLen > 0 && fileLen % SectorSize2448 == 0 && fileLen % OpticalConstants.RawSectorSize != 0)
-        {
-            sectorSize = SectorSize2448;
-        }
-
         int startFrame = 0;
         var idx01 = dataTrack.Indices.FirstOrDefault(i => i.IndexNumber == 1);
         if (idx01 != null)
         {
             startFrame = idx01.Position.ToFrameCount();
+        }
+
+        if (sectorSize == OpticalConstants.RawSectorSize && fileLen % SectorSize2448 == 0)
+        {
+            using var probeFs = new FileStream(binPath, FileMode.Open, FileAccess.Read, FileShare.Read);
+            long offset2448 = (long)startFrame * SectorSize2448;
+            long offset2352 = (long)startFrame * OpticalConstants.RawSectorSize;
+            bool sync2448 = HasRawCdSyncPatternAtStride(probeFs, SectorSize2448, offset2448);
+            bool sync2352 = HasRawCdSyncPatternAtStride(probeFs, OpticalConstants.RawSectorSize, offset2352);
+
+            if (sync2448 && !sync2352)
+            {
+                sectorSize = SectorSize2448;
+            }
+            else if (!sync2352 &&
+                     offset2448 < fileLen &&
+                     TryProbeIsoGeometry(probeFs, offset2448, fileLen - offset2448, out int probedSize, out _) &&
+                     probedSize == SectorSize2448)
+            {
+                sectorSize = SectorSize2448;
+            }
+            else if (fileLen % OpticalConstants.RawSectorSize != 0)
+            {
+                sectorSize = SectorSize2448;
+            }
         }
 
         int trackIndex = -1;
@@ -353,6 +378,11 @@ public static class LegacyDiscImageConverter
         {
             int totalFrames = (int)(fileLen / sectorSize);
             sectorCount = Math.Max(0, totalFrames - startFrame);
+        }
+
+        if (sectorCount <= 0)
+        {
+            throw new InvalidDataException($"CUE data track in '{Path.GetFileName(binPath)}' has no complete {sectorSize}-byte sectors.");
         }
 
         long payloadOffset = (long)startFrame * sectorSize;
@@ -533,8 +563,31 @@ public static class LegacyDiscImageConverter
     internal static int GetUserDataOffset(ReadOnlySpan<byte> sector, int sectorSize)
     {
         if (sectorSize == OpticalConstants.DataSectorSize) return 0;
-        if (sectorSize == SectorSize2336) return 8;
-        return sector.Length > 15 && sector[15] == 2 ? 24 : 16;
+        if (sectorSize == SectorSize2336)
+        {
+            if (IsMode2Form2Sector(sector, sectorSize))
+            {
+                throw new InvalidDataException("Mode 2 Form 2 sectors (2,324 bytes/sector) cannot be converted to a 2,048-byte ISO.");
+            }
+            return 8;
+        }
+
+        if (sector.Length < 24 || !sector.Slice(0, 12).SequenceEqual(RawCdSyncPattern))
+        {
+            throw new InvalidDataException($"Raw {sectorSize}-byte CD sector is missing the 12-byte sync pattern.");
+        }
+
+        if (IsMode2Form2Sector(sector, sectorSize))
+        {
+            throw new InvalidDataException("Mode 2 Form 2 sectors (2,324 bytes/sector) cannot be converted to a 2,048-byte ISO.");
+        }
+
+        return sector[15] switch
+        {
+            1 => 16,
+            2 => 24,
+            _ => throw new InvalidDataException($"Unsupported raw CD sector mode 0x{sector[15]:X2} (expected Mode 1 or Mode 2).")
+        };
     }
 
     /// <summary>
@@ -710,17 +763,87 @@ public static class LegacyDiscImageConverter
     /// <summary>
     /// Creates an Alcohol 120% (.mds + .mdf) image pair from a 2,048-byte ISO payload.
     /// </summary>
-    public static void CreateAlcoholMdsMdfImage(string mdsFilePath, ReadOnlySpan<byte> isoPayloadBytes)
+    public static void CreateAlcoholMdsMdfImage(string mdsFilePath, ReadOnlySpan<byte> isoPayloadBytes) =>
+        CreateAlcoholMdsMdfImage(mdsFilePath, isoPayloadBytes, OpticalConstants.DataSectorSize, audio: false);
+
+    /// <summary>
+    /// Creates an Alcohol 120% (.mds + .mdf) image pair with explicit sector geometry and track mode.
+    /// </summary>
+    public static void CreateAlcoholMdsMdfImage(string mdsFilePath, ReadOnlySpan<byte> payloadBytes, int sectorSize, bool audio = false)
     {
         ArgumentException.ThrowIfNullOrWhiteSpace(mdsFilePath);
-        string mdfFilePath = Path.ChangeExtension(mdsFilePath, ".mdf");
-        File.WriteAllBytes(mdfFilePath, isoPayloadBytes.ToArray());
+        if (sectorSize <= 0) throw new ArgumentOutOfRangeException(nameof(sectorSize));
 
-        // Write 88-byte Alcohol 120% v1.x MEDIA DESCRIPTOR header
-        byte[] mdsBytes = new byte[88];
-        MdsSignature.CopyTo(mdsBytes.AsSpan(0, 16));
-        mdsBytes[16] = 1; // Version 1.2
-        mdsBytes[17] = 2;
+        string? dir = Path.GetDirectoryName(mdsFilePath);
+        if (!string.IsNullOrEmpty(dir) && !Directory.Exists(dir))
+        {
+            Directory.CreateDirectory(dir);
+        }
+
+        string mdfFilePath = Path.ChangeExtension(mdsFilePath, ".mdf");
+        File.WriteAllBytes(mdfFilePath, payloadBytes.ToArray());
+
+        uint sectors = (uint)(payloadBytes.Length / sectorSize);
+        byte[] mdfNameBytes = Encoding.ASCII.GetBytes(Path.GetFileName(mdfFilePath) + "\0");
+
+        const int headerSize = 88;
+        const int sessionSize = 24;
+        const int trackSize = 80;
+        const int extraSize = 8;
+        const int footerSize = 16;
+        const int sessionOffset = headerSize;
+        const int trackOffset = sessionOffset + sessionSize;
+        const int extraOffset = trackOffset + trackSize;
+        const int footerOffset = extraOffset + extraSize;
+        const int filenameOffset = footerOffset + footerSize;
+
+        byte[] mdsBytes = new byte[filenameOffset + mdfNameBytes.Length];
+        Span<byte> span = mdsBytes;
+
+        // 88-byte Alcohol 120% v1.2 MEDIA DESCRIPTOR header
+        MdsSignature.CopyTo(span.Slice(0, 16));
+        span[16] = 1; // Version 1.2
+        span[17] = 2;
+        BinaryPrimitives.WriteUInt16LittleEndian(span.Slice(18, 2), 0); // Medium = CD-ROM
+        BinaryPrimitives.WriteUInt16LittleEndian(span.Slice(20, 2), 1); // 1 session
+        BinaryPrimitives.WriteUInt32LittleEndian(span.Slice(80, 4), sessionOffset);
+
+        // 24-byte SessionBlock
+        Span<byte> sess = span.Slice(sessionOffset, sessionSize);
+        BinaryPrimitives.WriteInt32LittleEndian(sess.Slice(0, 4), 0);
+        BinaryPrimitives.WriteInt32LittleEndian(sess.Slice(4, 4), (int)sectors);
+        BinaryPrimitives.WriteUInt16LittleEndian(sess.Slice(8, 2), 1); // session number
+        sess[10] = 1; // num_all_blocks
+        sess[11] = 0; // num_nontrack_blocks
+        BinaryPrimitives.WriteUInt16LittleEndian(sess.Slice(12, 2), 1); // first_track
+        BinaryPrimitives.WriteUInt16LittleEndian(sess.Slice(14, 2), 1); // last_track
+        BinaryPrimitives.WriteUInt32LittleEndian(sess.Slice(20, 4), trackOffset);
+
+        // 80-byte TrackBlock
+        Span<byte> trk = span.Slice(trackOffset, trackSize);
+        trk[0] = audio ? (byte)0xA9 : (sectorSize == SectorSize2336 ? (byte)0xAB : (byte)0xAA);
+        trk[1] = sectorSize == SectorSize2448 ? (byte)0x08 : (byte)0x00;
+        trk[2] = audio ? (byte)0x01 : (byte)0x14; // ADR/CTL
+        trk[3] = 0;
+        trk[4] = 1; // point = track 1
+        BinaryPrimitives.WriteUInt32LittleEndian(trk.Slice(12, 4), extraOffset);
+        BinaryPrimitives.WriteUInt16LittleEndian(trk.Slice(16, 2), (ushort)sectorSize);
+        BinaryPrimitives.WriteUInt32LittleEndian(trk.Slice(36, 4), 0); // start_sector
+        BinaryPrimitives.WriteUInt64LittleEndian(trk.Slice(40, 8), 0); // start_offset
+        BinaryPrimitives.WriteUInt32LittleEndian(trk.Slice(48, 4), 1); // number_of_files
+        BinaryPrimitives.WriteUInt32LittleEndian(trk.Slice(52, 4), footerOffset);
+
+        // 8-byte TrackExtraBlock
+        Span<byte> extra = span.Slice(extraOffset, extraSize);
+        BinaryPrimitives.WriteUInt32LittleEndian(extra.Slice(0, 4), 0); // pregap
+        BinaryPrimitives.WriteUInt32LittleEndian(extra.Slice(4, 4), sectors);
+
+        // 16-byte Footer + ASCII filename
+        Span<byte> footer = span.Slice(footerOffset, footerSize);
+        BinaryPrimitives.WriteUInt32LittleEndian(footer.Slice(0, 4), filenameOffset);
+        BinaryPrimitives.WriteUInt32LittleEndian(footer.Slice(4, 4), 0); // ASCII
+        mdfNameBytes.CopyTo(span.Slice(filenameOffset));
+
         File.WriteAllBytes(mdsFilePath, mdsBytes);
     }
 
@@ -812,102 +935,179 @@ public static class LegacyDiscImageConverter
         if (headerPos < 0 || headerPos >= fileLen - 8)
             throw new InvalidDataException("DiscJuggler descriptor position is outside the file.");
         string versionName = versionCode switch { CdiVersion2 => "2", CdiVersion3 => "3", _ => "3.5" };
+        long descriptorEnd = fileLen - 8;
+
+        void EnsureAvailable(long n)
+        {
+            if (n < 0 || fs.Position + n > descriptorEnd)
+                throw new InvalidDataException("DiscJuggler descriptor is truncated.");
+        }
 
         void Skip(long n)
         {
-            if (n < 0 || fs.Position + n > fileLen) throw new InvalidDataException("DiscJuggler descriptor is truncated.");
+            EnsureAvailable(n);
             fs.Position += n;
         }
 
-        fs.Position = headerPos;
-        int sessions = r.ReadUInt16();
-        if (sessions is < 1 or > 99) throw new InvalidDataException($"DiscJuggler image reports {sessions} sessions.");
+        byte ReadByteChecked() { EnsureAvailable(1); return r.ReadByte(); }
+        ushort ReadUInt16Checked() { EnsureAvailable(2); return r.ReadUInt16(); }
+        uint ReadUInt32Checked() { EnsureAvailable(4); return r.ReadUInt32(); }
+        byte[] ReadBytesChecked(int count) { EnsureAvailable(count); return r.ReadBytes(count); }
 
-        long dataCursor = 0;
-        int trackCount = 0;
-        bool anyData = false;
-        long payloadOffset = 0, payloadLength = 0;
-        int sectorSize = OpticalConstants.DataSectorSize;
-        int dataSectors = 0;
-
-        for (int s = 0; s < sessions; s++)
+        try
         {
-            int tracks = r.ReadUInt16();
-            for (int t = 0; t < tracks; t++)
+            fs.Position = headerPos;
+            int sessions = ReadUInt16Checked();
+            if (sessions is < 1 or > 99) throw new InvalidDataException($"DiscJuggler image reports {sessions} sessions.");
+
+            long dataCursor = 0;
+            int trackCount = 0;
+            bool anyData = false;
+            long payloadOffset = 0, payloadLength = 0;
+            int sectorSize = OpticalConstants.DataSectorSize;
+            int dataSectors = 0;
+
+            bool firstAudioSeen = false;
+            long firstAudioOffset = 0;
+            int firstAudioSectorSize = OpticalConstants.RawSectorSize;
+            ulong totalAudioSectors = 0;
+
+            for (int s = 0; s < sessions; s++)
             {
-                if (r.ReadUInt32() != 0) Skip(8);
-                byte[] mark1 = r.ReadBytes(10);
-                byte[] mark2 = r.ReadBytes(10);
-                if (!mark1.AsSpan().SequenceEqual(CdiStartMark) || !mark2.AsSpan().SequenceEqual(CdiStartMark))
-                    throw new InvalidDataException("DiscJuggler track descriptor is corrupt (start marker mismatch).");
-                Skip(4);
-                int nameLen = r.ReadByte();
-                Skip(nameLen);
-                Skip(11 + 4 + 4);
-                if (r.ReadUInt32() == 0x80000000) Skip(8);
-                Skip(2);
-                uint pregap = r.ReadUInt32();
-                uint length = r.ReadUInt32();
-                Skip(6);
-                uint mode = r.ReadUInt32();
-                if (mode > 2) throw new InvalidDataException($"DiscJuggler track mode {mode} is not supported.");
-                Skip(12);
-                r.ReadUInt32(); // start LBA (unused: tracks are stored back to back)
-                uint totalLength = r.ReadUInt32();
-                Skip(16);
-                uint sizeCode = r.ReadUInt32();
-                int size = sizeCode switch
-                {
-                    0 => OpticalConstants.DataSectorSize,
-                    1 => SectorSize2336,
-                    2 => OpticalConstants.RawSectorSize,
-                    _ => throw new InvalidDataException($"DiscJuggler sector size code {sizeCode} is not supported.")
-                };
-                Skip(29);
-                if (versionCode != CdiVersion2)
-                {
-                    Skip(5);
-                    if (r.ReadUInt32() == 0xFFFFFFFF) Skip(78);
-                }
+                int tracks = ReadUInt16Checked();
+                if (tracks is < 1 or > 99) throw new InvalidDataException($"DiscJuggler session {s + 1} reports {tracks} tracks.");
 
-                trackCount++;
-                if (mode != 0 && !anyData)
+                for (int t = 0; t < tracks; t++)
                 {
-                    anyData = true;
-                    payloadOffset = dataCursor + (long)pregap * size;
-                    sectorSize = size;
-                    dataSectors = checked((int)length);
-                    payloadLength = (long)length * size;
-                    if (payloadOffset + payloadLength > headerPos)
+                    if (ReadUInt32Checked() != 0) Skip(8);
+                    byte[] mark1 = ReadBytesChecked(10);
+                    byte[] mark2 = ReadBytesChecked(10);
+                    if (!mark1.AsSpan().SequenceEqual(CdiStartMark) || !mark2.AsSpan().SequenceEqual(CdiStartMark))
+                        throw new InvalidDataException("DiscJuggler track descriptor is corrupt (start marker mismatch).");
+                    Skip(4);
+                    int nameLen = ReadByteChecked();
+                    Skip(nameLen);
+                    Skip(11 + 4 + 4);
+                    if (ReadUInt32Checked() == 0x80000000) Skip(8);
+                    Skip(2);
+                    uint pregap = ReadUInt32Checked();
+                    uint length = ReadUInt32Checked();
+                    Skip(6);
+                    uint mode = ReadUInt32Checked();
+                    if (mode > 2) throw new InvalidDataException($"DiscJuggler track mode {mode} is not supported.");
+                    Skip(12);
+                    ReadUInt32Checked(); // start LBA (unused: tracks are stored back to back)
+                    uint totalLength = ReadUInt32Checked();
+                    Skip(16);
+                    uint sizeCode = ReadUInt32Checked();
+                    int size = sizeCode switch
+                    {
+                        0 => OpticalConstants.DataSectorSize,
+                        1 => SectorSize2336,
+                        2 => OpticalConstants.RawSectorSize,
+                        _ => throw new InvalidDataException($"DiscJuggler sector size code {sizeCode} is not supported.")
+                    };
+                    Skip(29);
+                    if (versionCode != CdiVersion2)
+                    {
+                        Skip(5);
+                        if (ReadUInt32Checked() == 0xFFFFFFFF) Skip(78);
+                    }
+
+                    if (length > int.MaxValue)
+                        throw new InvalidDataException($"DiscJuggler track length {length} exceeds maximum supported sectors.");
+
+                    ulong headerLimit = (ulong)headerPos;
+                    ulong uCursor = (ulong)dataCursor;
+                    ulong uPregapBytes = (ulong)pregap * (ulong)size;
+                    ulong uTrackBytes = (ulong)length * (ulong)size;
+                    ulong uTotalBytes = (ulong)totalLength * (ulong)size;
+
+                    if (uCursor > headerLimit ||
+                        uPregapBytes > headerLimit - uCursor ||
+                        uTrackBytes > headerLimit - uCursor - uPregapBytes ||
+                        uTotalBytes > headerLimit - uCursor)
+                    {
                         throw new InvalidDataException("DiscJuggler track extends past the end of the data area.");
+                    }
+
+                    ulong trackOffset = uCursor + uPregapBytes;
+                    trackCount++;
+
+                    if (mode != 0 && !anyData)
+                    {
+                        anyData = true;
+                        payloadOffset = (long)trackOffset;
+                        sectorSize = size;
+                        dataSectors = (int)length;
+                        payloadLength = (long)uTrackBytes;
+                    }
+                    else if (mode == 0)
+                    {
+                        if (!firstAudioSeen)
+                        {
+                            firstAudioSeen = true;
+                            firstAudioOffset = (long)trackOffset;
+                            firstAudioSectorSize = size;
+                        }
+                        totalAudioSectors += length;
+                    }
+
+                    dataCursor = (long)(uCursor + uTotalBytes);
                 }
 
-                dataCursor += (long)totalLength * size;
+                // Session trailer: 4 + 8 bytes, plus 1 more from v3 onward (cdirip CDI_skip_next_session).
+                Skip(12 + (versionCode == CdiVersion2 ? 0 : 1));
             }
 
-            // Session trailer: 4 + 8 bytes, plus 1 more from v3 onward (cdirip CDI_skip_next_session).
-            Skip(12 + (versionCode == CdiVersion2 ? 0 : 1));
+            if (trackCount == 0) throw new InvalidDataException("DiscJuggler image has no tracks.");
+
+            if (!anyData)
+            {
+                if (totalAudioSectors == 0 || totalAudioSectors > int.MaxValue)
+                    throw new InvalidDataException("DiscJuggler audio image has invalid sector count.");
+
+                ulong audioBytes = totalAudioSectors * (ulong)firstAudioSectorSize;
+                if (audioBytes > (ulong)long.MaxValue)
+                    throw new InvalidDataException("DiscJuggler audio image size exceeds supported bounds.");
+
+                payloadOffset = firstAudioOffset;
+                sectorSize = firstAudioSectorSize;
+                dataSectors = (int)totalAudioSectors;
+                payloadLength = (long)audioBytes;
+            }
+
+            return new LegacyDiscImageInfo(
+                SourceFilePath: cdiPath,
+                BinaryPayloadPath: cdiPath,
+                FormatName: $"DiscJuggler v{versionName} (.cdi)",
+                PayloadOffsetBytes: payloadOffset,
+                PayloadLengthBytes: payloadLength,
+                SectorSizeBytes: sectorSize,
+                SectorCount: dataSectors,
+                IsRaw2352: sectorSize == OpticalConstants.RawSectorSize,
+                IsAudioDisc: !anyData,
+                TrackCount: trackCount);
         }
-
-        if (trackCount == 0) throw new InvalidDataException("DiscJuggler image has no tracks.");
-
-        return new LegacyDiscImageInfo(
-            SourceFilePath: cdiPath,
-            BinaryPayloadPath: cdiPath,
-            FormatName: $"DiscJuggler v{versionName} (.cdi)",
-            PayloadOffsetBytes: payloadOffset,
-            PayloadLengthBytes: payloadLength,
-            SectorSizeBytes: sectorSize,
-            SectorCount: dataSectors,
-            IsRaw2352: sectorSize == OpticalConstants.RawSectorSize,
-            IsAudioDisc: !anyData,
-            TrackCount: trackCount);
+        catch (EndOfStreamException ex)
+        {
+            throw new InvalidDataException("DiscJuggler descriptor is truncated or corrupt.", ex);
+        }
+        catch (OverflowException ex)
+        {
+            throw new InvalidDataException("DiscJuggler descriptor contains out-of-range numeric values.", ex);
+        }
     }
 
     private static LegacyDiscImageInfo InspectIso(string isoPath)
     {
         using var fs = new FileStream(isoPath, FileMode.Open, FileAccess.Read, FileShare.Read);
         long len = fs.Length;
+        if (len == 0)
+        {
+            throw new InvalidDataException($"ISO disc image '{Path.GetFileName(isoPath)}' is empty (0 bytes).");
+        }
+
         int sectors = OpticalConstants.BytesToSectors(len, OpticalConstants.DataSectorSize);
         return new LegacyDiscImageInfo(
             SourceFilePath: isoPath,
@@ -925,6 +1125,11 @@ public static class LegacyDiscImageConverter
     private static LegacyDiscImageInfo InspectRawBin(string binPath)
     {
         using var fs = new FileStream(binPath, FileMode.Open, FileAccess.Read, FileShare.Read);
+        if (fs.Length == 0)
+        {
+            throw new InvalidDataException($"Binary disc image '{Path.GetFileName(binPath)}' is empty (0 bytes).");
+        }
+
         bool hasIsoVolume = TryProbeIsoGeometry(fs, 0, fs.Length, out _, out _);
         var (sectorSize, offset, len) = ProbeOrGuessGeometry(fs);
         bool isRaw = sectorSize != OpticalConstants.DataSectorSize;
@@ -951,116 +1156,280 @@ public static class LegacyDiscImageConverter
     {
         using var fs = new FileStream(nrgPath, FileMode.Open, FileAccess.Read, FileShare.Read);
         long fileLen = fs.Length;
-        long trailerOffset = fileLen;
-        string versionTag = "Nero Burning ROM (.nrg)";
-        int sectorSize = OpticalConstants.DataSectorSize;
-        long payloadOffset = 0;
-        long payloadLength = fileLen;
-        int trackCount = 1;
-        bool isAudio = false;
-
-        if (fileLen >= 12)
+        if (fileLen < 16)
         {
-            Span<byte> tail12 = stackalloc byte[12];
-            fs.Position = fileLen - 12;
-            if (fs.Read(tail12) == 12)
-            {
-                if (tail12.Slice(0, 4).SequenceEqual("NER5"u8))
-                {
-                    ulong off = BinaryPrimitives.ReadUInt64BigEndian(tail12.Slice(4, 8));
-                    if (off > 0 && (long)off < fileLen - 12)
-                    {
-                        trailerOffset = (long)off;
-                        payloadLength = trailerOffset;
-                        versionTag = "Nero Burning ROM v5.5+ (NER5)";
-                    }
-                }
-                else if (tail12.Slice(4, 4).SequenceEqual("NERO"u8))
-                {
-                    uint off = BinaryPrimitives.ReadUInt32BigEndian(tail12.Slice(8, 4));
-                    if (off > 0 && off < fileLen - 8)
-                    {
-                        trailerOffset = off;
-                        payloadLength = trailerOffset;
-                        versionTag = "Nero Burning ROM Legacy (NERO)";
-                    }
-                }
-            }
+            throw new InvalidDataException($"Nero disc image '{Path.GetFileName(nrgPath)}' is too small to contain a valid NRG trailer.");
         }
 
-        // Parse IFF-style chunks in trailer if present
-        if (trailerOffset < fileLen - 12)
+        Span<byte> tail12 = stackalloc byte[12];
+        fs.Position = fileLen - 12;
+        if (fs.Read(tail12) != 12)
         {
-            fs.Position = trailerOffset;
-            Span<byte> chunkHeader = stackalloc byte[8];
-            Span<byte> etn2 = stackalloc byte[32];
-            Span<byte> etnf = stackalloc byte[20];
-            Span<byte> sinf = stackalloc byte[4];
-            while (fs.Position + 8 <= fileLen - 8)
-            {
-                if (fs.Read(chunkHeader) < 8) break;
-                string id = Encoding.ASCII.GetString(chunkHeader.Slice(0, 4));
-                uint len = BinaryPrimitives.ReadUInt32BigEndian(chunkHeader.Slice(4, 4));
-                long nextChunkPos = fs.Position + len;
-
-                if (id == "END!")
-                {
-                    break;
-                }
-
-                if (id == "ETN2" && len >= 32 && fs.Position + 32 <= fileLen)
-                {
-                    if (fs.Read(etn2) == 32)
-                    {
-                        ulong off = BinaryPrimitives.ReadUInt64BigEndian(etn2.Slice(0, 8));
-                        ulong sz = BinaryPrimitives.ReadUInt64BigEndian(etn2.Slice(8, 8));
-                        uint mode = BinaryPrimitives.ReadUInt32BigEndian(etn2.Slice(16, 4));
-                        if ((long)off >= 0 && (long)(off + sz) <= trailerOffset && sz > 0)
-                        {
-                            payloadOffset = (long)off;
-                            payloadLength = (long)sz;
-                        }
-                        sectorSize = NrgModeToSectorSize(mode, sectorSize);
-                        isAudio = mode is 7 or 16;
-                    }
-                }
-                else if (id == "ETNF" && len >= 20 && fs.Position + 20 <= fileLen)
-                {
-                    if (fs.Read(etnf) == 20)
-                    {
-                        uint off = BinaryPrimitives.ReadUInt32BigEndian(etnf.Slice(0, 4));
-                        uint sz = BinaryPrimitives.ReadUInt32BigEndian(etnf.Slice(4, 4));
-                        uint mode = BinaryPrimitives.ReadUInt32BigEndian(etnf.Slice(8, 4));
-                        if (off + sz <= trailerOffset && sz > 0)
-                        {
-                            payloadOffset = off;
-                            payloadLength = sz;
-                        }
-                        sectorSize = NrgModeToSectorSize(mode, sectorSize);
-                        isAudio = mode is 7 or 16;
-                    }
-                }
-                else if (id == "SINF" && len >= 4 && fs.Position + 4 <= fileLen)
-                {
-                    if (fs.Read(sinf) == 4)
-                    {
-                        int trks = (int)BinaryPrimitives.ReadUInt32BigEndian(sinf);
-                        if (trks is > 0 and <= 99) trackCount = trks;
-                    }
-                }
-
-                if (nextChunkPos <= fs.Position || nextChunkPos > fileLen) break;
-                fs.Position = nextChunkPos;
-            }
+            throw new InvalidDataException($"Failed to read Nero footer from '{Path.GetFileName(nrgPath)}'.");
         }
 
-        // Locate the ISO 9660 Primary Volume Descriptor to confirm the sector geometry and skip a stored
-        // 150-sector pre-gap (Nero DAO images often keep track 1's 2-second pre-gap in front of the data).
-        if (!isAudio && TryProbeIsoGeometry(fs, payloadOffset, payloadLength, out int probedSize, out long pregapBytes))
+        long trailerOffset;
+        long footerEnd;
+        string versionTag;
+
+        if (tail12.Slice(0, 4).SequenceEqual("NER5"u8))
         {
-            sectorSize = probedSize;
-            payloadOffset += pregapBytes;
-            payloadLength -= pregapBytes;
+            ulong off = BinaryPrimitives.ReadUInt64BigEndian(tail12.Slice(4, 8));
+            footerEnd = fileLen - 12;
+            if (off == 0 || off >= (ulong)footerEnd)
+            {
+                throw new InvalidDataException($"Nero NER5 trailer offset 0x{off:X} is out of bounds for file length {fileLen}.");
+            }
+            trailerOffset = (long)off;
+            versionTag = "Nero Burning ROM v5.5+ (NER5)";
+        }
+        else if (tail12.Slice(4, 4).SequenceEqual("NERO"u8))
+        {
+            uint off = BinaryPrimitives.ReadUInt32BigEndian(tail12.Slice(8, 4));
+            footerEnd = fileLen - 8;
+            if (off == 0 || (ulong)off >= (ulong)footerEnd)
+            {
+                throw new InvalidDataException($"Nero NERO trailer offset 0x{off:X} is out of bounds for file length {fileLen}.");
+            }
+            trailerOffset = off;
+            versionTag = "Nero Burning ROM Legacy (NERO)";
+        }
+        else
+        {
+            throw new InvalidDataException($"'{Path.GetFileName(nrgPath)}' is not a valid Nero (.nrg) image (missing NER5/NERO footer signature).");
+        }
+
+        ulong trailerLimit = (ulong)trailerOffset;
+        var tracks = new List<(ulong Offset, ulong Size, int SectorSize, bool IsAudio)>();
+        bool seenEnd = false;
+
+        fs.Position = trailerOffset;
+        Span<byte> chunkHeader = stackalloc byte[8];
+        Span<byte> etn2 = stackalloc byte[32];
+        Span<byte> etnf = stackalloc byte[20];
+        Span<byte> daoHeader = stackalloc byte[22];
+        Span<byte> daox = stackalloc byte[42];
+        Span<byte> daoi = stackalloc byte[30];
+
+        while (fs.Position < footerEnd)
+        {
+            if (fs.Position + 8 > footerEnd || fs.Read(chunkHeader) != 8)
+            {
+                throw new InvalidDataException("Nero trailer chunk header is truncated.");
+            }
+
+            foreach (byte b in chunkHeader.Slice(0, 4))
+            {
+                if (b < 0x20 || b > 0x7E)
+                {
+                    throw new InvalidDataException("Nero trailer contains an invalid chunk identifier.");
+                }
+            }
+
+            string id = Encoding.ASCII.GetString(chunkHeader.Slice(0, 4));
+            long chunkLen = BinaryPrimitives.ReadUInt32BigEndian(chunkHeader.Slice(4, 4));
+            long chunkDataStart = fs.Position;
+            long nextChunkPos = chunkDataStart + chunkLen;
+            if (nextChunkPos > footerEnd)
+            {
+                throw new InvalidDataException($"Nero '{id}' chunk length ({chunkLen}) extends past trailer end.");
+            }
+
+            if (id == "END!")
+            {
+                seenEnd = true;
+                break;
+            }
+
+            if (id == "ETN2")
+            {
+                if (chunkLen < 32 || chunkLen % 32 != 0)
+                {
+                    throw new InvalidDataException($"Nero ETN2 chunk has invalid length {chunkLen}.");
+                }
+
+                long recordCount = chunkLen / 32;
+                for (long i = 0; i < recordCount; i++)
+                {
+                    if (fs.Read(etn2) != 32)
+                    {
+                        throw new InvalidDataException("Nero ETN2 record is truncated.");
+                    }
+
+                    ulong off = BinaryPrimitives.ReadUInt64BigEndian(etn2.Slice(0, 8));
+                    ulong sz = BinaryPrimitives.ReadUInt64BigEndian(etn2.Slice(8, 8));
+                    uint mode = BinaryPrimitives.ReadUInt32BigEndian(etn2.Slice(16, 4));
+
+                    if (sz == 0 || off > trailerLimit || sz > trailerLimit - off)
+                    {
+                        throw new InvalidDataException($"Nero ETN2 track range (offset={off}, size={sz}) is invalid or exceeds trailer offset {trailerOffset}.");
+                    }
+
+                    int trkSectorSize = NrgModeToSectorSize(mode, -1);
+                    if (trkSectorSize <= 0)
+                    {
+                        throw new InvalidDataException($"Nero ETN2 track mode {mode} is not supported.");
+                    }
+
+                    tracks.Add((off, sz, trkSectorSize, mode is 7 or 16));
+                }
+            }
+            else if (id == "ETNF")
+            {
+                if (chunkLen < 20 || chunkLen % 20 != 0)
+                {
+                    throw new InvalidDataException($"Nero ETNF chunk has invalid length {chunkLen}.");
+                }
+
+                long recordCount = chunkLen / 20;
+                for (long i = 0; i < recordCount; i++)
+                {
+                    if (fs.Read(etnf) != 20)
+                    {
+                        throw new InvalidDataException("Nero ETNF record is truncated.");
+                    }
+
+                    uint off = BinaryPrimitives.ReadUInt32BigEndian(etnf.Slice(0, 4));
+                    uint sz = BinaryPrimitives.ReadUInt32BigEndian(etnf.Slice(4, 4));
+                    uint mode = BinaryPrimitives.ReadUInt32BigEndian(etnf.Slice(8, 4));
+
+                    if (sz == 0 || (ulong)off > trailerLimit || (ulong)sz > trailerLimit - off)
+                    {
+                        throw new InvalidDataException($"Nero ETNF track range (offset={off}, size={sz}) is invalid or exceeds trailer offset {trailerOffset}.");
+                    }
+
+                    int trkSectorSize = NrgModeToSectorSize(mode, -1);
+                    if (trkSectorSize <= 0)
+                    {
+                        throw new InvalidDataException($"Nero ETNF track mode {mode} is not supported.");
+                    }
+
+                    tracks.Add((off, sz, trkSectorSize, mode is 7 or 16));
+                }
+            }
+            else if (id == "DAOX")
+            {
+                if (chunkLen < 22 + 42 || (chunkLen - 22) % 42 != 0)
+                {
+                    throw new InvalidDataException($"Nero DAOX chunk has invalid length {chunkLen}.");
+                }
+                if (fs.Read(daoHeader) != 22)
+                {
+                    throw new InvalidDataException("Nero DAOX header is truncated.");
+                }
+
+                long recordCount = (chunkLen - 22) / 42;
+                for (long i = 0; i < recordCount; i++)
+                {
+                    if (fs.Read(daox) != 42)
+                    {
+                        throw new InvalidDataException("Nero DAOX track record is truncated.");
+                    }
+
+                    ushort declaredSectorSize = BinaryPrimitives.ReadUInt16BigEndian(daox.Slice(12, 2));
+                    byte mode = daox[14];
+                    ulong pregapOff = BinaryPrimitives.ReadUInt64BigEndian(daox.Slice(18, 8));
+                    ulong startOff = BinaryPrimitives.ReadUInt64BigEndian(daox.Slice(26, 8));
+                    ulong endOff = BinaryPrimitives.ReadUInt64BigEndian(daox.Slice(34, 8));
+
+                    if (endOff <= startOff || pregapOff > startOff || endOff > trailerLimit)
+                    {
+                        throw new InvalidDataException($"Nero DAOX track offsets ({pregapOff}..{startOff}..{endOff}) are out of bounds.");
+                    }
+
+                    int trkSectorSize = NrgModeToSectorSize(mode, declaredSectorSize);
+                    if (trkSectorSize <= 0)
+                    {
+                        throw new InvalidDataException($"Nero DAOX track mode {mode} is not supported.");
+                    }
+
+                    tracks.Add((startOff, endOff - startOff, trkSectorSize, mode is 7 or 16));
+                }
+            }
+            else if (id == "DAOI")
+            {
+                if (chunkLen < 22 + 30 || (chunkLen - 22) % 30 != 0)
+                {
+                    throw new InvalidDataException($"Nero DAOI chunk has invalid length {chunkLen}.");
+                }
+                if (fs.Read(daoHeader) != 22)
+                {
+                    throw new InvalidDataException("Nero DAOI header is truncated.");
+                }
+
+                long recordCount = (chunkLen - 22) / 30;
+                for (long i = 0; i < recordCount; i++)
+                {
+                    if (fs.Read(daoi) != 30)
+                    {
+                        throw new InvalidDataException("Nero DAOI track record is truncated.");
+                    }
+
+                    ushort declaredSectorSize = BinaryPrimitives.ReadUInt16BigEndian(daoi.Slice(12, 2));
+                    byte mode = daoi[14];
+                    uint pregapOff = BinaryPrimitives.ReadUInt32BigEndian(daoi.Slice(18, 4));
+                    uint startOff = BinaryPrimitives.ReadUInt32BigEndian(daoi.Slice(22, 4));
+                    uint endOff = BinaryPrimitives.ReadUInt32BigEndian(daoi.Slice(26, 4));
+
+                    if (endOff <= startOff || pregapOff > startOff || (ulong)endOff > trailerLimit)
+                    {
+                        throw new InvalidDataException($"Nero DAOI track offsets ({pregapOff}..{startOff}..{endOff}) are out of bounds.");
+                    }
+
+                    int trkSectorSize = NrgModeToSectorSize(mode, declaredSectorSize);
+                    if (trkSectorSize <= 0)
+                    {
+                        throw new InvalidDataException($"Nero DAOI track mode {mode} is not supported.");
+                    }
+
+                    tracks.Add((startOff, endOff - startOff, trkSectorSize, mode is 7 or 16));
+                }
+            }
+
+            fs.Position = nextChunkPos;
+        }
+
+        if (tracks.Count == 0 || !seenEnd)
+        {
+            throw new InvalidDataException($"Nero image '{Path.GetFileName(nrgPath)}' trailer is missing track descriptors or END! marker.");
+        }
+
+        int dataTrackIdx = tracks.FindIndex(t => !t.IsAudio);
+        bool isAudio = dataTrackIdx < 0;
+        long payloadOffset;
+        long payloadLength;
+        int sectorSize;
+
+        if (!isAudio)
+        {
+            var dataTrack = tracks[dataTrackIdx];
+            payloadOffset = (long)dataTrack.Offset;
+            payloadLength = (long)dataTrack.Size;
+            sectorSize = dataTrack.SectorSize;
+
+            // Locate the ISO 9660 Primary Volume Descriptor to confirm the sector geometry and skip a stored
+            // 150-sector pre-gap (Nero DAO images often keep track 1's 2-second pre-gap in front of the data).
+            if (TryProbeIsoGeometry(fs, payloadOffset, payloadLength, out int probedSize, out long pregapBytes))
+            {
+                sectorSize = probedSize;
+                payloadOffset += pregapBytes;
+                payloadLength -= pregapBytes;
+            }
+        }
+        else
+        {
+            payloadOffset = (long)tracks[0].Offset;
+            sectorSize = tracks[0].SectorSize;
+            ulong totalAudioBytes = 0;
+            foreach (var trk in tracks)
+            {
+                if (totalAudioBytes > (ulong)long.MaxValue - trk.Size)
+                {
+                    throw new InvalidDataException("Nero audio track sizes overflow supported bounds.");
+                }
+                totalAudioBytes += trk.Size;
+            }
+            payloadLength = (long)totalAudioBytes;
         }
 
         int sectors = OpticalConstants.BytesToSectors(payloadLength, sectorSize);
@@ -1074,7 +1443,7 @@ public static class LegacyDiscImageConverter
             SectorCount: sectors,
             IsRaw2352: sectorSize == OpticalConstants.RawSectorSize,
             IsAudioDisc: isAudio,
-            TrackCount: trackCount);
+            TrackCount: tracks.Count);
     }
 
     private static LegacyDiscImageInfo InspectCloneCdCcd(string ccdPath)
@@ -1088,12 +1457,24 @@ public static class LegacyDiscImageConverter
             if (File.Exists(binCandidate)) imgPath = binCandidate;
         }
 
+        if (!File.Exists(imgPath))
+        {
+            throw new FileNotFoundException(
+                $"CloneCD payload image not found for '{Path.GetFileName(ccdPath)}' (expected '{baseName}.img' or '{baseName}.bin').",
+                imgPath);
+        }
+
+        bool hasCloneCdHeader = false;
         int trackCount = 0;
         var trackModes = new List<int>();
         foreach (string rawLine in File.ReadLines(ccdPath))
         {
             string line = rawLine.Trim();
-            if (line.StartsWith("[Track ", StringComparison.OrdinalIgnoreCase))
+            if (line.Equals("[CloneCD]", StringComparison.OrdinalIgnoreCase))
+            {
+                hasCloneCdHeader = true;
+            }
+            else if (line.StartsWith("[Track ", StringComparison.OrdinalIgnoreCase))
             {
                 trackCount++;
             }
@@ -1104,16 +1485,26 @@ public static class LegacyDiscImageConverter
             }
         }
 
+        if (!hasCloneCdHeader && trackCount == 0)
+        {
+            throw new InvalidDataException($"'{Path.GetFileName(ccdPath)}' is not a valid CloneCD (.ccd) control file.");
+        }
+
         if (trackCount == 0) trackCount = 1;
+
+        long payloadLen = new FileInfo(imgPath).Length;
+        if (payloadLen == 0)
+        {
+            throw new InvalidDataException($"CloneCD payload image '{Path.GetFileName(imgPath)}' is empty (0 bytes).");
+        }
 
         // Only a disc whose tracks are ALL audio (MODE=0) is an Audio CD. Mixed-mode / Enhanced CDs
         // (data track + audio tracks) still carry a convertible data track.
         bool isAudio = trackModes.Count > 0 && trackModes.All(m => m == 0);
 
         long payloadOffset = 0;
-        long payloadLen = File.Exists(imgPath) ? new FileInfo(imgPath).Length : new FileInfo(ccdPath).Length;
         int sectorSize = OpticalConstants.RawSectorSize;
-        if (File.Exists(imgPath) && !isAudio)
+        if (!isAudio)
         {
             using var fs = new FileStream(imgPath, FileMode.Open, FileAccess.Read, FileShare.Read);
             if (TryProbeIsoGeometry(fs, 0, payloadLen, out int probedSize, out long pregapBytes))
@@ -1127,7 +1518,7 @@ public static class LegacyDiscImageConverter
         int sectors = OpticalConstants.BytesToSectors(payloadLen, sectorSize);
         return new LegacyDiscImageInfo(
             SourceFilePath: ccdPath,
-            BinaryPayloadPath: File.Exists(imgPath) ? imgPath : ccdPath,
+            BinaryPayloadPath: imgPath,
             FormatName: "CloneCD Control Image (.ccd/.img)",
             PayloadOffsetBytes: payloadOffset,
             PayloadLengthBytes: payloadLen,
@@ -1148,6 +1539,11 @@ public static class LegacyDiscImageConverter
         }
 
         using var fs = new FileStream(imgPath, FileMode.Open, FileAccess.Read, FileShare.Read);
+        if (fs.Length == 0)
+        {
+            throw new InvalidDataException($"Disc image '{Path.GetFileName(imgPath)}' is empty (0 bytes).");
+        }
+
         var (sectorSize, offset, len) = ProbeOrGuessGeometry(fs);
         bool isRaw = sectorSize != OpticalConstants.DataSectorSize;
         int sectors = OpticalConstants.BytesToSectors(len, sectorSize);
@@ -1167,20 +1563,264 @@ public static class LegacyDiscImageConverter
 
     private static LegacyDiscImageInfo InspectAlcoholMds(string mdsPath)
     {
-        string mdfPath = Path.ChangeExtension(mdsPath, ".mdf");
-        string binaryPath = File.Exists(mdfPath) ? mdfPath : mdsPath;
-        var info = InspectAlcoholMdf(binaryPath);
-        return info with
+        long mdsFileLen = new FileInfo(mdsPath).Length;
+        const int MdsHeaderSize = 88;
+        const int MdsSessionSize = 24;
+        const int MdsTrackSize = 80;
+        const int MdsExtraSize = 8;
+        const int MdsFooterSize = 16;
+
+        if (mdsFileLen < MdsHeaderSize || mdsFileLen > 64L * 1024 * 1024)
         {
-            SourceFilePath = mdsPath,
-            BinaryPayloadPath = binaryPath,
-            FormatName = "Alcohol 120% Media Descriptor (.mds/.mdf)"
-        };
+            throw new InvalidDataException($"'{Path.GetFileName(mdsPath)}' is not a valid Alcohol 120% MDS descriptor (invalid file size {mdsFileLen} bytes).");
+        }
+
+        byte[] mds = File.ReadAllBytes(mdsPath);
+        ReadOnlySpan<byte> span = mds;
+        if (!span.Slice(0, 16).SequenceEqual(MdsSignature))
+        {
+            throw new InvalidDataException($"'{Path.GetFileName(mdsPath)}' is not a valid Alcohol 120% MDS file (missing MEDIA DESCRIPTOR signature).");
+        }
+
+        byte majorVersion = span[16];
+        if (majorVersion != 1)
+        {
+            throw new InvalidDataException($"Alcohol 120% MDS version {majorVersion}.{span[17]} is not supported.");
+        }
+
+        ushort mediumType = BinaryPrimitives.ReadUInt16LittleEndian(span.Slice(18, 2));
+        ushort numSessions = BinaryPrimitives.ReadUInt16LittleEndian(span.Slice(20, 2));
+        uint sessionsOffset = BinaryPrimitives.ReadUInt32LittleEndian(span.Slice(80, 4));
+
+        if (numSessions is < 1 or > 99)
+        {
+            throw new InvalidDataException($"Alcohol 120% MDS reports invalid session count {numSessions}.");
+        }
+
+        if (sessionsOffset < MdsHeaderSize || (long)sessionsOffset + (long)numSessions * MdsSessionSize > mds.Length)
+        {
+            throw new InvalidDataException("Alcohol 120% MDS session table offset is out of bounds.");
+        }
+
+        bool isCd = mediumType < 0x10;
+        var parsedTracks = new List<(bool IsAudio, int SectorSize, long StartOffset, uint TrackSectors, string? DeclaredFile)>();
+
+        for (int s = 0; s < numSessions; s++)
+        {
+            int sessPos = (int)sessionsOffset + (s * MdsSessionSize);
+            byte numAllBlocks = span[sessPos + 10];
+            uint tracksOffset = BinaryPrimitives.ReadUInt32LittleEndian(span.Slice(sessPos + 20, 4));
+
+            if (numAllBlocks == 0 || tracksOffset < MdsHeaderSize || (long)tracksOffset + (long)numAllBlocks * MdsTrackSize > mds.Length)
+            {
+                throw new InvalidDataException($"Alcohol 120% MDS session {s + 1} track table is out of bounds.");
+            }
+
+            for (int t = 0; t < numAllBlocks; t++)
+            {
+                int trkPos = (int)tracksOffset + (t * MdsTrackSize);
+                byte mode = span[trkPos + 0];
+                byte point = span[trkPos + 4];
+                uint extraOffset = BinaryPrimitives.ReadUInt32LittleEndian(span.Slice(trkPos + 12, 4));
+                ushort sectorSize = BinaryPrimitives.ReadUInt16LittleEndian(span.Slice(trkPos + 16, 2));
+                ulong startOffset = BinaryPrimitives.ReadUInt64LittleEndian(span.Slice(trkPos + 40, 8));
+                uint numFiles = BinaryPrimitives.ReadUInt32LittleEndian(span.Slice(trkPos + 48, 4));
+                uint footerOffset = BinaryPrimitives.ReadUInt32LittleEndian(span.Slice(trkPos + 52, 4));
+
+                if (point is < 1 or > 98)
+                {
+                    continue;
+                }
+
+                if ((mode & 0x07) == 0x06)
+                {
+                    throw new InvalidDataException($"Alcohol 120% MDS track {point} has unsupported mode 0x{mode:X2}.");
+                }
+
+                if (sectorSize is not (OpticalConstants.DataSectorSize or 2324 or 2328 or SectorSize2336 or OpticalConstants.RawSectorSize or SectorSize2448))
+                {
+                    throw new InvalidDataException($"Alcohol 120% MDS track {point} has unsupported sector size {sectorSize}.");
+                }
+
+                if (startOffset > (ulong)long.MaxValue)
+                {
+                    throw new InvalidDataException($"Alcohol 120% MDS track {point} start offset exceeds supported bounds.");
+                }
+
+                uint trackSectors = 0;
+                if (isCd && extraOffset != 0)
+                {
+                    if (extraOffset < MdsHeaderSize || (long)extraOffset + MdsExtraSize > mds.Length)
+                    {
+                        throw new InvalidDataException($"Alcohol 120% MDS track {point} extra block offset is out of bounds.");
+                    }
+                    trackSectors = BinaryPrimitives.ReadUInt32LittleEndian(span.Slice((int)extraOffset + 4, 4));
+                }
+
+                string? declaredFile = null;
+                if (footerOffset != 0 && numFiles > 0)
+                {
+                    if (footerOffset < MdsHeaderSize || (long)footerOffset + (long)numFiles * MdsFooterSize > mds.Length)
+                    {
+                        throw new InvalidDataException($"Alcohol 120% MDS track {point} footer offset is out of bounds.");
+                    }
+
+                    uint filenameOffset = BinaryPrimitives.ReadUInt32LittleEndian(span.Slice((int)footerOffset, 4));
+                    uint widechar = BinaryPrimitives.ReadUInt32LittleEndian(span.Slice((int)footerOffset + 4, 4));
+                    if (filenameOffset > 0 && filenameOffset < (uint)mds.Length)
+                    {
+                        declaredFile = ReadNullTerminatedMdsFilename(span.Slice((int)filenameOffset), widechar != 0);
+                    }
+                }
+
+                bool trkIsAudio = mode != 0 && (mode & 0x07) == 0x01;
+                parsedTracks.Add((trkIsAudio, sectorSize, (long)startOffset, trackSectors, declaredFile));
+            }
+        }
+
+        if (parsedTracks.Count == 0)
+        {
+            throw new InvalidDataException($"Alcohol 120% MDS '{Path.GetFileName(mdsPath)}' contains no tracks.");
+        }
+
+        int dataTrackIndex = parsedTracks.FindIndex(t => !t.IsAudio);
+        bool isAudioDisc = dataTrackIndex < 0;
+        var primary = isAudioDisc ? parsedTracks[0] : parsedTracks[dataTrackIndex];
+
+        string mdfPath = ResolveMdsPayloadPath(mdsPath, primary.DeclaredFile);
+        if (!File.Exists(mdfPath))
+        {
+            throw new FileNotFoundException($"Alcohol 120% payload file not found: '{mdfPath}'.", mdfPath);
+        }
+
+        long mdfLen = new FileInfo(mdfPath).Length;
+        if (mdfLen == 0)
+        {
+            throw new InvalidDataException($"Alcohol 120% payload file '{Path.GetFileName(mdfPath)}' is empty (0 bytes).");
+        }
+
+        if (primary.StartOffset < 0 || primary.StartOffset >= mdfLen)
+        {
+            throw new InvalidDataException($"Alcohol 120% track start offset {primary.StartOffset} is outside '{Path.GetFileName(mdfPath)}' ({mdfLen} bytes).");
+        }
+
+        long payloadLength;
+        int sectors;
+        if (!isAudioDisc)
+        {
+            if (primary.TrackSectors > 0)
+            {
+                ulong trackBytes = (ulong)primary.TrackSectors * (ulong)primary.SectorSize;
+                if (trackBytes > (ulong)(mdfLen - primary.StartOffset))
+                {
+                    throw new InvalidDataException($"Alcohol 120% track extends past the end of '{Path.GetFileName(mdfPath)}'.");
+                }
+                payloadLength = (long)trackBytes;
+                sectors = checked((int)primary.TrackSectors);
+            }
+            else
+            {
+                payloadLength = mdfLen - primary.StartOffset;
+                sectors = OpticalConstants.BytesToSectors(payloadLength, primary.SectorSize);
+            }
+        }
+        else
+        {
+            ulong audioSectorsSum = 0;
+            foreach (var trk in parsedTracks)
+            {
+                if (trk.TrackSectors > 0)
+                {
+                    audioSectorsSum += trk.TrackSectors;
+                }
+            }
+
+            if (audioSectorsSum > 0)
+            {
+                ulong audioBytes = audioSectorsSum * (ulong)primary.SectorSize;
+                if (audioBytes > (ulong)(mdfLen - primary.StartOffset) || audioSectorsSum > int.MaxValue)
+                {
+                    throw new InvalidDataException($"Alcohol 120% audio tracks extend past the end of '{Path.GetFileName(mdfPath)}'.");
+                }
+                payloadLength = (long)audioBytes;
+                sectors = (int)audioSectorsSum;
+            }
+            else
+            {
+                payloadLength = mdfLen - primary.StartOffset;
+                sectors = OpticalConstants.BytesToSectors(payloadLength, primary.SectorSize);
+            }
+        }
+
+        if (sectors <= 0)
+        {
+            throw new InvalidDataException($"Alcohol 120% image '{Path.GetFileName(mdsPath)}' contains 0 sectors.");
+        }
+
+        return new LegacyDiscImageInfo(
+            SourceFilePath: mdsPath,
+            BinaryPayloadPath: mdfPath,
+            FormatName: "Alcohol 120% Media Descriptor (.mds/.mdf)",
+            PayloadOffsetBytes: primary.StartOffset,
+            PayloadLengthBytes: payloadLength,
+            SectorSizeBytes: primary.SectorSize,
+            SectorCount: sectors,
+            IsRaw2352: primary.SectorSize == OpticalConstants.RawSectorSize,
+            IsAudioDisc: isAudioDisc,
+            TrackCount: parsedTracks.Count);
+    }
+
+    private static string? ReadNullTerminatedMdsFilename(ReadOnlySpan<byte> slice, bool wideChar)
+    {
+        if (wideChar)
+        {
+            int byteLen = 0;
+            while (byteLen + 1 < slice.Length && (slice[byteLen] != 0 || slice[byteLen + 1] != 0))
+            {
+                byteLen += 2;
+            }
+            return byteLen == 0 ? null : Encoding.Unicode.GetString(slice.Slice(0, byteLen)).Trim();
+        }
+
+        int nul = slice.IndexOf((byte)0);
+        ReadOnlySpan<byte> strBytes = nul >= 0 ? slice.Slice(0, nul) : slice;
+        return strBytes.IsEmpty ? null : Encoding.UTF8.GetString(strBytes).Trim();
+    }
+
+    private static string ResolveMdsPayloadPath(string mdsPath, string? declaredFile)
+    {
+        string defaultMdf = Path.ChangeExtension(mdsPath, ".mdf");
+        if (string.IsNullOrWhiteSpace(declaredFile))
+        {
+            return defaultMdf;
+        }
+
+        if (declaredFile.StartsWith("*.", StringComparison.Ordinal))
+        {
+            return Path.ChangeExtension(mdsPath, declaredFile.Substring(1));
+        }
+
+        string mdsDir = Path.GetDirectoryName(mdsPath) ?? string.Empty;
+        string candidate = Path.IsPathRooted(declaredFile)
+            ? declaredFile
+            : Path.Combine(mdsDir, declaredFile);
+        if (File.Exists(candidate))
+        {
+            return candidate;
+        }
+
+        string fileNameOnly = Path.Combine(mdsDir, Path.GetFileName(declaredFile));
+        return File.Exists(fileNameOnly) ? fileNameOnly : candidate;
     }
 
     private static LegacyDiscImageInfo InspectAlcoholMdf(string mdfPath)
     {
         using var fs = new FileStream(mdfPath, FileMode.Open, FileAccess.Read, FileShare.Read);
+        if (fs.Length == 0)
+        {
+            throw new InvalidDataException($"Alcohol 120% payload image '{Path.GetFileName(mdfPath)}' is empty (0 bytes).");
+        }
+
         var (sectorSize, offset, len) = ProbeOrGuessGeometry(fs);
         bool isRaw = sectorSize != OpticalConstants.DataSectorSize;
         int sectors = OpticalConstants.BytesToSectors(len, sectorSize);
@@ -1262,9 +1902,14 @@ public static class LegacyDiscImageConverter
             return (size, pregap, len - pregap);
         }
 
-        if (len >= OpticalConstants.RawSectorSize && len % OpticalConstants.RawSectorSize == 0 && HasRawCdSyncPattern(fs))
+        if (len >= OpticalConstants.RawSectorSize && len % OpticalConstants.RawSectorSize == 0 && HasRawCdSyncPatternAtStride(fs, OpticalConstants.RawSectorSize))
         {
             return (OpticalConstants.RawSectorSize, 0, len);
+        }
+
+        if (len >= SectorSize2448 && len % SectorSize2448 == 0 && HasRawCdSyncPatternAtStride(fs, SectorSize2448))
+        {
+            return (SectorSize2448, 0, len);
         }
 
         bool isRaw = len % OpticalConstants.RawSectorSize == 0 && len % OpticalConstants.DataSectorSize != 0;
@@ -1275,9 +1920,12 @@ public static class LegacyDiscImageConverter
     /// Returns true when the seekable stream begins with the 12-byte CD-ROM raw sector sync header
     /// (and a second sync header at byte 2,352 when the stream is at least two raw sectors long).
     /// </summary>
-    public static bool HasRawCdSyncPattern(Stream stream)
+    public static bool HasRawCdSyncPattern(Stream stream) =>
+        HasRawCdSyncPatternAtStride(stream, OpticalConstants.RawSectorSize);
+
+    private static bool HasRawCdSyncPatternAtStride(Stream stream, int stride, long baseOffset = 0)
     {
-        if (!stream.CanSeek || stream.Length < OpticalConstants.RawSectorSize)
+        if (!stream.CanSeek || baseOffset < 0 || stream.Length < baseOffset + stride)
         {
             return false;
         }
@@ -1286,15 +1934,15 @@ public static class LegacyDiscImageConverter
         try
         {
             Span<byte> sync = stackalloc byte[12];
-            stream.Position = 0;
+            stream.Position = baseOffset;
             if (stream.Read(sync) != 12 || !sync.SequenceEqual(RawCdSyncPattern))
             {
                 return false;
             }
 
-            if (stream.Length >= OpticalConstants.RawSectorSize * 2)
+            if (stream.Length >= baseOffset + (stride * 2L))
             {
-                stream.Position = OpticalConstants.RawSectorSize;
+                stream.Position = baseOffset + stride;
                 if (stream.Read(sync) != 12 || !sync.SequenceEqual(RawCdSyncPattern))
                 {
                     return false;

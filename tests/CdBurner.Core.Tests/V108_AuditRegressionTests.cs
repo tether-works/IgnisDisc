@@ -528,8 +528,8 @@ public sealed class V108_AuditRegressionTests : IDisposable
     {
         byte[] iso = await BuildIsoAsync();
         string mds = Path.Combine(_dir, "sub.mds");
-        LegacyDiscImageConverter.CreateAlcoholMdsMdfImage(mds, Array.Empty<byte>());
-        File.WriteAllBytes(Path.ChangeExtension(mds, ".mdf"), WrapRaw(iso, mode: 1, sectorSize: 2448));
+        byte[] raw2448 = WrapRaw(iso, mode: 1, sectorSize: 2448);
+        LegacyDiscImageConverter.CreateAlcoholMdsMdfImage(mds, raw2448, sectorSize: 2448);
 
         var info = LegacyDiscImageConverter.Inspect(mds);
         Assert.Equal(2448, info.SectorSizeBytes);

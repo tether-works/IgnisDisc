@@ -36,9 +36,33 @@ public static partial class CliCommandRunner
         if (ext == ".cue")
         {
             var cue = CueSheetParser.ParseFile(fullPath);
+            if (cue.Files.Count == 0)
+            {
+                throw new InvalidDataException($"CUE sheet '{Path.GetFileName(fullPath)}' contains no FILE entries.");
+            }
+
+            string cueDir = Path.GetDirectoryName(fullPath) ?? string.Empty;
             var trackEntries = new List<object>();
             foreach (var file in cue.Files)
             {
+                if (string.IsNullOrWhiteSpace(file.FileName))
+                {
+                    throw new InvalidDataException($"CUE sheet '{Path.GetFileName(fullPath)}' contains a FILE entry with an empty file name.");
+                }
+
+                string referencedPath = Path.IsPathRooted(file.FileName)
+                    ? file.FileName
+                    : Path.Combine(cueDir, file.FileName);
+                if (!File.Exists(referencedPath))
+                {
+                    throw new FileNotFoundException($"Track file referenced in CUE sheet not found: '{referencedPath}'.", referencedPath);
+                }
+
+                if (new FileInfo(referencedPath).Length == 0)
+                {
+                    throw new InvalidDataException($"Track file referenced in CUE sheet is empty (0 bytes): '{referencedPath}'.");
+                }
+
                 foreach (var trk in file.Tracks)
                 {
                     var idx01 = trk.Indices.FirstOrDefault(idx => idx.IndexNumber == 1)?.Position;
@@ -54,6 +78,11 @@ public static partial class CliCommandRunner
                         index01 = idx01?.ToString()
                     });
                 }
+            }
+
+            if (trackEntries.Count == 0)
+            {
+                throw new InvalidDataException($"CUE sheet '{Path.GetFileName(fullPath)}' contains no TRACK entries.");
             }
 
             if (cmd.IsJson)

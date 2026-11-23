@@ -168,6 +168,58 @@ public sealed class CliBatch2Tests : IDisposable
     }
 
     [Fact]
+    public async Task ImageInfo_And_ConvertImage_RejectEmptyCorruptAndIncompleteImages()
+    {
+        // 1. 0-byte .iso
+        string emptyIso = Path.Combine(_tempDir, "empty.iso");
+        await File.WriteAllBytesAsync(emptyIso, Array.Empty<byte>());
+        await AssertCliFailsAsync("image-info", "--image", emptyIso, "--json");
+        await AssertCliFailsAsync("convert-image", "--input", emptyIso, "--output", Path.Combine(_tempDir, "empty_out.bin"), "--json");
+
+        // 2. Corrupt .nrg
+        string badNrg = Path.Combine(_tempDir, "bad.nrg");
+        await File.WriteAllBytesAsync(badNrg, new byte[256]);
+        await AssertCliFailsAsync("image-info", "--image", badNrg, "--json");
+        await AssertCliFailsAsync("convert-image", "--input", badNrg, "--output", Path.Combine(_tempDir, "nrg_out.iso"), "--json");
+
+        // 3. Corrupt .mds
+        string badMds = Path.Combine(_tempDir, "bad.mds");
+        await File.WriteAllBytesAsync(badMds, new byte[128]);
+        await AssertCliFailsAsync("image-info", "--image", badMds, "--json");
+        await AssertCliFailsAsync("convert-image", "--input", badMds, "--output", Path.Combine(_tempDir, "mds_out.iso"), "--json");
+
+        // 4. Corrupt .cdi
+        string badCdi = Path.Combine(_tempDir, "bad.cdi");
+        await File.WriteAllBytesAsync(badCdi, new byte[128]);
+        await AssertCliFailsAsync("image-info", "--image", badCdi, "--json");
+        await AssertCliFailsAsync("convert-image", "--input", badCdi, "--output", Path.Combine(_tempDir, "cdi_out.iso"), "--json");
+
+        // 5. .ccd missing companion .img
+        string orphanCcd = Path.Combine(_tempDir, "orphan.ccd");
+        await File.WriteAllTextAsync(orphanCcd, "[CloneCD]\nVersion=3\n[Track 1]\nMODE=1\nINDEX 1=0\n");
+        await AssertCliFailsAsync("image-info", "--image", orphanCcd, "--json");
+        await AssertCliFailsAsync("convert-image", "--input", orphanCcd, "--output", Path.Combine(_tempDir, "ccd_out.iso"), "--json");
+
+        // 6. .cue missing referenced audio/bin track file
+        string missingCue = Path.Combine(_tempDir, "missing_ref.cue");
+        await File.WriteAllTextAsync(missingCue, "FILE \"does_not_exist.wav\" WAVE\n  TRACK 01 AUDIO\n    INDEX 01 00:00:00\n");
+        await AssertCliFailsAsync("image-info", "--image", missingCue, "--json");
+
+        string missingDataCue = Path.Combine(_tempDir, "missing_data.cue");
+        await File.WriteAllTextAsync(missingDataCue, "FILE \"does_not_exist.bin\" BINARY\n  TRACK 01 MODE1/2352\n    INDEX 01 00:00:00\n");
+        await AssertCliFailsAsync("image-info", "--image", missingDataCue, "--json");
+        await AssertCliFailsAsync("convert-image", "--input", missingDataCue, "--output", Path.Combine(_tempDir, "cue_out.iso"), "--json");
+
+        async Task AssertCliFailsAsync(params string[] args)
+        {
+            var (code, stdout, _) = await RunCliAsync(args);
+            Assert.NotEqual(0, code);
+            using var doc = JsonDocument.Parse(stdout);
+            Assert.False(doc.RootElement.GetProperty("success").GetBoolean());
+        }
+    }
+
+    [Fact]
     public async Task AuthorDvd_CreatesFolderAndIso_WithoutBurning_AndRejectsOverwrite()
     {
         string mkvPath = Path.Combine(_tempDir, "Clip.mkv");
