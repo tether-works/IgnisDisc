@@ -41,6 +41,11 @@ public class Imapi2BurnEngine : IBurnEngineBackend, ISecureAudioReader
         ArgumentNullException.ThrowIfNull(imageStream);
         options ??= new DataBurnOptions();
 
+        if (options.Overburn.Allowed)
+        {
+            return BurnOperationResult.Failed("Overburning needs the direct drive-command writer in Disc-at-Once mode; Windows' burning service cannot do it. Nothing was written.");
+        }
+
         if (!OperatingSystem.IsWindows())
         {
             return BurnOperationResult.Failed("Physical burning via IMAPIv2 is only supported on Windows.");
@@ -326,6 +331,11 @@ public class Imapi2BurnEngine : IBurnEngineBackend, ISecureAudioReader
         ArgumentNullException.ThrowIfNull(recorder);
         ArgumentNullException.ThrowIfNull(tracks);
         options ??= new AudioBurnOptions();
+
+        if (options.Overburn.Allowed)
+        {
+            return BurnOperationResult.Failed("Overburning needs the direct drive-command writer in Disc-at-Once mode; Windows' burning service cannot do it. Nothing was written.");
+        }
 
         if (!OperatingSystem.IsWindows())
         {

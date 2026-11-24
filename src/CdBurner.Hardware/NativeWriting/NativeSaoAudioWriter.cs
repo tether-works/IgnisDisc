@@ -1,6 +1,7 @@
 using System.Buffers.Binary;
 using System.Diagnostics;
 using CdBurner.Core.Abstractions;
+using CdBurner.Core.Primitives;
 using CdBurner.Hardware.Scsi;
 
 namespace CdBurner.Hardware.NativeWriting;
@@ -35,6 +36,10 @@ public sealed record NativeSaoWriteRequest(
 
     /// <summary>True to disable buffer-underrun protection (BUFE) in Mode Page 0x05.</summary>
     public bool DisableBufferUnderrunFree { get; init; }
+
+    /// <summary>Opt-in overburning of a CD-R: how far the lead-out may start beyond the ATIP lead-out. Null (the default)
+    /// is the same as <see cref="CdOverburnPolicy.Off"/>: a program longer than the disc is refused.</summary>
+    public CdOverburnPolicy? Overburn { get; init; }
 }
 
 /// <summary>Outcome of a native Session-at-Once write.</summary>
@@ -220,9 +225,35 @@ public sealed class NativeSaoAudioWriter
                 throw Stop($"Cannot place the CD-Text lead-in: {ex.Message}");
             }
         }
-        if (disc.LastLeadOutStart != default && disc.LastLeadOutStart.Minute < 90 && layout.LeadOutLba > disc.LastLeadOutStart.ToLba())
+        var overburn = request.Overburn ?? CdOverburnPolicy.Off;
+        if (overburn.Allowed && mastering.Profile != ProfileCdR)
         {
-            throw Stop($"The audio ({layout.TotalSectors:N0} sectors) does not fit on this disc (lead-out must start by {disc.LastLeadOutStart}).");
+            // Overburning is a CD-R, Disc-at-Once idea; a CD-RW (like any DVD or BD, refused above) never takes it.
+            throw Stop("Overburning is only allowed on a CD-R; the disc in the drive is a CD-RW.");
+        }
+        if (layout.LeadOutLba > CdOverburnPolicy.HardCeilingLeadOutLba)
+        {
+            throw Stop($"The audio ({layout.TotalSectors:N0} sectors) does not fit on any CD: the lead-out would start past 99:59:74.");
+        }
+        bool atipKnown = disc.LastLeadOutStart != default && disc.LastLeadOutStart.Minute < 90;
+        if (atipKnown)
+        {
+            int atipLeadOutLba = disc.LastLeadOutStart.ToLba();
+            _note($"ATIP capacity: lead-out starts {disc.LastLeadOutStart} (sector {atipLeadOutLba:N0}); the program needs a lead-out at sector {layout.LeadOutLba:N0} ({layout.TotalSectors:N0} sectors from LBA -150).");
+            if (layout.LeadOutLba > atipLeadOutLba)
+            {
+                if (!overburn.Allowed)
+                {
+                    throw Stop($"The audio ({layout.TotalSectors:N0} sectors) does not fit on this disc (lead-out must start by {disc.LastLeadOutStart}). Overburning is off.");
+                }
+                if (overburn.Check(layout.LeadOutLba, atipLeadOutLba) is { } refusal)
+                {
+                    throw Stop($"The audio ({layout.TotalSectors:N0} sectors) does not fit on this disc even with overburning: {refusal}");
+                }
+                int excess = CdOverburnPolicy.ExcessSectors(layout.LeadOutLba, atipLeadOutLba);
+                _note($"WARNING: overburning {excess:N0} sectors ({CdOverburnPolicy.FormatExcessTime(excess)}) past the ATIP lead-out; the limit is {overburn.MaxExtraSectors:N0} sectors. "
+                    + "Some drives stop or damage the disc near the end of such a write.");
+            }
         }
         _note($"Disc blank, lead-in starts {disc.LeadInStart}, last lead-out start {disc.LastLeadOutStart}, audio ends at LBA {layout.LeadOutLba}.");
 
@@ -300,6 +331,9 @@ public sealed class NativeSaoAudioWriter
             averageMultiplier = state.AudioSectors / seconds / 75.0;
             _note($"Audio sent at an average of {averageMultiplier:F1}x ({state.AudioSectors:N0} sectors in {seconds:F0} s).");
         }
+
+        _note($"Sent {state.LeadInSectors + state.DataSectors + state.AudioSectors:N0} sectors in total ({state.LeadInSectors:N0} lead-in, {state.DataSectors:N0} data, {state.AudioSectors:N0} audio); "
+            + $"the program area ends at sector {layout.LeadOutLba:N0} (ATIP lead-out {(disc.LastLeadOutStart == default ? "unknown" : disc.LastLeadOutStart.ToString())}).");
 
         // 6. Flush; the drive writes the lead-out and closes the session itself.
         reporter.Report(totalSectors, "Writing the lead-out");

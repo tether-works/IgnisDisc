@@ -342,6 +342,11 @@ public sealed class NativeAudioBurnEngine : IBurnEngineBackend, IAudioDiscVerifi
     private static NativeSaoWriteRequest? BuildRequest(IReadOnlyList<AudioTrackSource> tracks, AudioBurnOptions options, out string? problem)
     {
         problem = null;
+        if (options.Overburn.Allowed && !options.UseDiscAtOnce)
+        {
+            problem = "Overburning needs Disc-at-Once writing; this burn is set to Track-at-Once.";
+            return null;
+        }
         var saoTracks = new List<SaoTrack>(tracks.Count);
         for (int i = 0; i < tracks.Count; i++)
         {
@@ -385,7 +390,8 @@ public sealed class NativeAudioBurnEngine : IBurnEngineBackend, IAudioDiscVerifi
             WriteSpeedKiloBytesPerSecond: speed)
         {
             LeaveSessionOpen = options.LeaveSessionOpen,
-            DisableBufferUnderrunFree = options.DisableBufferUnderrunFree
+            DisableBufferUnderrunFree = options.DisableBufferUnderrunFree,
+            Overburn = options.Overburn // this engine always writes Session-at-Once (Disc-at-Once), the only mode that can overburn
         };
     }
 
@@ -663,6 +669,10 @@ public sealed class NativeAudioBurnEngine : IBurnEngineBackend, IAudioDiscVerifi
         ReadOnlySpan<byte> program = drive.RecordedProgram(); // where the audio landed, after the drive's write offset
         int firstSector = -SaoAudioLayout.FirstWritableLba; // the capture starts at LBA -150
         int sectors = Math.Max(0, program.Length / OpticalConstants.RawSectorSize - firstSector);
+        if (sectors > medium.TotalCapacitySectors)
+        {
+            medium.TotalCapacitySectors = sectors; // an overburned disc really holds what the drive recorded past its rated size
+        }
         for (int lba = 0; lba < sectors; lba++)
         {
             medium.WriteSector(lba, program.Slice((firstSector + lba) * OpticalConstants.RawSectorSize, OpticalConstants.RawSectorSize), OpticalConstants.RawSectorSize);

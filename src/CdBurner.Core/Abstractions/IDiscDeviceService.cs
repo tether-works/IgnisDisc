@@ -468,6 +468,12 @@ public class DataBurnOptions
     public int? LayerBreakSectors { get; init; }
 
     /// <summary>
+    /// Opt-in CD-R overburning. Direct data writing records Track-at-Once, which cannot overburn, so with this on an image
+    /// that does not fit is refused (and any non-CD-R disc is refused outright). Off by default.
+    /// </summary>
+    public CdOverburnPolicy Overburn { get; init; } = CdOverburnPolicy.Off;
+
+    /// <summary>
     /// Disables buffer-underrun protection (BURN-Free) for this write when true. Off by default.
     /// </summary>
     public bool DisableBufferUnderrunFree { get; init; }
@@ -551,6 +557,19 @@ public class AudioBurnOptions
     /// can be appended after burning (Enhanced CD / CD-Extra).
     /// </summary>
     public bool LeaveSessionOpen { get; init; }
+
+    /// <summary>
+    /// Direct drive-command writer, CD-R, Disc-at-Once only: let the program run past the disc's rated capacity, up to the
+    /// policy's ceiling. Off by default; every other disc type and mode refuses it.
+    /// </summary>
+    public CdOverburnPolicy Overburn { get; init; } = CdOverburnPolicy.Off;
+
+    /// <summary>
+    /// Asked once, with the rated capacity, the program size, the excess and the risk, when <see cref="Overburn"/> is on and
+    /// the program is longer than the disc's rated capacity; false cancels the burn before anything is written. Null means
+    /// the opt-in itself is the consent (the command line).
+    /// </summary>
+    public Func<CdOverburnWarning, bool>? ConfirmOverburn { get; init; }
 
     /// <summary>
     /// Disables buffer-underrun protection (BURN-Free) for this audio burn when true. Off by default.

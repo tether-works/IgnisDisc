@@ -345,6 +345,7 @@ public class AudioBurnViewModel : ObservableObject, IDisposable
             if (SetProperty(ref _useDirectDriveCommands, value) && !value)
             {
                 TestWriteFirst = false;
+                AllowOverburn = false;
                 IncludeRecoverySession = false;
                 DataSessionFolderPath = string.Empty;
                 FillWithPicture = false;
@@ -374,6 +375,42 @@ public class AudioBurnViewModel : ObservableObject, IDisposable
     {
         get => _testWriteFirst;
         set => SetProperty(ref _testWriteFirst, value && _useDirectDriveCommands);
+    }
+
+    private bool _allowOverburn;
+    private double _overburnMaxMinutes = CdOverburnPolicy.DefaultMaxExtraSectors / (60.0 * 75.0);
+
+    /// <summary>
+    /// Opt-in, off for every new view model and never remembered: let a Disc-at-Once CD-R burn run past the disc's rated
+    /// capacity, up to <see cref="OverburnMaxMinutes"/>. Needs direct drive commands. A burn that would overburn first asks
+    /// for confirmation (<see cref="ConfirmOverburn"/>), showing the rated capacity, the image size, the excess and the risk.
+    /// </summary>
+    public bool AllowOverburn
+    {
+        get => _allowOverburn;
+        set => SetProperty(ref _allowOverburn, value && _useDirectDriveCommands);
+    }
+
+    /// <summary>How far past the rated capacity a burn may go, in minutes (0.5 to 20; the ceiling of 99:59:74 applies anyway).</summary>
+    public double OverburnMaxMinutes
+    {
+        get => _overburnMaxMinutes;
+        set => SetProperty(ref _overburnMaxMinutes, double.IsNaN(value) ? 3.0 : Math.Clamp(value, 0.5, 20.0));
+    }
+
+    /// <summary>
+    /// Asks the user to accept an overburn; true means go ahead. Null (the default) shows a warning dialog in the running app
+    /// and declines when no one can answer (tests, scripts). Tests replace it.
+    /// </summary>
+    public Func<CdOverburnWarning, bool>? ConfirmOverburn { get; set; }
+
+    private bool AskToOverburn(CdOverburnWarning warning)
+    {
+        if (ConfirmOverburn != null)
+        {
+            return ConfirmOverburn(warning);
+        }
+        return CdBurner.App.Views.BurnTargetDialog.IsInteractiveSession && CdBurner.App.Views.OverburnConfirmationDialog.Confirm(warning);
     }
 
     /// <summary>
@@ -2583,6 +2620,33 @@ public class AudioBurnViewModel : ObservableObject, IDisposable
                 directDataEngine = new CdBurner.Hardware.NativeWriting.NativeDataBurnEngine(_burnEngine, DirectBurnLogDirectory);
             }
 
+            var overburnPolicy = CdOverburnPolicy.Off;
+            if (AllowOverburn)
+            {
+                var overburnStatus = recorder.QueryMediaStatus();
+                string? overburnRefusal = null;
+                if (!direct || RecordingMode != AudioRecordingMode.DiscAtOnceGapless)
+                {
+                    overburnRefusal = "Overburning needs direct drive commands and Disc-at-Once mode.";
+                }
+                else if (overburnStatus.MediaType != DiscMediaType.CdR)
+                {
+                    overburnRefusal = "Overburning is only allowed on a CD-R.";
+                }
+                else
+                {
+                    // The burn service sizes the program and asks (through ConfirmOverburn) only when it is really too long.
+                    overburnPolicy = CdOverburnPolicy.AllowedForMinutes(OverburnMaxMinutes);
+                }
+                if (overburnRefusal != null)
+                {
+                    StatusMessage = $"Burn not started: {overburnRefusal}";
+                    var refusedOverburn = BurnOperationResult.Failed(StatusMessage);
+                    LastBurnResult = refusedOverburn;
+                    return refusedOverburn;
+                }
+            }
+
             CdBurner.Lithography.DiscArt.AudioCdPictureSession? pictureSession = null;
             string? pictureNote = null;
             if (FillWithPicture)
@@ -2614,7 +2678,9 @@ public class AudioBurnViewModel : ObservableObject, IDisposable
                 DataSessionFolderPath = HasDataSessionFolder ? DataSessionFolderPath : null,
                 DataSessionVolumeLabel = DataSessionVolumeLabel,
                 BlueBookLayout = HasDataSessionFolder && BlueBookLayout,
-                SessionTwoImage = pictureSession
+                SessionTwoImage = pictureSession,
+                Overburn = overburnPolicy,
+                ConfirmOverburn = overburnPolicy.Allowed ? AskToOverburn : null
             };
 
             var burnService = directEngine != null ? new AudioCdBurnService(directEngine, _audioDecoder, directDataEngine) : _audioBurnService;

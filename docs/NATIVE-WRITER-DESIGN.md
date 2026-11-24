@@ -364,6 +364,19 @@ List layout, read from the file (339,204 bytes on 2026-11-11, 4,916 records of 6
 read offset, the name "VENDOR - PRODUCT" in 33 bytes padded with zeros, a 32-bit submission count (capped at 255),
 30 bytes not used here. The GP60NB50 is listed at +6 (255 submissions); C measured 0 on every burn, so W = −6.
 
+## Overburning (CD-R, Session-at-Once only)
+
+Off unless asked for: `AudioBurnOptions.Overburn` (CLI `--allow-overburn [--max-overburn-minutes <n>]`, with `--native --dao`;
+the Audio CD screen's "Allow overburn (CD-R)" switch). The lead-out may then start at most 13,500 sectors (3:00, or the
+`--max-overburn-minutes` value, at most 20) past the ATIP lead-out start that READ DISC INFORMATION reports, and never past
+99:59:74 (LBA 449,849). Refused outright: any DVD or Blu-ray disc, a CD-RW, Track-at-Once (direct data writing records
+Track-at-Once, so a data image that does not fit is refused with that reason) and the Windows writer.
+
+Before the first WRITE the writer logs the ATIP capacity and the lead-out the program needs; after the last it logs the exact
+number of sectors sent. The Audio CD screen shows the rated capacity against the image size, the excess in MB and mm:ss, and
+the risk, and writes only after the user presses Overburn. Many drives refuse a cue sheet past the ATIP (the simulated drive
+does unless `VirtualMmcDrive.OverburnLimitSectors` allows it); that refusal is reported before anything is written.
+
 ## Buffer and underrun handling
 
 Poll `READ BUFFER CAPACITY` (0x5C) while writing to show the drive buffer and keep the host-side queue full. Turn on

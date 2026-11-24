@@ -106,6 +106,7 @@ public sealed class NativeDataBurnEngine : IBurnEngineBackend, IWriterMediaStatu
             SessionStartLba: appending ? status.NextWritableLba : null)
         {
             DisableBufferUnderrunFree = options.DisableBufferUnderrunFree,
+            Overburn = options.Overburn,
             Mode2Form1 = options.CdRomXaMode2Form1,
             StreamingWrite = options.StreamingWrite,
             BdFormat = BdFormat

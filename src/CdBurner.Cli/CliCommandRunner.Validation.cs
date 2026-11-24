@@ -34,8 +34,44 @@ public static partial class CliCommandRunner
         "subtitle-size", "subtitles-default", "svg", "target", "telemetry-out", "text", "title", "title-names",
         "title-ring", "title-ring-date", "title-ring-height-mm", "to", "tone", "tracks",
         "tracks-file", "turn-map", "turn-map-offset", "udf-rev", "upc", "value",
-        "video-bitrate", "video-ts", "virtual-media", "virtual-state", "wait-minutes", "write-offset"
+        "max-overburn-minutes", "video-bitrate", "video-ts", "virtual-media", "virtual-state", "wait-minutes", "write-offset"
     };
+
+    /// <summary>
+    /// Reads <c>--allow-overburn [--max-overburn-minutes &lt;n&gt;]</c>. Overburning is off unless <c>--allow-overburn</c> is
+    /// given; it needs the direct drive-command writer (<c>--native</c>) and Disc-at-Once (<c>--dao</c>), and the minutes
+    /// go with the flag. The value is minutes past the disc's rated end, at most 20 (the ceiling of 99:59:74 applies anyway).
+    /// </summary>
+    private static CdBurner.Core.Primitives.CdOverburnPolicy ParseOverburnPolicy(CommandLineArgs cmd, bool native, bool discAtOnce)
+    {
+        string? minutesText = cmd.GetOption("max-overburn-minutes");
+        if (!cmd.HasFlag("allow-overburn"))
+        {
+            if (minutesText != null)
+            {
+                throw new CommandLineException("--max-overburn-minutes only works together with --allow-overburn.");
+            }
+            return CdBurner.Core.Primitives.CdOverburnPolicy.Off;
+        }
+        if (!native)
+        {
+            throw new CommandLineException("--allow-overburn requires --native (direct drive commands); Windows' burning service cannot overburn.");
+        }
+        if (!discAtOnce)
+        {
+            throw new CommandLineException("--allow-overburn requires --dao: only Disc-at-Once writing can overburn a CD-R.");
+        }
+        if (minutesText == null)
+        {
+            return new CdBurner.Core.Primitives.CdOverburnPolicy(true);
+        }
+        if (!double.TryParse(minutesText, System.Globalization.NumberStyles.Float, System.Globalization.CultureInfo.InvariantCulture, out double minutes)
+            || double.IsNaN(minutes) || minutes <= 0 || minutes > 20)
+        {
+            throw new CommandLineException("--max-overburn-minutes needs a number of minutes above 0 and at most 20 (for example 3).");
+        }
+        return CdBurner.Core.Primitives.CdOverburnPolicy.AllowedForMinutes(minutes);
+    }
 
     private sealed record CommandOptionSpec(HashSet<string> Flags, HashSet<string> Options)
     {
@@ -105,8 +141,8 @@ public static partial class CliCommandRunner
         ["drive", "input", "label", "speed", "boot-bios", "boot-uefi", "udf-rev", "fixed-time", "log-dir", "layer-break", "book-type", "post-action", "fill-picture", "telemetry-out", "virtual-media", "virtual-state", .. CalibrationParamOptions]);
 
     private static readonly CommandOptionSpec BurnAudioSpec = CommandOptionSpec.Of(
-        ["plan-only", "native", "test-write", "test-first", "recovery-session", "blue-book", "no-burnfree", "allow-damaged", "lookup", "confirm-shutdown", .. AudioCompilationFlags],
-        ["drive", "speed", "data-folder", "data-label", "log-dir", "write-offset", "post-action", "fill-picture", "drive-model", "media-id", "store", "telemetry-out", "virtual-media", "virtual-state", .. AudioCompilationOptions]);
+        ["plan-only", "native", "test-write", "test-first", "recovery-session", "blue-book", "no-burnfree", "allow-damaged", "lookup", "confirm-shutdown", "allow-overburn", .. AudioCompilationFlags],
+        ["drive", "speed", "max-overburn-minutes", "data-folder", "data-label", "log-dir", "write-offset", "post-action", "fill-picture", "drive-model", "media-id", "store", "telemetry-out", "virtual-media", "virtual-state", .. AudioCompilationOptions]);
 
     private static readonly CommandOptionSpec BurnDvdSpec = CommandOptionSpec.Of(
         ["native", "test-write", "test-first", "windows-writer", "no-burnfree", "no-verify", "verify", "overwrite", "confirm-shutdown", "require-book-type", .. DvdAuthoringFlags],

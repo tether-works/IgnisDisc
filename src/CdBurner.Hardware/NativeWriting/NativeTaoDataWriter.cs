@@ -1,6 +1,7 @@
 using System.Buffers.Binary;
 using System.Diagnostics;
 using CdBurner.Core.Abstractions;
+using CdBurner.Core.Primitives;
 using CdBurner.Hardware.Scsi;
 
 namespace CdBurner.Hardware.NativeWriting;
@@ -49,6 +50,11 @@ public sealed record NativeDataWriteRequest(
     /// <summary>Blu-ray only: how a blank BD-R, or an unformatted BD-RE, is formatted before writing. The default leaves it
     /// to the drive (BD-R is formatted by the drive at the first write; BD-RE gets format type 00h).</summary>
     public BdFormatMode BdFormat { get; init; }
+
+    /// <summary>Opt-in overburning of a CD-R. This writer records Track-at-Once, which cannot overburn: with the policy
+    /// allowed, an image that does not fit is refused with that reason, and any DVD, Blu-ray or CD-RW is refused outright.
+    /// Disc-at-Once overburning is <see cref="NativeSaoAudioWriter"/>'s. Null is the same as <see cref="CdOverburnPolicy.Off"/>.</summary>
+    public CdOverburnPolicy? Overburn { get; init; }
 }
 
 /// <summary>Which FORMAT UNIT type a Blu-ray disc is formatted with (MMC-6 Table 242).</summary>
@@ -266,6 +272,10 @@ public sealed partial class NativeTaoDataWriter
             state.UnsupportedDisc = true;
             throw Stop($"Direct writing adds sessions to CD-R, CD-RW, DVD-R, DVD-RW and DVD+R so far (the disc in the drive has profile 0x{tao.Profile:X4}).");
         }
+        if (request.Overburn is { Allowed: true } && tao.Profile != NativeSaoAudioWriter.ProfileCdR)
+        {
+            throw Stop($"Overburning is only allowed on a CD-R; the disc in the drive has profile 0x{tao.Profile:X4}. Nothing was written.");
+        }
         if (IsDvdProfile(tao.Profile))
         {
             return RunDvd(request, tao.Profile, progress, ct, clock, state);
@@ -320,8 +330,17 @@ public sealed partial class NativeTaoDataWriter
             _note($"No next writable address from READ TRACK INFORMATION; using the last lead-out start {disc.LastLeadOutStart} ({freeSectors} sectors).");
         }
 
+        if (disc.LastLeadOutStart != default)
+        {
+            _note($"ATIP capacity: the last possible lead-out starts at {disc.LastLeadOutStart}; the image is {state.ImageSectors:N0} sectors, {freeSectors:N0} sectors free.");
+        }
         if (freeSectors > 0 && trackSectors + RunOutSectors > freeSectors)
         {
+            if (request.Overburn is { Allowed: true })
+            {
+                throw Stop($"The image ({state.ImageSectors:N0} sectors) does not fit on this disc ({freeSectors:N0} sectors free), and it cannot be overburned: "
+                    + "overburning needs Disc-at-Once writing, while direct data writing records Track-at-Once. Nothing was written.");
+            }
             throw Stop($"The image ({state.ImageSectors:N0} sectors) does not fit on this disc ({freeSectors:N0} sectors free).");
         }
         _note($"{(append != null ? $"Adding session {append.Value.SessionNumber}" : "Disc blank")}; writing starts at LBA {startLba}; {state.ImageSectors} image sectors" +
@@ -375,6 +394,7 @@ public sealed partial class NativeTaoDataWriter
         var writing = Stopwatch.StartNew();
         WriteTrack(request, startLba, trackSectors, SectorsPerWrite, state, reporter, ct);
         writing.Stop();
+        _note($"Sent exactly {state.SectorsSent:N0} sectors ({state.ImageSectors:N0} image + {trackSectors - state.ImageSectors:N0} padding) from LBA {startLba}.");
 
         // 6. Flush: the drive empties its buffer and writes the run-out.
         reporter.Report(trackSectors, "Finishing the track");

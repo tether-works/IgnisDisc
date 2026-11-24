@@ -59,7 +59,7 @@ public static partial class CliCommandRunner
         "no-cover-lookup", "no-folder-image", "recursive", "no-rim", "rim-header",
         "sha256sums", "blake3sums", "native", "test-write", "test-first", "recovery-session", "blue-book", "streaming",
         "allow-suspect", "repair", "repair-from-recovery", "no-replaygain", "health-certificate", "files-outer", "read-compat", "force-old",
-        "get", "require-book-type"
+        "get", "require-book-type", "allow-overburn"
     };
 
     private static void WriteJsonResult(TextWriter stdout, object payload)
@@ -1330,6 +1330,7 @@ public static partial class CliCommandRunner
         bool disableBufe = cmd.HasFlag("no-burnfree");
         var postAction = ParsePostBurnAction(cmd);
         string? speedStr = cmd.GetOption("speed");
+        var overburn = ParseOverburnPolicy(cmd, native, discAtOnce: dao);
 
         if (testFirst && (!native || testWrite))
         {
@@ -1422,7 +1423,8 @@ public static partial class CliCommandRunner
                 DataSessionVolumeLabel = dataLabel,
                 BlueBookLayout = blueBook,
                 SessionTwoImage = pictureSession,
-                DisableBufferUnderrunFree = disableBufe
+                DisableBufferUnderrunFree = disableBufe,
+                Overburn = overburn
             },
             progress: telemetry).ConfigureAwait(false);
 
@@ -4131,7 +4133,7 @@ public static partial class CliCommandRunner
         stdout.WriteLine("      Burns an ISO image directly to the target optical drive. --streaming uses WRITE(12) Streaming (0x80) on BD-RE/DVD-RAM. --layer-break: sectors on the first layer of a DVD+R DL (multiple of 16). --telemetry-out writes burn telemetry as .svg or .json (or both if no extension). A DVD-RW is written with direct drive commands unless --windows-writer.");
         stdout.WriteLine("  burn-data --drive <id> --input <folder> [--label <vol>] [--speed <X|max>] [--udf] [--udf-rev <1.02|1.50|2.00|2.01|2.50|2.60>] [--joliet] [--boot-bios <img>] [--boot-uefi <img>] [--no-verify | --strict-verify] [--no-close] [--append] [--no-burnfree] [--overwrite] [--book-type dvd-rom|...] [--post-action none|eject|sound|eject-sound|shutdown] [--fixed-time <unix|iso8601>] [--sha256sums] [--blake3sums] [--fill-picture <file.png> [--disc-preset <id>]] [--telemetry-out <path>] [--windows-writer | --native [--test-write | --test-first] [--streaming] [--layer-break <sectors>] [--log-dir <folder>]] [--json]");
         stdout.WriteLine("      Compiles a folder and burns it to optical media (--append merges and adds a session on an appendable disc). A DVD-RW is written with direct drive commands unless --windows-writer.");
-        stdout.WriteLine("  burn-audio (--drive <id> | --plan-only) (--tracks <files|.cue|.m3u|.pls> | --tracks-file <file.json>) [--title <album>] [--artist <name>] [--songwriter <name>] [--upc <13digits>] [--speed <X|max>] [--dao] [--pregap <frames>] [--normalize] [--rms-level] [--loudness track|album|off] [--crossfade <sec>] [--no-cd-text] [--no-burnfree] [--post-action none|eject|sound|eject-sound|shutdown] [--allow-damaged] [--telemetry-out <path>] [--native [--test-write | --test-first] [--recovery-session | --data-folder <dir> [--data-label <label>] [--blue-book] | --fill-picture <picture>|auto [--lookup]] [--write-offset <samples|auto>] [--log-dir <folder>]] [--json]");
+        stdout.WriteLine("  burn-audio (--drive <id> | --plan-only) (--tracks <files|.cue|.m3u|.pls> | --tracks-file <file.json>) [--title <album>] [--artist <name>] [--songwriter <name>] [--upc <13digits>] [--speed <X|max>] [--dao] [--pregap <frames>] [--normalize] [--rms-level] [--loudness track|album|off] [--crossfade <sec>] [--no-cd-text] [--no-burnfree] [--post-action none|eject|sound|eject-sound|shutdown] [--allow-damaged] [--telemetry-out <path>] [--native [--test-write | --test-first] [--recovery-session | --data-folder <dir> [--data-label <label>] [--blue-book] | --fill-picture <picture>|auto [--lookup]] [--write-offset <samples|auto>] [--allow-overburn [--max-overburn-minutes <n>]] [--log-dir <folder>]] [--json]");
         stdout.WriteLine("      Burns Red Book Audio CD from WAV, FLAC, MP3, AAC/M4A, WMA, .cue, .m3u/.pls, or a JSON --tracks-file (--recovery-session adds session-2 PAR2 recovery; --data-folder burns an Enhanced CD data session; --blue-book writes it as CD-ROM XA Mode 2 with CDPLUS/INFO.CDP and PICTURES/; --plan-only previews without burning).");
         stdout.WriteLine("  burn-dvd --drive <id> --video-ts <folder|movie> [--label <vol>] [--menu-title <title>] [--menu on|off | --no-menu] [--menu-autoplay <never|sec>] [--after-title next|menu] [--standard ntsc|pal] [--aspect 16:9|4:3] [--chapters <none|sec>] [--subtitles-default on|off] [--subtitle-size small|medium|large] [--video-bitrate <fit|kbps>] [--fit-to-disc] [--title-names <a;b;...>] [--dual-layer] [--generate-subtitles [--subtitle-language <code>]] [--speed <X|max>] [--no-verify] [--no-burnfree] [--overwrite] [--fill-picture <file.png>|auto [--disc-preset <id>]] [--post-action none|eject|sound|eject-sound|shutdown] [--telemetry-out <path>] [--native [--test-write | --test-first] [--log-dir <folder>]] [--json]");
         stdout.WriteLine("      Validates, normalizes/authors, aligns, and burns a DVD-Video compliant disc from VIDEO_TS or movie files.");

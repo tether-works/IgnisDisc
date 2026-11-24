@@ -747,8 +747,29 @@ public class AudioCdBurnService
             // 4. Validate capacity against media
             if (!checkOnly && mediaStatus.FreeSectors > 0 && totalRequiredFrames > mediaStatus.FreeSectors)
             {
-                return BurnOperationResult.Failed(
-                    $"Compilation requires {totalRequiredFrames} frames, exceeding media free capacity of {mediaStatus.FreeSectors} frames.");
+                if (!options.Overburn.Allowed)
+                {
+                    return BurnOperationResult.Failed(
+                        $"Compilation requires {totalRequiredFrames} frames, exceeding media free capacity of {mediaStatus.FreeSectors} frames.");
+                }
+                if (mediaStatus.MediaType != DiscMediaType.CdR)
+                {
+                    return BurnOperationResult.Failed(
+                        $"Compilation requires {totalRequiredFrames} frames, exceeding media free capacity of {mediaStatus.FreeSectors} frames. Overburning is only allowed on a CD-R. Nothing was written to the disc.");
+                }
+
+                // Opt-in overburn: the ceiling is checked here and again by the writer, which knows the disc's ATIP lead-out.
+                var overburnWarning = new CdOverburnWarning(mediaStatus.FreeSectors, totalRequiredFrames, options.Overburn);
+                if (overburnWarning.ExceedsLimit)
+                {
+                    return BurnOperationResult.Failed(
+                        $"Compilation requires {totalRequiredFrames} frames, exceeding media free capacity of {mediaStatus.FreeSectors} frames, and overburning cannot make it fit: "
+                        + $"{options.Overburn.Check(totalRequiredFrames, mediaStatus.FreeSectors)} Nothing was written to the disc.");
+                }
+                if (options.ConfirmOverburn != null && !options.ConfirmOverburn(overburnWarning))
+                {
+                    return BurnOperationResult.CancelledResult("Overburning was not confirmed. Nothing was written to the disc.");
+                }
             }
 
             long discCapacitySectors = mediaStatus.TotalSectors > 0
@@ -825,7 +846,8 @@ public class AudioCdBurnService
                 WriteOffsetSamples = options.WriteOffsetSamples,
                 LeaveSessionOpen = options.LeaveSessionOpen || leaveOpenForSession2,
                 IncludeRecoverySession = options.IncludeRecoverySession,
-                DisableBufferUnderrunFree = options.DisableBufferUnderrunFree
+                DisableBufferUnderrunFree = options.DisableBufferUnderrunFree,
+                Overburn = options.Overburn
             };
 
             // 6. Execute burn through backend (or, for a check, read the disc back against the prepared tracks)

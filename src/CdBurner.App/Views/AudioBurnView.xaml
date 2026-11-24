@@ -202,6 +202,14 @@
                                           VerticalAlignment="Center"
                                           Margin="0,0,12,0" />
 
+                                <CheckBox Content="Allow overburn (CD-R)"
+                                          AutomationProperties.Name="Allow overburn (CD-R)"
+                                          IsChecked="{Binding AllowOverburn}"
+                                          IsEnabled="{Binding UseDirectDriveCommands}"
+                                          ToolTip="Off by default. Lets a Disc-at-Once CD-R burn run up to 3 minutes past the disc's rated capacity. Many drives cannot do this and may fail or damage the disc; you are shown the rated capacity, the excess and the risk, and asked to confirm, before anything is written."
+                                          VerticalAlignment="Center"
+                                          Margin="0,0,12,0" />
+
                                 <CheckBox Content="Recovery session (CD-Extra)"
                                           AutomationProperties.Name="Recovery session (CD-Extra)"
                                           IsChecked="{Binding IncludeRecoverySession}"

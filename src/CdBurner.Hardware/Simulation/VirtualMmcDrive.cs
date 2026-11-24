@@ -85,6 +85,12 @@ public sealed class VirtualMmcDrive : IScsiTransport
     public Msf LeadInStart { get; set; } = new(97, 34, 23);
     public Msf LastLeadOutStart { get; set; } = new(79, 59, 74);
 
+    /// <summary>
+    /// CD-R: how many sectors past the ATIP lead-out (<see cref="LastLeadOutStart"/>) this drive will record. Real drives
+    /// differ widely: many refuse any cue sheet past the ATIP, a few take a few minutes. 0 (the default) refuses it.
+    /// </summary>
+    public int OverburnLimitSectors { get; set; }
+
     public bool OffersSessionAtOnce { get; set; } = true;
     public bool OffersTestWrite { get; set; } = true;
     public bool OffersRwSubchannel { get; set; } = true;
@@ -1687,8 +1693,9 @@ public sealed class VirtualMmcDrive : IScsiTransport
         {
             return Sense(0x05, 0x26, 0x00);
         }
-        if (parsed.LeadOutLba > LastLeadOutStart.ToLba())
+        if (parsed.LeadOutLba > LastLeadOutStart.ToLba() + Math.Max(0, OverburnLimitSectors))
         {
+            // 5/21/00 logical block address out of range: the cue sheet's lead-out is past what this drive will record.
             return Sense(0x05, 0x21, 0x00);
         }
 
