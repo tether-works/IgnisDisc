@@ -207,9 +207,11 @@ public sealed partial class NativeTaoDataWriter
         }
 
         // 6. The data, in 64 KiB WRITEs from LBA 0.
+        byte[]? alignedClosingAvdp = TryBuildAlignedClosingAvdp(request, state.ImageSectors, sectors, startLba: 0);
         request.Image.Position = request.StartPosition;
         var writing = Stopwatch.StartNew();
-        WriteTrack(request, 0, sectors, DvdSectorsPerWrite, state, reporter, ct, DvdMinimumSectorsPerWrite);
+        WriteTrack(request, 0, sectors, DvdSectorsPerWrite, state, reporter, ct, DvdMinimumSectorsPerWrite,
+            lastSectorOverride: alignedClosingAvdp);
         writing.Stop();
 
         reporter.Report(sectors, "Finishing");

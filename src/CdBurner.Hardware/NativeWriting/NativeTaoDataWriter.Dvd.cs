@@ -280,6 +280,7 @@ public sealed partial class NativeTaoDataWriter
         }
 
         // 6. The data, in whole 32 KiB blocks.
+        byte[]? alignedClosingAvdp = TryBuildAlignedClosingAvdp(request, state.ImageSectors, trackSectors, startLba);
         request.Image.Position = request.StartPosition;
         var reporter = new ProgressReporter(this, progress, clock, trackSectors, DvdSectorsPerSecondAt1x);
         var writing = Stopwatch.StartNew();
@@ -294,11 +295,12 @@ public sealed partial class NativeTaoDataWriter
             }
             _note($"Layer jump: {j.Layer0Sectors} sectors written on layer 0; the drive goes on at LBA {j.Layer1StartLba} on layer 1.");
             WriteTrack(request, j.Layer1StartLba, trackSectors - j.Layer0Sectors, DvdSectorsPerWrite, state, reporter, ct, DvdMinimumSectorsPerWrite,
-                imageBytesAlreadyWritten: (long)j.Layer0Sectors * SectorSize);
+                imageBytesAlreadyWritten: (long)j.Layer0Sectors * SectorSize, lastSectorOverride: alignedClosingAvdp);
         }
         else
         {
-            WriteTrack(request, startLba, trackSectors, DvdSectorsPerWrite, state, reporter, ct, DvdMinimumSectorsPerWrite);
+            WriteTrack(request, startLba, trackSectors, DvdSectorsPerWrite, state, reporter, ct, DvdMinimumSectorsPerWrite,
+                lastSectorOverride: alignedClosingAvdp);
         }
         writing.Stop();
 

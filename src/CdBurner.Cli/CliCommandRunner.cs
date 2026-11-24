@@ -3683,7 +3683,7 @@ public static partial class CliCommandRunner
                 throw new FileNotFoundException($"BIOS boot image file not found: {bootBiosPath}", bootBiosPath);
             }
             var fi = new FileInfo(bootBiosPath);
-            ushort sectors = (ushort)Math.Max(1, (fi.Length + 511) / 512);
+            ushort sectors = ElToritoCatalogBuilder.ComputeSectorCount(BootPlatformId.X86Bios, fi.Length);
             biosEntry = new BootCatalogEntrySpec(
                 Platform: BootPlatformId.X86Bios,
                 Emulation: BootEmulationType.NoEmulation,
@@ -3701,7 +3701,7 @@ public static partial class CliCommandRunner
                 throw new FileNotFoundException($"UEFI boot image file not found: {bootUefiPath}", bootUefiPath);
             }
             var fi = new FileInfo(bootUefiPath);
-            ushort sectors = (ushort)Math.Max(1, (fi.Length + 511) / 512);
+            ushort sectors = ElToritoCatalogBuilder.ComputeSectorCount(BootPlatformId.Efi, fi.Length);
             uefiEntry = new BootCatalogEntrySpec(
                 Platform: BootPlatformId.Efi,
                 Emulation: BootEmulationType.NoEmulation,

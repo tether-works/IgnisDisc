@@ -11,7 +11,43 @@ namespace CdBurner.Core.Iso;
 public static class ElToritoCatalogBuilder
 {
     public const int SectorSize = OpticalConstants.DataSectorSize; // 2048 bytes
+    public const int MaxAdditionalSectionEntries = (SectorSize - 64) / 64;
     public const string ElToritoSpecificationIdentifier = "EL TORITO SPECIFICATION";
+
+    /// <summary>
+    /// Computes the El Torito 512-byte virtual sector count for a boot image of <paramref name="imageByteLength"/> bytes.
+    /// Per El Torito / UEFI convention, when an EFI (<c>0xEF</c>) boot image exceeds 65,535 512-byte blocks (&gt; 32 MiB),
+    /// <c>SectorCount</c> is emitted as <c>0</c> so firmware loads the entire image; other platforms clamp at <c>65535</c>.
+    /// </summary>
+    public static ushort ComputeSectorCount(BootPlatformId platform, long imageByteLength)
+    {
+        if (imageByteLength <= 0)
+        {
+            return 1;
+        }
+
+        long blocks = ((imageByteLength + SectorSize - 1) / SectorSize) * 4;
+        if (blocks > ushort.MaxValue)
+        {
+            return platform == BootPlatformId.Efi ? (ushort)0 : ushort.MaxValue;
+        }
+
+        return (ushort)blocks;
+    }
+
+    private static ushort ResolveCatalogSectorCount(BootCatalogEntrySpec spec, long? imageByteLength)
+    {
+        if (spec.Emulation == BootEmulationType.NoEmulation && imageByteLength is long byteLength && byteLength > 0)
+        {
+            long blocks = ((byteLength + SectorSize - 1) / SectorSize) * 4;
+            if (blocks > ushort.MaxValue)
+            {
+                return spec.Platform == BootPlatformId.Efi ? (ushort)0 : ushort.MaxValue;
+            }
+        }
+
+        return spec.SectorCount;
+    }
 
     /// <summary>
     /// Builds a 2048-byte El Torito Boot Record Volume Descriptor (ISO 9660 descriptor type 0x00).
@@ -111,9 +147,20 @@ public static class ElToritoCatalogBuilder
     public static byte[] BuildBootCatalogSector(
         ElToritoBootConfiguration configuration,
         uint defaultLoadRba,
-        IReadOnlyList<uint>? additionalLoadRbas = null)
+        IReadOnlyList<uint>? additionalLoadRbas = null,
+        long? defaultImageByteLength = null,
+        IReadOnlyList<long>? additionalImageByteLengths = null)
     {
         ArgumentNullException.ThrowIfNull(configuration);
+
+        if (configuration.AdditionalSectionEntries != null &&
+            configuration.AdditionalSectionEntries.Count > MaxAdditionalSectionEntries)
+        {
+            throw new ArgumentOutOfRangeException(
+                nameof(configuration),
+                configuration.AdditionalSectionEntries.Count,
+                $"El Torito boot catalog sector supports at most {MaxAdditionalSectionEntries} additional section entries.");
+        }
 
         byte[] sector = new byte[SectorSize];
 
@@ -123,27 +170,32 @@ public static class ElToritoCatalogBuilder
 
         // 2. Initial / Default Entry (bytes 32..63)
         var defaultSpec = configuration.DefaultEntry;
+        ushort defaultSectorCount = ResolveCatalogSectorCount(defaultSpec, defaultImageByteLength);
         sector[32] = 0x88; // Bootable
         sector[33] = (byte)defaultSpec.Emulation;
         BinaryPrimitives.WriteUInt16LittleEndian(sector.AsSpan(34, 2), defaultSpec.LoadSegment);
         sector[36] = defaultSpec.SystemType;
         sector[37] = 0x00; // Unused
-        BinaryPrimitives.WriteUInt16LittleEndian(sector.AsSpan(38, 2), defaultSpec.SectorCount);
+        BinaryPrimitives.WriteUInt16LittleEndian(sector.AsSpan(38, 2), defaultSectorCount);
         BinaryPrimitives.WriteUInt32LittleEndian(sector.AsSpan(40, 4), defaultLoadRba);
         // Bytes 44..63 (20 bytes): selection criteria / zeros
 
         // 3. Additional Section Headers and Section Entries (bytes 64..)
         if (configuration.AdditionalSectionEntries != null && configuration.AdditionalSectionEntries.Count > 0)
         {
-            int maxSections = Math.Min(configuration.AdditionalSectionEntries.Count, (SectorSize - 64) / 64);
+            int sectionCount = configuration.AdditionalSectionEntries.Count;
             int offset = 64;
-            for (int i = 0; i < maxSections; i++)
+            for (int i = 0; i < sectionCount; i++)
             {
                 var sectionSpec = configuration.AdditionalSectionEntries[i];
                 uint sectionLoadRba = (additionalLoadRbas != null && i < additionalLoadRbas.Count)
                     ? additionalLoadRbas[i]
                     : 0;
-                bool isFinal = (i == maxSections - 1);
+                long? sectionImageLength = (additionalImageByteLengths != null && i < additionalImageByteLengths.Count)
+                    ? additionalImageByteLengths[i]
+                    : null;
+                ushort sectionSectorCount = ResolveCatalogSectorCount(sectionSpec, sectionImageLength);
+                bool isFinal = (i == sectionCount - 1);
 
                 // Section Header (32 bytes)
                 sector[offset] = isFinal ? (byte)0x91 : (byte)0x90;
@@ -165,7 +217,7 @@ public static class ElToritoCatalogBuilder
                 BinaryPrimitives.WriteUInt16LittleEndian(sector.AsSpan(offset + 2, 2), sectionSpec.LoadSegment);
                 sector[offset + 4] = sectionSpec.SystemType;
                 sector[offset + 5] = 0x00;
-                BinaryPrimitives.WriteUInt16LittleEndian(sector.AsSpan(offset + 6, 2), sectionSpec.SectorCount);
+                BinaryPrimitives.WriteUInt16LittleEndian(sector.AsSpan(offset + 6, 2), sectionSectorCount);
                 BinaryPrimitives.WriteUInt32LittleEndian(sector.AsSpan(offset + 8, 4), sectionLoadRba);
                 // Bytes 12..31: zeros
                 offset += 32;

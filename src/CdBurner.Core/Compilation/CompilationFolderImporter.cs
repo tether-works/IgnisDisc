@@ -57,7 +57,12 @@ public static class CompilationFolderImporter
                     {
                         continue;
                     }
-                    target.AddFile(new CompilationFile(file.FullName, file.Length));
+                    target.AddFile(new CompilationFile(
+                        file.Name,
+                        file.FullName,
+                        file.Length,
+                        lastWriteTimeUtc: file.LastWriteTimeUtc,
+                        attributes: file.Attributes));
                 }
                 catch (Exception ex) when (!strict && ex is not OperationCanceledException)
                 {
@@ -77,6 +82,8 @@ public static class CompilationFolderImporter
                     }
 
                     var child = target.AddDirectory(subDir.Name);
+                    child.LastWriteTimeUtc = subDir.LastWriteTimeUtc;
+                    child.Attributes = subDir.Attributes | FileAttributes.Directory;
                     ImportCore(child, subDir.FullName, strict, skipFile, activeAncestors, depth + 1);
                 }
                 catch (Exception ex) when (!strict && ex is not OperationCanceledException)
@@ -113,6 +120,9 @@ public static class CompilationFolderImporter
     {
         var root = CompilationDirectory.CreateRoot();
         Import(root, sourceFolder, strict);
+        var dirInfo = new DirectoryInfo(sourceFolder);
+        root.LastWriteTimeUtc = dirInfo.LastWriteTimeUtc;
+        root.Attributes = dirInfo.Attributes | FileAttributes.Directory;
         return root;
     }
 }

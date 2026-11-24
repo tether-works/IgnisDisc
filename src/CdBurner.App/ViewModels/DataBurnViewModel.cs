@@ -1157,7 +1157,7 @@ public class DataBurnViewModel : ObservableObject
         else if (!string.IsNullOrWhiteSpace(BiosBootImagePath) && File.Exists(BiosBootImagePath))
         {
             var fi = new FileInfo(BiosBootImagePath);
-            ushort sectors = (ushort)Math.Max(1, (fi.Length + 511) / 512);
+            ushort sectors = ElToritoCatalogBuilder.ComputeSectorCount(BootPlatformId.X86Bios, fi.Length);
             biosEntry = new BootCatalogEntrySpec(
                 Platform: BootPlatformId.X86Bios,
                 Emulation: BootEmulationType.NoEmulation,
@@ -1181,7 +1181,7 @@ public class DataBurnViewModel : ObservableObject
         else if (!string.IsNullOrWhiteSpace(UefiBootImagePath) && File.Exists(UefiBootImagePath))
         {
             var fi = new FileInfo(UefiBootImagePath);
-            ushort sectors = (ushort)Math.Max(1, (fi.Length + 511) / 512);
+            ushort sectors = ElToritoCatalogBuilder.ComputeSectorCount(BootPlatformId.Efi, fi.Length);
             uefiEntry = new BootCatalogEntrySpec(
                 Platform: BootPlatformId.Efi,
                 Emulation: BootEmulationType.NoEmulation,

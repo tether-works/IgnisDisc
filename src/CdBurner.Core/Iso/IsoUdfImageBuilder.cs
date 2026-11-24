@@ -249,11 +249,13 @@ public static class IsoUdfImageBuilder
         public int IsoPathTableM_Lba { get; set; }
         public int IsoPathTableBytesLength { get; set; }
         public int IsoPathTableSectors { get; set; }
+        public List<PathTableEntry> IsoPathTableEntries { get; } = new();
 
         public int JolietPathTableL_Lba { get; set; } = -1;
         public int JolietPathTableM_Lba { get; set; } = -1;
         public int JolietPathTableBytesLength { get; set; }
         public int JolietPathTableSectors { get; set; }
+        public List<PathTableEntry> JolietPathTableEntries { get; } = new();
 
         public int TotalSectors { get; set; }
 
@@ -291,17 +293,25 @@ public static class IsoUdfImageBuilder
         public DateTime BuildTimeUtc { get; }
 
         /// <summary>
-        /// A file or directory time as written into the image. With a fixed time, times later than it (or unset) are
-        /// clamped to it, so the same tree always gives the same bytes; without one, the time is used unchanged.
+        /// A file or directory time as written into the image. Local times are converted to UTC. With a fixed time,
+        /// times later than it (or unset) are clamped to it, so the same tree always gives the same bytes.
         /// </summary>
         public DateTime Stamp(DateTime sourceTimeUtc)
         {
+            DateTime utc = sourceTimeUtc == default ? default : NormalizeUtc(sourceTimeUtc);
             if (Options.FixedTimestampUtc is null)
             {
-                return sourceTimeUtc;
+                return utc;
             }
-            return sourceTimeUtc == default || sourceTimeUtc.ToUniversalTime() > BuildTimeUtc ? BuildTimeUtc : sourceTimeUtc;
+            return utc == default || utc > BuildTimeUtc ? BuildTimeUtc : utc;
         }
+
+        internal static DateTime NormalizeUtc(DateTime value) => value.Kind switch
+        {
+            DateTimeKind.Utc => value,
+            DateTimeKind.Local => value.ToUniversalTime(),
+            _ => DateTime.SpecifyKind(value, DateTimeKind.Utc),
+        };
 
         /// <summary>
         /// The 16 hex characters that start the UDF Volume Set Identifier (UDF 2.2.2.5 asks for a unique value).
@@ -402,6 +412,13 @@ public static class IsoUdfImageBuilder
                 SizeManifests(ctx);
             }
 
+            // 2c. Build ECMA-119 §9.4 path table sequences ordered by (ParentDirNumber, encoded Directory Identifier)
+            ctx.IsoPathTableEntries.AddRange(BuildPathTableEntries(rootLayout, isJoliet: false));
+            if (options.IncludeJoliet)
+            {
+                ctx.JolietPathTableEntries.AddRange(BuildPathTableEntries(rootLayout, isJoliet: true));
+            }
+
             // 3. Pre-calculate extent sector requirements for each directory
             foreach (var dir in ctx.BfsDirectories)
             {
@@ -413,18 +430,27 @@ public static class IsoUdfImageBuilder
             }
 
             // 4. Calculate Path Table lengths
-            ctx.IsoPathTableBytesLength = CalculatePathTableBytesLength(ctx.BfsDirectories, isJoliet: false);
+            ctx.IsoPathTableBytesLength = CalculatePathTableBytesLength(ctx.IsoPathTableEntries, isJoliet: false);
             ctx.IsoPathTableSectors = Math.Max(1, (ctx.IsoPathTableBytesLength + SectorSize - 1) / SectorSize);
 
             if (options.IncludeJoliet)
             {
-                ctx.JolietPathTableBytesLength = CalculatePathTableBytesLength(ctx.BfsDirectories, isJoliet: true);
+                ctx.JolietPathTableBytesLength = CalculatePathTableBytesLength(ctx.JolietPathTableEntries, isJoliet: true);
                 ctx.JolietPathTableSectors = Math.Max(1, (ctx.JolietPathTableBytesLength + SectorSize - 1) / SectorSize);
             }
 
             // 4b. Pre-load boot images if El Torito boot is configured
             if (options.BootConfiguration != null)
             {
+                if (options.BootConfiguration.AdditionalSectionEntries != null &&
+                    options.BootConfiguration.AdditionalSectionEntries.Count > ElToritoCatalogBuilder.MaxAdditionalSectionEntries)
+                {
+                    throw new ArgumentOutOfRangeException(
+                        nameof(options),
+                        options.BootConfiguration.AdditionalSectionEntries.Count,
+                        $"El Torito boot catalog sector supports at most {ElToritoCatalogBuilder.MaxAdditionalSectionEntries} additional section entries.");
+                }
+
                 var def = options.BootConfiguration.DefaultEntry;
                 using (var s = def.BootImageStreamFactory())
                 {
@@ -693,10 +719,6 @@ public static class IsoUdfImageBuilder
                     }
 
                     file.StartLba = currentLba;
-                    if (file.SourceFile.ImportedStartLba.HasValue)
-                    {
-                        file.SourceFile.ImportedStartLba = file.StartLba;
-                    }
                     currentLba += file.SectorCount;
                 }
             }
@@ -819,7 +841,7 @@ public static class IsoUdfImageBuilder
 
                 foreach (var sub in dir.SubDirectories)
                 {
-                    sub.IsoName = MakeUnique(IsoNameSanitizer.ToIso9660DirectoryName(sub.SourceDir.Name), isoNames, 31, keepExtension: false);
+                    sub.IsoName = MakeUnique(IsoNameSanitizer.ToIso9660DirectoryName(sub.SourceDir.Name), isoNames, 8, keepExtension: false, collisionPrefix: "_");
                     sub.JolietName = MakeUnique(IsoNameSanitizer.ToJolietName(sub.SourceDir.Name), jolietNames, 64, keepExtension: false);
                     sub.UdfName = MakeUnique(TruncateForUdf(sub.SourceDir.Name), udfNames, MaxUdfNameChars(sub.SourceDir.Name), keepExtension: false);
                 }
@@ -851,10 +873,10 @@ public static class IsoUdfImageBuilder
         }
 
         /// <summary>
-        /// Returns <paramref name="candidate"/> or a "~N" disambiguated variant that is not yet in <paramref name="used"/>,
+        /// Returns <paramref name="candidate"/> or a disambiguated variant that is not yet in <paramref name="used"/>,
         /// keeping the result within <paramref name="maxLength"/> characters, and records it as used.
         /// </summary>
-        private static string MakeUnique(string candidate, HashSet<string> used, int maxLength, bool keepExtension)
+        private static string MakeUnique(string candidate, HashSet<string> used, int maxLength, bool keepExtension, string collisionPrefix = "~")
         {
             if (used.Add(candidate))
             {
@@ -875,10 +897,11 @@ public static class IsoUdfImageBuilder
 
             for (int n = 1; n < 100000; n++)
             {
-                string suffix = "~" + n.ToString(System.Globalization.CultureInfo.InvariantCulture);
-                int room = Math.Max(1, maxLength - version.Length - ext.Length - suffix.Length);
-                string attempt = (stem.Length > room ? TruncateUtf16Safe(stem, room) : stem) + suffix + ext + version;
-                if (used.Add(attempt))
+                string suffix = collisionPrefix + n.ToString(System.Globalization.CultureInfo.InvariantCulture);
+                int room = Math.Max(0, maxLength - version.Length - ext.Length - suffix.Length);
+                string stemPart = room > 0 ? (stem.Length > room ? TruncateUtf16Safe(stem, room) : stem) : string.Empty;
+                string attempt = stemPart + suffix + ext + version;
+                if (attempt.Length <= maxLength && used.Add(attempt))
                 {
                     return attempt;
                 }
@@ -887,7 +910,7 @@ public static class IsoUdfImageBuilder
             throw new InvalidOperationException($"Unable to generate a unique name for '{candidate}'.");
         }
 
-        private static string TruncateUtf16Safe(string value, int maxLength)
+        internal static string TruncateUtf16Safe(string value, int maxLength)
         {
             if (value.Length <= maxLength)
             {
@@ -1081,6 +1104,40 @@ public static class IsoUdfImageBuilder
             return dirNode;
         }
 
+        private static List<PathTableEntry> BuildPathTableEntries(DirectoryLayoutNode root, bool isJoliet)
+        {
+            var entries = new List<PathTableEntry>();
+            var queue = new Queue<(DirectoryLayoutNode Dir, int ParentDirNumber)>();
+            queue.Enqueue((root, 1));
+
+            while (queue.Count > 0)
+            {
+                var (dir, parentNum) = queue.Dequeue();
+                if (parentNum > ushort.MaxValue)
+                {
+                    throw new NotSupportedException(
+                        $"The {(isJoliet ? "Joliet" : "ISO 9660")} path table cannot reference parent directory number {parentNum} (> {ushort.MaxValue}).");
+                }
+
+                int dirNum = entries.Count + 1;
+                entries.Add(new PathTableEntry(dir, dirNum, parentNum));
+
+                if (dir.SubDirectories.Count > 0)
+                {
+                    var sortedSubs = dir.SubDirectories
+                        .Select(sub => (Sub: sub, Ident: EncodeIdentifierBytes(isJoliet ? sub.JolietName : sub.IsoName, isJoliet)))
+                        .OrderBy(x => x, Comparer<(DirectoryLayoutNode Sub, byte[] Ident)>.Create((a, b) => CompareEncodedBytes(a.Ident, b.Ident)));
+
+                    foreach (var (sub, _) in sortedSubs)
+                    {
+                        queue.Enqueue((sub, dirNum));
+                    }
+                }
+            }
+
+            return entries;
+        }
+
         private static int CalculateDirectorySectors(DirectoryLayoutNode dir, bool isJoliet, int systemUseLength)
         {
             var recordLengths = new List<int>
@@ -1089,30 +1146,9 @@ public static class IsoUdfImageBuilder
                 34 + systemUseLength  // '..' entry
             };
 
-            foreach (var sub in dir.SubDirectories)
+            foreach (var child in GetOrderedDirectoryChildren(dir, isJoliet))
             {
-                string name = isJoliet ? sub.JolietName : sub.IsoName;
-
-                int identLen = isJoliet
-                    ? Encoding.BigEndianUnicode.GetByteCount(name)
-                    : Encoding.ASCII.GetByteCount(name);
-
-                recordLengths.Add(GetDirectoryRecordLength(identLen) + systemUseLength);
-            }
-
-            foreach (var file in dir.Files)
-            {
-                string name = isJoliet
-                    ? file.JolietName
-                    : (!string.IsNullOrEmpty(file.Iso9660Name)
-                        ? file.Iso9660Name
-                        : IsoNameSanitizer.ToIso9660Level1Name(file.SourceFile.Name));
-
-                int identLen = isJoliet
-                    ? Encoding.BigEndianUnicode.GetByteCount(name)
-                    : Encoding.ASCII.GetByteCount(name);
-
-                recordLengths.Add(GetDirectoryRecordLength(identLen) + systemUseLength);
+                recordLengths.Add(GetDirectoryRecordLength(child.IdentifierBytes.Length) + systemUseLength);
             }
 
             int sectors = 1;
@@ -1130,13 +1166,13 @@ public static class IsoUdfImageBuilder
             return sectors;
         }
 
-        private static int CalculatePathTableBytesLength(List<DirectoryLayoutNode> directories, bool isJoliet)
+        private static int CalculatePathTableBytesLength(IReadOnlyList<PathTableEntry> entries, bool isJoliet)
         {
             int total = 10; // Root directory entry: 1 + 1 + 4 + 2 + 1 + 1 pad = 10 bytes
 
-            for (int i = 1; i < directories.Count; i++)
+            for (int i = 1; i < entries.Count; i++)
             {
-                var dir = directories[i];
+                var dir = entries[i].Dir;
                 string name = isJoliet ? dir.JolietName : dir.IsoName;
 
                 int identLen = isJoliet
@@ -1154,6 +1190,44 @@ public static class IsoUdfImageBuilder
 
             return total;
         }
+    }
+
+    private readonly record struct PathTableEntry(DirectoryLayoutNode Dir, int DirNumber, int ParentDirNumber);
+
+    private readonly record struct DirectoryChildRecord(
+        bool IsDirectory,
+        DirectoryLayoutNode? SubDirectory,
+        FileLayoutNode? File,
+        byte[] IdentifierBytes);
+
+    private static byte[] EncodeIdentifierBytes(string name, bool isJoliet) =>
+        isJoliet ? Encoding.BigEndianUnicode.GetBytes(name) : Encoding.ASCII.GetBytes(name);
+
+    private static int CompareEncodedBytes(ReadOnlySpan<byte> a, ReadOnlySpan<byte> b) =>
+        a.SequenceCompareTo(b);
+
+    private static List<DirectoryChildRecord> GetOrderedDirectoryChildren(DirectoryLayoutNode dir, bool isJoliet)
+    {
+        var records = new List<DirectoryChildRecord>(dir.SubDirectories.Count + dir.Files.Count);
+
+        foreach (var sub in dir.SubDirectories)
+        {
+            string name = isJoliet ? sub.JolietName : sub.IsoName;
+            records.Add(new DirectoryChildRecord(true, sub, null, EncodeIdentifierBytes(name, isJoliet)));
+        }
+
+        foreach (var file in dir.Files)
+        {
+            string name = isJoliet
+                ? file.JolietName
+                : (!string.IsNullOrEmpty(file.Iso9660Name)
+                    ? file.Iso9660Name
+                    : IsoNameSanitizer.ToIso9660Level1Name(file.SourceFile.Name));
+            records.Add(new DirectoryChildRecord(false, null, file, EncodeIdentifierBytes(name, isJoliet)));
+        }
+
+        records.Sort((a, b) => CompareEncodedBytes(a.IdentifierBytes, b.IdentifierBytes));
+        return records;
     }
 
     private sealed class DirectoryLayoutNode
@@ -1273,13 +1347,13 @@ public static class IsoUdfImageBuilder
             metadata.Add((ctx.Tea01Lba, BuildUdfExtendedAreaDescriptor("TEA01")));
         }
 
-        metadata.Add((ctx.IsoPathTableL_Lba, BuildPathTable(ctx.BfsDirectories, ctx.IsoPathTableSectors, isJoliet: false, isBigEndian: false)));
-        metadata.Add((ctx.IsoPathTableM_Lba, BuildPathTable(ctx.BfsDirectories, ctx.IsoPathTableSectors, isJoliet: false, isBigEndian: true)));
+        metadata.Add((ctx.IsoPathTableL_Lba, BuildPathTable(ctx.IsoPathTableEntries, ctx.IsoPathTableSectors, isJoliet: false, isBigEndian: false)));
+        metadata.Add((ctx.IsoPathTableM_Lba, BuildPathTable(ctx.IsoPathTableEntries, ctx.IsoPathTableSectors, isJoliet: false, isBigEndian: true)));
 
         if (ctx.Options.IncludeJoliet)
         {
-            metadata.Add((ctx.JolietPathTableL_Lba, BuildPathTable(ctx.BfsDirectories, ctx.JolietPathTableSectors, isJoliet: true, isBigEndian: false)));
-            metadata.Add((ctx.JolietPathTableM_Lba, BuildPathTable(ctx.BfsDirectories, ctx.JolietPathTableSectors, isJoliet: true, isBigEndian: true)));
+            metadata.Add((ctx.JolietPathTableL_Lba, BuildPathTable(ctx.JolietPathTableEntries, ctx.JolietPathTableSectors, isJoliet: true, isBigEndian: false)));
+            metadata.Add((ctx.JolietPathTableM_Lba, BuildPathTable(ctx.JolietPathTableEntries, ctx.JolietPathTableSectors, isJoliet: true, isBigEndian: true)));
         }
 
         foreach (var dir in ctx.BfsDirectories)
@@ -1294,10 +1368,13 @@ public static class IsoUdfImageBuilder
         if (ctx.Options.BootConfiguration != null)
         {
             var addLoadRbas = ctx.AdditionalBootImages.Select(x => (uint)x.StartLba).ToList();
+            var addImageLengths = ctx.AdditionalBootImages.Select(x => x.Data.LongLength).ToList();
             metadata.Add((ctx.BootCatalogLba, ElToritoCatalogBuilder.BuildBootCatalogSector(
                 ctx.Options.BootConfiguration,
                 (uint)ctx.DefaultBootImageLba,
-                addLoadRbas)));
+                addLoadRbas,
+                ctx.DefaultBootImageData?.LongLength,
+                addImageLengths)));
             metadata.Add((ctx.DefaultBootImageLba, PadToSectors(ctx.DefaultBootImageData!, ctx.DefaultBootImageSectorCount)));
             foreach (var sec in ctx.AdditionalBootImages)
             {
@@ -1623,11 +1700,7 @@ public static class IsoUdfImageBuilder
         WriteUcs2BeString(svd.AsSpan(8, 32), "WINDOWS");
 
         // Volume Identifier (UCS-2BE, 32 bytes = 16 UTF-16 characters)
-        string volLabel = ctx.Options.VolumeLabel;
-        if (volLabel.Length > 16)
-        {
-            volLabel = volLabel[..16];
-        }
+        string volLabel = LayoutContext.TruncateUtf16Safe(ctx.Options.VolumeLabel, 16);
         WriteUcs2BeString(svd.AsSpan(40, 32), volLabel);
 
         // Volume Space Size (offsets 80..87, both-endian uint32)
@@ -2225,7 +2298,7 @@ public static class IsoUdfImageBuilder
         BinaryPrimitives.WriteUInt16LittleEndian(d[48..], linkCount);
         BinaryPrimitives.WriteUInt64LittleEndian(d[56..], informationLength);
 
-        DateTime ts = modifiedUtc == default || modifiedUtc.Year < 1980 ? buildTimeUtc : modifiedUtc;
+        DateTime ts = modifiedUtc == default ? buildTimeUtc : modifiedUtc;
         if (extended)
         {
             // ECMA-167 4/14.17 Extended File Entry
@@ -2410,16 +2483,12 @@ public static class IsoUdfImageBuilder
             systemUse: xaDirectory);
         offsetInSector += dotLength;
 
-        // 3. Child Subdirectories
-        foreach (var sub in dir.SubDirectories)
+        // 3. Combined child entries sorted in ascending encoded File Identifier order (ECMA-119 §9.3)
+        foreach (var child in GetOrderedDirectoryChildren(dir, isJoliet))
         {
-            string name = isJoliet ? sub.JolietName : sub.IsoName;
-
-            byte[] ident = isJoliet
-                ? Encoding.BigEndianUnicode.GetBytes(name)
-                : Encoding.ASCII.GetBytes(name);
-
-            byte recordLen = (byte)(GetDirectoryRecordLength(ident.Length) + xaDirectory.Length);
+            byte[] ident = child.IdentifierBytes;
+            byte[] systemUse = child.IsDirectory ? xaDirectory : xaFile;
+            byte recordLen = (byte)(GetDirectoryRecordLength(ident.Length) + systemUse.Length);
             if (offsetInSector + recordLen > SectorSize)
             {
                 sectorIdx++;
@@ -2427,62 +2496,45 @@ public static class IsoUdfImageBuilder
             }
 
             int destOffset = sectorIdx * SectorSize + offsetInSector;
-            byte flags = 0x02; // Directory
-            if (sub.SourceDir.Attributes.HasFlag(FileAttributes.Hidden))
+            if (child.IsDirectory)
             {
-                flags |= 0x01;
+                var sub = child.SubDirectory!;
+                byte flags = 0x02; // Directory
+                if (sub.SourceDir.Attributes.HasFlag(FileAttributes.Hidden))
+                {
+                    flags |= 0x01;
+                }
+
+                uint subLba = isJoliet ? (uint)sub.JolietLba : (uint)sub.IsoLba;
+                uint subBytes = isJoliet ? sub.JolietExtentSizeBytes : sub.IsoExtentSizeBytes;
+
+                WriteDirectoryRecord(
+                    extent.AsSpan(destOffset, recordLen),
+                    subLba,
+                    subBytes,
+                    ctx.Stamp(sub.SourceDir.LastWriteTimeUtc),
+                    flags,
+                    ident,
+                    xaDirectory);
             }
-
-            uint subLba = isJoliet ? (uint)sub.JolietLba : (uint)sub.IsoLba;
-            uint subBytes = isJoliet ? sub.JolietExtentSizeBytes : sub.IsoExtentSizeBytes;
-
-            WriteDirectoryRecord(
-                extent.AsSpan(destOffset, recordLen),
-                subLba,
-                subBytes,
-                ctx.Stamp(sub.SourceDir.LastWriteTimeUtc),
-                flags,
-                ident,
-                xaDirectory);
-
-            offsetInSector += recordLen;
-        }
-
-        // 4. Child Files
-        foreach (var file in dir.Files)
-        {
-            string name = isJoliet
-                ? file.JolietName
-                : (!string.IsNullOrEmpty(file.Iso9660Name)
-                    ? file.Iso9660Name
-                    : IsoNameSanitizer.ToIso9660Level1Name(file.SourceFile.Name));
-
-            byte[] ident = isJoliet
-                ? Encoding.BigEndianUnicode.GetBytes(name)
-                : Encoding.ASCII.GetBytes(name);
-
-            byte recordLen = (byte)(GetDirectoryRecordLength(ident.Length) + xaFile.Length);
-            if (offsetInSector + recordLen > SectorSize)
+            else
             {
-                sectorIdx++;
-                offsetInSector = 0;
-            }
+                var file = child.File!;
+                byte flags = 0x00; // File
+                if (file.SourceFile.Attributes.HasFlag(FileAttributes.Hidden))
+                {
+                    flags |= 0x01;
+                }
 
-            int destOffset = sectorIdx * SectorSize + offsetInSector;
-            byte flags = 0x00; // File
-            if (file.SourceFile.Attributes.HasFlag(FileAttributes.Hidden))
-            {
-                flags |= 0x01;
+                WriteDirectoryRecord(
+                    extent.AsSpan(destOffset, recordLen),
+                    (uint)file.StartLba,
+                    (uint)Math.Min(file.SourceFile.SizeBytes, 0xFFFFF800L), // >4 GiB files are fully described only in UDF
+                    ctx.Stamp(file.SourceFile.LastWriteTimeUtc),
+                    flags,
+                    ident,
+                    xaFile);
             }
-
-            WriteDirectoryRecord(
-                extent.AsSpan(destOffset, recordLen),
-                (uint)file.StartLba,
-                (uint)Math.Min(file.SourceFile.SizeBytes, 0xFFFFF800L), // >4 GiB files are fully described only in UDF
-                ctx.Stamp(file.SourceFile.LastWriteTimeUtc),
-                flags,
-                ident,
-                xaFile);
 
             offsetInSector += recordLen;
         }
@@ -2491,7 +2543,7 @@ public static class IsoUdfImageBuilder
     }
 
     private static byte[] BuildPathTable(
-        List<DirectoryLayoutNode> directories,
+        IReadOnlyList<PathTableEntry> entries,
         int pathTableSectors,
         bool isJoliet,
         bool isBigEndian)
@@ -2499,12 +2551,18 @@ public static class IsoUdfImageBuilder
         byte[] table = new byte[pathTableSectors * SectorSize];
         int offset = 0;
 
-        foreach (var dir in directories)
+        foreach (var entry in entries)
         {
+            var dir = entry.Dir;
             uint extentLba = isJoliet ? (uint)dir.JolietLba : (uint)dir.IsoLba;
-            ushort parentIndex = (ushort)dir.ParentDirNumber;
+            if (entry.ParentDirNumber > ushort.MaxValue)
+            {
+                throw new NotSupportedException(
+                    $"The {(isJoliet ? "Joliet" : "ISO 9660")} path table cannot reference parent directory number {entry.ParentDirNumber} (> {ushort.MaxValue}).");
+            }
+            ushort parentIndex = (ushort)entry.ParentDirNumber;
 
-            if (dir.DirNumber == 1) // Root
+            if (entry.DirNumber == 1) // Root
             {
                 table[offset] = 1; // Length of identifier
                 table[offset + 1] = 0; // Extended attribute length
@@ -2597,6 +2655,7 @@ public static class IsoUdfImageBuilder
         WriteBothEndianUInt32(destination.Slice(10, 8), dataLength);
 
         // Recording date and time (7 bytes)
+        recordingTimeUtc = LayoutContext.NormalizeUtc(recordingTimeUtc);
         destination[18] = (byte)Math.Clamp(recordingTimeUtc.Year - 1900, 0, 255);
         destination[19] = (byte)Math.Clamp(recordingTimeUtc.Month, 1, 12);
         destination[20] = (byte)Math.Clamp(recordingTimeUtc.Day, 1, 31);
@@ -2679,23 +2738,29 @@ public static class IsoUdfImageBuilder
     private static void WriteUcs2BeString(Span<byte> destination, string value)
     {
         // In UCS-2BE, spaces are 0x00 0x20
-        for (int i = 0; i < destination.Length; i += 2)
+        for (int i = 0; i + 1 < destination.Length; i += 2)
         {
             destination[i] = 0x00;
             destination[i + 1] = 0x20;
         }
+        if ((destination.Length & 1) != 0)
+        {
+            destination[^1] = 0x00;
+        }
 
         if (!string.IsNullOrEmpty(value))
         {
-            byte[] bytes = Encoding.BigEndianUnicode.GetBytes(value);
-            int copyLen = Math.Min(bytes.Length, destination.Length);
-            copyLen = (copyLen / 2) * 2; // ensure 16-bit alignment
+            int maxChars = destination.Length / 2;
+            string safeValue = LayoutContext.TruncateUtf16Safe(value, maxChars);
+            byte[] bytes = Encoding.BigEndianUnicode.GetBytes(safeValue);
+            int copyLen = Math.Min(bytes.Length, maxChars * 2);
             bytes.AsSpan(0, copyLen).CopyTo(destination);
         }
     }
 
     private static void WriteIsoDateTime(Span<byte> destination, DateTime dateTimeUtc)
     {
+        dateTimeUtc = LayoutContext.NormalizeUtc(dateTimeUtc);
         string s = dateTimeUtc.ToString("yyyyMMddHHmmss00", System.Globalization.CultureInfo.InvariantCulture);
         Encoding.ASCII.GetBytes(s, destination[..16]);
         destination[16] = 0; // GMT offset

@@ -95,10 +95,12 @@ public sealed partial class NativeTaoDataWriter
         Check(ct, state);
 
         // 3. The data, 64 KiB per WRITE.
+        byte[]? alignedClosingAvdp = TryBuildAlignedClosingAvdp(request, state.ImageSectors, trackSectors, startLba: 0);
         request.Image.Position = request.StartPosition;
         var reporter = new ProgressReporter(this, progress, clock, trackSectors, BdSectorsPerSecondAt1x);
         var writing = Stopwatch.StartNew();
-        WriteTrack(request, 0, trackSectors, DvdSectorsPerWrite, state, reporter, ct, DvdMinimumSectorsPerWrite);
+        WriteTrack(request, 0, trackSectors, DvdSectorsPerWrite, state, reporter, ct, DvdMinimumSectorsPerWrite,
+            lastSectorOverride: alignedClosingAvdp);
         writing.Stop();
 
         reporter.Report(trackSectors, "Finishing the track");

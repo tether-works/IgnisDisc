@@ -408,7 +408,8 @@ public sealed partial class NativeTaoDataWriter
     /// <param name="imageBytesAlreadyWritten">Image bytes an earlier part of the same track took (a DVD-R DL track goes on
     /// after its layer jump); the image stream is already past them.</param>
     private void WriteTrack(NativeDataWriteRequest request, int startLba, int trackSectors, int sectorsPerWrite, RunState state,
-        ProgressReporter reporter, CancellationToken ct, int? minimumSectorsPerWrite = null, long imageBytesAlreadyWritten = 0)
+        ProgressReporter reporter, CancellationToken ct, int? minimumSectorsPerWrite = null, long imageBytesAlreadyWritten = 0,
+        byte[]? lastSectorOverride = null)
     {
         int minimum = minimumSectorsPerWrite ?? sectorsPerWrite;
         byte[] buffer = new byte[sectorsPerWrite * SectorSize];
@@ -430,6 +431,10 @@ public sealed partial class NativeTaoDataWriter
                 throw Stop($"Could not read the image at sector {lba - startLba}: {ex.Message}");
             }
             Array.Clear(buffer, fromImage, bytes - fromImage);
+            if (lastSectorOverride != null && lba + n == end && fromImage < bytes)
+            {
+                lastSectorOverride.AsSpan(0, SectorSize).CopyTo(buffer.AsSpan((n - 1) * SectorSize, SectorSize));
+            }
             remainingImage -= fromImage;
 
             if (!WriteBlocks(lba, (ushort)n, buffer.AsSpan(0, bytes), state, canShrink: sectorsPerWrite > minimum, first: lba == startLba))
@@ -444,6 +449,72 @@ public sealed partial class NativeTaoDataWriter
             state.SectorsSent += n;
             reporter.Report(state.SectorsSent, "Writing data");
         }
+    }
+
+    private static byte[]? TryBuildAlignedClosingAvdp(NativeDataWriteRequest request, int imageSectors, int trackSectors, int startLba)
+    {
+        if (startLba != 0 || trackSectors <= imageSectors || imageSectors <= 257 || request.ImageBytes != (long)imageSectors * SectorSize)
+        {
+            return null;
+        }
+
+        long savedPos = request.Image.Position;
+        try
+        {
+            byte[] sector = new byte[SectorSize];
+            request.Image.Position = request.StartPosition + (long)(imageSectors - 1) * SectorSize;
+            ReadExactly(request.Image, sector);
+            if (!IsValidAvdpSector(sector, (uint)(imageSectors - 1)))
+            {
+                return null;
+            }
+
+            byte[] anchor256 = new byte[SectorSize];
+            request.Image.Position = request.StartPosition + 256L * SectorSize;
+            ReadExactly(request.Image, anchor256);
+            if (!IsValidAvdpSector(anchor256, 256u) ||
+                !sector.AsSpan(16, 16).SequenceEqual(anchor256.AsSpan(16, 16)))
+            {
+                return null;
+            }
+
+            BinaryPrimitives.WriteUInt32LittleEndian(sector.AsSpan(12, 4), (uint)(trackSectors - 1));
+            byte sum = 0;
+            for (int i = 0; i < 16; i++)
+            {
+                if (i != 4)
+                {
+                    sum = (byte)(sum + sector[i]);
+                }
+            }
+            sector[4] = sum;
+            return sector;
+        }
+        finally
+        {
+            request.Image.Position = savedPos;
+        }
+    }
+
+    private static bool IsValidAvdpSector(ReadOnlySpan<byte> sector, uint expectedLocation)
+    {
+        if (sector.Length < SectorSize ||
+            BinaryPrimitives.ReadUInt16LittleEndian(sector) != 0x0002 ||
+            BinaryPrimitives.ReadUInt16LittleEndian(sector.Slice(10, 2)) != 496 ||
+            BinaryPrimitives.ReadUInt32LittleEndian(sector.Slice(12, 4)) != expectedLocation)
+        {
+            return false;
+        }
+
+        byte sum = 0;
+        for (int i = 0; i < 16; i++)
+        {
+            if (i != 4)
+            {
+                sum = (byte)(sum + sector[i]);
+            }
+        }
+        return sum == sector[4];
     }
 
     private static void ReadExactly(Stream stream, Span<byte> destination)

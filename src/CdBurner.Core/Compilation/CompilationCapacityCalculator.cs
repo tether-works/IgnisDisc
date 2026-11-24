@@ -110,17 +110,18 @@ public static class CompilationCapacityCalculator
 
     /// <summary>
     /// Computes the filesystem overhead in 2048-byte sectors for System Area (16 sectors),
-    /// Volume Descriptors, Path Tables, UDF structures, and directory extents.
+    /// Volume Descriptors, Path Tables, UDF structures (including one File Entry per file), and directory extents.
     /// </summary>
     public static int CalculateFileSystemOverheadSectors(
         int directoryCount,
         bool includeIso9660 = true,
         bool includeJoliet = true,
         bool includeUdf = true,
-        bool isBootable = false)
+        bool isBootable = false,
+        int fileCount = 0)
     {
         // System Area: LBAs 0..15 (32,768 bytes)
-        int overhead = 16;
+        long overhead = 16;
 
         if (includeIso9660)
         {
@@ -144,15 +145,15 @@ public static class CompilationCapacityCalculator
 
         if (includeUdf)
         {
-            // UDF Volume Recognition Sequence (BEA01, NSR02, TEA01),
-            // AVDP at LBA 256, Main & Reserve VDS, File Set Descriptor, ICBs
-            overhead += 32;
+            // UDF Volume Recognition Sequence (BEA01, NSR02/NSR03, TEA01),
+            // AVDP at LBA 256, Main & Reserve VDS, File Set Descriptor, plus one File Entry sector per file.
+            overhead += 32L + Math.Max(0, fileCount);
         }
 
         // Directory records: each directory extent requires at least 1 sector
         overhead += Math.Max(1, directoryCount);
 
-        return overhead;
+        return (int)Math.Min(overhead, int.MaxValue);
     }
 
     /// <summary>
@@ -247,33 +248,15 @@ public static class CompilationCapacityCalculator
         var allFiles = root.GetAllFilesRecursive();
         var allDirs = root.GetAllDirectoriesRecursive();
 
-        long rawBytes = 0;
-        int fileSectors = 0;
-        foreach (var file in allFiles)
-        {
-            if (!file.ImportedStartLba.HasValue || file.IsPlannedLayoutLba)
-            {
-                rawBytes += file.SizeBytes;
-                fileSectors += CalculateFileSectors(file.SizeBytes);
-            }
-        }
-
-        int overheadSectors = CalculateFileSystemOverheadSectors(
+        return CalculateForFiles(
+            allFiles,
             allDirs.Count,
+            mediaType,
             includeIso9660,
             includeJoliet,
             includeUdf,
-            isBootable);
-
-        int totalSectors = fileSectors + overheadSectors;
-
-        return AssessCapacity(
-            totalSectors: totalSectors,
-            mediaType: mediaType,
-            mediaMaxSectors: mediaMaxSectors,
-            totalFileDataBytes: rawBytes,
-            totalFileDataSectors: fileSectors,
-            fileSystemOverheadSectors: overheadSectors);
+            isBootable,
+            mediaMaxSectors);
     }
 
     /// <summary>
@@ -291,31 +274,55 @@ public static class CompilationCapacityCalculator
         ArgumentNullException.ThrowIfNull(files);
 
         var fileList = files as IReadOnlyList<CompilationFile> ?? files.ToList();
+        return CalculateForFiles(
+            fileList,
+            Math.Max(1, directoryCount),
+            mediaType,
+            includeIso9660,
+            includeJoliet,
+            includeUdf,
+            isBootable,
+            mediaMaxSectors: 0);
+    }
 
+    private static CapacityAssessment CalculateForFiles(
+        IReadOnlyList<CompilationFile> files,
+        int directoryCount,
+        DiscMediaType mediaType,
+        bool includeIso9660,
+        bool includeJoliet,
+        bool includeUdf,
+        bool isBootable,
+        int mediaMaxSectors)
+    {
         long rawBytes = 0;
-        int fileSectors = 0;
-        foreach (var file in fileList)
+        long fileSectorsLong = 0;
+        int newFileCount = 0;
+        foreach (var file in files)
         {
             if (!file.ImportedStartLba.HasValue || file.IsPlannedLayoutLba)
             {
                 rawBytes += file.SizeBytes;
-                fileSectors += CalculateFileSectors(file.SizeBytes);
+                fileSectorsLong += CalculateFileSectors(file.SizeBytes);
+                newFileCount++;
             }
         }
 
+        int fileSectors = (int)Math.Min(fileSectorsLong, int.MaxValue);
         int overheadSectors = CalculateFileSystemOverheadSectors(
-            Math.Max(1, directoryCount),
+            directoryCount,
             includeIso9660,
             includeJoliet,
             includeUdf,
-            isBootable);
+            isBootable,
+            newFileCount);
 
-        int totalSectors = fileSectors + overheadSectors;
+        int totalSectors = (int)Math.Min(fileSectorsLong + overheadSectors, int.MaxValue);
 
         return AssessCapacity(
             totalSectors: totalSectors,
             mediaType: mediaType,
-            mediaMaxSectors: 0,
+            mediaMaxSectors: mediaMaxSectors,
             totalFileDataBytes: rawBytes,
             totalFileDataSectors: fileSectors,
             fileSystemOverheadSectors: overheadSectors);
