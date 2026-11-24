@@ -35,6 +35,7 @@ public sealed partial class CdromExclusiveAccess : IDisposable
     public static unsafe CdromExclusiveAccess Acquire(SafeFileHandle handle, string callerName)
     {
         ArgumentNullException.ThrowIfNull(handle);
+        ArgumentNullException.ThrowIfNull(callerName);
         var request = new ExclusiveLock
         {
             RequestType = RequestLockDevice,

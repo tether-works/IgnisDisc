@@ -1,4 +1,5 @@
 using System.IO;
+using System.Runtime.InteropServices;
 
 namespace CdBurner.Setup;
 
@@ -258,45 +259,72 @@ internal static class ShellLink
     public static string? ReadTarget(string linkPath)
     {
         if (!File.Exists(linkPath)) return null;
+        object? shell = null;
+        object? link = null;
         try
         {
-            dynamic? shell = CreateShell();
+            shell = CreateShell();
             if (shell == null) return null;
-            dynamic link = shell.CreateShortcut(linkPath);
-            string target = (string)link.TargetPath;
+            dynamic shellDyn = shell;
+            link = shellDyn.CreateShortcut(linkPath);
+            dynamic linkDyn = link!;
+            string target = (string)linkDyn.TargetPath;
             return string.IsNullOrWhiteSpace(target) ? null : target;
         }
         catch (Exception)
         {
             return null; // damaged or unreadable shortcut: treat as unknown and leave it alone
         }
+        finally
+        {
+            ReleaseCom(link);
+            ReleaseCom(shell);
+        }
+    }
+
+    // Releases the COM objects now instead of waiting for the garbage collector, so a shortcut file is never held open.
+    private static void ReleaseCom(object? comObject)
+    {
+        if (comObject != null && Marshal.IsComObject(comObject))
+        {
+            Marshal.FinalReleaseComObject(comObject);
+        }
     }
 
     /// <summary>Writes the shortcut. Returns null on success, otherwise the reason it failed.</summary>
     public static string? Write(string linkPath, string targetPath, string workingDir, string description)
     {
+        object? shell = null;
+        object? link = null;
         try
         {
             string? folder = Path.GetDirectoryName(linkPath);
             if (!string.IsNullOrEmpty(folder)) Directory.CreateDirectory(folder);
 
-            dynamic? shell = CreateShell();
+            shell = CreateShell();
             if (shell == null) return "the Windows shortcut service is not available";
-            dynamic link = shell.CreateShortcut(linkPath);
-            link.TargetPath = targetPath;
-            link.WorkingDirectory = workingDir;
-            link.Description = description;
-            link.IconLocation = $"{targetPath},0";
-            link.Save();
+            dynamic shellDyn = shell;
+            link = shellDyn.CreateShortcut(linkPath);
+            dynamic linkDyn = link!;
+            linkDyn.TargetPath = targetPath;
+            linkDyn.WorkingDirectory = workingDir;
+            linkDyn.Description = description;
+            linkDyn.IconLocation = $"{targetPath},0";
+            linkDyn.Save();
             return null;
         }
         catch (Exception ex)
         {
             return ex.Message;
         }
+        finally
+        {
+            ReleaseCom(link);
+            ReleaseCom(shell);
+        }
     }
 
-    private static dynamic? CreateShell()
+    private static object? CreateShell()
     {
         Type? shellType = Type.GetTypeFromProgID("WScript.Shell");
         return shellType == null ? null : Activator.CreateInstance(shellType);

@@ -99,7 +99,20 @@ internal static class Program
                 }
                 finally
                 {
-                    form.BeginInvoke(new Action(form.Close));
+                    // The window may already be gone (closed by the user or never shown), so a blind BeginInvoke can throw.
+                    try
+                    {
+                        if (!form.IsDisposed && form.IsHandleCreated)
+                        {
+                            form.BeginInvoke(new Action(form.Close));
+                        }
+                    }
+                    catch (ObjectDisposedException)
+                    {
+                    }
+                    catch (InvalidOperationException)
+                    {
+                    }
                 }
             })
             {

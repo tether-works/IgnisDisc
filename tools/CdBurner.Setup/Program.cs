@@ -10,31 +10,64 @@ namespace CdBurner.Setup;
 internal static class Program
 {
     public const string AppTitle = "IgnisDisc Optical Studio";
-    public const string AppVersion = "1.18";
+    /// <summary>The version stamped into this setup program at build time (Directory.Build.props).</summary>
+    public static string AppVersion { get; } = ReadOwnVersion();
+
     public const string Publisher = "tetherworks";
     public const string UninstallRegKeyPath = @"Software\Microsoft\Windows\CurrentVersion\Uninstall\IgnisDisc";
     public const string LegacyUninstallRegKeyPath = @"Software\Microsoft\Windows\CurrentVersion\Uninstall\CdBurner";
 
     private const string ManifestFileName = ".ignisdisc-manifest.txt";
 
-    [STAThread]
-    public static int Main(string[] args)
+    /// <summary>
+    /// The product version from this assembly's metadata. The informational version may carry a "+commit" suffix,
+    /// which is dropped so Apps &amp; Features shows plain "1.18".
+    /// </summary>
+    internal static string ReadOwnVersion()
     {
-        string defaultInstallDir = Path.TrimEndingDirectorySeparator(Path.GetFullPath(
-            GetExistingInstallLocation() ?? Path.Combine(
-                Environment.GetFolderPath(Environment.SpecialFolder.LocalApplicationData),
-                "Programs",
-                "IgnisDisc")));
+        var assembly = typeof(Program).Assembly;
+        string? info = assembly
+            .GetCustomAttributes(typeof(System.Reflection.AssemblyInformationalVersionAttribute), inherit: false)
+            .OfType<System.Reflection.AssemblyInformationalVersionAttribute>()
+            .Select(a => a.InformationalVersion)
+            .FirstOrDefault();
+        string? version = info?.Split('+')[0];
+        if (!string.IsNullOrWhiteSpace(version)) return version;
+        return assembly.GetName().Version?.ToString() ?? "unknown";
+    }
 
+    /// <summary>The processor family this setup runs on, for the text in the wizard header.</summary>
+    internal static string ArchitectureLabel(System.Runtime.InteropServices.Architecture architecture) => architecture switch
+    {
+        System.Runtime.InteropServices.Architecture.X64 => "x64",
+        System.Runtime.InteropServices.Architecture.Arm64 => "ARM64",
+        System.Runtime.InteropServices.Architecture.X86 => "x86",
+        _ => architecture.ToString()
+    };
+
+    /// <summary>The parsed command line. <see cref="Error"/> is set when an option is missing its value.</summary>
+    internal sealed record SetupOptions(
+        bool Silent,
+        bool Uninstall,
+        bool CreateDesktopShortcut,
+        bool CreateStartMenuShortcut,
+        bool AddToPath,
+        string InstallDir,
+        string? ShortcutRoot,
+        string? Error);
+
+    internal static SetupOptions ParseArguments(string[] args, string defaultInstallDir)
+    {
         bool silent = false;
         bool uninstall = false;
-        bool createDesktopShortcut = true;
-        bool createStartMenuShortcut = true;
+        bool desktop = true;
+        bool startMenu = true;
         bool addToPath = true;
         string installDir = defaultInstallDir;
-        ShortcutManager shortcuts = ShortcutManager.ForCurrentUser();
+        string? shortcutRoot = null;
+        string? error = null;
 
-        for (int i = 0; i < args.Length; i++)
+        for (int i = 0; i < args.Length && error == null; i++)
         {
             string arg = args[i];
             if (string.Equals(arg, "--silent", StringComparison.OrdinalIgnoreCase) ||
@@ -50,26 +83,76 @@ internal static class Program
             }
             else if (string.Equals(arg, "--no-shortcuts", StringComparison.OrdinalIgnoreCase))
             {
-                createDesktopShortcut = false;
-                createStartMenuShortcut = false;
+                desktop = false;
+                startMenu = false;
             }
             else if (string.Equals(arg, "--no-path", StringComparison.OrdinalIgnoreCase))
             {
                 addToPath = false;
             }
-            else if (string.Equals(arg, "--install-dir", StringComparison.OrdinalIgnoreCase) && i + 1 < args.Length)
+            else if (string.Equals(arg, "--install-dir", StringComparison.OrdinalIgnoreCase))
             {
-                installDir = Path.TrimEndingDirectorySeparator(Path.GetFullPath(args[++i]));
+                if (i + 1 >= args.Length || string.IsNullOrWhiteSpace(args[i + 1]))
+                {
+                    error = "--install-dir needs a folder path.";
+                }
+                else
+                {
+                    installDir = Path.TrimEndingDirectorySeparator(Path.GetFullPath(args[++i]));
+                }
             }
-            else if (string.Equals(arg, "--shortcut-root", StringComparison.OrdinalIgnoreCase) && i + 1 < args.Length)
+            else if (string.Equals(arg, "--shortcut-root", StringComparison.OrdinalIgnoreCase))
             {
                 // Puts the shortcuts in <folder>\Desktop and <folder>\Programs instead of the real ones. Used by the
                 // installer tests so a test install never replaces or removes the user's own shortcuts.
-                shortcuts = ShortcutManager.ForRoot(Path.GetFullPath(args[++i]));
+                if (i + 1 >= args.Length || string.IsNullOrWhiteSpace(args[i + 1]))
+                {
+                    error = "--shortcut-root needs a folder path.";
+                }
+                else
+                {
+                    shortcutRoot = Path.GetFullPath(args[++i]);
+                }
             }
         }
 
-        if (uninstall)
+        return new SetupOptions(silent, uninstall, desktop, startMenu, addToPath, installDir, shortcutRoot, error);
+    }
+
+    /// <summary>
+    /// Whether this install is listed in Windows' Installed Apps. Silent and wizard installs follow the same rule: every
+    /// install is listed, except one run with --shortcut-root, which is an isolated test install that must leave the
+    /// machine's own Installed Apps entry alone.
+    /// </summary>
+    internal static bool ShouldRegisterUninstaller(string? shortcutRoot) => shortcutRoot == null;
+
+    [STAThread]
+    public static int Main(string[] args)
+    {
+        string defaultInstallDir = Path.TrimEndingDirectorySeparator(Path.GetFullPath(
+            GetExistingInstallLocation() ?? Path.Combine(
+                Environment.GetFolderPath(Environment.SpecialFolder.LocalApplicationData),
+                "Programs",
+                "IgnisDisc")));
+
+        SetupOptions options = ParseArguments(args, defaultInstallDir);
+        if (options.Error != null)
+        {
+            Console.Error.WriteLine(options.Error);
+            if (!options.Silent)
+            {
+                System.Windows.MessageBox.Show(options.Error, $"{AppTitle} Setup", MessageBoxButton.OK, MessageBoxImage.Error);
+            }
+            return 2;
+        }
+
+        bool silent = options.Silent;
+        string installDir = options.InstallDir;
+        ShortcutManager shortcuts = options.ShortcutRoot != null
+            ? ShortcutManager.ForRoot(options.ShortcutRoot)
+            : ShortcutManager.ForCurrentUser();
+
+        if (options.Uninstall)
         {
             return RunUninstall(installDir, silent, shortcuts);
         }
@@ -80,10 +163,10 @@ internal static class Program
             {
                 IReadOnlyList<string> warnings = InstallPayload(
                     installDir,
-                    createDesktopShortcut,
-                    createStartMenuShortcut,
-                    addToPath,
-                    registerUninstaller: installDir.Equals(defaultInstallDir, StringComparison.OrdinalIgnoreCase),
+                    options.CreateDesktopShortcut,
+                    options.CreateStartMenuShortcut,
+                    options.AddToPath,
+                    registerUninstaller: ShouldRegisterUninstaller(options.ShortcutRoot),
                     progress: null,
                     shortcuts: shortcuts);
                 foreach (string warning in warnings) Console.Error.WriteLine($"Warning: {warning}");
@@ -97,7 +180,7 @@ internal static class Program
         }
 
         var app = new System.Windows.Application();
-        var window = new SetupWizardWindow(installDir, shortcuts);
+        var window = new SetupWizardWindow(installDir, shortcuts, ShouldRegisterUninstaller(options.ShortcutRoot));
         app.Run(window);
         return window.ExitCode;
     }
@@ -294,7 +377,9 @@ internal static class Program
         bool registerUninstaller,
         IProgress<(double Percent, string Status)>? progress,
         bool ensureClosed = true,
-        ShortcutManager? shortcuts = null)
+        ShortcutManager? shortcuts = null,
+        string? payloadDirectory = null,
+        string userEnvironmentKeyPath = UserEnvironmentKeyPath)
     {
         installDir = Path.TrimEndingDirectorySeparator(Path.GetFullPath(installDir));
         string installDirWithSep = installDir + Path.DirectorySeparatorChar;
@@ -309,7 +394,9 @@ internal static class Program
 
         progress?.Report((5, $"Preparing target directory: {installDir}"));
 
-        string payloadDir = GetPayloadDirectory();
+        string payloadDir = payloadDirectory != null
+            ? Path.TrimEndingDirectorySeparator(Path.GetFullPath(payloadDirectory))
+            : GetPayloadDirectory();
         if (string.Equals(payloadDir, installDir, StringComparison.OrdinalIgnoreCase))
         {
             throw new InvalidOperationException("IgnisDisc is already installed in this folder. Run IgnisDisc-Setup.exe to install or update it.");
@@ -326,36 +413,7 @@ internal static class Program
         {
         }
 
-        var installedFiles = new List<string>();
-        string[] sourceFiles = Directory.GetFiles(payloadDir, "*", SearchOption.AllDirectories);
-        int total = Math.Max(1, sourceFiles.Length);
-        int processed = 0;
-
-        foreach (string sourcePath in sourceFiles)
-        {
-            processed++;
-            string relative = Path.GetRelativePath(payloadDir, sourcePath);
-            string destinationPath = Path.GetFullPath(Path.Combine(installDir, relative));
-            if (!destinationPath.StartsWith(installDirWithSep, StringComparison.OrdinalIgnoreCase))
-            {
-                continue;
-            }
-
-            string? parentDir = Path.GetDirectoryName(destinationPath);
-            if (!string.IsNullOrEmpty(parentDir))
-            {
-                Directory.CreateDirectory(parentDir);
-            }
-
-            File.Copy(sourcePath, destinationPath, overwrite: true);
-            installedFiles.Add(relative);
-
-            if (processed % 8 == 0 || processed == total)
-            {
-                double pct = 5.0 + (processed * 80.0 / total);
-                progress?.Report((pct, $"Copying ({processed}/{total}): {Path.GetFileName(sourcePath)}"));
-            }
-        }
+        var installedFiles = CopyPayloadWithRollback(payloadDir, installDir, progress);
 
         // Remove files from the previous version that this version no longer includes (only files it recorded).
         var current = new HashSet<string>(installedFiles, StringComparer.OrdinalIgnoreCase) { ManifestFileName };
@@ -399,7 +457,15 @@ internal static class Program
         if (addToPath)
         {
             progress?.Report((95, "Adding ignisdisc-cli to User PATH..."));
-            AddDirectoryToUserPath(installDir);
+            string? pathProblem = AddDirectoryToUserPath(installDir, userEnvironmentKeyPath);
+            if (pathProblem != null)
+            {
+                var withPathWarning = new List<string>(warnings)
+                {
+                    $"ignisdisc-cli could not be added to your PATH: {pathProblem}"
+                };
+                warnings = withPathWarning;
+            }
         }
 
         if (registerUninstaller)
@@ -412,46 +478,294 @@ internal static class Program
         return warnings;
     }
 
-    private static void AddDirectoryToUserPath(string installDir)
+    /// <summary>
+    /// Copies every payload file into <paramref name="installDir"/> in two steps: all files are first copied next to
+    /// their final names under a temporary name, then each is swapped in (the old file is renamed aside first). If any
+    /// step fails, every swapped file is put back, new files and new folders are removed, and the error is rethrown, so a
+    /// failed update never leaves a half-old, half-new installation. Returns the relative paths that were installed.
+    /// </summary>
+    internal static List<string> CopyPayloadWithRollback(
+        string payloadDir,
+        string installDir,
+        IProgress<(double Percent, string Status)>? progress)
     {
+        const string StagedSuffix = ".ignisdisc-new";
+        const string BackupSuffix = ".ignisdisc-old";
+        string installDirWithSep = installDir + Path.DirectorySeparatorChar;
+
+        string[] sourceFiles = Directory.GetFiles(payloadDir, "*", SearchOption.AllDirectories);
+        int total = Math.Max(1, sourceFiles.Length);
+        int processed = 0;
+
+        var installedFiles = new List<string>();
+        var staged = new List<(string Destination, string StagedPath)>();
+        var createdDirectories = new List<string>();
+        var swapped = new List<(string Destination, string? Backup)>();
+
         try
         {
-            string normalizedInstallDir = Path.TrimEndingDirectorySeparator(Path.GetFullPath(installDir));
-            string? currentPath = Environment.GetEnvironmentVariable("Path", EnvironmentVariableTarget.User);
-            var parts = (currentPath ?? string.Empty)
-                .Split(';', StringSplitOptions.RemoveEmptyEntries | StringSplitOptions.TrimEntries)
-                .ToList();
-
-            if (!parts.Any(p => string.Equals(Path.TrimEndingDirectorySeparator(p), normalizedInstallDir, StringComparison.OrdinalIgnoreCase)))
+            foreach (string sourcePath in sourceFiles)
             {
-                parts.Add(normalizedInstallDir);
-                Environment.SetEnvironmentVariable("Path", string.Join(";", parts), EnvironmentVariableTarget.User);
+                processed++;
+                string relative = Path.GetRelativePath(payloadDir, sourcePath);
+                string destinationPath = Path.GetFullPath(Path.Combine(installDir, relative));
+                if (!destinationPath.StartsWith(installDirWithSep, StringComparison.OrdinalIgnoreCase))
+                {
+                    continue;
+                }
+
+                string? parentDir = Path.GetDirectoryName(destinationPath);
+                if (!string.IsNullOrEmpty(parentDir))
+                {
+                    // Remember which folders this install creates (outermost first) so a rollback can remove them again.
+                    var missing = new Stack<string>();
+                    for (string? d = parentDir; d != null && !Directory.Exists(d); d = Path.GetDirectoryName(d))
+                    {
+                        missing.Push(d);
+                    }
+
+                    Directory.CreateDirectory(parentDir);
+                    createdDirectories.AddRange(missing);
+                }
+
+                string stagedPath = destinationPath + StagedSuffix;
+                File.Copy(sourcePath, stagedPath, overwrite: true);
+                staged.Add((destinationPath, stagedPath));
+                installedFiles.Add(relative);
+
+                if (processed % 8 == 0 || processed == total)
+                {
+                    double pct = 5.0 + (processed * 60.0 / total);
+                    progress?.Report((pct, $"Copying ({processed}/{total}): {Path.GetFileName(sourcePath)}"));
+                }
+            }
+
+            int swappedCount = 0;
+            foreach (var (destination, stagedPath) in staged)
+            {
+                string? backup = null;
+                if (File.Exists(destination))
+                {
+                    backup = destination + BackupSuffix;
+                    File.Move(destination, backup, overwrite: true);
+                }
+
+                // Recorded before the second move: if that move fails, the rollback still knows where the old file went.
+                swapped.Add((destination, backup));
+                File.Move(stagedPath, destination);
+
+                swappedCount++;
+                if (swappedCount % 8 == 0 || swappedCount == staged.Count)
+                {
+                    double pct = 65.0 + (swappedCount * 20.0 / Math.Max(1, staged.Count));
+                    progress?.Report((pct, $"Installing ({swappedCount}/{staged.Count}): {Path.GetFileName(destination)}"));
+                }
             }
         }
-        catch
+        catch (Exception ex) when (ex is IOException or UnauthorizedAccessException)
         {
+            RollbackCopy(staged, swapped, createdDirectories);
+            throw new IOException($"The files could not be installed and the previous installation was left as it was: {ex.Message}", ex);
+        }
+
+        // The swap succeeded; the renamed old files are no longer needed. A backup that cannot be deleted now is harmless
+        // (it is only a stray file), so it must not turn a finished install into a failure.
+        foreach (var (_, backup) in swapped)
+        {
+            if (backup == null) continue;
+            try { File.Delete(backup); }
+            catch (IOException) { }
+            catch (UnauthorizedAccessException) { }
+        }
+
+        return installedFiles;
+    }
+
+    private static void RollbackCopy(
+        List<(string Destination, string StagedPath)> staged,
+        List<(string Destination, string? Backup)> swapped,
+        List<string> createdDirectories)
+    {
+        // Undo in reverse order. Each step is best effort: one stuck file must not stop the others from being restored.
+        for (int i = swapped.Count - 1; i >= 0; i--)
+        {
+            var (destination, backup) = swapped[i];
+            try
+            {
+                if (backup != null)
+                {
+                    File.Move(backup, destination, overwrite: true);
+                }
+                else if (File.Exists(destination))
+                {
+                    File.Delete(destination);
+                }
+            }
+            catch (IOException) { }
+            catch (UnauthorizedAccessException) { }
+        }
+
+        foreach (var (_, stagedPath) in staged)
+        {
+            TryDeleteFile(stagedPath);
+        }
+
+        for (int i = createdDirectories.Count - 1; i >= 0; i--)
+        {
+            try
+            {
+                if (Directory.Exists(createdDirectories[i]) && !Directory.EnumerateFileSystemEntries(createdDirectories[i]).Any())
+                {
+                    Directory.Delete(createdDirectories[i]);
+                }
+            }
+            catch (IOException) { }
+            catch (UnauthorizedAccessException) { }
         }
     }
 
-    private static void RemoveDirectoryFromUserPath(string installDir)
+    /// <summary>The registry key (under HKEY_CURRENT_USER) that holds the user's PATH.</summary>
+    internal const string UserEnvironmentKeyPath = "Environment";
+
+    /// <summary>
+    /// Splits a PATH value on semicolons that are outside double quotes and strips the quotes around each entry, so
+    /// <c>"C:\Program Files\Tool"</c> and <c>C:\Program Files\Tool</c> are the same entry. An entry that itself contains a
+    /// semicolon cannot be unquoted without changing its meaning, so it keeps its quotes.
+    /// </summary>
+    internal static List<string> SplitPathValue(string? value)
+    {
+        var entries = new List<string>();
+        if (string.IsNullOrEmpty(value)) return entries;
+
+        var current = new System.Text.StringBuilder();
+        bool inQuotes = false;
+        void Flush()
+        {
+            string entry = current.ToString().Trim();
+            current.Clear();
+            if (entry.Length == 0) return;
+
+            string unquoted = entry.Replace("\"", string.Empty).Trim();
+            if (unquoted.Length == 0) return;
+            entries.Add(unquoted.Contains(';') ? "\"" + unquoted + "\"" : unquoted);
+        }
+
+        foreach (char c in value)
+        {
+            if (c == '"') inQuotes = !inQuotes;
+            if (c == ';' && !inQuotes)
+            {
+                Flush();
+            }
+            else
+            {
+                current.Append(c);
+            }
+        }
+
+        Flush();
+        return entries;
+    }
+
+    private static bool PathEntryMatches(string entry, string normalizedDir)
+    {
+        static string Normalize(string s)
+        {
+            // Relative entries (such as ".") depend on the current folder, so they never name the install folder.
+            if (!Path.IsPathRooted(s)) return s;
+            try { return Path.TrimEndingDirectorySeparator(Path.GetFullPath(s.Trim('"'))); }
+            catch (ArgumentException) { return s; }
+            catch (NotSupportedException) { return s; }
+        }
+
+        // An entry like %LOCALAPPDATA%\Programs\IgnisDisc names the same folder as its expanded form.
+        string expanded = Environment.ExpandEnvironmentVariables(entry);
+        return string.Equals(Normalize(entry), normalizedDir, StringComparison.OrdinalIgnoreCase) ||
+               string.Equals(Normalize(expanded), normalizedDir, StringComparison.OrdinalIgnoreCase);
+    }
+
+    /// <summary>
+    /// Adds <paramref name="installDir"/> to the user PATH stored under <paramref name="keyPath"/>. The value is read
+    /// without expanding %VARIABLES% and written back with its original registry type, because rewriting an expandable
+    /// PATH as plain text would freeze every %VARIABLE% in it at today's value. Returns null on success, otherwise why
+    /// the PATH could not be changed.
+    /// </summary>
+    internal static string? AddDirectoryToUserPath(string installDir, string keyPath = UserEnvironmentKeyPath)
     {
         try
         {
             string normalizedInstallDir = Path.TrimEndingDirectorySeparator(Path.GetFullPath(installDir));
-            string? currentPath = Environment.GetEnvironmentVariable("Path", EnvironmentVariableTarget.User);
-            if (string.IsNullOrWhiteSpace(currentPath)) return;
+            using RegistryKey key = Registry.CurrentUser.CreateSubKey(keyPath, writable: true);
+            object? raw = key.GetValue("Path", null, RegistryValueOptions.DoNotExpandEnvironmentNames);
+            RegistryValueKind kind = raw is string ? key.GetValueKind("Path") : RegistryValueKind.ExpandString;
+            if (kind != RegistryValueKind.String) kind = RegistryValueKind.ExpandString;
 
-            var parts = currentPath
-                .Split(';', StringSplitOptions.RemoveEmptyEntries | StringSplitOptions.TrimEntries)
-                .ToList();
+            List<string> parts = SplitPathValue(raw as string);
+            if (parts.Any(p => PathEntryMatches(p, normalizedInstallDir)))
+            {
+                return null;
+            }
 
-            int removed = parts.RemoveAll(p => string.Equals(Path.TrimEndingDirectorySeparator(p), normalizedInstallDir, StringComparison.OrdinalIgnoreCase));
+            parts.Add(normalizedInstallDir);
+            key.SetValue("Path", string.Join(";", parts), kind);
+            BroadcastEnvironmentChange(keyPath);
+            return null;
+        }
+        catch (Exception ex) when (ex is IOException or UnauthorizedAccessException or System.Security.SecurityException)
+        {
+            return ex.Message;
+        }
+    }
+
+    internal static string? RemoveDirectoryFromUserPath(string installDir, string keyPath = UserEnvironmentKeyPath)
+    {
+        try
+        {
+            string normalizedInstallDir = Path.TrimEndingDirectorySeparator(Path.GetFullPath(installDir));
+            using RegistryKey? key = Registry.CurrentUser.OpenSubKey(keyPath, writable: true);
+            if (key?.GetValue("Path", null, RegistryValueOptions.DoNotExpandEnvironmentNames) is not string raw ||
+                string.IsNullOrWhiteSpace(raw))
+            {
+                return null;
+            }
+
+            RegistryValueKind kind = key.GetValueKind("Path");
+            if (kind != RegistryValueKind.String) kind = RegistryValueKind.ExpandString;
+
+            List<string> parts = SplitPathValue(raw);
+            int removed = parts.RemoveAll(p => PathEntryMatches(p, normalizedInstallDir));
             if (removed > 0)
             {
-                Environment.SetEnvironmentVariable("Path", string.Join(";", parts), EnvironmentVariableTarget.User);
+                key.SetValue("Path", string.Join(";", parts), kind);
+                BroadcastEnvironmentChange(keyPath);
             }
+
+            return null;
         }
-        catch
+        catch (Exception ex) when (ex is IOException or UnauthorizedAccessException or System.Security.SecurityException)
+        {
+            return ex.Message;
+        }
+    }
+
+    [System.Runtime.InteropServices.DllImport("user32.dll", CharSet = System.Runtime.InteropServices.CharSet.Unicode, SetLastError = true)]
+    private static extern IntPtr SendMessageTimeout(
+        IntPtr hWnd, uint msg, UIntPtr wParam, string lParam, uint flags, uint timeoutMs, out UIntPtr result);
+
+    /// <summary>
+    /// Tells running programs (Explorer, new terminals) that the environment changed. Writing the registry value directly
+    /// does not do this on its own. Skipped for a test key, which is not the real environment.
+    /// </summary>
+    private static void BroadcastEnvironmentChange(string keyPath)
+    {
+        if (!string.Equals(keyPath, UserEnvironmentKeyPath, StringComparison.Ordinal)) return;
+        const uint WM_SETTINGCHANGE = 0x001A;
+        const uint SMTO_ABORTIFHUNG = 0x0002;
+        try
+        {
+            SendMessageTimeout((IntPtr)0xFFFF, WM_SETTINGCHANGE, UIntPtr.Zero, "Environment", SMTO_ABORTIFHUNG, 2000, out _);
+        }
+        catch (EntryPointNotFoundException)
         {
         }
     }
@@ -624,8 +938,15 @@ internal static class Program
         }
     }
 
-    private static int RunUninstall(string installDir, bool silent, ShortcutManager shortcuts)
+    internal static int RunUninstall(
+        string installDir,
+        bool silent,
+        ShortcutManager shortcuts,
+        Func<string, IReadOnlyCollection<string>, bool>? cleanupScheduler = null,
+        string? currentExePath = null,
+        string userEnvironmentKeyPath = UserEnvironmentKeyPath)
     {
+        cleanupScheduler ??= ScheduleDeferredCleanup;
         try
         {
             installDir = Path.TrimEndingDirectorySeparator(Path.GetFullPath(installDir));
@@ -659,22 +980,42 @@ internal static class Program
                 Registry.CurrentUser.DeleteSubKeyTree(UninstallRegKeyPath, throwOnMissingSubKey: false);
             }
 
-            RemoveDirectoryFromUserPath(installDir);
+            RemoveDirectoryFromUserPath(installDir, userEnvironmentKeyPath);
 
+            bool filesRemain = false;
             if (Directory.Exists(installDir))
             {
                 // This uninstaller runs from the install folder and shares its .NET runtime, so it must not delete those
                 // files while running (doing so can crash it mid-way). Collect the files to remove and delete them all
                 // after this process exits.
                 var toDelete = CollectInstalledFiles(installDir, installDirWithSep);
-                bool scheduled = ScheduleDeferredCleanup(installDir, toDelete);
+                bool scheduled = cleanupScheduler(installDir, toDelete);
 
-                string currentExe = Path.GetFullPath(Environment.ProcessPath ?? string.Empty);
-                bool runningFromInstallDir = currentExe.StartsWith(installDirWithSep, StringComparison.OrdinalIgnoreCase);
-                if (!scheduled && !runningFromInstallDir)
+                if (!scheduled)
                 {
-                    foreach (string file in toDelete) TryDeleteFile(file);
+                    // The deferred cleanup could not be started. Delete directly when this program is not itself inside the
+                    // install folder; otherwise nothing can remove the files, so report the uninstall as incomplete.
+                    string currentExe = Path.GetFullPath(currentExePath ?? Environment.ProcessPath ?? string.Empty);
+                    bool runningFromInstallDir = currentExe.StartsWith(installDirWithSep, StringComparison.OrdinalIgnoreCase);
+                    if (!runningFromInstallDir)
+                    {
+                        foreach (string file in toDelete) TryDeleteFile(file);
+                    }
+
+                    filesRemain = toDelete.Any(File.Exists);
                 }
+            }
+
+            if (filesRemain)
+            {
+                string message = $"{AppTitle} was removed from Windows, but some files in {installDir} could not be deleted. Delete that folder by hand.";
+                Console.Error.WriteLine(message);
+                if (!silent)
+                {
+                    System.Windows.MessageBox.Show(message, $"{AppTitle} Uninstaller", MessageBoxButton.OK, MessageBoxImage.Warning);
+                }
+
+                return 1;
             }
 
             if (!silent)
@@ -716,13 +1057,15 @@ internal sealed class SetupWizardWindow : Window
     private readonly System.Windows.Controls.Button _closeButton;
     private readonly bool _isUpgrade;
     private readonly ShortcutManager _shortcuts;
+    private readonly bool _registerUninstaller;
     private bool _isInstalled;
 
     public int ExitCode { get; private set; }
 
-    public SetupWizardWindow(string defaultInstallDir, ShortcutManager shortcuts)
+    public SetupWizardWindow(string defaultInstallDir, ShortcutManager shortcuts, bool registerUninstaller = true)
     {
         _shortcuts = shortcuts;
+        _registerUninstaller = registerUninstaller;
         string? previousVer = Program.GetExistingInstallVersion(defaultInstallDir);
         _isUpgrade = !string.IsNullOrEmpty(previousVer);
 
@@ -756,7 +1099,7 @@ internal sealed class SetupWizardWindow : Window
         {
             Text = _isUpgrade
                 ? $"Existing Version {previousVer} Detected • Ready to Upgrade to v{Program.AppVersion}"
-                : $"Version {Program.AppVersion} • Self-Contained Windows 10/11 x64 Installer (No .NET Runtime Required)",
+                : $"Version {Program.AppVersion} • Self-Contained Windows 10/11 {Program.ArchitectureLabel(System.Runtime.InteropServices.RuntimeInformation.OSArchitecture)} Installer (No .NET Runtime Required)",
             FontSize = 12.5,
             Foreground = new SolidColorBrush(_isUpgrade ? System.Windows.Media.Color.FromRgb(56, 189, 248) : System.Windows.Media.Color.FromRgb(148, 163, 184)),
             Margin = new Thickness(0, 6, 0, 0)
@@ -977,15 +1320,21 @@ internal sealed class SetupWizardWindow : Window
 
         try
         {
-            IReadOnlyList<string> warnings = await Task.Run(() => Program.InstallPayload(
-                targetDir,
-                desktop,
-                startMenu,
-                addPath,
-                registerUninstaller: true,
-                progress,
-                ensureClosed: false,
-                shortcuts: _shortcuts));
+            IReadOnlyList<string> warnings = await Task.Run(() =>
+            {
+                // The dialog above already asked the user; a second quiet pass closes anything that was started again
+                // in the meantime, so no program file is in use when the files are swapped in.
+                Program.EnsureRunningProcessesClosed(targetDir, silent: true);
+                return Program.InstallPayload(
+                    targetDir,
+                    desktop,
+                    startMenu,
+                    addPath,
+                    registerUninstaller: _registerUninstaller,
+                    progress,
+                    ensureClosed: false,
+                    shortcuts: _shortcuts);
+            });
 
             _isInstalled = true;
             _installButton.Content = _isUpgrade ? "✓ Upgraded" : "✓ Installed";
