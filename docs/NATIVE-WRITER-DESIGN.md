@@ -6,13 +6,13 @@
 - audio CD Session-at-Once in `src/CdBurner.Hardware/NativeWriting/`: test write and real write
   (`NativeSaoAudioWriter`), the read-back check that follows every real write (`NativeSaoVerifier`), CD-Text in the
   lead-in, ISRC and catalog codes, pre-emphasis and copy bits, audio in pre-gaps (INDEX 00) and in front of track 1.
-  Reached through `ignisdisc-cli burn-audio --native` and the "Direct drive commands" option on the app's Audio CD
-  screen; both are off by default.
+  Reached through `ignisdisc-cli burn-audio --native` (off by default) and the "Direct drive commands" option on the app's Audio CD
+  screen (on by default when the drive offers Session-at-Once, falling back to the Windows writer).
 - mixed-mode CDs (track 1 a Mode 1 data track, then audio), from a `.cue` file whose track 1 is `MODE1/2352` or
   `MODE1/2048` in a BINARY file, through the same audio path (`burn-audio --native`, the Audio CD screen). The
   Windows writer refuses them. Disc copy (Disc Image screen, with direct drive commands on) copies such a disc whole:
   track 1 is read as 2,048-byte user data up to the next track's 2-second pre-gap, the audio is ripped as usual,
-  and both are written by this writer (once on a real drive: CD-RW to CD-R, 2026-11-11). An Enhanced CD (data after the audio, in a second
+  and both are written by this writer (on one real drive on 2026-11-11: CD-RW to CD-R twice, and CD-R to CD-R once). An Enhanced CD (data after the audio, in a second
   session) is copied whole too, audio session then data session; that has run only in the virtual drive.
 - data discs: one Mode 1 track Track-at-Once on a blank CD-R/CD-RW, and one data track on a blank single-layer
   DVD-R, DVD-RW (sequential) or DVD+R (`NativeTaoDataWriter`, DVD half in `NativeTaoDataWriter.Dvd.cs`), through
@@ -37,11 +37,11 @@ write; a used and a new DVD+RW; a DVD+R finalized by the drive; three added sess
 four on a DVD-R, every file of every session identical; a 60 s DVD-Video test disc on a DVD+RW, read back and decoded
 in full; and a dual-layer DVD+R with the layer break where IgnisDisc was told to put it (the Ubuntu 26.04 image, 6.5 GB,
 SHA-256 of the disc equal to the image). Also real: a two-film DVD-9 on a dual-layer DVD+R with the break on the second film's first cell, played on an Xbox Series X across the layer change. Real since 2026-11-15: DVD-RW closed (Disc-At-Once), left open (incremental) and in restricted overwrite mode (expanded with 13h). A second session added to a real DVD-RW the same day. Still simulator only: DVD-RAM, dual-layer DVD-R, Blu-ray, a Mode 2 / XA data track in a mixed-mode CD, the open audio session with a data
-session after it (CD-Extra) and copying an Enhanced CD whole, the Audio CD recovery session, CD picture tracks, the radial spread of archive recovery data, the archive
-`HEALTH.json` certificates, the `eject` command and `load` on any tray but the Lite-On iHAS124's motorised one (which closed itself on `load`, 2026-11-19 to 21), and the picture-disc options not covered by the burns noted below: `disc-art burn` (including
-the two-session burn of a picture with the files at the outer edge on DVD-R and DVD+R, the rim header drawn on CD, DVD and BD-R picture discs, and the experimental audio CD
+session after it (CD-Extra) and copying an Enhanced CD whole, the Audio CD recovery session, the radial spread of archive recovery data, the archive
+`HEALTH.json` certificates, `eject` and `load` on any tray other than the Lite-On iHAS124's motorised one (where `eject` opened the tray when clear and returned `4/53/00` when blocked, and `load` closed it, 2026-11-19 to 21), CD picture tracks added after a base `.cue`, and the picture-disc options not covered by the burns noted below: `disc-art burn` (including
+the two-session burn of a picture with the files at the outer edge on DVD-R and DVD+R, the rim header drawn on calibrated CD, DVD and BD-R picture discs, and the experimental audio CD
 picture in the pre-gap before track 1), the picture fill on data, DVD-Video and audio CD burns, and the Rosetta hybrid
-DVD-R. Picture discs have run on the GP60NB50 on CD-RW (2026-11-18 without a calibration, no picture; 2026-11-22 placed from a turn table measured by read timing, first recognisable picture), on CD-R (2026-11-22, read-back passed) and on one DVD-R (2026-11-21, a coarse calibration target; write accepted, read-back check stopped at the first sector); see the results table for what each showed.
+DVD-R. Picture discs have run on the GP60NB50 on CD-RW (2026-11-18 with `--rim-header` and no calibration, no picture; 2026-11-22 placed from a turn table measured by read timing, first recognisable picture), on CD-R (2026-11-22, read-back passed) and on one DVD-R (2026-11-21, a coarse calibration target; write accepted, read-back check stopped at the first sector); see the results table for what each showed.
 
 Phases 5–6 below are still plans.
 
@@ -61,7 +61,7 @@ way (`Win32ScsiTransport`, `IOCTL_SCSI_PASS_THROUGH_DIRECT`); this proposal adds
 
 ## Rules
 
-1. **Off by default.** Native writing is chosen per burn (app option, CLI `--native`). IMAPIv2 stays the default.
+1. **Off by default on the command line.** Native writing is chosen per burn (CLI `--native`; in the app it is on by default for audio CDs when Session-at-Once is offered, for dual-layer DVD-Video, and for DVD-RW in the app and `burn-data`/`burn-iso`). Elsewhere IMAPIv2 stays the default.
 2. **Probed drives only.** The drive must report the needed feature: CD Mastering (0x002E) with SAO for audio
    Session-at-Once, plus its R-W bit for CD-Text (`supportsNativeCdText` in `drives --json`); Track-at-Once (0x002D)
    for TAO; DVD-R/-RW Write (0x002F) or the DVD+R feature for DVD.
@@ -369,7 +369,7 @@ BURN-Free / buffer-underrun protection (BUFE bit in page 0x05) when the drive su
 - Virtual drive: each command is implemented in `VirtualDiscBackend`, including failure injection (sense codes at
   chosen LBAs), so the error paths are tested.
 - Real hardware, in order: test write on CD-RW (done), real write on CD-RW (done), then CD-R (done); DVD after CD:
-  a DVD-R test write, then a real DVD-R (done 2026-11-11), DVD+R (done 2026-11-13) and DVD-RW (done 2026-11-15).
+  a DVD-R test write, then a real DVD-R (done 2026-11-11), DVD+RW (done 2026-11-11), DVD+R (done 2026-11-13), DVD+R DL (done 2026-11-14) and DVD-RW (done 2026-11-15).
 
 ## Test hardware
 
