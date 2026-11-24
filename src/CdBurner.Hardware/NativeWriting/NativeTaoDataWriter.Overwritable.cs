@@ -213,12 +213,17 @@ public sealed partial class NativeTaoDataWriter
             state.FormattingInProgress = false;
         }
 
-        // 6. The data, in 64 KiB WRITEs from LBA 0.
+        // 6. The data, in 64 KiB WRITEs from LBA 0 (WRITE(12) with Streaming bit 0x80 when opted in for BD-RE / DVD-RAM).
+        bool useStreamingWrite = request.StreamingWrite && kind is OverwritableKind.BdRe or OverwritableKind.DvdRam;
+        if (useStreamingWrite)
+        {
+            _note($"Streaming write enabled on {name}: sending WRITE(12) with Streaming bit (0x80).");
+        }
         byte[]? alignedClosingAvdp = TryBuildAlignedClosingAvdp(request, state.ImageSectors, sectors, startLba: 0);
         request.Image.Position = request.StartPosition;
         var writing = Stopwatch.StartNew();
         WriteTrack(request, 0, sectors, DvdSectorsPerWrite, state, reporter, ct, DvdMinimumSectorsPerWrite,
-            lastSectorOverride: alignedClosingAvdp);
+            lastSectorOverride: alignedClosingAvdp, streamingWrite: useStreamingWrite);
         writing.Stop();
 
         reporter.Report(sectors, "Finishing");

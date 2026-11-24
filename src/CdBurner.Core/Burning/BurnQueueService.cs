@@ -79,6 +79,11 @@ public record BurnQueueItem(
     /// Allows overwriting existing data on overwritable media when explicitly requested by the caller.
     /// </summary>
     public bool OverwriteExistingData { get; init; }
+
+    /// <summary>
+    /// Direct drive-command writer only (BD-RE / DVD-RAM): use WRITE (12) with Streaming bit (0x80). Off by default.
+    /// </summary>
+    public bool StreamingWrite { get; init; }
 }
 
 /// <summary>
@@ -263,7 +268,8 @@ public class BurnQueueService
                         ? WriteSpeedDescriptor.FromMultiplier(item.WriteSpeedMultiplier.Value, recorder.QueryMediaStatus().MediaType)
                         : null,
                     // A queue runs unattended: never silently replace what is on a rewritable disc unless explicitly allowed.
-                    OverwriteExistingData = item.OverwriteExistingData
+                    OverwriteExistingData = item.OverwriteExistingData,
+                    StreamingWrite = item.StreamingWrite
                 };
 
                 BurnOperationResult burnResult;

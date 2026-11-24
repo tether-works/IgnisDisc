@@ -104,7 +104,8 @@ public sealed class NativeDataBurnEngine : IBurnEngineBackend, IWriterMediaStatu
             SessionStartLba: appending ? status.NextWritableLba : null)
         {
             DisableBufferUnderrunFree = options.DisableBufferUnderrunFree,
-            Mode2Form1 = options.CdRomXaMode2Form1
+            Mode2Form1 = options.CdRomXaMode2Form1,
+            StreamingWrite = options.StreamingWrite
         };
 
         var result = await Task.Run(() => Run(recorder, request, progress, cancellationToken), CancellationToken.None).ConfigureAwait(false);
@@ -218,6 +219,7 @@ public sealed class NativeDataBurnEngine : IBurnEngineBackend, IWriterMediaStatu
         string kind = request.TestWrite ? "test write only" : TestWriteFirst ? "test write, then real write" : "real write";
         log.Note($"IgnisDisc native data writer (CD Track-at-Once, DVD-R/-RW Disc-At-Once or incremental, DVD+R, DVD+R DL, DVD-R DL layer jump, DVD+RW, DVD-RW overwrite, DVD-RAM, BD-R, BD-RE), {kind}. Drive: {recorder.VendorId} {recorder.ProductId} {recorder.ProductRevision} ({(recorder.IsVirtual ? "virtual" : "physical")}).");
         log.Note($"Image: {request.ImageBytes:N0} bytes, close disc {request.CloseDisc}, speed asked {(request.WriteSpeedKiloBytesPerSecond?.ToString() ?? "fastest listed")}" +
+                 (request.StreamingWrite ? ", streaming WRITE(12) requested" : "") +
                  (request.AppendsSession ? $", new session laid out from sector {request.SessionStartLba}." : "."));
 
         IDisposable? exclusive = null;

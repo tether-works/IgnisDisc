@@ -56,7 +56,7 @@ public static partial class CliCommandRunner
         "generate-subtitles", "no-menu", "dual-layer", "fit-to-disc", "no-ffmpeg", "no-cd-text", "normalize", "peak-normalize", "rms-level",
         "no-burnfree", "append", "delete-backups", "confirm-shutdown", "windows-writer", "no-interleave",
         "no-cover-lookup", "no-folder-image", "recursive", "no-rim", "rim-header",
-        "sha256sums", "blake3sums", "native", "test-write", "test-first", "recovery-session", "blue-book",
+        "sha256sums", "blake3sums", "native", "test-write", "test-first", "recovery-session", "blue-book", "streaming",
         "allow-suspect", "repair", "repair-from-recovery", "no-replaygain", "health-certificate", "files-outer", "read-compat"
     };
 
@@ -785,6 +785,7 @@ public static partial class CliCommandRunner
         var recorder = FindRecorder(deviceService, driveId);
         var mediaStatus = recorder.QueryMediaStatus();
         nativeEngine = ApplyDirectWritingDefault(cmd, nativeEngine, burnEngine, mediaStatus, stdout);
+        bool streamingWrite = ParseStreamingWrite(cmd, nativeEngine);
         verify |= nativeEngine != null && !testWrite; // a direct burn is always read back
 
         var speedDesc = ParseSpeed(speedStr, recorder, mediaStatus.MediaType);
@@ -798,7 +799,8 @@ public static partial class CliCommandRunner
             CloseDisc = closeDisc,
             OverwriteExistingData = overwrite,
             LayerBreakSectors = ParseLayerBreak(cmd, nativeEngine, mediaStatus),
-            DisableBufferUnderrunFree = disableBufe
+            DisableBufferUnderrunFree = disableBufe,
+            StreamingWrite = streamingWrite
         };
 
         string? telemetryOut = ParseTelemetryOutPath(cmd);
@@ -911,6 +913,7 @@ public static partial class CliCommandRunner
         var recorder = FindRecorder(deviceService, driveId);
         var windowsStatus = recorder.QueryMediaStatus();
         nativeEngine = ApplyDirectWritingDefault(cmd, nativeEngine, burnEngine, windowsStatus, stdout);
+        bool streamingWrite = ParseStreamingWrite(cmd, nativeEngine);
         verify |= nativeEngine != null && !testWrite; // a direct burn is always read back
         // As the writer that will burn sees the disc: direct writing finds an open DVD-RW that Windows calls overwrite-only.
         var mediaStatus = MediaStatusForWriting.Describe(nativeEngine ?? burnEngine, recorder, windowsStatus);
@@ -970,7 +973,8 @@ public static partial class CliCommandRunner
             CloseDisc = closeDisc,
             OverwriteExistingData = overwrite,
             LayerBreakSectors = ParseLayerBreak(cmd, nativeEngine, mediaStatus),
-            DisableBufferUnderrunFree = disableBufe
+            DisableBufferUnderrunFree = disableBufe,
+            StreamingWrite = streamingWrite
         };
 
         var buildOptions = new IsoBuildOptions(
@@ -1146,6 +1150,23 @@ public static partial class CliCommandRunner
         return sectors;
     }
 
+    private static bool ParseStreamingWrite(CommandLineArgs cmd, NativeDataBurnEngine? nativeEngine)
+    {
+        if (!cmd.HasFlag("streaming"))
+        {
+            return false;
+        }
+        if (cmd.HasFlag("windows-writer"))
+        {
+            throw new CommandLineException("--streaming cannot be used with --windows-writer: only the direct writer sends streaming WRITE(12) commands.");
+        }
+        if (nativeEngine == null)
+        {
+            throw new CommandLineException("--streaming needs --native: only the direct writer sends streaming WRITE(12) commands.");
+        }
+        return true;
+    }
+
     private static object? NativeDataJson(NativeDataBurnEngine? engine)
     {
         if (engine == null)
@@ -1159,6 +1180,7 @@ public static partial class CliCommandRunner
             fallbackReason = engine.LastFallbackReason,
             testWritePassedFirst = engine.LastTestWritePassed,
             writeMode = r?.WriteMode,
+            streamingWrite = r?.StreamingWriteUsed,
             speedSetKiloBytesPerSecond = r?.SpeedSetKiloBytesPerSecond,
             driveSpeedsKiloBytesPerSecond = r?.DriveSpeedsKiloBytesPerSecond,
             dataSectors = r?.DataSectorsWritten,
@@ -3037,6 +3059,7 @@ public static partial class CliCommandRunner
         string driveId = ResolveTargetDriveId(cmd);
         string discFolder = cmd.GetRequiredOption("disc", "--disc <staged disc folder>");
         var (nativeEngine, testWrite) = ResolveNativeDataEngine(cmd, burnEngine);
+        bool streamingWrite = ParseStreamingWrite(cmd, nativeEngine);
         bool strictVerify = cmd.HasFlag("strict-verify"); // every read forced from the disc; implies a read-back
         bool verify = strictVerify || (!testWrite && (!cmd.HasFlag("no-verify") || nativeEngine != null));
         bool overwrite = cmd.HasFlag("overwrite");
@@ -3084,7 +3107,8 @@ public static partial class CliCommandRunner
             StrictVerify = strictVerify,
             CloseDisc = true,
             OverwriteExistingData = overwrite,
-            DisableBufferUnderrunFree = archiveDisableBufe
+            DisableBufferUnderrunFree = archiveDisableBufe,
+            StreamingWrite = streamingWrite
         };
         var buildOptions = new IsoBuildOptions(
             VolumeLabel: label,
@@ -3566,6 +3590,8 @@ public static partial class CliCommandRunner
                 actualSha256 = result.ActualSha256,
                 expectedCrc32 = result.ExpectedCrc32,
                 actualCrc32 = result.ActualCrc32,
+                mediaSurfaceReadbackEnforced = result.MediaSurfaceReadbackEnforced,
+                readbackNote = result.ReadbackNote,
                 totalTime = result.TotalTime.ToString(),
                 error = result.ErrorMessage
             };
@@ -3582,6 +3608,8 @@ public static partial class CliCommandRunner
             stdout.WriteLine($"  Total Sectors Verified:  {result.TotalSectorsVerified:N0}");
             stdout.WriteLine($"  Expected SHA-256:        {result.ExpectedSha256}");
             stdout.WriteLine($"  Actual SHA-256:          {result.ActualSha256}");
+            stdout.WriteLine($"  Media Readback Enforced: {(result.MediaSurfaceReadbackEnforced ? "Yes" : "No")}");
+            if (result.ReadbackNote != null) stdout.WriteLine($"  Readback Note:           {result.ReadbackNote}");
             stdout.WriteLine($"  Duration:                {result.TotalTime}");
             return 0;
         }
@@ -3594,6 +3622,8 @@ public static partial class CliCommandRunner
         }
         stderr.WriteLine($"  Expected SHA-256:        {result.ExpectedSha256}");
         stderr.WriteLine($"  Actual SHA-256:          {result.ActualSha256}");
+        stderr.WriteLine($"  Media Readback Enforced: {(result.MediaSurfaceReadbackEnforced ? "Yes" : "No")}");
+        if (result.ReadbackNote != null) stderr.WriteLine($"  Readback Note:           {result.ReadbackNote}");
         return 1;
     }
 
@@ -3911,9 +3941,9 @@ public static partial class CliCommandRunner
         stdout.WriteLine("      Reports virtual drive state, media geometry, and MMC profile without touching physical hardware.");
         stdout.WriteLine("  build-iso --input <folder> --output <file.iso> [--label <vol>] [--udf] [--udf-rev <1.02|1.50|2.00|2.01|2.50|2.60>] [--joliet] [--boot-bios <img>] [--boot-uefi <img>] [--fixed-time <unix|iso8601>] [--sha256sums] [--blake3sums] [--json]");
         stdout.WriteLine("      Compiles a folder into an ISO 9660 / Joliet / UDF filesystem image.");
-        stdout.WriteLine("  burn-iso --drive <id> --iso <file.iso|.nrg|.cdi|.mdf|.mds|.ccd|.img> [--speed <X|max>] [--no-verify | --strict-verify] [--no-close] [--no-burnfree] [--overwrite] [--post-action none|eject|sound|eject-sound|shutdown] [--telemetry-out <path>] [--windows-writer | --native [--test-write | --test-first] [--layer-break <sectors>] [--log-dir <folder>]] [--json]");
-        stdout.WriteLine("      Burns an ISO image directly to the target optical drive. --layer-break: sectors on the first layer of a DVD+R DL (multiple of 16). --telemetry-out writes burn telemetry as .svg or .json (or both if no extension). A DVD-RW is written with direct drive commands unless --windows-writer.");
-        stdout.WriteLine("  burn-data --drive <id> --input <folder> [--label <vol>] [--speed <X|max>] [--udf] [--udf-rev <1.02|1.50|2.00|2.01|2.50|2.60>] [--joliet] [--boot-bios <img>] [--boot-uefi <img>] [--no-verify | --strict-verify] [--no-close] [--append] [--no-burnfree] [--overwrite] [--post-action none|eject|sound|eject-sound|shutdown] [--fixed-time <unix|iso8601>] [--sha256sums] [--blake3sums] [--fill-picture <file.png> [--disc-preset <id>]] [--telemetry-out <path>] [--windows-writer | --native [--test-write | --test-first] [--layer-break <sectors>] [--log-dir <folder>]] [--json]");
+        stdout.WriteLine("  burn-iso --drive <id> --iso <file.iso|.nrg|.cdi|.mdf|.mds|.ccd|.img> [--speed <X|max>] [--no-verify | --strict-verify] [--no-close] [--no-burnfree] [--overwrite] [--post-action none|eject|sound|eject-sound|shutdown] [--telemetry-out <path>] [--windows-writer | --native [--test-write | --test-first] [--streaming] [--layer-break <sectors>] [--log-dir <folder>]] [--json]");
+        stdout.WriteLine("      Burns an ISO image directly to the target optical drive. --streaming uses WRITE(12) Streaming (0x80) on BD-RE/DVD-RAM. --layer-break: sectors on the first layer of a DVD+R DL (multiple of 16). --telemetry-out writes burn telemetry as .svg or .json (or both if no extension). A DVD-RW is written with direct drive commands unless --windows-writer.");
+        stdout.WriteLine("  burn-data --drive <id> --input <folder> [--label <vol>] [--speed <X|max>] [--udf] [--udf-rev <1.02|1.50|2.00|2.01|2.50|2.60>] [--joliet] [--boot-bios <img>] [--boot-uefi <img>] [--no-verify | --strict-verify] [--no-close] [--append] [--no-burnfree] [--overwrite] [--post-action none|eject|sound|eject-sound|shutdown] [--fixed-time <unix|iso8601>] [--sha256sums] [--blake3sums] [--fill-picture <file.png> [--disc-preset <id>]] [--telemetry-out <path>] [--windows-writer | --native [--test-write | --test-first] [--streaming] [--layer-break <sectors>] [--log-dir <folder>]] [--json]");
         stdout.WriteLine("      Compiles a folder and burns it to optical media (--append merges and adds a session on an appendable disc). A DVD-RW is written with direct drive commands unless --windows-writer.");
         stdout.WriteLine("  burn-audio (--drive <id> | --plan-only) (--tracks <files|.cue|.m3u|.pls> | --tracks-file <file.json>) [--title <album>] [--artist <name>] [--songwriter <name>] [--upc <13digits>] [--speed <X|max>] [--dao] [--pregap <frames>] [--normalize] [--rms-level] [--loudness track|album|off] [--crossfade <sec>] [--no-cd-text] [--no-burnfree] [--post-action none|eject|sound|eject-sound|shutdown] [--allow-damaged] [--telemetry-out <path>] [--native [--test-write | --test-first] [--recovery-session | --data-folder <dir> [--data-label <label>] [--blue-book] | --fill-picture <picture>|auto [--lookup]] [--write-offset <samples|auto>] [--log-dir <folder>]] [--json]");
         stdout.WriteLine("      Burns Red Book Audio CD from WAV, FLAC, MP3, AAC/M4A, WMA, .cue, .m3u/.pls, or a JSON --tracks-file (--recovery-session adds session-2 PAR2 recovery; --data-folder burns an Enhanced CD data session; --blue-book writes it as CD-ROM XA Mode 2 with CDPLUS/INFO.CDP and PICTURES/; --plan-only previews without burning).");
@@ -3943,7 +3973,7 @@ public static partial class CliCommandRunner
         stdout.WriteLine("      Splits a folder across discs and stages disc01..discNN with SHA-256 manifests and PAR2 recovery data (fills free space unless --no-fill).");
         stdout.WriteLine("      Files are packed largest first into the first disc with room (--order size, the default); --keep-folders keeps a folder whole when it fits on one disc;");
         stdout.WriteLine("      --order path fills discs in path order. Every disc also gets CATALOG.JSON and INDEX.HTML listing the whole set.");
-        stdout.WriteLine("  archive-burn --drive <id> --disc <staged disc folder> [--speed <X|max>] [--no-verify | --strict-verify] [--no-burnfree] [--overwrite] [--post-action none|eject|sound|eject-sound|shutdown] [--native [--test-write | --test-first] [--log-dir <folder>]] [--health-certificate] [--json]");
+        stdout.WriteLine("  archive-burn --drive <id> --disc <staged disc folder> [--speed <X|max>] [--no-verify | --strict-verify] [--no-burnfree] [--overwrite] [--post-action none|eject|sound|eject-sound|shutdown] [--native [--test-write | --test-first] [--streaming] [--log-dir <folder>]] [--health-certificate] [--json]");
         stdout.WriteLine("      --health-certificate (off by default) writes discNN.HEALTH.json and .svg next to the disc folder: read-back result, write-speed curve, drive, media ID, date and, for a CD, one read-health pass.");
         stdout.WriteLine("      Burns one staged archive disc (ISO 9660 + Joliet + UDF, closed). With --native, discs the direct writer does not cover go to the Windows writer, and the output says why.");
         stdout.WriteLine("  archive-verify --path <folder|drive> [--json]");

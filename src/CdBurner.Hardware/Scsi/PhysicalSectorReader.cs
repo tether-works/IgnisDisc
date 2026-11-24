@@ -96,16 +96,26 @@ public static partial class PhysicalSectorReader
             {
                 return RipOperationResult.Failed(openError ?? $"Unable to open drive {volumePath} for reading.");
             }
-            if (forceUnitAccess && !raw2352Mode && source is SptiSource spti)
+            if (forceUnitAccess && source is SptiSource spti)
             {
-                spti.EnableForceUnitAccess(bypassRangeStart ?? startLba, bypassRangeCount ?? sectorCount,
-                    cacheBypass == DriveCacheBypass.EveryRead);
+                if (!raw2352Mode)
+                {
+                    spti.EnableForceUnitAccess(bypassRangeStart ?? startLba, bypassRangeCount ?? sectorCount,
+                        cacheBypass == DriveCacheBypass.EveryRead);
+                }
+                else
+                {
+                    spti.EnableRawCacheInvalidation(bypassRangeStart ?? startLba, bypassRangeCount ?? sectorCount, cancellationToken);
+                }
             }
 
             var result = await ReadCoreAsync(source, startLba, sectorCount, raw2352Mode, sectorConsumer, progress, cancellationToken).ConfigureAwait(false);
-            if (forceUnitAccess && !raw2352Mode && source is not SptiSource)
+            if (forceUnitAccess && source is not SptiSource)
             {
-                return WithNote(result, "The drive could only be read through Windows, which cannot tell it to skip its own cache.");
+                string note = raw2352Mode
+                    ? "The drive could only be read through Windows (raw read), which cannot flush or bypass the drive cache."
+                    : "The drive could only be read through Windows, which cannot tell it to skip its own cache.";
+                return WithReadbackStatus(result, note, mediaSurfaceEnforced: false);
             }
             return result;
         }, cancellationToken);
@@ -256,7 +266,7 @@ public static partial class PhysicalSectorReader
             _fastSalvage = fastSalvage;
         }
 
-        private string? EnsureSourceOpened(int startLba, int sectorCount, bool forceUnitAccess)
+        private string? EnsureSourceOpened(int startLba, int sectorCount, bool forceUnitAccess, CancellationToken cancellationToken = default)
         {
             if (_source != null)
             {
@@ -291,10 +301,17 @@ public static partial class PhysicalSectorReader
                 return openError ?? $"Unable to open drive {_volumePath} for reading.";
             }
 
-            if (forceUnitAccess && !_raw2352Mode && _source is SptiSource sptiSource)
+            if (forceUnitAccess && _source is SptiSource sptiSource)
             {
-                sptiSource.EnableForceUnitAccess(_bypassRangeStart ?? startLba, _bypassRangeCount ?? sectorCount,
-                    _cacheBypass == DriveCacheBypass.EveryRead);
+                if (!_raw2352Mode)
+                {
+                    sptiSource.EnableForceUnitAccess(_bypassRangeStart ?? startLba, _bypassRangeCount ?? sectorCount,
+                        _cacheBypass == DriveCacheBypass.EveryRead);
+                }
+                else
+                {
+                    sptiSource.EnableRawCacheInvalidation(_bypassRangeStart ?? startLba, _bypassRangeCount ?? sectorCount, cancellationToken);
+                }
             }
 
             if (_fastSalvage && !_raw2352Mode && _source is SptiSource salvageSpti)
@@ -349,15 +366,18 @@ public static partial class PhysicalSectorReader
                 try
                 {
                     ObjectDisposedException.ThrowIf(_disposed, this);
-                    if (EnsureSourceOpened(startLba, sectorCount, forceUnitAccess) is string openError)
+                    if (EnsureSourceOpened(startLba, sectorCount, forceUnitAccess, cancellationToken) is string openError)
                     {
                         return RipOperationResult.Failed(openError);
                     }
 
                     var result = await ReadCoreAsync(_source!, startLba, sectorCount, _raw2352Mode, sectorConsumer, progress, cancellationToken).ConfigureAwait(false);
-                    if (forceUnitAccess && !_raw2352Mode && _source is not SptiSource)
+                    if (forceUnitAccess && _source is not SptiSource)
                     {
-                        return WithNote(result, "The drive could only be read through Windows, which cannot tell it to skip its own cache.");
+                        string note = _raw2352Mode
+                            ? "The drive could only be read through Windows (raw read), which cannot flush or bypass the drive cache."
+                            : "The drive could only be read through Windows, which cannot tell it to skip its own cache.";
+                        return WithReadbackStatus(result, note, mediaSurfaceEnforced: false);
                     }
                     return result;
                 }
@@ -485,18 +505,54 @@ public static partial class PhysicalSectorReader
         return ReadCoreAsync(source, startLba, sectorCount, false, sectorConsumer, progress, cancellationToken);
     }
 
-    private static RipOperationResult WithNote(RipOperationResult result, string? note) => note == null ? result : new RipOperationResult
+    /// <summary>
+    /// Reads raw 2,352-byte sectors through <paramref name="transport"/> with READ CD after optional cache invalidation
+    /// (SYNCHRONIZE CACHE (10) plus tray-reload or seek-away reads) when <paramref name="cacheBypass"/> is not None.
+    /// </summary>
+    internal static Task<RipOperationResult> ReadRawSectorsForVerifyAsync(
+        IScsiTransport transport,
+        int startLba,
+        int sectorCount,
+        DriveCacheBypass cacheBypass,
+        Func<int, ReadOnlyMemory<byte>, ValueTask> sectorConsumer,
+        IProgress<BurnProgressSnapshot>? progress,
+        CancellationToken cancellationToken,
+        int? bypassRangeStart = null,
+        int? bypassRangeCount = null,
+        Action<TimeSpan>? sleep = null)
     {
-        Success = result.Success,
-        ErrorMessage = result.ErrorMessage,
-        SectorsRead = result.SectorsRead,
-        BadSectorsCount = result.BadSectorsCount,
-        TotalTime = result.TotalTime,
-        BadSectorsList = result.BadSectorsList,
-        TotalRetriesPerformed = result.TotalRetriesPerformed,
-        Exception = result.Exception,
-        Note = note
-    };
+        ArgumentNullException.ThrowIfNull(transport);
+        ArgumentNullException.ThrowIfNull(sectorConsumer);
+        if (startLba < -150 || sectorCount < 0 || (long)startLba + sectorCount > int.MaxValue)
+        {
+            return Task.FromResult(RipOperationResult.Failed($"Invalid sector range (start {startLba}, count {sectorCount})."));
+        }
+
+        var source = new SptiSource(transport, ownedHandle: null, raw: true, sleep: sleep);
+        if (cacheBypass != DriveCacheBypass.None)
+        {
+            source.EnableRawCacheInvalidation(bypassRangeStart ?? startLba, bypassRangeCount ?? sectorCount, cancellationToken);
+        }
+        return ReadCoreAsync(source, startLba, sectorCount, true, sectorConsumer, progress, cancellationToken);
+    }
+
+    private static RipOperationResult WithReadbackStatus(RipOperationResult result, string? note, bool mediaSurfaceEnforced) =>
+        note == null && result.MediaSurfaceReadbackEnforced == mediaSurfaceEnforced
+            ? result
+            : new RipOperationResult
+            {
+                Success = result.Success,
+                ErrorMessage = result.ErrorMessage,
+                SectorsRead = result.SectorsRead,
+                BadSectorsCount = result.BadSectorsCount,
+                TotalTime = result.TotalTime,
+                BadSectorsList = result.BadSectorsList,
+                TotalRetriesPerformed = result.TotalRetriesPerformed,
+                RawRecoveredSectorsCount = result.RawRecoveredSectorsCount,
+                Exception = result.Exception,
+                Note = note ?? result.Note,
+                MediaSurfaceReadbackEnforced = mediaSurfaceEnforced
+            };
 
     /// <summary>
     /// Best-effort SCSI START STOP UNIT (0x1B, start=false, loadEject=false, immediate=true) motor spin-down.
@@ -538,7 +594,8 @@ public static partial class PhysicalSectorReader
         CancellationToken cancellationToken)
     {
         var result = await ReadCoreLoopAsync(source, startLba, sectorCount, raw2352Mode, sectorConsumer, progress, cancellationToken).ConfigureAwait(false);
-        return WithNote(result, (source as SptiSource)?.Note);
+        var spti = source as SptiSource;
+        return WithReadbackStatus(result, spti?.Note, spti?.MediaSurfaceReadbackEnforced ?? false);
     }
 
     private static async Task<RipOperationResult> ReadCoreLoopAsync(
@@ -2072,6 +2129,7 @@ public static partial class PhysicalSectorReader
         private readonly Action<TimeSpan> _sleep;
         private bool _fua;
         private bool _fuaEveryRead = true;
+        private bool _rawCacheInvalidated;
         private int _rangeStart;
         private int _rangeEnd;
         private int _guardSectors;
@@ -2106,8 +2164,11 @@ public static partial class PhysicalSectorReader
             _sleep = sleep ?? Thread.Sleep;
         }
 
-        /// <summary>Set when something about the read is worth telling the user (the FUA fallback).</summary>
+        /// <summary>Set when something about the read is worth telling the user (the FUA fallback or raw cache invalidation).</summary>
         public string? Note { get; private set; }
+
+        /// <summary>True when FUA or raw cache invalidation enforced media-surface readback.</summary>
+        public bool MediaSurfaceReadbackEnforced { get; private set; }
 
         /// <summary>
         /// Data reads from <paramref name="rangeStart"/> on set FUA so the drive reads the disc rather than whatever
@@ -2127,9 +2188,11 @@ public static partial class PhysicalSectorReader
             if (FuaRefusedDrives.TryGetValue(_driveKey, out string? note))
             {
                 Note = note;
+                MediaSurfaceReadbackEnforced = false;
                 return;
             }
             _fua = !_raw;
+            MediaSurfaceReadbackEnforced = _fua;
             if (_fua && !_fuaEveryRead)
             {
                 _guardSectors = ReadGuardSectors();
@@ -2137,19 +2200,142 @@ public static partial class PhysicalSectorReader
             }
         }
 
-        /// <summary>Twice the drive's buffer (READ BUFFER CAPACITY), in sectors, within sensible bounds.</summary>
-        private int ReadGuardSectors()
+        /// <summary>
+        /// READ CD (0xBE) has no FUA bit in MMC-5, so raw 2,352-byte verification must explicitly flush the drive's
+        /// write buffer via SYNCHRONIZE CACHE (10) and then invalidate the read buffer via tray reload (if the drive
+        /// supports motorized load/eject) or seek-away reads past twice the drive's reported buffer capacity.
+        /// </summary>
+        public void EnableRawCacheInvalidation(int rangeStart, int rangeCount, CancellationToken cancellationToken = default)
+        {
+            if (_rawCacheInvalidated)
+            {
+                return;
+            }
+            _rawCacheInvalidated = true;
+            _rangeStart = rangeStart;
+            _rangeEnd = (int)Math.Min(int.MaxValue, (long)rangeStart + rangeCount);
+
+            // 1. Flush pending write buffer to media.
+            bool syncOk = ExecuteSynchronizeCache(cancellationToken);
+
+            // 2. If the drive can reload its own tray, eject + load drops all drive RAM caches cleanly.
+            var removable = NativeWriting.TrayReload.ReadRemovableMedium(_transport);
+            if (removable is { CanReloadByItself: true } &&
+                NativeWriting.TrayReload.TryReloadMedia(_transport, _ => { }, _sleep, cancellationToken))
+            {
+                MediaSurfaceReadbackEnforced = syncOk;
+                Note = syncOk
+                    ? "Drive write buffer flushed (SYNCHRONIZE CACHE) and disc reloaded to guarantee media-surface readback."
+                    : "Disc reloaded, but SYNCHRONIZE CACHE (10) was refused before reload.";
+                return;
+            }
+
+            // 3. Otherwise (spring tray or unknown), seek away from rangeStart and read >2x drive buffer to evict RAM cache.
+            long? bufferBytes = TryReadBufferCapacityBytes();
+            bool bufferCapacityKnown = bufferBytes is > 0;
+            int targetSectors = bufferBytes is > 0
+                ? (bufferBytes.Value >= 512 * 1024
+                    ? (int)Math.Clamp(2 * bufferBytes.Value / OpticalConstants.DataSectorSize, MinGuardSectors, MaxGuardSectors)
+                    : (int)Math.Clamp(2 * bufferBytes.Value / OpticalConstants.DataSectorSize, 32, MinGuardSectors))
+                : DefaultGuardSectors;
+
+            int flushed = SeekAwayFlushRawCache(rangeStart, rangeCount, targetSectors, cancellationToken);
+            MediaSurfaceReadbackEnforced = syncOk && bufferCapacityKnown && flushed >= targetSectors;
+            Note = MediaSurfaceReadbackEnforced
+                ? $"Drive write buffer flushed (SYNCHRONIZE CACHE) and {flushed} sectors read away from start to clear the drive cache."
+                : !syncOk
+                    ? "SYNCHRONIZE CACHE (10) was refused, so true media-surface readback could not be guaranteed."
+                    : !bufferCapacityKnown
+                        ? $"Drive write buffer flushed (SYNCHRONIZE CACHE) and {flushed} sectors read to seek away, but the drive did not report its buffer size so true media-surface readback could not be guaranteed."
+                        : $"Drive write buffer flushed (SYNCHRONIZE CACHE) and {flushed} sectors read to seek away, fewer than twice the drive buffer ({targetSectors} sectors), and the tray cannot auto-reload; reload the disc to guarantee media-surface readback.";
+        }
+
+        private bool ExecuteSynchronizeCache(CancellationToken cancellationToken)
+        {
+            byte[] cdb = MmcCommandBuilder.BuildSynchronizeCacheCdb();
+            for (int attempt = 0; attempt < 4; attempt++)
+            {
+                cancellationToken.ThrowIfCancellationRequested();
+                var r = _transport.ExecuteCommand(cdb, Span<byte>.Empty, ScsiPassThroughNative.SCSI_IOCTL_DATA_UNSPECIFIED, CommandTimeout);
+                if (r.IsSuccess)
+                {
+                    return true;
+                }
+                if (r.SenseInfo is { SenseKey: 0x06 } or { SenseKey: 0x02, Asc: 0x04 })
+                {
+                    _sleep(NotReadyBackoff);
+                    continue;
+                }
+                return false;
+            }
+            return false;
+        }
+
+        private int SeekAwayFlushRawCache(int rangeStart, int rangeCount, int targetSectors, CancellationToken cancellationToken)
+        {
+            var tocTracks = TryReadTocTracksViaScsi(_transport);
+            int windowStart = Math.Max(0, rangeStart);
+            int windowEnd = (int)Math.Min(int.MaxValue, (long)windowStart + Math.Max(0, rangeCount));
+            if (tocTracks.Count > 0)
+            {
+                var best = tocTracks.Where(t => t.SectorCount > 0).OrderByDescending(t => t.SectorCount).FirstOrDefault();
+                if (best != null && best.SectorCount > (windowEnd - windowStart))
+                {
+                    windowStart = Math.Max(0, best.StartLba);
+                    windowEnd = (int)Math.Min(int.MaxValue, (long)windowStart + best.SectorCount);
+                }
+            }
+
+            int windowLen = windowEnd - windowStart;
+            if (windowLen <= 0)
+            {
+                return 0;
+            }
+
+            int span = Math.Min(targetSectors, windowLen);
+            int nearInWindow = Math.Clamp(rangeStart, windowStart, windowEnd - 1);
+            int farLba = windowStart + ((nearInWindow - windowStart + windowLen / 2) % windowLen);
+            farLba = Math.Clamp(farLba, windowStart, Math.Max(windowStart, windowEnd - span));
+            if (rangeStart >= farLba && rangeStart < farLba + span && windowLen > span)
+            {
+                farLba = rangeStart - windowStart >= span ? windowStart : Math.Max(windowStart, windowEnd - span);
+            }
+
+            byte[] scratch = new byte[ChunkSectors * OpticalConstants.RawSectorSize];
+            int flushed = 0;
+            for (int done = 0; done < span; done += ChunkSectors)
+            {
+                cancellationToken.ThrowIfCancellationRequested();
+                int n = Math.Min(ChunkSectors, span - done);
+                byte[] cdb = MmcCommandBuilder.BuildReadCdCdb(farLba + done, n, expectedSectorType: 0, mainChannelSelectionBits: 0xF8);
+                var r = _transport.ExecuteCommand(cdb, scratch.AsSpan(0, n * OpticalConstants.RawSectorSize),
+                    ScsiPassThroughNative.SCSI_IOCTL_DATA_IN, CommandTimeout);
+                if (r.IsSuccess && r.DataTransferLength >= (uint)(n * OpticalConstants.RawSectorSize))
+                {
+                    flushed += n;
+                }
+            }
+            return flushed;
+        }
+
+        private long? TryReadBufferCapacityBytes()
         {
             byte[] data = new byte[12];
             byte[] cdb = [0x5C, 0, 0, 0, 0, 0, 0, 0, (byte)data.Length, 0];
             var r = _transport.ExecuteCommand(cdb, data, ScsiPassThroughNative.SCSI_IOCTL_DATA_IN, CommandTimeout);
             if (!r.IsSuccess || r.DataTransferLength < 8)
             {
-                return DefaultGuardSectors;
+                return null;
             }
 
             long bufferBytes = ((long)data[4] << 24) | ((long)data[5] << 16) | ((long)data[6] << 8) | data[7];
-            if (bufferBytes <= 0)
+            return bufferBytes > 0 ? bufferBytes : null;
+        }
+
+        /// <summary>Twice the drive's buffer (READ BUFFER CAPACITY), in sectors, within sensible bounds.</summary>
+        private int ReadGuardSectors()
+        {
+            if (TryReadBufferCapacityBytes() is not long bufferBytes)
             {
                 return DefaultGuardSectors;
             }
@@ -2245,6 +2431,7 @@ public static partial class PhysicalSectorReader
 
             Note = $"This drive would not read past its own memory, so {flushed * OpticalConstants.DataSectorSize / 1024 / 1024.0:0.#} MB " +
                    "of the disc was read first to clear the burn out of that memory.";
+            MediaSurfaceReadbackEnforced = false;
             FuaRefusedDrives.AddOrUpdate(_driveKey, Note);
         }
 

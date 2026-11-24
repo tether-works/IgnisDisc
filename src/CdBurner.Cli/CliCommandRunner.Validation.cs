@@ -97,11 +97,11 @@ public static partial class CliCommandRunner
     ];
 
     private static readonly CommandOptionSpec BurnIsoSpec = CommandOptionSpec.Of(
-        ["native", "test-write", "test-first", "windows-writer", "strict-verify", "verify", "no-verify", "close", "no-close", "overwrite", "no-burnfree", "confirm-shutdown"],
+        ["native", "test-write", "test-first", "streaming", "windows-writer", "strict-verify", "verify", "no-verify", "close", "no-close", "overwrite", "no-burnfree", "confirm-shutdown"],
         ["drive", "iso", "speed", "log-dir", "layer-break", "post-action", "telemetry-out", "virtual-media", "virtual-state"]);
 
     private static readonly CommandOptionSpec BurnDataSpec = CommandOptionSpec.Of(
-        ["native", "test-write", "test-first", "windows-writer", "strict-verify", "verify", "no-verify", "close", "no-close", "overwrite", "append", "no-burnfree", "udf", "joliet", "sha256sums", "blake3sums", "confirm-shutdown"],
+        ["native", "test-write", "test-first", "streaming", "windows-writer", "strict-verify", "verify", "no-verify", "close", "no-close", "overwrite", "append", "no-burnfree", "udf", "joliet", "sha256sums", "blake3sums", "confirm-shutdown"],
         ["drive", "input", "label", "speed", "boot-bios", "boot-uefi", "udf-rev", "fixed-time", "log-dir", "layer-break", "post-action", "fill-picture", "telemetry-out", "virtual-media", "virtual-state", .. CalibrationParamOptions]);
 
     private static readonly CommandOptionSpec BurnAudioSpec = CommandOptionSpec.Of(
@@ -205,7 +205,7 @@ public static partial class CliCommandRunner
         Add(CommandOptionSpec.Of(["native", "raw", "allow-suspect"], ["source", "target", "copies", "wait-minutes", "log-dir", "keep-image", "speed", "virtual-state"]), "copy-disc", "copydisc", "copy");
         Add(CommandOptionSpec.Of(["plan-only", "keep-folders", "no-fill"], ["input", "staging", "media", "redundancy", "order"]), "archive-stage", "archivestage");
         Add(CommandOptionSpec.Of(
-            ["native", "test-write", "test-first", "windows-writer", "strict-verify", "verify", "no-verify", "overwrite", "no-burnfree", "health-certificate", "confirm-shutdown"],
+            ["native", "test-write", "test-first", "streaming", "windows-writer", "strict-verify", "verify", "no-verify", "overwrite", "no-burnfree", "health-certificate", "confirm-shutdown"],
             ["drive", "disc", "speed", "log-dir", "post-action", "virtual-media", "virtual-state"]),
             "archive-burn", "archiveburn");
         Add(CommandOptionSpec.Of([], ["path"]), "archive-verify", "archiveverify");

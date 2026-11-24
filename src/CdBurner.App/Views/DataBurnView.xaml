@@ -115,6 +115,14 @@
                               ToolTip="Burn with IgnisDisc's own drive commands instead of the Windows writer, at a speed taken from the drive's own list for the disc, then read the disc back to check it. Covers blank CD-R, CD-RW, DVD-R, DVD-RW, DVD+R (single and dual layer), DVD+RW, DVD-RAM, and single-layer BD-R and BD-RE so far; other discs are burned by the Windows writer as before."
                               VerticalAlignment="Center"
                               Margin="0,0,16,0" />
+                    <CheckBox Content="Streaming WRITE(12) (BD-RE)"
+                              AutomationProperties.Name="Streaming WRITE(12) (BD-RE)"
+                              IsChecked="{Binding StreamingWrite}"
+                              IsEnabled="{Binding UseDirectDriveCommands}"
+                              Visibility="{Binding IsOverwritableBdMedia, Converter={StaticResource BoolToVis}}"
+                              ToolTip="Send WRITE(12) with the MMC-5 Streaming bit (0x80) on BD-RE to skip hardware defect-management read-after-write slowdown. Requires direct drive commands. Off by default."
+                              VerticalAlignment="Center"
+                              Margin="0,0,16,0" />
                     <CheckBox Content="Add SHA256SUMS"
                               AutomationProperties.Name="Add SHA256SUMS"
                               ToolTip="Adds a SHA256SUMS file to the disc root. Years from now, 'sha256sum -c SHA256SUMS' (Linux/macOS) or PowerShell can check every file without IgnisDisc."

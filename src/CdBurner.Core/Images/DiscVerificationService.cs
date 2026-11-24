@@ -184,6 +184,18 @@ public class VerificationResult
     /// Error message describing mismatches or read failures, or null if matched.
     /// </summary>
     public string? ErrorMessage { get; init; }
+
+    /// <summary>
+    /// True when the underlying sector reads enforced media-surface readback (SCSI FUA for 2,048-byte data reads,
+    /// or SYNCHRONIZE CACHE (10) plus seek-away / tray-reload cache invalidation for raw 2,352-byte reads);
+    /// false when readback could have been served from a drive or OS buffer.
+    /// </summary>
+    public bool MediaSurfaceReadbackEnforced { get; init; }
+
+    /// <summary>
+    /// Optional note explaining how media-surface readback was enforced or why it could not be guaranteed.
+    /// </summary>
+    public string? ReadbackNote { get; init; }
 }
 
 /// <summary>
@@ -420,7 +432,7 @@ public class DiscVerificationService
             actualSha.AppendData(actual);
         }
 
-        await BatchedSectorReader.ReadRangeAsync(
+        var readOutcome = await BatchedSectorReader.ReadRangeAsync(
             engine,
             recorder,
             startLba: 0,
@@ -456,8 +468,8 @@ public class DiscVerificationService
                 CurrentBytesPerSecond = 24 * (raw2352Mode ? OpticalConstants.CdAudio1XBytesPerSec : OpticalConstants.CdData1XBytesPerSec)
             }),
             cancellationToken: ct,
-            // The disc may have been burned a moment ago: make the drive read it, not what the burn left in its memory.
-            readFromDisc: !raw2352Mode,
+            // Always verify from media surface: 2,048-byte uses SCSI FUA; raw 2,352-byte uses SYNCHRONIZE CACHE + seek-away / tray-reload.
+            readFromDisc: true,
             strict: strict ?? VerifyPreferences.StrictByDefault).ConfigureAwait(false);
 
         progress?.Report(new BurnProgressSnapshot
@@ -497,7 +509,9 @@ public class DiscVerificationService
             ExpectedCrc32Value = expCrcVal,
             ActualCrc32Value = actCrcVal,
             TotalTime = sw.Elapsed,
-            ErrorMessage = isMatch ? null : $"Verification failed: {mismatchedLbas.Count} sector mismatch(es) detected."
+            ErrorMessage = isMatch ? null : $"Verification failed: {mismatchedLbas.Count} sector mismatch(es) detected.",
+            MediaSurfaceReadbackEnforced = readOutcome.MediaSurfaceReadbackEnforced,
+            ReadbackNote = readOutcome.ReadbackNote
         };
     }
 

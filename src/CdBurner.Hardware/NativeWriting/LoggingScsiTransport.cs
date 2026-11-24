@@ -113,6 +113,7 @@ public sealed class LoggingScsiTransport : IScsiTransport
         0xAC => "GET PERFORMANCE",
         NativeWriteCommands.OpCodeCloseTrackSession => "CLOSE TRACK/SESSION",
         NativeWriteCommands.OpCodeWrite10 => "WRITE(10)",
+        NativeWriteCommands.OpCodeWrite12 => "WRITE(12)",
         NativeWriteCommands.OpCodeModeSelect10 => "MODE SELECT(10)",
         NativeWriteCommands.OpCodeReadBufferCapacity => "READ BUFFER CAPACITY",
         NativeWriteCommands.OpCodeSendCueSheet => "SEND CUE SHEET",

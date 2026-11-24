@@ -401,6 +401,13 @@ public class RipOperationResult
     /// </summary>
     public string? Note { get; init; }
 
+    /// <summary>
+    /// True when the read path enforced reading from the physical disc surface rather than a drive or OS cache
+    /// (SCSI FUA for 2,048-byte reads, or SYNCHRONIZE CACHE (10) plus seek-away / tray-reload invalidation for raw
+    /// 2,352-byte reads).
+    /// </summary>
+    public bool MediaSurfaceReadbackEnforced { get; init; }
+
     public static RipOperationResult Succeeded(int sectorsRead, TimeSpan duration, IReadOnlyList<int>? badSectors = null) => new()
     {
         Success = true,
@@ -477,6 +484,12 @@ public class DataBurnOptions
     /// this range are not read back or compared during post-burn verification; sectors outside it are still verified.
     /// </summary>
     public SectorRange? PictureZone { get; init; }
+
+    /// <summary>
+    /// Direct drive-command writer only (BD-RE / DVD-RAM): send WRITE (12) with the MMC-5 Streaming bit (0x80) to
+    /// skip hardware defect-management read-after-write verification for higher write speed. Off by default.
+    /// </summary>
+    public bool StreamingWrite { get; init; }
 }
 
 /// <summary>

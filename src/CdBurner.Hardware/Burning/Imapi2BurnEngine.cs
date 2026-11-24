@@ -1079,7 +1079,7 @@ public class Imapi2BurnEngine : IBurnEngineBackend, ISecureAudioReader
         SectorRange? writtenRange = null)
     {
         ArgumentNullException.ThrowIfNull(recorder);
-        DriveCacheBypass bypass = readFromDisc && !raw2352Mode
+        DriveCacheBypass bypass = readFromDisc
             ? (strict ? DriveCacheBypass.EveryRead : DriveCacheBypass.RecentlyWritten)
             : DriveCacheBypass.None;
         return PhysicalSectorReader.OpenSession(

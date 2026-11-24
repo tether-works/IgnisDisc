@@ -10,10 +10,21 @@ namespace CdBurner.Core.Images;
 /// <param name="StoppedAtLba">When <see cref="Completed"/> is false, the unreadable LBA at which the caller asked to stop.</param>
 /// <param name="TotalRetries">Number of single-sector re-reads performed on suspect sectors.</param>
 /// <param name="RawRecoveredSectors">Number of failed cooked CD sectors recovered via raw 2,352-byte read + P/Q parity.</param>
-public readonly record struct BatchedReadOutcome(bool Completed, int? StoppedAtLba, int TotalRetries, int RawRecoveredSectors = 0)
+public readonly record struct BatchedReadOutcome(
+    bool Completed,
+    int? StoppedAtLba,
+    int TotalRetries,
+    int RawRecoveredSectors = 0,
+    bool MediaSurfaceReadbackEnforced = false,
+    string? ReadbackNote = null)
 {
     public BatchedReadOutcome(bool completed, int? stoppedAtLba, int totalRetries)
-        : this(completed, stoppedAtLba, totalRetries, 0)
+        : this(completed, stoppedAtLba, totalRetries, 0, false, null)
+    {
+    }
+
+    public BatchedReadOutcome(bool completed, int? stoppedAtLba, int totalRetries, int rawRecoveredSectors)
+        : this(completed, stoppedAtLba, totalRetries, rawRecoveredSectors, false, null)
     {
     }
 }
@@ -99,7 +110,25 @@ public static class BatchedSectorReader
 
         using ISectorReadSession? session = useRawSectorSalvage
             ? engine.OpenSalvageReadSession(recorder, raw2352Mode, fastSalvage: true)
-            : engine.OpenReadSession(recorder, raw2352Mode, verifyReads, strict, wholeRange);
+            : engine.OpenReadSession(recorder, raw2352Mode, readFromDisc, strict, wholeRange);
+
+        bool sawReadback = false;
+        bool mediaSurfaceEnforced = false;
+        string? readbackNote = null;
+
+        void RecordReadback(RipOperationResult result)
+        {
+            if (!sawReadback)
+            {
+                sawReadback = true;
+                mediaSurfaceEnforced = result.MediaSurfaceReadbackEnforced;
+            }
+            else
+            {
+                mediaSurfaceEnforced &= result.MediaSurfaceReadbackEnforced;
+            }
+            readbackNote ??= result.Note;
+        }
 
         Task<RipOperationResult> Read(int lba, int count, Func<int, ReadOnlyMemory<byte>, ValueTask> consumer) =>
             session != null
@@ -125,6 +154,7 @@ public static class BatchedSectorReader
                         delivered++;
                     }).ConfigureAwait(false);
 
+                RecordReadback(result);
                 batchOk = result.Success && delivered == batch;
             }
             catch (Exception ex) when (ex is not OperationCanceledException)
@@ -155,6 +185,7 @@ public static class BatchedSectorReader
                             got = true;
                         }).ConfigureAwait(false);
 
+                    RecordReadback(single);
                     if (single.Success && got)
                     {
                         return (true, retriesUsed);
@@ -207,7 +238,7 @@ public static class BatchedSectorReader
 
         if (adaptiveSalvage)
         {
-            return await ReadRangeAdaptiveAsync(
+            var adaptive = await ReadRangeAdaptiveAsync(
                 startLba,
                 sectorCount,
                 batchSectors,
@@ -217,6 +248,11 @@ public static class BatchedSectorReader
                 RetrySingleSectorAsync,
                 TrySalvageRawSectorAsync,
                 cancellationToken).ConfigureAwait(false);
+            return adaptive with
+            {
+                MediaSurfaceReadbackEnforced = sawReadback && mediaSurfaceEnforced,
+                ReadbackNote = readbackNote
+            };
         }
 
         int nextLba = startLba;
@@ -248,7 +284,7 @@ public static class BatchedSectorReader
                 if (!recovered && !await onUnreadable(suspectLba).ConfigureAwait(false))
                 {
                     onProgress?.Invoke(suspectLba - startLba);
-                    return new BatchedReadOutcome(false, suspectLba, totalRetries, rawRecovered);
+                    return new BatchedReadOutcome(false, suspectLba, totalRetries, rawRecovered, sawReadback && mediaSurfaceEnforced, readbackNote);
                 }
 
                 nextLba = suspectLba + 1;
@@ -257,7 +293,7 @@ public static class BatchedSectorReader
             onProgress?.Invoke(nextLba - startLba);
         }
 
-        return new BatchedReadOutcome(true, null, totalRetries, rawRecovered);
+        return new BatchedReadOutcome(true, null, totalRetries, rawRecovered, sawReadback && mediaSurfaceEnforced, readbackNote);
     }
 
     private static async Task<BatchedReadOutcome> ReadRangeAdaptiveAsync(

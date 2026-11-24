@@ -262,11 +262,47 @@ public class ImageStudioViewModel : ObservableObject
     }
 
     private bool _useDirectDriveCommands;
+    private bool _streamingWrite;
+    private bool _isOverwritableBdMedia;
     private readonly AutomaticChoice _directDefault = new();
+
+    /// <summary>
+    /// Overwritable BD-RE / DVD-RAM with direct drive commands: send WRITE (12) with the Streaming bit (0x80) to skip
+    /// hardware defect-management read-after-write slowdown. Off by default.
+    /// </summary>
+    public bool StreamingWrite
+    {
+        get => _streamingWrite;
+        set => SetProperty(ref _streamingWrite, value);
+    }
+
+    /// <summary>True while the selected recorder holds overwritable Blu-ray media (BD-RE).</summary>
+    public bool IsOverwritableBdMedia
+    {
+        get => _isOverwritableBdMedia;
+        private set => SetProperty(ref _isOverwritableBdMedia, value);
+    }
+
+    private static bool IsOverwritableBd(DiscMediaType mediaType) =>
+        mediaType is DiscMediaType.BdRe or DiscMediaType.BdReDualLayer or DiscMediaType.BdxlReTripleLayer;
+
+    private void RefreshOverwritableBdFlag(IDiscRecorderBackend? recorder)
+    {
+        try
+        {
+            var st = recorder?.QueryMediaStatus();
+            IsOverwritableBdMedia = st is { MediaPresent: true } s && IsOverwritableBd(s.MediaType);
+        }
+        catch
+        {
+            IsOverwritableBdMedia = false;
+        }
+    }
 
     /// <summary>On by itself for a DVD-RW while the setting allows it, until the user sets the box (as on the Data Disc screen).</summary>
     public void ApplyDirectDefaultForDisc(MediaStatusDto? status, bool enabled)
     {
+        IsOverwritableBdMedia = status is { MediaPresent: true } s && IsOverwritableBd(s.MediaType);
         if (_directDefault.Decide(_useDirectDriveCommands, enabled && DirectWritingDefault.Prefers(status)) is bool value)
         {
             SetProperty(ref _useDirectDriveCommands, value, nameof(UseDirectDriveCommands));
@@ -362,6 +398,7 @@ public class ImageStudioViewModel : ObservableObject
             {
                 if (_copySourceRecorder == null) CopySourceRecorder = value;
                 if (_copyTargetRecorder == null) CopyTargetRecorder = value;
+                RefreshOverwritableBdFlag(value);
             }
         }
     }
@@ -1643,7 +1680,8 @@ public class ImageStudioViewModel : ObservableObject
                         Speed = SelectedWriteSpeed,
                         OverwriteExistingData = replaceAllowed,
                         VerifyAfterBurn = hasPictureZone && (VerifyAfterBurn || directEngine != null),
-                        PictureZone = hasPictureZone ? pictureZone : null
+                        PictureZone = hasPictureZone ? pictureZone : null,
+                        StreamingWrite = StreamingWrite && directEngine != null
                     },
                     progress,
                     linkedToken);
@@ -1673,7 +1711,8 @@ public class ImageStudioViewModel : ObservableObject
                         VolumeLabel = Path.GetFileNameWithoutExtension(SourceImagePath),
                         CloseDisc = true,
                         Speed = SelectedWriteSpeed,
-                        OverwriteExistingData = replaceAllowed
+                        OverwriteExistingData = replaceAllowed,
+                        StreamingWrite = StreamingWrite && directEngine != null
                     },
                     progress,
                     linkedToken);
@@ -1691,7 +1730,14 @@ public class ImageStudioViewModel : ObservableObject
                     burnResult = await dataEngine.BurnDataStreamAsync(
                         recorder,
                         fs,
-                        new DataBurnOptions { VolumeLabel = Path.GetFileNameWithoutExtension(SourceImagePath), CloseDisc = true, Speed = SelectedWriteSpeed, OverwriteExistingData = replaceAllowed },
+                        new DataBurnOptions
+                        {
+                            VolumeLabel = Path.GetFileNameWithoutExtension(SourceImagePath),
+                            CloseDisc = true,
+                            Speed = SelectedWriteSpeed,
+                            OverwriteExistingData = replaceAllowed,
+                            StreamingWrite = StreamingWrite && directEngine != null
+                        },
                         progress,
                         linkedToken);
                 }

@@ -47,15 +47,14 @@ public static class TrayReload
 
     /// <summary>
     /// Ejects and reloads the disc if, and only if, the drive says it can close its own tray, then waits until it is
-    /// ready and checks with <paramref name="discReadsBlank"/>. Returns true when the disc reads blank again; false
-    /// (with a note saying why) when the drive cannot or the reload did not clear the session.
+    /// ready. Returns true when the disc was reloaded and the drive is ready again; false when the drive cannot reload
+    /// by itself or did not become ready.
     /// </summary>
-    public static bool TryReload(IScsiTransport transport, Action<string> note, Action<TimeSpan> sleep, Func<bool> discReadsBlank, CancellationToken ct)
+    public static bool TryReloadMedia(IScsiTransport transport, Action<string> note, Action<TimeSpan> sleep, CancellationToken ct)
     {
         ArgumentNullException.ThrowIfNull(transport);
         ArgumentNullException.ThrowIfNull(note);
         ArgumentNullException.ThrowIfNull(sleep);
-        ArgumentNullException.ThrowIfNull(discReadsBlank);
         ct.ThrowIfCancellationRequested();
 
         var info = ReadRemovableMedium(transport);
@@ -70,7 +69,7 @@ public static class TrayReload
             return false;
         }
 
-        note("The drive can close its own tray: ejecting and reloading the disc to clear the test write.");
+        note("The drive can close its own tray: ejecting and reloading the disc.");
         var eject = transport.ExecuteCommand(MmcCommandBuilder.BuildStartStopUnitCdb(start: false, loadEject: true), Span<byte>.Empty,
             ScsiPassThroughNative.SCSI_IOCTL_DATA_UNSPECIFIED, CommandTimeout);
         if (!eject.IsSuccess)
@@ -93,6 +92,22 @@ public static class TrayReload
         if (!WaitUntilReady(transport, sleep, ct))
         {
             note($"The drive was not ready within {ReadyTimeout.TotalSeconds:0} s of loading the disc.");
+            return false;
+        }
+
+        return true;
+    }
+
+    /// <summary>
+    /// Ejects and reloads the disc if, and only if, the drive says it can close its own tray, then waits until it is
+    /// ready and checks with <paramref name="discReadsBlank"/>. Returns true when the disc reads blank again; false
+    /// (with a note saying why) when the drive cannot or the reload did not clear the session.
+    /// </summary>
+    public static bool TryReload(IScsiTransport transport, Action<string> note, Action<TimeSpan> sleep, Func<bool> discReadsBlank, CancellationToken ct)
+    {
+        ArgumentNullException.ThrowIfNull(discReadsBlank);
+        if (!TryReloadMedia(transport, note, sleep, ct))
+        {
             return false;
         }
 

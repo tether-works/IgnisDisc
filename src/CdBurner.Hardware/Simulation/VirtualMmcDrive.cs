@@ -144,6 +144,18 @@ public sealed class VirtualMmcDrive : IScsiTransport
     /// <summary>BD-RE: false makes it a new, unformatted disc that refuses writes until FORMAT UNIT type 00h.</summary>
     public bool BdReFormatted { get; set; } = true;
 
+    /// <summary>Refuse WRITE (12) (0xAA) with 5/20/00 (Invalid Command Operation Code).</summary>
+    public bool RejectsWrite12 { get; set; }
+
+    /// <summary>Total WRITE (12) commands received by this virtual drive.</summary>
+    public int Write12CommandCount { get; private set; }
+
+    /// <summary>Total WRITE (12) commands with the MMC-5 Streaming bit (0x80 in byte 10) set.</summary>
+    public int StreamingWrite12CommandCount { get; private set; }
+
+    /// <summary>Every WRITE (12) received: start LBA, block count, and Streaming bit state.</summary>
+    public List<(int Lba, int Count, bool Streaming)> Write12Log { get; } = new();
+
     // ---- Faults ----
 
     /// <summary>TEST UNIT READY answers 2/04/01 (becoming ready) this many times first.</summary>
@@ -714,7 +726,21 @@ public sealed class VirtualMmcDrive : IScsiTransport
     /// <summary>Every READ (10) received: start, count and whether FUA was set.</summary>
     public List<(int Lba, int Count, bool Fua)> Read10Log { get; } = new();
 
+    /// <summary>
+    /// Raw 2,352-byte sectors still held in the drive's write/read RAM buffer, by LBA: a READ CD returns these
+    /// bytes instead of the disc's content until evicted by <see cref="ReadCacheCapacitySectors"/> cache misses or
+    /// <see cref="Reload"/>.
+    /// </summary>
+    public Dictionary<int, byte[]> StaleRawReadCache { get; } = new();
+
+    /// <summary>Every READ CD received: start LBA, sector count, expected sector type, and main channel byte.</summary>
+    public List<(int Lba, int Count, byte ExpectedSectorType, byte MainChannel)> ReadCdLog { get; } = new();
+
+    /// <summary>Total SYNCHRONIZE CACHE (10) commands accepted by this virtual drive.</summary>
+    public int SynchronizeCacheCount { get; private set; }
+
     private int _cacheMissesSinceFill;
+    private int _rawCacheMissesSinceFill;
 
     // ---- What happened ----
 
@@ -825,6 +851,9 @@ public sealed class VirtualMmcDrive : IScsiTransport
         }
         _cue = null;
         StaleReadCache.Clear();
+        StaleRawReadCache.Clear();
+        _cacheMissesSinceFill = 0;
+        _rawCacheMissesSinceFill = 0;
     }
 
     public ScsiExecutionResult ExecuteCommand(ReadOnlySpan<byte> cdb, Span<byte> dataBuffer, byte dataDirection, TimeSpan timeout)
@@ -861,6 +890,7 @@ public sealed class VirtualMmcDrive : IScsiTransport
             NativeWriteCommands.OpCodeModeSelect10 => ModeSelect(dataBuffer),
             NativeWriteCommands.OpCodeSendCueSheet => SendCueSheet(cdb, dataBuffer),
             NativeWriteCommands.OpCodeWrite10 => TimedWrite(cdb, dataBuffer, timeout),
+            MmcCommandBuilder.OpCodeWrite12 => TimedWrite(cdb, dataBuffer, timeout),
             NativeWriteCommands.OpCodeReadBufferCapacity => ReadBufferCapacity(cdb, dataBuffer),
             0x35 => SynchronizeCache(),
             0xBE => ReadCdTimed(cdb, dataBuffer),
@@ -1271,10 +1301,18 @@ public sealed class VirtualMmcDrive : IScsiTransport
 
     private ScsiExecutionResult Write(ReadOnlySpan<byte> cdb, ReadOnlySpan<byte> data)
     {
+        if (cdb[0] == MmcCommandBuilder.OpCodeWrite12 && RejectsWrite12)
+        {
+            return Sense(0x05, 0x20, 0x00);
+        }
         WriteCommandCount++;
         if (_cue == null && IsOverwritable)
         {
             return WriteOverwrite(cdb, data);
+        }
+        if (cdb[0] == MmcCommandBuilder.OpCodeWrite12)
+        {
+            return Sense(0x05, 0x20, 0x00);
         }
         if (_cue == null && WritesLikeDvd)
         {
@@ -1442,6 +1480,12 @@ public sealed class VirtualMmcDrive : IScsiTransport
         destination.Clear();
         for (int i = 0; i < count; i++)
         {
+            if (mainBits == 0xF8 && StaleRawReadCache.TryGetValue(lba + i, out byte[]? cachedRaw) && cachedRaw.Length >= 2352)
+            {
+                cachedRaw.AsSpan(0, 2352).CopyTo(destination.Slice(i * size));
+                continue;
+            }
+
             ReadOnlySpan<byte> raw = rawSector(i);
             byte mode = raw[15];
             bool form2 = mode == 2 && (raw[18] & 0x20) != 0;
@@ -1478,6 +1522,11 @@ public sealed class VirtualMmcDrive : IScsiTransport
             if (HasReadDifferenceAt(lba + i))
             {
                 destination[i * size + Math.Min(100, payloadSize - 1)] ^= 0x01;
+            }
+            if (StaleRawReadCache.Count > 0 && ++_rawCacheMissesSinceFill >= ReadCacheCapacitySectors)
+            {
+                StaleRawReadCache.Clear();
+                _rawCacheMissesSinceFill = 0;
             }
         }
         if (c2Bytes > 0)
@@ -1593,6 +1642,7 @@ public sealed class VirtualMmcDrive : IScsiTransport
         }
 
         int sectorType = (cdb[1] >> 2) & 0x07; // 0 any, 1 CD-DA, 2 Mode 1, 3 Mode 2, 4 Form 1, 5 Form 2
+        ReadCdLog.Add((lba, count, (byte)sectorType, cdb[9]));
         if (Recorded && lba >= 0 && count > 0 && lba < _recordedDataEndLba)
         {
             ReadOnlySpan<byte> program = ProgramAreaWritten.GetBuffer().AsSpan(0, (int)ProgramAreaWritten.Length);
@@ -1710,7 +1760,19 @@ public sealed class VirtualMmcDrive : IScsiTransport
                     }
                 }
 
-                audio.Slice(i * 2352, 2352).CopyTo(destination.Slice(i * stride));
+                if (StaleRawReadCache.TryGetValue(lba + i, out byte[]? cachedRaw) && cachedRaw.Length >= 2352)
+                {
+                    cachedRaw.AsSpan(0, 2352).CopyTo(destination.Slice(i * stride));
+                }
+                else
+                {
+                    audio.Slice(i * 2352, 2352).CopyTo(destination.Slice(i * stride));
+                    if (StaleRawReadCache.Count > 0 && ++_rawCacheMissesSinceFill >= ReadCacheCapacitySectors)
+                    {
+                        StaleRawReadCache.Clear();
+                        _rawCacheMissesSinceFill = 0;
+                    }
+                }
                 if (withC2 && misread)
                 {
                     int c2Offset = i * stride + mainBytes;
@@ -2269,6 +2331,7 @@ public sealed class VirtualMmcDrive : IScsiTransport
         {
             return Sense(0x03, 0x0C, 0x00);
         }
+        SynchronizeCacheCount++;
 
         if ((_taoArmed || WritesLikeDvd) && _taoNextLba > 0 && _taoClosedSectors == 0)
         {
@@ -2728,8 +2791,35 @@ public sealed class VirtualMmcDrive : IScsiTransport
         {
             return Sense(0x05, 0x30, 0x10);
         }
-        int lba = BinaryPrimitives.ReadInt32BigEndian(cdb.Slice(2, 4));
-        int count = BinaryPrimitives.ReadUInt16BigEndian(cdb.Slice(7, 2));
+        int lba;
+        int count;
+        bool isWrite12 = cdb[0] == MmcCommandBuilder.OpCodeWrite12;
+        bool streaming = false;
+        if (isWrite12)
+        {
+            if (cdb.Length < 12)
+            {
+                return Sense(0x05, 0x24, 0x00);
+            }
+            lba = BinaryPrimitives.ReadInt32BigEndian(cdb.Slice(2, 4));
+            count = BinaryPrimitives.ReadInt32BigEndian(cdb.Slice(6, 4));
+            if (count < 0)
+            {
+                return Sense(0x05, 0x24, 0x00);
+            }
+            streaming = (cdb[10] & MmcCommandBuilder.Write12StreamingBit) != 0;
+            Write12CommandCount++;
+            if (streaming)
+            {
+                StreamingWrite12CommandCount++;
+            }
+            Write12Log.Add((lba, count, streaming));
+        }
+        else
+        {
+            lba = BinaryPrimitives.ReadInt32BigEndian(cdb.Slice(2, 4));
+            count = BinaryPrimitives.ReadUInt16BigEndian(cdb.Slice(7, 2));
+        }
         if (Profile == NativeTaoDataWriter.ProfileDvdMinusRwRestricted)
         {
             // 32 KiB alignment; a partly formatted disc takes nothing past its formatted part; the intermediate

@@ -407,7 +407,8 @@ public sealed partial class NativeTaoDataWriter
         IsDvd = !state.IsBluRay,
         IsBluRay = state.IsBluRay,
         Layer0Sectors = state.Layer0Sectors,
-        WriteMode = state.WriteMode
+        WriteMode = state.WriteMode,
+        StreamingWriteUsed = state.StreamingWriteUsed
     };
 
     /// <summary>

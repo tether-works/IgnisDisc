@@ -156,7 +156,29 @@ public class DataBurnViewModel : ObservableObject
     }
 
     private bool _useDirectDriveCommands;
+    private bool _streamingWrite;
+    private bool _isOverwritableBdMedia;
     private readonly CdBurner.App.Mvvm.AutomaticChoice _directDefault = new();
+
+    /// <summary>
+    /// Overwritable BD-RE / DVD-RAM with direct drive commands: send WRITE (12) with the Streaming bit (0x80) to skip
+    /// hardware defect-management read-after-write slowdown. Off by default.
+    /// </summary>
+    public bool StreamingWrite
+    {
+        get => _streamingWrite;
+        set => SetProperty(ref _streamingWrite, value);
+    }
+
+    /// <summary>True while the selected recorder holds overwritable Blu-ray media (BD-RE).</summary>
+    public bool IsOverwritableBdMedia
+    {
+        get => _isOverwritableBdMedia;
+        private set => SetProperty(ref _isOverwritableBdMedia, value);
+    }
+
+    private static bool IsOverwritableBd(DiscMediaType mediaType) =>
+        mediaType is DiscMediaType.BdRe or DiscMediaType.BdReDualLayer or DiscMediaType.BdxlReTripleLayer;
 
     /// <summary>
     /// Turns direct drive commands on while the disc in the drive is one they suit better (a DVD-RW,
@@ -165,6 +187,7 @@ public class DataBurnViewModel : ObservableObject
     /// </summary>
     public void ApplyDirectDefaultForDisc(MediaStatusDto? status, bool enabled)
     {
+        IsOverwritableBdMedia = status is { MediaPresent: true } s && IsOverwritableBd(s.MediaType);
         if (_directDefault.Decide(_useDirectDriveCommands, enabled && DirectWritingDefault.Prefers(status)) is bool value)
         {
             SetProperty(ref _useDirectDriveCommands, value, nameof(UseDirectDriveCommands));
@@ -740,12 +763,14 @@ public class DataBurnViewModel : ObservableObject
 
         var mediaType = DiscMediaType.CdR;
         int reportedSectors = 0;
+        bool isOverwritableBd = false;
         if (SelectedRecorder != null)
         {
             var st = SelectedRecorder.QueryMediaStatus();
             if (st.MediaPresent && st.MediaType != DiscMediaType.NoMedia && st.MediaType != DiscMediaType.Unknown)
             {
                 mediaType = st.MediaType;
+                isOverwritableBd = IsOverwritableBd(st.MediaType);
                 // A blank disc's own reported size beats the planning table (BD-RE spare area, BDXL, short media).
                 if (st.IsBlank && st.TotalSectors > 0)
                 {
@@ -753,6 +778,7 @@ public class DataBurnViewModel : ObservableObject
                 }
             }
         }
+        IsOverwritableBdMedia = isOverwritableBd;
 
         Capacity = Compilation.CalculateCapacity(
             mediaType: mediaType,
@@ -904,7 +930,8 @@ public class DataBurnViewModel : ObservableObject
                 VerifyAfterBurn = VerifyAfterBurn || UseDirectDriveCommands, // a direct burn is always read back
                 EjectAfterBurn = EjectAfterBurn,
                 Speed = SelectedWriteSpeed,
-                OverwriteExistingData = replaceAllowed
+                OverwriteExistingData = replaceAllowed,
+                StreamingWrite = StreamingWrite && UseDirectDriveCommands
             };
 
             var directEngine = UseDirectDriveCommands

@@ -41,6 +41,10 @@ public sealed record NativeDataWriteRequest(
     /// <summary>CD only: write the track as CD-ROM XA Mode 2 Form 1 (data block type 10, session format 20h) instead of
     /// Mode 1. The image stays 2,048-byte sectors; the drive adds the sub-header. Refused on DVD and Blu-ray.</summary>
     public bool Mode2Form1 { get; init; }
+
+    /// <summary>Overwritable BD-RE / DVD-RAM only: send WRITE (12) with the Streaming bit (byte 10 bit 7 = 0x80) to
+    /// skip hardware defect-management read-after-write slowdown. Off by default.</summary>
+    public bool StreamingWrite { get; init; }
 }
 
 /// <summary>Outcome of a native Track-at-Once data write.</summary>
@@ -97,6 +101,9 @@ public sealed record NativeDataWriteResult
 
     /// <summary>True when the drive's table of contents was read back and matched what was written.</summary>
     public bool TocChecked { get; init; }
+
+    /// <summary>True when the track was written using WRITE (12) with the MMC-5 Streaming bit (0x80).</summary>
+    public bool StreamingWriteUsed { get; init; }
 
     /// <summary>The drive's kB/s for 1x on this disc: 176.4 on CD (audio units, as drives count), 1,385 on DVD, 4,495.5 on
     /// Blu-ray.</summary>
@@ -413,7 +420,7 @@ public sealed partial class NativeTaoDataWriter
     /// after its layer jump); the image stream is already past them.</param>
     private void WriteTrack(NativeDataWriteRequest request, int startLba, int trackSectors, int sectorsPerWrite, RunState state,
         ProgressReporter reporter, CancellationToken ct, int? minimumSectorsPerWrite = null, long imageBytesAlreadyWritten = 0,
-        byte[]? lastSectorOverride = null)
+        byte[]? lastSectorOverride = null, bool streamingWrite = false)
     {
         int minimum = minimumSectorsPerWrite ?? sectorsPerWrite;
         int hostCapacityBytes = Math.Max(sectorsPerWrite, sectorsPerWrite * 4) * SectorSize;
@@ -475,7 +482,7 @@ public sealed partial class NativeTaoDataWriter
                 }
             }
 
-            if (!WriteBlocks(lba, (ushort)n, buffer.AsSpan(bufferedStart, bytes), state, canShrink: sectorsPerWrite > minimum, first: lba == startLba, ct))
+            if (!WriteBlocks(lba, (ushort)n, buffer.AsSpan(bufferedStart, bytes), state, canShrink: sectorsPerWrite > minimum, first: lba == startLba, ct, streamingWrite))
             {
                 sectorsPerWrite = Math.Max(minimum, sectorsPerWrite / 2);
                 _note($"The adapter refused {n} sectors in one WRITE; sending {sectorsPerWrite} per WRITE from LBA {lba}.");
@@ -577,9 +584,12 @@ public sealed partial class NativeTaoDataWriter
     /// (<see cref="FirstWriteTimeout"/>).</param>
     /// <returns>False only when <paramref name="canShrink"/> is set and the adapter refused the transfer as too large.</returns>
     private bool WriteBlocks(int lba, ushort count, Span<byte> data, RunState state, bool canShrink = false, bool first = false,
-        CancellationToken ct = default)
+        CancellationToken ct = default, bool streamingWrite = false)
     {
-        byte[] cdb = NativeWriteCommands.BuildWrite10(lba, count);
+        bool useStreaming = streamingWrite && !state.StreamingWriteFallback;
+        byte[] cdb = useStreaming
+            ? NativeWriteCommands.BuildWrite12(lba, count, streaming: true)
+            : NativeWriteCommands.BuildWrite10(lba, count);
         TimeSpan timeout = first ? FirstWriteTimeout : WriteTimeout;
         var deadline = Stopwatch.StartNew();
         int transientRetries = 0;
@@ -590,7 +600,19 @@ public sealed partial class NativeTaoDataWriter
             var r = _transport.ExecuteCommand(cdb, data, ScsiPassThroughNative.SCSI_IOCTL_DATA_OUT, timeout);
             if (r.IsSuccess)
             {
+                if (useStreaming)
+                {
+                    state.StreamingWriteUsed = true;
+                }
                 return true;
+            }
+            if (first && useStreaming && r.SenseInfo is { SenseKey: 0x05, Asc: 0x20 or 0x24 })
+            {
+                _note($"The drive refused WRITE(12) streaming ({Describe(r)}); falling back to WRITE(10).");
+                state.StreamingWriteFallback = true;
+                useStreaming = false;
+                cdb = NativeWriteCommands.BuildWrite10(lba, count);
+                continue;
             }
             if (canShrink && r.SenseInfo == null && r.Win32Error == ErrorInvalidParameter)
             {
@@ -1195,6 +1217,8 @@ public sealed partial class NativeTaoDataWriter
         public bool IsBluRay;
         public int? Layer0Sectors;
         public string WriteMode = "track-at-once, mode 1";
+        public bool StreamingWriteUsed;
+        public bool StreamingWriteFallback;
     }
 
     private sealed class WriteStop : Exception

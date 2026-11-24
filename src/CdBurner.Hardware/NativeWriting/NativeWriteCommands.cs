@@ -12,6 +12,7 @@ namespace CdBurner.Hardware.NativeWriting;
 public static class NativeWriteCommands
 {
     public const byte OpCodeWrite10 = 0x2A;
+    public const byte OpCodeWrite12 = MmcCommandBuilder.OpCodeWrite12;
     public const byte OpCodeModeSelect10 = 0x55;
     public const byte OpCodeReadBufferCapacity = 0x5C;
     public const byte OpCodeSendCueSheet = 0x5D;
@@ -283,6 +284,10 @@ public static class NativeWriteCommands
         BinaryPrimitives.WriteUInt16BigEndian(cdb.AsSpan(7, 2), blockCount);
         return cdb;
     }
+
+    /// <summary>WRITE (12): <paramref name="blockCount"/> blocks starting at <paramref name="lba"/>, with optional MMC-5 Streaming bit.</summary>
+    public static byte[] BuildWrite12(int lba, int blockCount, bool streaming = false) =>
+        MmcCommandBuilder.BuildWrite12(lba, blockCount, streaming);
 
     /// <summary>MODE SELECT (10) with PF = 1 (the parameter list uses the MMC page format).</summary>
     public static byte[] BuildModeSelect10(ushort parameterListLength)

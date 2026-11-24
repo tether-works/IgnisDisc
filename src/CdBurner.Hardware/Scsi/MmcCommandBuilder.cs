@@ -25,9 +25,13 @@ public static class MmcCommandBuilder
     public const byte OpCodeReadBufferCapacity   = 0x5C;
     public const byte OpCodeSendCueSheet         = 0x5D;
     public const byte OpCodeBlank                = 0xA1;
+    public const byte OpCodeWrite12              = 0xAA;
     public const byte OpCodeReadDiscStructure    = 0xAD;
     public const byte OpCodeReadCd               = 0xBE;
     public const byte OpCodeSendDiscStructure    = 0xBF;
+
+    /// <summary>Streaming bit (byte 10 bit 7 = 0x80) in WRITE (12) (MMC-5).</summary>
+    public const byte Write12StreamingBit = 0x80;
 
     // MMC-5 Feature Codes
     public const ushort FeatureTrackAtOnce        = 0x002D;
@@ -420,6 +424,24 @@ public static class MmcCommandBuilder
         cdb[9] = mainChannelSelectionBits;
         cdb[10] = (byte)(subChannelSelection & 0x07);
         cdb[11] = 0x00; // Control
+        return cdb;
+    }
+
+    /// <summary>
+    /// Builds a 12-byte MMC WRITE (12) CDB (OpCode 0xAA) with an optional Streaming bit (byte 10 bit 7 = 0x80).
+    /// </summary>
+    /// <param name="lba">Starting Logical Block Address (32-bit big-endian).</param>
+    /// <param name="blockCount">Number of logical blocks to write (32-bit big-endian).</param>
+    /// <param name="streaming">True to set the MMC-5 Streaming bit (0x80 in byte 10) for real-time/non-verified writes.</param>
+    public static byte[] BuildWrite12(int lba, int blockCount, bool streaming = false)
+    {
+        ArgumentOutOfRangeException.ThrowIfNegative(blockCount);
+
+        byte[] cdb = new byte[12];
+        cdb[0] = OpCodeWrite12;
+        BinaryPrimitives.WriteInt32BigEndian(cdb.AsSpan(2, 4), lba);
+        BinaryPrimitives.WriteInt32BigEndian(cdb.AsSpan(6, 4), blockCount);
+        cdb[10] = streaming ? Write12StreamingBit : (byte)0x00;
         return cdb;
     }
 

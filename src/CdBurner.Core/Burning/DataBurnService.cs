@@ -286,6 +286,7 @@ public class DataBurnService
                 LayerBreakSectors = options.LayerBreakSectors,
                 DisableBufferUnderrunFree = options.DisableBufferUnderrunFree,
                 CdRomXaMode2Form1 = options.CdRomXaMode2Form1,
+                StreamingWrite = options.StreamingWrite,
                 PictureZone = pictureZone
             };
 
@@ -380,7 +381,8 @@ public class DataBurnService
             OverwriteExistingData = burnOptions.OverwriteExistingData,
             LayerBreakSectors = burnOptions.LayerBreakSectors,
             DisableBufferUnderrunFree = burnOptions.DisableBufferUnderrunFree,
-            CdRomXaMode2Form1 = burnOptions.CdRomXaMode2Form1
+            CdRomXaMode2Form1 = burnOptions.CdRomXaMode2Form1,
+            StreamingWrite = burnOptions.StreamingWrite
         };
 
         BurnOperationResult burnResult;
