@@ -34,7 +34,8 @@ public sealed record AudioExportOptions(
     string? FfmpegPath,
     bool KeepWav = false,
     bool WriteFolderImage = true,
-    bool Overwrite = false);
+    bool Overwrite = false,
+    bool ApplyDeEmphasis = false);
 
 /// <summary>One file written by an export.</summary>
 public sealed record AudioExportedFile(AudioRipFormat Format, int TrackNumber, string Path);
@@ -215,6 +216,7 @@ public sealed class AudioLibraryExporter
         var folderImages = new List<string>();
         var keptWavs = new HashSet<string>(StringComparer.OrdinalIgnoreCase);
         string? coverTempPath = null;
+        var deEmphTempWavs = new Dictionary<string, string>(StringComparer.OrdinalIgnoreCase);
         AudioRipFormat currentFormat = plans[0].Target.Format;
 
         try
@@ -251,13 +253,25 @@ public sealed class AudioLibraryExporter
                         continue;
                     }
 
+                    string encodeSourceWav = planned.Source.Wav;
+                    if (options.ApplyDeEmphasis && planned.Source.Info is { PreEmphasis: true, DeEmphasisApplied: false })
+                    {
+                        if (!deEmphTempWavs.TryGetValue(planned.Source.Wav, out string? deEmphPath))
+                        {
+                            deEmphPath = Path.Combine(Path.GetTempPath(), "ignisdisc-deemph-" + Guid.NewGuid().ToString("N") + ".wav");
+                            RedBookPcmDspProcessor.ApplyDeEmphasisToWavFile(planned.Source.Wav, deEmphPath);
+                            deEmphTempWavs[planned.Source.Wav] = deEmphPath;
+                        }
+                        encodeSourceWav = deEmphPath;
+                    }
+
                     EnsureDirectory(Path.GetDirectoryName(destination)!, createdDirs);
                     string temp = Path.Combine(Path.GetDirectoryName(destination)!, "~ignis-" + Guid.NewGuid().ToString("N") + AudioRipFormats.Extension(format));
                     try
                     {
                         var tags = BuildTags(planned.Source, rip, albumTitle, albumArtist, album, rip.TrackInfos.Count);
                         string? tagWarning = await EncodeFileAsync(
-                            plan.Target, options.FfmpegPath, planned.Source.Wav, temp, tags, bitrate, coverTempPath, cancellationToken).ConfigureAwait(false);
+                            plan.Target, options.FfmpegPath, encodeSourceWav, temp, tags, bitrate, coverTempPath, cancellationToken).ConfigureAwait(false);
                         if (tagWarning != null)
                         {
                             warnings.Add($"Track {planned.Source.TrackNumber:D2}: {tagWarning}");
@@ -351,6 +365,10 @@ public sealed class AudioLibraryExporter
             if (coverTempPath != null)
             {
                 try { File.Delete(coverTempPath); } catch (IOException) { } catch (UnauthorizedAccessException) { }
+            }
+            foreach (string tmp in deEmphTempWavs.Values)
+            {
+                try { File.Delete(tmp); } catch (IOException) { } catch (UnauthorizedAccessException) { }
             }
         }
 

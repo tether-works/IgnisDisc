@@ -241,4 +241,187 @@ public class ReadOffsetDetectorTests
             catch { }
         }
     }
+
+    private static uint ReferenceFrame450Crc(ReadOnlySpan<byte> frame450Pcm)
+    {
+        unchecked
+        {
+            uint crc = 0;
+            for (uint i = 0; i < 588; i++)
+            {
+                uint sample = BinaryPrimitives.ReadUInt32LittleEndian(frame450Pcm.Slice((int)(i * 4), 4));
+                crc += sample * (i + 1);
+            }
+            return crc;
+        }
+    }
+
+    [Theory]
+    [InlineData(-1164)]
+    [InlineData(-6)]
+    [InlineData(0)]
+    [InlineData(6)]
+    [InlineData(667)]
+    public void FindFrame450Offsets_FindsPlantedOffset(int planted)
+    {
+        const int margin = 2000;
+        const int frameSamples = 588;
+        byte[] padded = new byte[(frameSamples + 2 * margin) * 4];
+        new Random(77).NextBytes(padded);
+
+        uint frame450Crc = ReferenceFrame450Crc(padded.AsSpan((margin + planted) * 4, frameSamples * 4));
+        var pressing = new AccurateRipPressing(
+            0x11111111u, 0x22222222u, 0x33333333u,
+            [new AccurateRipTrackEntry(Confidence: 12, Crc: 0, Frame450Crc: frame450Crc)]);
+
+        var candidates = ReadOffsetDetector.FindFrame450Offsets(padded, margin, [pressing], trackIndex: 0, trackNumber: 1);
+        Assert.Contains(candidates, c => c.OffsetSamples == planted && c.Confidence == 12 && c.TrackNumber == 1);
+    }
+
+    [Theory]
+    [InlineData(1, 48)]
+    [InlineData(2, -24)]
+    public async Task DetectAsync_FewerThanThreeTracksWithFrame450Crc_DetectsOffset(int trackCount, int planted)
+    {
+        string tempDir = Path.Combine(Path.GetTempPath(), "CdBurner_Offset450_" + Guid.NewGuid().ToString("N"));
+        Directory.CreateDirectory(tempDir);
+
+        try
+        {
+            var rng = new Random(54321 + trackCount);
+            const int sectorsPerTrack = 470; // > 450 + marginSectors
+            byte[][] pcms = new byte[trackCount][];
+            int totalBytes = 0;
+            for (int i = 0; i < trackCount; i++)
+            {
+                pcms[i] = new byte[sectorsPerTrack * OpticalConstants.RawSectorSize];
+                rng.NextBytes(pcms[i]);
+                totalBytes += pcms[i].Length;
+            }
+
+            byte[] wholeDiscPcm = new byte[totalBytes];
+            for (int i = 0; i < trackCount; i++)
+            {
+                pcms[i].CopyTo(wholeDiscPcm, i * sectorsPerTrack * OpticalConstants.RawSectorSize);
+            }
+
+            var compilation = new AudioCdCompilation
+            {
+                AlbumTitle = "Short Track Count Disc",
+                AlbumPerformer = "Test Artist",
+                RecordingMode = AudioRecordingMode.DiscAtOnceGapless
+            };
+            for (int i = 0; i < trackCount; i++)
+            {
+                string wavPath = Path.Combine(tempDir, $"t_{i + 1}.wav");
+                WavFileCodec.WriteWavFile(wavPath, pcms[i]);
+                compilation.AddTrack(new AudioCdTrackItem(i + 1, wavPath, $"Track {i + 1}", "Test Artist", PreGapFrames: i == 0 ? 150 : 0));
+            }
+
+            using var recorder = new VirtualDiscRecorder();
+            using var medium = VirtualDiscMedium.CreateBlankCdR700();
+            recorder.InsertMedia(medium);
+
+            var engine = new VirtualBurnEngine(recorder);
+            var burnResult = await new AudioCdBurnService(engine).BurnCompilationAsync(recorder, compilation);
+            Assert.True(burnResult.Success, burnResult.ErrorMessage);
+
+            var entries = new AccurateRipTrackEntry[trackCount];
+            for (int i = 0; i < trackCount; i++)
+            {
+                int frame450Byte = (i * sectorsPerTrack + 450) * OpticalConstants.RawSectorSize + planted * 4;
+                uint crc450 = ReferenceFrame450Crc(wholeDiscPcm.AsSpan(frame450Byte, OpticalConstants.RawSectorSize));
+                entries[i] = new AccurateRipTrackEntry(Confidence: 7, Crc: 0, Frame450Crc: crc450);
+            }
+
+            var pressing = new AccurateRipPressing(0x10101010u, 0x20202020u, 0x30303030u, entries);
+            var (tracks, _) = AudioCdRipperService.QueryTracksAndCdText(recorder);
+            var result = await ReadOffsetDetector.DetectAsync(engine, recorder, tracks, [pressing], maxOffsetSamples: 3000);
+
+            Assert.Null(result.ErrorMessage);
+            Assert.Equal(Enumerable.Range(1, trackCount), result.ProbedTracks.OrderBy(x => x));
+            Assert.NotNull(result.Best);
+            Assert.Equal(planted, result.Best.OffsetSamples);
+        }
+        finally
+        {
+            try { if (Directory.Exists(tempDir)) Directory.Delete(tempDir, true); } catch { }
+        }
+    }
+
+    [Fact]
+    public async Task DetectAsync_MiddleTrackNearLbaZero_ClampsFirstSectorToZeroAndFindsPositiveOffset()
+    {
+        string tempDir = Path.Combine(Path.GetTempPath(), "CdBurner_OffsetClamp_" + Guid.NewGuid().ToString("N"));
+        Directory.CreateDirectory(tempDir);
+
+        try
+        {
+            // Track 1 is only 2 sectors so Track 2 starts at LBA 2 (< marginSectors = 6).
+            int[] sectorCounts = [2, 80, 20];
+            var rng = new Random(9988);
+            byte[][] pcms = new byte[3][];
+            int totalBytes = 0;
+            for (int i = 0; i < 3; i++)
+            {
+                pcms[i] = new byte[sectorCounts[i] * OpticalConstants.RawSectorSize];
+                rng.NextBytes(pcms[i]);
+                totalBytes += pcms[i].Length;
+            }
+
+            byte[] wholeDisc = new byte[totalBytes];
+            int pos = 0;
+            for (int i = 0; i < 3; i++)
+            {
+                pcms[i].CopyTo(wholeDisc, pos);
+                pos += pcms[i].Length;
+            }
+
+            using var recorder = new VirtualDiscRecorder();
+            using var medium = VirtualDiscMedium.CreateBlankCdR700();
+            medium.Raw2352Mode = true;
+            medium.WriteSectors(0, wholeDisc, OpticalConstants.RawSectorSize);
+            var session = new VirtualSession { SessionNumber = 1, StartLba = 0, SectorCount = sectorCounts.Sum() };
+            int lba = 0;
+            for (int i = 0; i < 3; i++)
+            {
+                session.Tracks.Add(new VirtualTrack
+                {
+                    TrackNumber = i + 1,
+                    Title = $"Track {i + 1}",
+                    StartLba = lba,
+                    SectorCount = sectorCounts[i],
+                    IsAudio = true
+                });
+                lba += sectorCounts[i];
+            }
+            medium.Sessions.Add(session);
+            recorder.InsertMedia(medium);
+
+            const int planted = 19;
+            int track2StartSample = sectorCounts[0] * 588;
+            int track2Samples = sectorCounts[1] * 588;
+            var (refV1, _) = ReferenceAccurateRip(wholeDisc.AsSpan((track2StartSample + planted) * 4, track2Samples * 4), first: false, last: false);
+
+            var pressing = new AccurateRipPressing(
+                0x11u, 0x22u, 0x33u,
+                [
+                    new AccurateRipTrackEntry(1, 0xAAAAu, 0),
+                    new AccurateRipTrackEntry(6, refV1, 0),
+                    new AccurateRipTrackEntry(1, 0xBBBBu, 0)
+                ]);
+
+            var engine = new VirtualBurnEngine(recorder);
+            var (tracks, _) = AudioCdRipperService.QueryTracksAndCdText(recorder);
+            var result = await ReadOffsetDetector.DetectAsync(engine, recorder, tracks, [pressing], maxOffsetSamples: 3000);
+
+            Assert.Null(result.ErrorMessage);
+            Assert.NotNull(result.Best);
+            Assert.Equal(planted, result.Best.OffsetSamples);
+        }
+        finally
+        {
+            try { if (Directory.Exists(tempDir)) Directory.Delete(tempDir, true); } catch { }
+        }
+    }
 }

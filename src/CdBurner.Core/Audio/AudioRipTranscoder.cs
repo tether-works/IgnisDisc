@@ -11,7 +11,8 @@ public sealed record AudioRipTranscodeSettings(
     AudioRipFormat Format,
     int BitrateKbps = 0,
     string? FfmpegPath = null,
-    bool KeepWav = false);
+    bool KeepWav = false,
+    bool ApplyDeEmphasis = false);
 
 /// <summary>Outcome of <see cref="AudioRipTranscoder.TranscodeAsync"/>.</summary>
 public sealed record AudioRipTranscodeResult(IReadOnlyList<string> Files, IReadOnlyList<string> Warnings);
@@ -100,6 +101,7 @@ public sealed class AudioRipTranscoder
         string albumPerformer = !string.IsNullOrWhiteSpace(rip.CdText?.AlbumPerformer) ? rip.CdText.AlbumPerformer : "Unknown Artist";
 
         string? coverTempPath = null;
+        var tempDeEmphWavs = new List<string>();
         try
         {
             if (coverArtBytes is { Length: > 0 } && format == AudioRipFormat.Mp3)
@@ -144,11 +146,19 @@ public sealed class AudioRipTranscoder
                 cancellationToken.ThrowIfCancellationRequested();
 
                 string wavPath = info.FilePath;
+                string sourceWav = wavPath;
+                if (settings.ApplyDeEmphasis && info.PreEmphasis && !info.DeEmphasisApplied)
+                {
+                    sourceWav = Path.Combine(Path.GetTempPath(), "ignisdisc-deemph-" + Guid.NewGuid().ToString("N") + ".wav");
+                    RedBookPcmDspProcessor.ApplyDeEmphasisToWavFile(wavPath, sourceWav);
+                    tempDeEmphWavs.Add(sourceWav);
+                }
+
                 string outPath = Path.ChangeExtension(wavPath, extension);
                 var tags = BuildTags(info, rip, albumTitle, albumPerformer, trackTotal, coverArtBytes, coverArtMimeType);
 
                 string? tagWarning = await EncodeFileAsync(
-                    format, settings, wavPath, outPath, tags, bitrate, coverArtBytes, coverTempPath, cancellationToken).ConfigureAwait(false);
+                    format, settings, sourceWav, outPath, tags, bitrate, coverArtBytes, coverTempPath, cancellationToken).ConfigureAwait(false);
                 if (tagWarning != null)
                 {
                     warnings.Add($"Track {info.TrackNumber:D2}: {tagWarning}");
@@ -162,6 +172,10 @@ public sealed class AudioRipTranscoder
             if (coverTempPath != null)
             {
                 try { File.Delete(coverTempPath); } catch (IOException) { } catch (UnauthorizedAccessException) { }
+            }
+            foreach (string tmp in tempDeEmphWavs)
+            {
+                try { File.Delete(tmp); } catch (IOException) { } catch (UnauthorizedAccessException) { }
             }
         }
 

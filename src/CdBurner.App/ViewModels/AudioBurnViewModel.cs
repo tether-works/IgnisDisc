@@ -82,6 +82,7 @@ public class AudioBurnViewModel : ObservableObject, IDisposable
     private bool _verifyAccurateRip = true;
     private bool _verifyCtdb;
     private bool _continueOnUnreadable;
+    private bool _deEmphasizePreEmphasisTracks;
     private bool _includeRecoverySession; // off by default: some car head units refuse Enhanced CDs
     private string _dataSessionFolderPath = string.Empty;
     private string _dataSessionVolumeLabel = "CD_EXTRA";
@@ -842,6 +843,21 @@ public class AudioBurnViewModel : ObservableObject, IDisposable
         }
     }
 
+    /// <summary>
+    /// Whether to apply the Red Book 50/15 us digital de-emphasis filter to tracks flagged with pre-emphasis.
+    /// </summary>
+    public bool DeEmphasizePreEmphasisTracks
+    {
+        get => _deEmphasizePreEmphasisTracks;
+        set
+        {
+            if (SetProperty(ref _deEmphasizePreEmphasisTracks, value))
+            {
+                SaveSettingsIfAvailable();
+            }
+        }
+    }
+
     /// <summary>Save the rip as uncompressed WAV files.</summary>
     public bool RipAsWav
     {
@@ -1249,6 +1265,7 @@ public class AudioBurnViewModel : ObservableObject, IDisposable
             _lookupMetadata = s.LookupMusicBrainzByDefault;
             _verifyAccurateRip = s.VerifyAccurateRipByDefault;
             _verifyCtdb = s.VerifyCtdbByDefault;
+            _deEmphasizePreEmphasisTracks = s.DeEmphasizePreEmphasisOnRip;
             LoadRipExportSettings(s);
         }
         else
@@ -2745,6 +2762,7 @@ public class AudioBurnViewModel : ObservableObject, IDisposable
             LookupMetadata = settings.LookupMusicBrainzByDefault;
             VerifyAccurateRip = settings.VerifyAccurateRipByDefault;
             VerifyCtdb = settings.VerifyCtdbByDefault;
+            DeEmphasizePreEmphasisTracks = settings.DeEmphasizePreEmphasisOnRip;
             LoadRipExportSettings(settings);
         }
         finally
@@ -2811,6 +2829,7 @@ public class AudioBurnViewModel : ObservableObject, IDisposable
             settings.RipNamingTemplate = _ripNamingTemplate;
             settings.FetchCoverArtByDefault = _fetchCoverArt;
             settings.WriteFolderImage = _writeFolderImage;
+            settings.DeEmphasizePreEmphasisOnRip = _deEmphasizePreEmphasisTracks;
             _settingsService.CurrentSettings = settings;
             _settingsService.Save();
         }
@@ -3189,7 +3208,8 @@ public class AudioBurnViewModel : ObservableObject, IDisposable
         var exportCheck = new AudioExportOptions(
             targets, exportRoot, useLibrary ? RipNamingTemplate : AudioNamingTemplate.Flat,
             new AudioAlbumInfo(string.Empty, string.Empty, null), ffmpegPath,
-            KeepWav: false, WriteFolderImage: WriteFolderImage, Overwrite: OverwriteExistingFiles);
+            KeepWav: false, WriteFolderImage: WriteFolderImage, Overwrite: OverwriteExistingFiles,
+            ApplyDeEmphasis: DeEmphasizePreEmphasisTracks);
         if (formatProblem == null)
         {
             formatProblem = exporter.CheckPrerequisites(exportCheck);
@@ -3336,7 +3356,8 @@ public class AudioBurnViewModel : ObservableObject, IDisposable
                 CalculateReplayGain = true, // track and album ReplayGain 2.0, same as rip-audio without --no-replaygain
                 CoverArtBytes = coverBytes,
                 CoverArtMimeType = coverMime,
-                RepairFromRecoverySession = RepairFromRecoverySession
+                RepairFromRecoverySession = RepairFromRecoverySession,
+                ApplyDeEmphasis = DeEmphasizePreEmphasisTracks
             };
 
             var ripResult = await _ripperService.RipAudioCdAsync(recorder, _burnEngine, targetFolder, options, progress, activeToken);

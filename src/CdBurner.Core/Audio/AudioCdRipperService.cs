@@ -76,6 +76,12 @@ public class AudioRipOptions
     /// ripped track against session 2 and rebuilds any damaged samples from PAR2.
     /// </summary>
     public bool RepairFromRecoverySession { get; set; } = false;
+
+    /// <summary>
+    /// When true, applies the Red Book 50/15 us digital de-emphasis filter to tracks flagged with pre-emphasis.
+    /// AccurateRip and CTDB checksums are still computed on the raw disc PCM before de-emphasis.
+    /// </summary>
+    public bool ApplyDeEmphasis { get; set; } = false;
 }
 
 /// <summary>
@@ -106,7 +112,9 @@ public sealed record AudioTrackRipInfo(
     string? Isrc = null,
     double? ReplayGainTrackGain = null,
     double? ReplayGainTrackPeak = null,
-    uint CtdbTrackCrc = 0);
+    uint CtdbTrackCrc = 0,
+    bool PreEmphasis = false,
+    bool DeEmphasisApplied = false);
 
 /// <summary>
 /// Discovered audio track descriptor extracted from optical medium TOC or session metadata.
@@ -658,6 +666,13 @@ public class AudioCdRipperService
                     new IOException($"Unrecovered read error at LBA {trackExtract.StoppedAtLba}."));
             }
 
+            bool deEmphasisApplied = false;
+            if (options.ApplyDeEmphasis && track.PreEmphasis && !hasRecoverySession && File.Exists(targetWavPath))
+            {
+                ApplyDeEmphasisInPlace(targetWavPath);
+                deEmphasisApplied = true;
+            }
+
             rippedFilePaths.Add(targetWavPath);
             wavNameByTrackNumber[track.TrackNumber] = fileName;
 
@@ -693,7 +708,9 @@ public class AudioCdRipperService
                 track.Isrc,
                 trackGain,
                 trackPeak,
-                ctdbChecksum.Value));
+                ctdbChecksum.Value,
+                track.PreEmphasis,
+                deEmphasisApplied));
             totalSectorsRead += track.SectorCount;
         }
 
@@ -716,17 +733,34 @@ public class AudioCdRipperService
                 options,
                 cancellationToken).ConfigureAwait(false);
 
-            if (recoveryRepair.RepairedTracks.Count > 0 && options.CalculateReplayGain)
+            bool anyDeEmphasizedAfterRepair = false;
+            if (options.ApplyDeEmphasis)
+            {
+                for (int i = 0; i < trackInfos.Count; i++)
+                {
+                    if (trackInfos[i].PreEmphasis && !trackInfos[i].DeEmphasisApplied && File.Exists(trackInfos[i].FilePath))
+                    {
+                        ApplyDeEmphasisInPlace(trackInfos[i].FilePath);
+                        trackInfos[i] = trackInfos[i] with { DeEmphasisApplied = true };
+                        anyDeEmphasizedAfterRepair = true;
+                    }
+                }
+            }
+
+            if ((recoveryRepair.RepairedTracks.Count > 0 || anyDeEmphasizedAfterRepair) && options.CalculateReplayGain)
             {
                 replayGainResults.Clear();
-                foreach (var info in trackInfos)
+                for (int i = 0; i < trackInfos.Count; i++)
                 {
+                    var info = trackInfos[i];
                     if (File.Exists(info.FilePath))
                     {
                         try
                         {
                             using var s = new FileStream(info.FilePath, FileMode.Open, FileAccess.Read, FileShare.Read);
-                            replayGainResults.Add(ReplayGainCalculator.CalculateTrackReplayGain(s));
+                            var rg = ReplayGainCalculator.CalculateTrackReplayGain(s);
+                            replayGainResults.Add(rg);
+                            trackInfos[i] = info with { ReplayGainTrackGain = rg.GainDb, ReplayGainTrackPeak = rg.PeakAmplitude };
                         }
                         catch
                         {
@@ -769,7 +803,7 @@ public class AudioCdRipperService
 
                 var flags = new List<string>(2);
                 if (trk.CopyPermitted) flags.Add("DCP");
-                if (trk.PreEmphasis) flags.Add("PRE");
+                if (trk.PreEmphasis && !options.ApplyDeEmphasis) flags.Add("PRE");
 
                 CueSplitIndex00? splitIndex00 = null;
                 MsfAddress? preGap = null;
@@ -899,9 +933,21 @@ public class AudioCdRipperService
             bytesRemaining -= sector.Length;
         }
 
-        for (int s = firstSector; s < Math.Min(readStart, endSector); s++)
+        async Task EmitOverreadRangeAsync(int overStart, int overEnd)
         {
-            await EmitAsync(silence).ConfigureAwait(false);
+            for (int s = overStart; s < overEnd; s++)
+            {
+                cancellationToken.ThrowIfCancellationRequested();
+                byte[]? overreadSector = options.ReadOffsetSamples != 0
+                    ? await TryReadOverreadSectorAsync(recorder, engine, secureReader, s, audioEndLba, options.MaxRetriesPerSector, cancellationToken).ConfigureAwait(false)
+                    : null;
+                await EmitAsync(overreadSector ?? silence).ConfigureAwait(false);
+            }
+        }
+
+        if (firstSector < readStart)
+        {
+            await EmitOverreadRangeAsync(firstSector, Math.Min(readStart, endSector)).ConfigureAwait(false);
         }
 
         if (readEnd > readStart)
@@ -952,12 +998,97 @@ public class AudioCdRipperService
             }
         }
 
-        for (int s = Math.Max(readEnd, readStart); s < endSector; s++)
+        int tailOverStart = Math.Max(readEnd, readStart);
+        if (tailOverStart < endSector)
         {
-            await EmitAsync(silence).ConfigureAwait(false);
+            await EmitOverreadRangeAsync(tailOverStart, endSector).ConfigureAwait(false);
         }
 
         return new RangeExtractOutcome(completed, stoppedAtLba, badSectors, recoveredSectors, suspectSectors);
+    }
+
+    private static async Task<byte[]?> TryReadOverreadSectorAsync(
+        IDiscRecorderBackend recorder,
+        IBurnEngineBackend engine,
+        ISecureAudioReader? secureReader,
+        int lba,
+        int audioEndLba,
+        int maxRetries,
+        CancellationToken cancellationToken)
+    {
+        try
+        {
+            if (secureReader != null)
+            {
+                byte[]? captured = null;
+                int c2Flags = 0;
+                var first = await secureReader.ReadAudioSectorsWithC2Async(recorder, lba, 1, (gotLba, data, c2) =>
+                {
+                    if (gotLba == lba && captured == null)
+                    {
+                        captured = data.ToArray();
+                        c2Flags = c2;
+                    }
+                    return ValueTask.CompletedTask;
+                }, cancellationToken).ConfigureAwait(false);
+
+                if (!first.Success || captured == null)
+                {
+                    return null;
+                }
+
+                for (int round = 0; round < maxRetries && c2Flags > 0; round++)
+                {
+                    await secureReader.FlushReadCacheAsync(recorder, lba, audioEndLba, cancellationToken).ConfigureAwait(false);
+                    var retry = await secureReader.ReadAudioSectorsWithC2Async(recorder, lba, 1, (gotLba, data, c2) =>
+                    {
+                        if (gotLba == lba)
+                        {
+                            captured = data.ToArray();
+                            c2Flags = c2;
+                        }
+                        return ValueTask.CompletedTask;
+                    }, cancellationToken).ConfigureAwait(false);
+
+                    if (!retry.Success)
+                    {
+                        break;
+                    }
+                }
+
+                return captured;
+            }
+
+            byte[]? sector = null;
+            var result = await engine.ReadSectorsAsync(recorder, lba, 1, raw2352Mode: true, (gotLba, data) =>
+            {
+                if (gotLba == lba && sector == null)
+                {
+                    sector = data.ToArray();
+                }
+                return ValueTask.CompletedTask;
+            }, progress: null, cancellationToken).ConfigureAwait(false);
+
+            return result.Success ? sector : null;
+        }
+        catch (Exception ex) when (ex is not OperationCanceledException)
+        {
+            return null;
+        }
+    }
+
+    private static void ApplyDeEmphasisInPlace(string wavPath)
+    {
+        string tempPath = wavPath + ".deemph-" + Guid.NewGuid().ToString("N")[..8] + ".tmp";
+        try
+        {
+            RedBookPcmDspProcessor.ApplyDeEmphasisToWavFile(wavPath, tempPath);
+            File.Move(tempPath, wavPath, overwrite: true);
+        }
+        finally
+        {
+            TryDeleteFile(tempPath);
+        }
     }
 
     private static void TryDeleteFile(string path)

@@ -939,8 +939,14 @@
                                           AutomationProperties.Name="Repair from recovery session"
                                           IsChecked="{Binding RepairFromRecoverySession}"
                                           Foreground="{DynamicResource TextPrimaryBrush}"
-                                          Margin="0,2,0,2"
+                                          Margin="0,2,20,2"
                                           ToolTip="Verify ripped audio tracks against session 2 PAR2 recovery data on Enhanced CDs and rebuild any damaged samples." />
+                                <CheckBox Content="De-emphasize pre-emphasis tracks"
+                                          AutomationProperties.Name="De-emphasize pre-emphasis tracks"
+                                          IsChecked="{Binding DeEmphasizePreEmphasisTracks}"
+                                          Foreground="{DynamicResource TextPrimaryBrush}"
+                                          Margin="0,2,0,2"
+                                          ToolTip="Apply the Red Book 50/15 us de-emphasis filter to tracks flagged with pre-emphasis so standalone files play with flat treble." />
                             </WrapPanel>
                         </StackPanel>
                     </Border>

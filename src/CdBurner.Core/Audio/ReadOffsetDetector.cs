@@ -79,6 +79,50 @@ public static class ReadOffsetDetector
             }
         }
 
+        return ScanWindowOffsets(paddedPcm, marginSamples, trackSamples, wanted, trackNumber);
+    }
+
+    /// <summary>
+    /// Scans offsets -<paramref name="marginSamples"/>..+<paramref name="marginSamples"/> against each pressing's
+    /// <see cref="AccurateRipTrackEntry.Frame450Crc"/>. <paramref name="paddedPcm"/> holds frame 450 (588 samples) with
+    /// <paramref name="marginSamples"/> extra samples before and after it.
+    /// </summary>
+    public static IReadOnlyList<ReadOffsetCandidate> FindFrame450Offsets(
+        ReadOnlySpan<byte> paddedPcm,
+        int marginSamples,
+        IReadOnlyList<AccurateRipPressing> pressings,
+        int trackIndex,
+        int trackNumber)
+    {
+        ArgumentOutOfRangeException.ThrowIfNegative(marginSamples);
+        if (paddedPcm.Length < (long)(SamplesPerSector + 2 * marginSamples) * 4)
+        {
+            throw new ArgumentException("Padded PCM is shorter than frame 450 plus both margins.", nameof(paddedPcm));
+        }
+
+        var wanted = new Dictionary<uint, int>();
+        foreach (var pressing in pressings)
+        {
+            if (trackIndex < pressing.Tracks.Count)
+            {
+                var e = pressing.Tracks[trackIndex];
+                if (e.Frame450Crc != 0)
+                {
+                    wanted[e.Frame450Crc] = wanted.GetValueOrDefault(e.Frame450Crc) + e.Confidence;
+                }
+            }
+        }
+
+        return ScanWindowOffsets(paddedPcm, marginSamples, SamplesPerSector, wanted, trackNumber);
+    }
+
+    private static List<ReadOffsetCandidate> ScanWindowOffsets(
+        ReadOnlySpan<byte> paddedPcm,
+        int marginSamples,
+        int windowSamples,
+        Dictionary<uint, int> wanted,
+        int trackNumber)
+    {
         var results = new List<ReadOffsetCandidate>();
         if (wanted.Count == 0)
         {
@@ -90,14 +134,14 @@ public static class ReadOffsetDetector
         // Window for offset -margin starts at sample index 0 of the padded buffer.
         uint crc = 0;
         uint sum = 0;
-        for (int k = 0; k < trackSamples; k++)
+        for (int k = 0; k < windowSamples; k++)
         {
             uint s = Sample(paddedPcm, k);
             crc += s * (uint)(k + 1);
             sum += s;
         }
 
-        uint n = (uint)trackSamples;
+        uint n = (uint)windowSamples;
         for (int o = -marginSamples; ; o++)
         {
             if (wanted.TryGetValue(crc, out int confidence))
@@ -110,7 +154,7 @@ public static class ReadOffsetDetector
             }
 
             int start = o + marginSamples;           // window start index in the padded buffer
-            uint incoming = Sample(paddedPcm, start + trackSamples);
+            uint incoming = Sample(paddedPcm, start + windowSamples);
             crc = crc - sum + n * incoming;
             sum = sum - Sample(paddedPcm, start) + incoming;
         }
@@ -119,9 +163,9 @@ public static class ReadOffsetDetector
     }
 
     /// <summary>
-    /// Reads up to <paramref name="tracksToProbe"/> middle tracks with a margin of
-    /// <paramref name="maxOffsetSamples"/> samples on each side and looks for offsets whose v1 checksum is in the
-    /// database. Requires at least three audio tracks.
+    /// Reads up to <paramref name="tracksToProbe"/> middle tracks (or frame 450 via
+    /// <see cref="AccurateRipTrackEntry.Frame450Crc"/> on 1- or 2-track discs) with a margin of
+    /// <paramref name="maxOffsetSamples"/> samples on each side and looks for matching offsets in the database.
     /// </summary>
     public static async Task<ReadOffsetDetectionResult> DetectAsync(
         IBurnEngineBackend engine,
@@ -138,15 +182,85 @@ public static class ReadOffsetDetector
         ArgumentNullException.ThrowIfNull(pressings);
 
         var ordered = audioTracks.OrderBy(t => t.StartLba).ToList();
-        if (ordered.Count < 3)
+        if (ordered.Count == 0)
         {
             return new ReadOffsetDetectionResult(Array.Empty<ReadOffsetCandidate>(), Array.Empty<int>(),
-                "Offset detection needs a disc with at least three audio tracks.");
+                "Offset detection requires at least one audio track.");
         }
 
         int marginSectors = (maxOffsetSamples + SamplesPerSector - 1) / SamplesPerSector;
+        int audioEndLba = ordered.Max(t => t.StartLba + t.SectorCount);
         var candidates = new List<ReadOffsetCandidate>();
         var probed = new List<int>();
+
+        if (ordered.Count < 3)
+        {
+            var eligible = Enumerable.Range(0, ordered.Count)
+                .Where(i => ordered[i].SectorCount > 450 &&
+                            pressings.Any(p => i < p.Tracks.Count && p.Tracks[i].Frame450Crc != 0))
+                .OrderByDescending(i => ordered[i].SectorCount)
+                .Take(Math.Max(1, tracksToProbe))
+                .ToList();
+
+            if (eligible.Count == 0)
+            {
+                return new ReadOffsetDetectionResult(Array.Empty<ReadOffsetCandidate>(), Array.Empty<int>(),
+                    "Offset detection on a 1- or 2-track disc needs a track longer than 450 frames with a Frame450 CRC in AccurateRip.");
+            }
+
+            foreach (int index in eligible)
+            {
+                cancellationToken.ThrowIfCancellationRequested();
+                var track = ordered[index];
+                int frame450Lba = track.StartLba + 450;
+                int nominalFirstSector = frame450Lba - marginSectors;
+                int sectorCount = 1 + 2 * marginSectors;
+                int firstSector = Math.Max(0, nominalFirstSector);
+                int readEnd = Math.Min(audioEndLba, nominalFirstSector + sectorCount);
+                int readCount = Math.Max(0, readEnd - firstSector);
+                var buffer = new byte[(long)sectorCount * OpticalConstants.RawSectorSize];
+                int written = (firstSector - nominalFirstSector) * OpticalConstants.RawSectorSize;
+
+                if (readCount > 0)
+                {
+                    var outcome = await BatchedSectorReader.ReadRangeAsync(
+                        engine,
+                        recorder,
+                        firstSector,
+                        readCount,
+                        raw2352Mode: true,
+                        maxRetriesPerSector: 3,
+                        onSector: (_, data) =>
+                        {
+                            data.Span.CopyTo(buffer.AsSpan(written));
+                            written += data.Length;
+                            return ValueTask.CompletedTask;
+                        },
+                        onUnreadable: _ => ValueTask.FromResult(false),
+                        cancellationToken: cancellationToken).ConfigureAwait(false);
+
+                    if (!outcome.Completed)
+                    {
+                        return new ReadOffsetDetectionResult(candidates, probed,
+                            $"Unreadable sector at LBA {outcome.StoppedAtLba} while reading track {track.TrackNumber}.");
+                    }
+                }
+
+                probed.Add(track.TrackNumber);
+                int skipSamples = marginSectors * SamplesPerSector - maxOffsetSamples;
+                var padded = buffer.AsSpan(skipSamples * 4);
+                candidates.AddRange(FindFrame450Offsets(
+                    padded,
+                    maxOffsetSamples,
+                    pressings,
+                    index,
+                    track.TrackNumber));
+            }
+
+            return new ReadOffsetDetectionResult(
+                candidates.OrderByDescending(c => c.Confidence).ToList(),
+                probed);
+        }
 
         // Prefer the longest middle tracks up to 10 minutes: more samples make an accidental match less likely, but each
         // probed track is held in memory (10 minutes = ~106 MB) and very long tracks would overflow 32-bit offsets.
@@ -166,31 +280,37 @@ public static class ReadOffsetDetector
         {
             cancellationToken.ThrowIfCancellationRequested();
             var track = ordered[index];
-            int firstSector = track.StartLba - marginSectors;
+            int nominalFirstSector = track.StartLba - marginSectors;
+            int firstSector = Math.Max(0, nominalFirstSector);
             int sectorCount = track.SectorCount + 2 * marginSectors;
+            int readEnd = Math.Min(audioEndLba, nominalFirstSector + sectorCount);
+            int readCount = Math.Max(0, readEnd - firstSector);
             var buffer = new byte[(long)sectorCount * OpticalConstants.RawSectorSize];
-            int written = 0;
+            int written = (firstSector - nominalFirstSector) * OpticalConstants.RawSectorSize;
 
-            var outcome = await BatchedSectorReader.ReadRangeAsync(
-                engine,
-                recorder,
-                firstSector,
-                sectorCount,
-                raw2352Mode: true,
-                maxRetriesPerSector: 3,
-                onSector: (_, data) =>
-                {
-                    data.Span.CopyTo(buffer.AsSpan(written));
-                    written += data.Length;
-                    return ValueTask.CompletedTask;
-                },
-                onUnreadable: _ => ValueTask.FromResult(false),
-                cancellationToken: cancellationToken).ConfigureAwait(false);
-
-            if (!outcome.Completed)
+            if (readCount > 0)
             {
-                return new ReadOffsetDetectionResult(candidates, probed,
-                    $"Unreadable sector at LBA {outcome.StoppedAtLba} while reading track {track.TrackNumber}.");
+                var outcome = await BatchedSectorReader.ReadRangeAsync(
+                    engine,
+                    recorder,
+                    firstSector,
+                    readCount,
+                    raw2352Mode: true,
+                    maxRetriesPerSector: 3,
+                    onSector: (_, data) =>
+                    {
+                        data.Span.CopyTo(buffer.AsSpan(written));
+                        written += data.Length;
+                        return ValueTask.CompletedTask;
+                    },
+                    onUnreadable: _ => ValueTask.FromResult(false),
+                    cancellationToken: cancellationToken).ConfigureAwait(false);
+
+                if (!outcome.Completed)
+                {
+                    return new ReadOffsetDetectionResult(candidates, probed,
+                        $"Unreadable sector at LBA {outcome.StoppedAtLba} while reading track {track.TrackNumber}.");
+                }
             }
 
             probed.Add(track.TrackNumber);

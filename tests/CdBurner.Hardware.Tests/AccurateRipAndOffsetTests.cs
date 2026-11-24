@@ -1,4 +1,5 @@
 using System.Buffers.Binary;
+using CdBurner.Core.Abstractions;
 using CdBurner.Core.Audio;
 using CdBurner.Core.Primitives;
 using CdBurner.Hardware.Simulation;
@@ -559,5 +560,148 @@ public class AccurateRipAndOffsetTests : IClassFixture<VirtualAudioDiscFixture>
         Assert.Single(partialResult.TrackInfos);
         Assert.Null(partialResult.CtdbDiscCrc);
         Assert.Equal(c2.Value, partialResult.TrackInfos[0].CtdbTrackCrc);
+    }
+
+    private sealed class OverreadProbeEngine : IBurnEngineBackend, ISecureAudioReader
+    {
+        private readonly IBurnEngineBackend _inner;
+        private readonly byte[]? _leadInSector;
+        private readonly byte[]? _leadOutSector;
+        private readonly int _audioEndLba;
+
+        public List<int> RequestedLbas { get; } = new();
+
+        public OverreadProbeEngine(IBurnEngineBackend inner, int audioEndLba, byte[]? leadInSector, byte[]? leadOutSector)
+        {
+            _inner = inner;
+            _audioEndLba = audioEndLba;
+            _leadInSector = leadInSector;
+            _leadOutSector = leadOutSector;
+        }
+
+        public Task<BurnOperationResult> BurnDataStreamAsync(IDiscRecorderBackend r, Stream s, DataBurnOptions o, IProgress<BurnProgressSnapshot>? p, CancellationToken ct) => _inner.BurnDataStreamAsync(r, s, o, p, ct);
+        public Task<BurnOperationResult> BurnAudioTracksAsync(IDiscRecorderBackend r, IReadOnlyList<AudioTrackSource> t, AudioBurnOptions o, IProgress<BurnProgressSnapshot>? p, CancellationToken ct) => _inner.BurnAudioTracksAsync(r, t, o, p, ct);
+        public Task<BurnOperationResult> EraseMediaAsync(IDiscRecorderBackend r, bool f, IProgress<BurnProgressSnapshot>? p, CancellationToken ct) => _inner.EraseMediaAsync(r, f, p, ct);
+        public bool SupportsC2ErrorPointers(IDiscRecorderBackend r, int probeLba) => true;
+        public Task FlushReadCacheAsync(IDiscRecorderBackend r, int nearLba, int endLba, CancellationToken ct) => Task.CompletedTask;
+
+        public async Task<RipOperationResult> ReadSectorsAsync(
+            IDiscRecorderBackend recorder,
+            int startLba,
+            int sectorCount,
+            bool raw2352Mode,
+            Func<int, ReadOnlyMemory<byte>, ValueTask> sectorConsumer,
+            IProgress<BurnProgressSnapshot>? progress,
+            CancellationToken cancellationToken)
+        {
+            for (int i = 0; i < sectorCount; i++)
+            {
+                RequestedLbas.Add(startLba + i);
+            }
+
+            if (startLba < 0)
+            {
+                if (_leadInSector != null && sectorCount == 1 && startLba == -1)
+                {
+                    await sectorConsumer(-1, _leadInSector);
+                    return RipOperationResult.Succeeded(1, TimeSpan.Zero);
+                }
+                return RipOperationResult.Failed($"Illegal request at LBA {startLba} (Sense: 05/21/00)");
+            }
+
+            if (startLba >= _audioEndLba)
+            {
+                if (_leadOutSector != null && sectorCount == 1 && startLba == _audioEndLba)
+                {
+                    await sectorConsumer(_audioEndLba, _leadOutSector);
+                    return RipOperationResult.Succeeded(1, TimeSpan.Zero);
+                }
+                return RipOperationResult.Failed($"Illegal request at LBA {startLba} (Sense: 05/21/00)");
+            }
+
+            return await _inner.ReadSectorsAsync(recorder, startLba, sectorCount, raw2352Mode, sectorConsumer, progress, cancellationToken);
+        }
+
+        public async Task<RipOperationResult> ReadAudioSectorsWithC2Async(
+            IDiscRecorderBackend recorder,
+            int startLba,
+            int sectorCount,
+            Func<int, ReadOnlyMemory<byte>, int, ValueTask> sectorConsumer,
+            CancellationToken cancellationToken)
+        {
+            return await ReadSectorsAsync(
+                recorder,
+                startLba,
+                sectorCount,
+                raw2352Mode: true,
+                (lba, data) => sectorConsumer(lba, data, 0),
+                progress: null,
+                cancellationToken);
+        }
+    }
+
+    [Fact]
+    public async Task Rip_OverreadSupported_ReadsLeadInAndLeadOutSamples()
+    {
+        byte[] whole = await GetZeroOffsetWholeAudioPcmAsync();
+        int audioEndLba = VirtualAudioDiscFixture.Track1Frames + VirtualAudioDiscFixture.Track2Frames + VirtualAudioDiscFixture.Track3Frames;
+
+        byte[] leadIn = Enumerable.Repeat((byte)0x5A, OpticalConstants.RawSectorSize).ToArray();
+        byte[] leadOut = Enumerable.Repeat((byte)0xA5, OpticalConstants.RawSectorSize).ToArray();
+
+        // Negative offset (-6) probes lead-in LBA -1 and injects the last 24 bytes of leadIn into Track 1 start.
+        var negEngine = new OverreadProbeEngine(new VirtualBurnEngine(_fixture.Recorder), audioEndLba, leadIn, leadOut);
+        var negRes = await new AudioCdRipperService().RipAudioCdAsync(
+            _fixture.Recorder,
+            negEngine,
+            Path.Combine(_fixture.TempDir, "rip_overread_neg"),
+            new AudioRipOptions { ReadOffsetSamples = -6, SecureMode = false });
+        Assert.True(negRes.Success, negRes.ErrorMessage);
+        Assert.Contains(-1, negEngine.RequestedLbas);
+        byte[] t1Neg = (await File.ReadAllBytesAsync(negRes.TrackInfos[0].FilePath))[44..];
+        Assert.Equal(leadIn[^24..], t1Neg[..24]);
+
+        // Positive offset (+6) probes lead-out LBA audioEndLba and injects its first 24 bytes into Track 3 end.
+        var posEngine = new OverreadProbeEngine(new VirtualBurnEngine(_fixture.Recorder), audioEndLba, leadIn, leadOut);
+        var posRes = await new AudioCdRipperService().RipAudioCdAsync(
+            _fixture.Recorder,
+            posEngine,
+            Path.Combine(_fixture.TempDir, "rip_overread_pos"),
+            new AudioRipOptions { ReadOffsetSamples = 6, SecureMode = true });
+        Assert.True(posRes.Success, posRes.ErrorMessage);
+        Assert.Contains(audioEndLba, posEngine.RequestedLbas);
+        byte[] t3Pos = (await File.ReadAllBytesAsync(posRes.TrackInfos[2].FilePath))[44..];
+        int tailStart = whole.Length - (_fixture.Track1Pcm.Length + _fixture.Track2Pcm.Length) - 24;
+        Assert.Equal(leadOut[..24], t3Pos[tailStart..]);
+    }
+
+    [Fact]
+    public async Task Rip_OverreadRejectedWith52100_FallsBackToZeroPadding()
+    {
+        int audioEndLba = VirtualAudioDiscFixture.Track1Frames + VirtualAudioDiscFixture.Track2Frames + VirtualAudioDiscFixture.Track3Frames;
+
+        var negEngine = new OverreadProbeEngine(new VirtualBurnEngine(_fixture.Recorder), audioEndLba, leadInSector: null, leadOutSector: null);
+        var negRes = await new AudioCdRipperService().RipAudioCdAsync(
+            _fixture.Recorder,
+            negEngine,
+            Path.Combine(_fixture.TempDir, "rip_overread_521_neg"),
+            new AudioRipOptions { ReadOffsetSamples = -6, SecureMode = true });
+        Assert.True(negRes.Success, negRes.ErrorMessage);
+        Assert.Contains(-1, negEngine.RequestedLbas);
+        Assert.Empty(negRes.BadSectorLbas);
+        byte[] t1Neg = (await File.ReadAllBytesAsync(negRes.TrackInfos[0].FilePath))[44..];
+        Assert.All(t1Neg[..24], b => Assert.Equal((byte)0, b));
+
+        var posEngine = new OverreadProbeEngine(new VirtualBurnEngine(_fixture.Recorder), audioEndLba, leadInSector: null, leadOutSector: null);
+        var posRes = await new AudioCdRipperService().RipAudioCdAsync(
+            _fixture.Recorder,
+            posEngine,
+            Path.Combine(_fixture.TempDir, "rip_overread_521_pos"),
+            new AudioRipOptions { ReadOffsetSamples = 6, SecureMode = false });
+        Assert.True(posRes.Success, posRes.ErrorMessage);
+        Assert.Contains(audioEndLba, posEngine.RequestedLbas);
+        Assert.Empty(posRes.BadSectorLbas);
+        byte[] t3Pos = (await File.ReadAllBytesAsync(posRes.TrackInfos[2].FilePath))[44..];
+        Assert.All(t3Pos[^24..], b => Assert.Equal((byte)0, b));
     }
 }

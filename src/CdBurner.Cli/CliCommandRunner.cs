@@ -2093,7 +2093,8 @@ public static partial class CliCommandRunner
             exportTargets, rootFolder, namingTemplate, new AudioAlbumInfo(string.Empty, string.Empty, null), ffmpegPath,
             KeepWav: cmd.HasFlag("keep-wav"),
             WriteFolderImage: !cmd.HasFlag("no-folder-image"),
-            Overwrite: cmd.HasFlag("overwrite"));
+            Overwrite: cmd.HasFlag("overwrite"),
+            ApplyDeEmphasis: cmd.HasFlag("de-emphasis"));
         string? prerequisiteError = exporter.CheckPrerequisites(exportCheck);
         if (prerequisiteError != null)
         {
@@ -2221,6 +2222,7 @@ public static partial class CliCommandRunner
         }
 
         bool repairFromRecovery = cmd.HasFlag("repair") || cmd.HasFlag("repair-from-recovery");
+        bool applyDeEmphasis = cmd.HasFlag("de-emphasis");
         var options = new AudioRipOptions
         {
             ContinueOnUnreadableSector = cmd.HasFlag("continue-on-error"),
@@ -2231,7 +2233,8 @@ public static partial class CliCommandRunner
             CalculateReplayGain = !cmd.HasFlag("no-replaygain"),
             CoverArtBytes = coverBytes,
             CoverArtMimeType = coverMime,
-            RepairFromRecoverySession = repairFromRecovery
+            RepairFromRecoverySession = repairFromRecovery,
+            ApplyDeEmphasis = applyDeEmphasis
         };
 
         var ripper = new AudioCdRipperService();
@@ -3797,7 +3800,7 @@ public static partial class CliCommandRunner
         stdout.WriteLine("      Makes machine-generated subtitles for a movie (FFmpeg + whisper.cpp). Fast on a graphics card, slower on integrated graphics, slowest on the processor; names are often misheard.");
         stdout.WriteLine("  rip --drive <id> --output <file.iso|file.bin> [--raw] [--json]");
         stdout.WriteLine("      Rips optical disc to an ISO or raw BIN+CUE image.");
-        stdout.WriteLine("  rip-audio --drive <id> --output <folder> [--format wav|flac|mp3|opus|aac[,...]] [--bitrate <kbps>] [--mp3-bitrate <kbps> | --mp3-quality V0..V9] [--opus-bitrate <kbps>] [--aac-bitrate <kbps>] [--library <folder>] [--naming <template>] [--tracks 1,3,5] [--lookup] [--release <n|mbid>] [--no-cover-lookup] [--no-folder-image] [--overwrite] [--keep-wav] [--continue-on-error] [--read-offset <samples>] [--verify-accuraterip] [--verify-ctdb] [--no-ctdb-repair] [--no-secure] [--repair] [--json]");
+        stdout.WriteLine("  rip-audio --drive <id> --output <folder> [--format wav|flac|mp3|opus|aac[,...]] [--bitrate <kbps>] [--mp3-bitrate <kbps> | --mp3-quality V0..V9] [--opus-bitrate <kbps>] [--aac-bitrate <kbps>] [--library <folder>] [--naming <template>] [--tracks 1,3,5] [--lookup] [--release <n|mbid>] [--no-cover-lookup] [--no-folder-image] [--overwrite] [--keep-wav] [--continue-on-error] [--read-offset <samples>] [--verify-accuraterip] [--verify-ctdb] [--no-ctdb-repair] [--no-secure] [--repair] [--de-emphasis] [--json]");
         stdout.WriteLine("  convert-audio --input <file|folder>[;<more>] --output <folder> --format flac|mp3|opus|aac[,...] [--recursive] [--naming <template>] [--overwrite] [--bitrate <kbps>] [--mp3-bitrate <kbps> | --mp3-quality V0..V9] [--opus-bitrate <kbps>] [--aac-bitrate <kbps>] [--json]");
         stdout.WriteLine("      Rips Red Book Audio CD to WAV, FLAC, MP3, Opus or AAC (FLAC, MP3, Opus need the optional ffmpeg; AAC uses the Windows encoder) with CD-Text and optional MusicBrainz lookup. Exit code 2 when sectors may be wrong (still suspect or unreadable).");
         stdout.WriteLine("  copy-disc --source <id> [--target <id>] [--copies <n>] [--speed <X|max>] [--raw] [--native [--log-dir <folder>]] [--allow-suspect] [--keep-image <folder>] [--wait-minutes <n>] [--json]");
@@ -3917,9 +3920,10 @@ public static partial class CliCommandRunner
         {
             stdout.WriteLine(LegalBanner.VersionNotice);
             stdout.WriteLine();
-            stdout.WriteLine("  rip-audio --drive <id> --output <folder> [--format wav|flac|mp3|opus|aac[,...]] [--bitrate <kbps>] [--mp3-bitrate <kbps> | --mp3-quality V0..V9] [--opus-bitrate <kbps>] [--aac-bitrate <kbps>] [--library <folder>] [--naming <template>] [--tracks 1,3,5] [--lookup] [--release <n|mbid>] [--no-cover-lookup] [--no-folder-image] [--overwrite] [--keep-wav] [--continue-on-error] [--read-offset <samples>] [--verify-accuraterip] [--verify-ctdb] [--no-ctdb-repair] [--no-secure] [--repair] [--cover <image>] [--no-replaygain] [--json]");
+            stdout.WriteLine("  rip-audio --drive <id> --output <folder> [--format wav|flac|mp3|opus|aac[,...]] [--bitrate <kbps>] [--mp3-bitrate <kbps> | --mp3-quality V0..V9] [--opus-bitrate <kbps>] [--aac-bitrate <kbps>] [--library <folder>] [--naming <template>] [--tracks 1,3,5] [--lookup] [--release <n|mbid>] [--no-cover-lookup] [--no-folder-image] [--overwrite] [--keep-wav] [--continue-on-error] [--read-offset <samples>] [--verify-accuraterip] [--verify-ctdb] [--no-ctdb-repair] [--no-secure] [--repair] [--de-emphasis] [--cover <image>] [--no-replaygain] [--json]");
             stdout.WriteLine("      Rips Red Book Audio CD to WAV, FLAC, MP3, Opus or AAC (FLAC, MP3, Opus need the optional ffmpeg; AAC uses the Windows encoder) with CD-Text and optional MusicBrainz lookup. Exit code 2 when sectors may be wrong (still suspect or unreadable).");
             stdout.WriteLine("      --repair checks and repairs damaged samples from session 2 PAR2 recovery data on Enhanced CDs.");
+            stdout.WriteLine("      --de-emphasis applies the Red Book 50/15 us de-emphasis filter to tracks flagged with pre-emphasis.");
             stdout.WriteLine("      FLAC files get ReplayGain 2.0 tags (unless --no-replaygain) and, with --cover, embedded front cover art.");
             stdout.WriteLine("      --format takes a comma list (flac,mp3): each format is written once, in its own {format} folder unless --naming has {format}.");
             stdout.WriteLine("      --library <folder> files the album by --naming (default {albumartist}\\{album}[ ({year})]\\{track} - {title}); --output is then only the working folder.");

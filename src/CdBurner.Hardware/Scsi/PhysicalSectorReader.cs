@@ -83,7 +83,7 @@ public static partial class PhysicalSectorReader
             return Task.FromResult(RipOperationResult.Failed("The drive has no drive letter assigned, so it cannot be read."));
         }
 
-        if (startLba < 0 || sectorCount < 0)
+        if ((!raw2352Mode && startLba < 0) || (raw2352Mode && startLba < -150) || sectorCount < 0)
         {
             return Task.FromResult(RipOperationResult.Failed($"Invalid sector range (start {startLba}, count {sectorCount})."));
         }
@@ -756,11 +756,21 @@ public static partial class PhysicalSectorReader
         }
     }
 
-    // READ CD byte 9: bit 4 = user data (all 2352 bytes for CD-DA), bits 2..1 = 01b -> 294-byte C2 error pointer block.
-    private const byte ReadCdUserDataWithC2 = 0x12;
+    public enum C2ErrorMode
+    {
+        None = 0,
+        Mode294 = 1,
+        Mode296 = 2
+    }
+
+    // READ CD byte 9: bit 4 = user data (2352 bytes for CD-DA), bits 2..1 = 01b -> 294-byte C2 bitmap, 10b -> 296-byte block error + C2 bitmap.
+    private const byte ReadCdUserDataWithC2_294 = 0x12;
+    private const byte ReadCdUserDataWithC2_296 = 0x14;
     private const byte SectorTypeCdda = 1;
     private const int C2PointerBytes = 294;
-    private const int AudioWithC2Size = OpticalConstants.RawSectorSize + C2PointerBytes;
+    private const int C2Block296Bytes = 296;
+    private const int AudioWithC2_294Size = OpticalConstants.RawSectorSize + C2PointerBytes;
+    private const int AudioWithC2_296Size = OpticalConstants.RawSectorSize + C2Block296Bytes;
     private const int CacheFlushSectors = 1024; // ~2.4 MB: larger than the read cache of typical consumer drives
 
     private static readonly System.Collections.Concurrent.ConcurrentDictionary<string, MmcWriteCapabilityProbe> WriteCapabilitiesCache =
@@ -954,12 +964,12 @@ public static partial class PhysicalSectorReader
         }
     }
 
-    private static readonly System.Collections.Concurrent.ConcurrentDictionary<string, bool> C2SupportCache =
+    private static readonly System.Collections.Concurrent.ConcurrentDictionary<string, C2ErrorMode> C2SupportCache =
         new(StringComparer.OrdinalIgnoreCase);
 
     /// <summary>
-    /// True if the drive returns C2 error pointers for audio reads. Probed once per volume with a single READ CD
-    /// at <paramref name="probeLba"/> (an audio sector); requires SCSI pass-through.
+    /// True if the drive returns C2 error pointers for audio reads (trying 294-byte C2 first, then 296-byte C2 + block error).
+    /// Probed once per volume with a single READ CD at <paramref name="probeLba"/> (an audio sector); requires SCSI pass-through.
     /// </summary>
     public static bool ProbeC2Support(string volumePath, int probeLba)
     {
@@ -970,7 +980,7 @@ public static partial class PhysicalSectorReader
 
         // Only a positive answer is cached: a failed probe can be a scratch, a spin-up or a missing disc rather than
         // a drive without C2 support, so it is retried next time.
-        if (C2SupportCache.TryGetValue(volumePath, out bool cached) && cached)
+        if (C2SupportCache.TryGetValue(volumePath, out C2ErrorMode cached) && cached != C2ErrorMode.None)
         {
             return true;
         }
@@ -982,20 +992,49 @@ public static partial class PhysicalSectorReader
         }
 
         using var transport = new Win32ScsiTransport(rw, ownsHandle: false);
-        byte[] buffer = new byte[AudioWithC2Size];
-        byte[] cdb = MmcCommandBuilder.BuildReadCdCdb(probeLba, 1, SectorTypeCdda, ReadCdUserDataWithC2);
-        var result = transport.ExecuteCommand(cdb, buffer, ScsiPassThroughNative.SCSI_IOCTL_DATA_IN, CommandTimeout);
-        bool supported = result.IsSuccess && result.DataTransferLength >= AudioWithC2Size;
-        if (supported)
+        C2ErrorMode mode = ProbeC2Mode(transport, probeLba);
+        if (mode != C2ErrorMode.None)
         {
-            C2SupportCache[volumePath] = true;
+            C2SupportCache[volumePath] = mode;
+            return true;
         }
-        return supported;
+        return false;
     }
 
     /// <summary>
-    /// Reads raw audio sectors with C2 error pointers via SCSI pass-through. For each sector the consumer receives the
-    /// 2352 audio bytes and the number of bytes the drive flagged as uncorrected (popcount of the 294-byte C2 block).
+    /// True if <paramref name="transport"/> returns C2 error pointers (Mode 294 or Mode 296) for a single READ CD at <paramref name="probeLba"/>.
+    /// </summary>
+    public static bool ProbeC2Support(IScsiTransport transport, int probeLba)
+    {
+        ArgumentNullException.ThrowIfNull(transport);
+        return ProbeC2Mode(transport, probeLba) != C2ErrorMode.None;
+    }
+
+    internal static C2ErrorMode ProbeC2Mode(IScsiTransport transport, int probeLba)
+    {
+        byte[] buffer = new byte[AudioWithC2_296Size];
+
+        byte[] cdb294 = MmcCommandBuilder.BuildReadCdCdb(probeLba, 1, SectorTypeCdda, ReadCdUserDataWithC2_294);
+        var res294 = transport.ExecuteCommand(cdb294, buffer.AsSpan(0, AudioWithC2_294Size), ScsiPassThroughNative.SCSI_IOCTL_DATA_IN, CommandTimeout);
+        if (res294.IsSuccess && res294.DataTransferLength >= AudioWithC2_294Size)
+        {
+            return C2ErrorMode.Mode294;
+        }
+
+        byte[] cdb296 = MmcCommandBuilder.BuildReadCdCdb(probeLba, 1, SectorTypeCdda, ReadCdUserDataWithC2_296);
+        var res296 = transport.ExecuteCommand(cdb296, buffer.AsSpan(0, AudioWithC2_296Size), ScsiPassThroughNative.SCSI_IOCTL_DATA_IN, CommandTimeout);
+        if (res296.IsSuccess && res296.DataTransferLength >= AudioWithC2_296Size)
+        {
+            return C2ErrorMode.Mode296;
+        }
+
+        return C2ErrorMode.None;
+    }
+
+    /// <summary>
+    /// Reads raw audio sectors with C2 error pointers via SCSI pass-through, supporting both Mode 294 and Mode 296
+    /// (standard 2+294 header and Pioneer 294+2 footer layouts). For each sector the consumer receives the
+    /// 2352 audio bytes and the number of bytes the drive flagged as uncorrected (popcount of the 294-byte C2 bitmap).
     /// Stops at the first sector the drive cannot return at all, like <see cref="ReadAsync"/>.
     /// </summary>
     public static Task<RipOperationResult> ReadAudioWithC2Async(
@@ -1013,7 +1052,6 @@ public static partial class PhysicalSectorReader
 
         return Task.Run(async () =>
         {
-            var sw = Stopwatch.StartNew();
             using var rw = OpenDevice(volumePath, FileAccess.ReadWrite, out int win32Error);
             if (rw == null)
             {
@@ -1022,71 +1060,167 @@ public static partial class PhysicalSectorReader
             }
 
             using var transport = new Win32ScsiTransport(rw, ownsHandle: false);
-            byte[] buffer = new byte[ChunkSectors * AudioWithC2Size];
-            int readCount = 0;
+            C2ErrorMode? initialMode = C2SupportCache.TryGetValue(volumePath, out C2ErrorMode cached) && cached != C2ErrorMode.None
+                ? cached
+                : null;
+            return await ReadAudioWithC2CoreAsync(
+                transport,
+                startLba,
+                sectorCount,
+                sectorConsumer,
+                initialMode,
+                detected => C2SupportCache[volumePath] = detected,
+                cancellationToken).ConfigureAwait(false);
+        }, cancellationToken);
+    }
 
-            string? ReadChunk(int lba, int count)
+    /// <summary>
+    /// Reads raw audio sectors with C2 error pointers over an <see cref="IScsiTransport"/>, supporting Mode 294 and
+    /// Mode 296 (header and Pioneer footer layouts) with automatic fallback from Mode 294 to Mode 296.
+    /// </summary>
+    public static Task<RipOperationResult> ReadAudioWithC2Async(
+        IScsiTransport transport,
+        int startLba,
+        int sectorCount,
+        Func<int, ReadOnlyMemory<byte>, int, ValueTask> sectorConsumer,
+        CancellationToken cancellationToken)
+    {
+        ArgumentNullException.ThrowIfNull(transport);
+        ArgumentNullException.ThrowIfNull(sectorConsumer);
+
+        return ReadAudioWithC2CoreAsync(
+            transport,
+            startLba,
+            sectorCount,
+            sectorConsumer,
+            initialMode: null,
+            onModeDetected: null,
+            cancellationToken);
+    }
+
+    private static async Task<RipOperationResult> ReadAudioWithC2CoreAsync(
+        IScsiTransport transport,
+        int startLba,
+        int sectorCount,
+        Func<int, ReadOnlyMemory<byte>, int, ValueTask> sectorConsumer,
+        C2ErrorMode? initialMode,
+        Action<C2ErrorMode>? onModeDetected,
+        CancellationToken cancellationToken)
+    {
+        var sw = Stopwatch.StartNew();
+        byte[] buffer = new byte[ChunkSectors * AudioWithC2_296Size];
+        int readCount = 0;
+        C2ErrorMode activeMode = initialMode ?? C2ErrorMode.Mode294;
+        bool canFallbackTo296 = initialMode == null;
+
+        (string? Error, bool ModeUnsupported) ReadChunk(int lba, int count, C2ErrorMode mode)
+        {
+            int c2Bytes = mode == C2ErrorMode.Mode296 ? C2Block296Bytes : C2PointerBytes;
+            int stride = OpticalConstants.RawSectorSize + c2Bytes;
+            byte mainBits = mode == C2ErrorMode.Mode296 ? ReadCdUserDataWithC2_296 : ReadCdUserDataWithC2_294;
+            var span = buffer.AsSpan(0, count * stride);
+            byte[] cdb = MmcCommandBuilder.BuildReadCdCdb(lba, count, SectorTypeCdda, mainBits);
+            var result = transport.ExecuteCommand(cdb, span, ScsiPassThroughNative.SCSI_IOCTL_DATA_IN, CommandTimeout);
+            if (result.IsSuccess && result.DataTransferLength >= span.Length)
             {
-                var span = buffer.AsSpan(0, count * AudioWithC2Size);
-                byte[] cdb = MmcCommandBuilder.BuildReadCdCdb(lba, count, SectorTypeCdda, ReadCdUserDataWithC2);
-                var result = transport.ExecuteCommand(cdb, span, ScsiPassThroughNative.SCSI_IOCTL_DATA_IN, CommandTimeout);
-                if (result.IsSuccess && result.DataTransferLength >= span.Length)
+                return (null, false);
+            }
+            bool unsupported = result.IsSuccess || result.SenseInfo is { SenseKey: 0x05, Asc: 0x24 or 0x20 or 0x26 };
+            string error = result.IsSuccess ? "short transfer" : result.ErrorMessage ?? "read failed";
+            return (error, unsupported);
+        }
+
+        async ValueTask DeliverAsync(int lba, int index, C2ErrorMode mode)
+        {
+            int c2BytesPerSector = mode == C2ErrorMode.Mode296 ? C2Block296Bytes : C2PointerBytes;
+            int stride = OpticalConstants.RawSectorSize + c2BytesPerSector;
+            int offset = index * stride;
+            int c2Bytes = CountC2Bytes(buffer.AsSpan(offset + OpticalConstants.RawSectorSize, c2BytesPerSector));
+            await sectorConsumer(lba, buffer.AsMemory(offset, OpticalConstants.RawSectorSize), c2Bytes).ConfigureAwait(false);
+        }
+
+        while (readCount < sectorCount)
+        {
+            cancellationToken.ThrowIfCancellationRequested();
+            int lba = startLba + readCount;
+            int chunk = Math.Min(ChunkSectors, sectorCount - readCount);
+
+            var (chunkError, modeUnsupported) = ReadChunk(lba, chunk, activeMode);
+            if (chunkError != null && readCount == 0 && activeMode == C2ErrorMode.Mode294 && canFallbackTo296 && modeUnsupported)
+            {
+                canFallbackTo296 = false;
+                var fallback = ReadChunk(lba, chunk, C2ErrorMode.Mode296);
+                if (fallback.Error == null || !fallback.ModeUnsupported)
                 {
-                    return null;
+                    activeMode = C2ErrorMode.Mode296;
+                    onModeDetected?.Invoke(C2ErrorMode.Mode296);
+                    chunkError = fallback.Error;
                 }
-                return result.IsSuccess ? "short transfer" : result.ErrorMessage ?? "read failed";
             }
 
-            async ValueTask DeliverAsync(int lba, int index)
+            if (chunkError == null)
             {
-                int offset = index * AudioWithC2Size;
-                int c2Bytes = 0;
-                foreach (byte b in buffer.AsSpan(offset + OpticalConstants.RawSectorSize, C2PointerBytes))
-                {
-                    c2Bytes += System.Numerics.BitOperations.PopCount(b);
-                }
-                await sectorConsumer(lba, buffer.AsMemory(offset, OpticalConstants.RawSectorSize), c2Bytes).ConfigureAwait(false);
-            }
-
-            while (readCount < sectorCount)
-            {
-                cancellationToken.ThrowIfCancellationRequested();
-                int lba = startLba + readCount;
-                int chunk = Math.Min(ChunkSectors, sectorCount - readCount);
-
-                if (ReadChunk(lba, chunk) == null)
-                {
-                    for (int i = 0; i < chunk; i++)
-                    {
-                        await DeliverAsync(lba + i, i).ConfigureAwait(false);
-                    }
-                    readCount += chunk;
-                    continue;
-                }
-
-                // Narrow down to the first sector the drive cannot return.
                 for (int i = 0; i < chunk; i++)
                 {
-                    string? error = ReadChunk(lba + i, 1);
-                    if (error != null)
-                    {
-                        return new RipOperationResult
-                        {
-                            Success = false,
-                            ErrorMessage = $"Unrecovered read error at LBA {lba + i}: {error}",
-                            SectorsRead = readCount,
-                            BadSectorsCount = 1,
-                            BadSectorsList = new[] { lba + i },
-                            TotalTime = sw.Elapsed
-                        };
-                    }
-                    await DeliverAsync(lba + i, 0).ConfigureAwait(false);
-                    readCount++;
+                    await DeliverAsync(lba + i, i, activeMode).ConfigureAwait(false);
                 }
+                readCount += chunk;
+                continue;
             }
 
-            return RipOperationResult.Succeeded(readCount, sw.Elapsed);
-        }, cancellationToken);
+            // Narrow down to the first sector the drive cannot return.
+            for (int i = 0; i < chunk; i++)
+            {
+                var (error, _) = ReadChunk(lba + i, 1, activeMode);
+                if (error != null)
+                {
+                    return new RipOperationResult
+                    {
+                        Success = false,
+                        ErrorMessage = $"Unrecovered read error at LBA {lba + i}: {error}",
+                        SectorsRead = readCount,
+                        BadSectorsCount = 1,
+                        BadSectorsList = new[] { lba + i },
+                        TotalTime = sw.Elapsed
+                    };
+                }
+                await DeliverAsync(lba + i, 0, activeMode).ConfigureAwait(false);
+                readCount++;
+            }
+        }
+
+        return RipOperationResult.Succeeded(readCount, sw.Elapsed);
+    }
+
+    /// <summary>
+    /// Counts the flagged C2 error bytes in a 294-byte or 296-byte (MMC-6 header or Pioneer footer) C2 block.
+    /// </summary>
+    public static int CountC2Bytes(ReadOnlySpan<byte> c2Block)
+    {
+        ReadOnlySpan<byte> bitmap;
+        if (c2Block.Length >= C2Block296Bytes)
+        {
+            // Standard MMC-6 puts the 2-byte block error summary before the 294-byte C2 bitmap ([0..1] + [2..295]);
+            // some Pioneer drives place the 2-byte summary after the bitmap ([0..293] + [294..295]).
+            byte orMid = 0;
+            for (int pos = 2; pos < C2PointerBytes; pos++)
+            {
+                orMid |= c2Block[pos];
+            }
+            bool isPioneerFooter = c2Block[294] == (byte)(orMid | c2Block[0] | c2Block[1]);
+            bitmap = isPioneerFooter ? c2Block[..C2PointerBytes] : c2Block.Slice(2, C2PointerBytes);
+        }
+        else
+        {
+            bitmap = c2Block[..Math.Min(C2PointerBytes, c2Block.Length)];
+        }
+
+        int c2Bytes = 0;
+        foreach (byte b in bitmap)
+        {
+            c2Bytes += System.Numerics.BitOperations.PopCount(b);
+        }
+        return c2Bytes;
     }
 
     /// <summary>
@@ -1669,6 +1803,11 @@ public static partial class PhysicalSectorReader
 
         public string? Read(int lba, int count, byte[] buffer)
         {
+            if (lba < 0)
+            {
+                return "negative LBA requires SCSI pass-through";
+            }
+
             // RAW_READ_INFO { LARGE_INTEGER DiskOffset; ULONG SectorCount; TRACK_MODE_TYPE TrackMode; }
             byte[] info = new byte[16];
             BitConverter.TryWriteBytes(info.AsSpan(0, 8), (long)lba * OpticalConstants.DataSectorSize);

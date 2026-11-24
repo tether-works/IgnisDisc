@@ -931,6 +931,126 @@ public sealed class RipAudioCliTests : IAsyncLifetime, IDisposable
         Assert.False(Directory.Exists(outDir));
     }
 
+    [Fact]
+    public async Task RipAudio_WithDeEmphasisFlag_AttenuatesPreEmphasisTrackAndKeepsRawAccurateRipChecksums()
+    {
+        const int sectors = 30;
+        const int sampleRate = OpticalConstants.CdAudioSampleRate;
+        byte[] preEmphPcm = new byte[sectors * OpticalConstants.RawSectorSize];
+        for (int i = 0; i < preEmphPcm.Length / 4; i++)
+        {
+            short s = (short)Math.Round(0.6 * short.MaxValue * Math.Sin(2.0 * Math.PI * 15000.0 * i / sampleRate));
+            System.Buffers.Binary.BinaryPrimitives.WriteInt16LittleEndian(preEmphPcm.AsSpan(i * 4, 2), s);
+            System.Buffers.Binary.BinaryPrimitives.WriteInt16LittleEndian(preEmphPcm.AsSpan(i * 4 + 2, 2), s);
+        }
+
+        byte[] normalPcm = new byte[sectors * OpticalConstants.RawSectorSize];
+        for (int i = 0; i < normalPcm.Length / 4; i++)
+        {
+            short s = (short)Math.Round(0.6 * short.MaxValue * Math.Sin(2.0 * Math.PI * 15000.0 * i / sampleRate));
+            System.Buffers.Binary.BinaryPrimitives.WriteInt16LittleEndian(normalPcm.AsSpan(i * 4, 2), s);
+            System.Buffers.Binary.BinaryPrimitives.WriteInt16LittleEndian(normalPcm.AsSpan(i * 4 + 2, 2), s);
+        }
+
+        using var recorder = new VirtualDiscRecorder();
+        using var medium = VirtualDiscMedium.CreateBlankCdR700();
+        medium.Raw2352Mode = true;
+        medium.WriteSectors(0, preEmphPcm, OpticalConstants.RawSectorSize);
+        medium.WriteSectors(sectors, normalPcm, OpticalConstants.RawSectorSize);
+        var session = new VirtualSession { SessionNumber = 1, StartLba = 0, SectorCount = sectors * 2 };
+        session.Tracks.Add(new VirtualTrack
+        {
+            TrackNumber = 1,
+            Title = "Pre-Emph Track",
+            StartLba = 0,
+            SectorCount = sectors,
+            IsAudio = true,
+            PreEmphasis = true
+        });
+        session.Tracks.Add(new VirtualTrack
+        {
+            TrackNumber = 2,
+            Title = "Flat Track",
+            StartLba = sectors,
+            SectorCount = sectors,
+            IsAudio = true,
+            PreEmphasis = false
+        });
+        medium.Sessions.Add(session);
+        recorder.InsertMedia(medium);
+
+        var deviceService = new TestDeviceService(recorder);
+        var engine = new VirtualBurnEngine(recorder);
+
+        // Baseline rip without --de-emphasis
+        string rawDir = Path.Combine(_tempDir, "deemph-raw");
+        var (rawOut, rawErr) = CreateStringWriters();
+        int rawExit = await CliCommandRunner.RunAsync(
+            ["rip-audio", "--drive", "VDRV-01", "--output", rawDir, "--no-replaygain", "--json"],
+            rawOut, rawErr, deviceService, engine);
+        Assert.Equal(0, rawExit);
+
+        // De-emphasized rip with --de-emphasis
+        string deEmphDir = Path.Combine(_tempDir, "deemph-applied");
+        var (deOut, deErr) = CreateStringWriters();
+        int deExit = await CliCommandRunner.RunAsync(
+            ["rip-audio", "--drive", "VDRV-01", "--output", deEmphDir, "--de-emphasis", "--no-replaygain", "--json"],
+            deOut, deErr, deviceService, engine);
+        Assert.Equal(0, deExit);
+
+        using var rawDoc = ParseJsonOutput(rawOut);
+        using var deDoc = ParseJsonOutput(deOut);
+        var rawTracks = rawDoc.RootElement.GetProperty("trackChecksums");
+        var deTracks = deDoc.RootElement.GetProperty("trackChecksums");
+        Assert.Equal(rawTracks[0].GetProperty("accurateRipV1").GetString(), deTracks[0].GetProperty("accurateRipV1").GetString());
+        Assert.Equal(rawTracks[0].GetProperty("accurateRipV2").GetString(), deTracks[0].GetProperty("accurateRipV2").GetString());
+
+        byte[] track1DeEmph = (await File.ReadAllBytesAsync(Path.Combine(deEmphDir, "01 - Unknown Artist - Pre-Emph Track.wav")))[44..];
+        byte[] track2DeEmph = (await File.ReadAllBytesAsync(Path.Combine(deEmphDir, "02 - Unknown Artist - Flat Track.wav")))[44..];
+        Assert.Equal(normalPcm, track2DeEmph);
+
+        // Track 1 (15 kHz pre-emphasis) must be attenuated by ~8.87 dB (-10.4 dB to -7.4 dB).
+        double rmsIn = 0, rmsOut = 0;
+        int skip = 500;
+        int totalFrames = preEmphPcm.Length / 4;
+        for (int i = skip; i < totalFrames; i++)
+        {
+            double a = System.Buffers.Binary.BinaryPrimitives.ReadInt16LittleEndian(preEmphPcm.AsSpan(i * 4, 2));
+            double b = System.Buffers.Binary.BinaryPrimitives.ReadInt16LittleEndian(track1DeEmph.AsSpan(i * 4, 2));
+            rmsIn += a * a;
+            rmsOut += b * b;
+        }
+        double gainDb = 20.0 * Math.Log10(Math.Sqrt(rmsOut / (totalFrames - skip)) / Math.Sqrt(rmsIn / (totalFrames - skip)));
+        Assert.InRange(gainDb, -9.5, -8.2);
+
+        // CUE sheet omits FLAGS PRE when de-emphasis was already applied during rip.
+        string rawCue = await File.ReadAllTextAsync(Path.Combine(rawDir, "album.cue"));
+        string deCue = await File.ReadAllTextAsync(Path.Combine(deEmphDir, "album.cue"));
+        Assert.Contains("FLAGS PRE", rawCue, StringComparison.Ordinal);
+        Assert.DoesNotContain("FLAGS PRE", deCue, StringComparison.Ordinal);
+
+        // Exporting the raw rip with ApplyDeEmphasis=true de-emphasizes Track 1 in the export without modifying raw WAV.
+        var rawRipResult = await new AudioCdRipperService().RipAudioCdAsync(
+            recorder, engine, Path.Combine(_tempDir, "deemph-export-src"), new AudioRipOptions { ApplyDeEmphasis = false });
+        Assert.True(rawRipResult.Success);
+        var exporter = new AudioLibraryExporter();
+        var exportDir = Path.Combine(_tempDir, "deemph-export-dst");
+        var exported = await exporter.ExportAsync(
+            rawRipResult,
+            new AudioExportOptions(
+                [new AudioExportTarget(AudioRipFormat.Wav)],
+                exportDir,
+                AudioNamingTemplate.Flat,
+                new AudioAlbumInfo("Artist", "Album", null),
+                FfmpegPath: null,
+                KeepWav: true,
+                ApplyDeEmphasis: true));
+        byte[] exportedTrack1 = (await File.ReadAllBytesAsync(exported.Files[0].Path))[44..];
+        Assert.Equal(track1DeEmph, exportedTrack1);
+        byte[] stillRawTrack1 = (await File.ReadAllBytesAsync(rawRipResult.TrackInfos[0].FilePath))[44..];
+        Assert.Equal(preEmphPcm, stillRawTrack1);
+    }
+
     private sealed class SpyHttpHandler(Func<HttpRequestMessage, HttpResponseMessage> respond) : HttpMessageHandler
     {
         public List<Uri> Requests { get; } = [];

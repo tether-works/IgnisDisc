@@ -193,7 +193,7 @@ public static partial class CliCommandRunner
         Add(BurnDvdSpec, "burn-dvd", "burndvd");
         Add(CommandOptionSpec.Of(["raw"], ["drive", "output"]), "rip", "rip-disc");
         Add(CommandOptionSpec.Of(
-            ["lookup", "keep-wav", "no-folder-image", "overwrite", "continue-on-error", "verify-accuraterip", "verify-ctdb", "no-ctdb-repair", "no-cover-lookup", "repair", "repair-from-recovery", "no-secure", "secure", "no-replaygain"],
+            ["lookup", "keep-wav", "no-folder-image", "overwrite", "continue-on-error", "verify-accuraterip", "verify-ctdb", "no-ctdb-repair", "no-cover-lookup", "repair", "repair-from-recovery", "no-secure", "secure", "no-replaygain", "de-emphasis"],
             ["drive", "library", "output", "release", "naming", "tracks", "read-offset", "cover", "cover-art", .. AudioTargetOptions]),
             "rip-audio", "ripaudio");
         Add(CommandOptionSpec.Of(["overwrite", "recursive"], ["input", "output", "naming", .. AudioTargetOptions]), "convert-audio", "convertaudio");

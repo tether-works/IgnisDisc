@@ -130,6 +130,9 @@ public class AppSettings
     /// <summary>Whether to save folder.jpg (or .png) next to ripped albums that have a cover.</summary>
     public bool WriteFolderImage { get; set; } = true;
 
+    /// <summary>Whether to apply Red Book 50/15 us digital de-emphasis to tracks flagged with pre-emphasis when ripping.</summary>
+    public bool DeEmphasizePreEmphasisOnRip { get; set; } = false;
+
     /// <summary>
     /// Whether to automatically check for application updates on startup against GitHub Releases.
     /// Strictly opt-in (default is false).
@@ -199,6 +202,7 @@ public class AppSettings
             RipNamingTemplate = RipNamingTemplate,
             FetchCoverArtByDefault = FetchCoverArtByDefault,
             WriteFolderImage = WriteFolderImage,
+            DeEmphasizePreEmphasisOnRip = DeEmphasizePreEmphasisOnRip,
             CheckForUpdatesOnStartup = CheckForUpdatesOnStartup,
             SettingsVersion = SettingsVersion
         };

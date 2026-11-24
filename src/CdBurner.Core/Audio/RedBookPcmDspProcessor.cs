@@ -677,4 +677,136 @@ public static class RedBookPcmDspProcessor
         BinaryPrimitives.WriteInt16LittleEndian(frame4.Slice(0, 2), nl);
         BinaryPrimitives.WriteInt16LittleEndian(frame4.Slice(2, 2), nr);
     }
+
+    /// <summary>
+    /// Applies the Red Book CD-DA 50/15 us de-emphasis IIR filter to 16-bit signed little-endian stereo PCM bytes.
+    /// Uses pole-zero matched discretization of <c>H(s) = (1 + s * 15 us) / (1 + s * 50 us)</c> with independent
+    /// state per stereo channel.
+    /// </summary>
+    public static byte[] ApplyDeEmphasis(ReadOnlySpan<byte> pcmData, int sampleRate = OpticalConstants.CdAudioSampleRate)
+    {
+        ArgumentOutOfRangeException.ThrowIfLessThanOrEqual(sampleRate, 0);
+
+        int frames = pcmData.Length / 4;
+        byte[] output = new byte[pcmData.Length];
+        if (frames == 0)
+        {
+            pcmData.CopyTo(output);
+            return output;
+        }
+
+        var state = new DeEmphasisState(sampleRate);
+        state.ProcessStereoFrames(pcmData[..(frames * 4)], output.AsSpan(0, frames * 4));
+
+        int tailStart = frames * 4;
+        if (tailStart < pcmData.Length)
+        {
+            pcmData[tailStart..].CopyTo(output.AsSpan(tailStart));
+        }
+
+        return output;
+    }
+
+    /// <summary>
+    /// Reads a canonical 16-bit stereo RIFF WAVE file and writes a de-emphasized copy using the Red Book 50/15 us
+    /// digital de-emphasis filter, preserving streaming memory bounds.
+    /// </summary>
+    public static void ApplyDeEmphasisToWavFile(string sourceWavPath, string destinationWavPath)
+    {
+        ArgumentException.ThrowIfNullOrWhiteSpace(sourceWavPath);
+        ArgumentException.ThrowIfNullOrWhiteSpace(destinationWavPath);
+
+        using var src = new FileStream(sourceWavPath, FileMode.Open, FileAccess.Read, FileShare.Read);
+        if (src.Length < 44)
+        {
+            throw new InvalidDataException($"WAV file '{sourceWavPath}' is shorter than a 44-byte RIFF header.");
+        }
+
+        byte[] header = new byte[44];
+        src.ReadExactly(header);
+        int sampleRate = BinaryPrimitives.ReadInt32LittleEndian(header.AsSpan(24, 4));
+        if (sampleRate <= 0)
+        {
+            sampleRate = OpticalConstants.CdAudioSampleRate;
+        }
+
+        var state = new DeEmphasisState(sampleRate);
+        string? dir = Path.GetDirectoryName(destinationWavPath);
+        if (!string.IsNullOrEmpty(dir))
+        {
+            Directory.CreateDirectory(dir);
+        }
+
+        using var dst = new FileStream(destinationWavPath, FileMode.Create, FileAccess.Write, FileShare.None, 65536);
+        dst.Write(header);
+
+        byte[] inBuf = new byte[65536];
+        byte[] outBuf = new byte[65536];
+        int carry = 0;
+
+        int read;
+        while ((read = src.Read(inBuf, carry, inBuf.Length - carry)) > 0)
+        {
+            int available = carry + read;
+            int aligned = available & ~3;
+            if (aligned > 0)
+            {
+                state.ProcessStereoFrames(inBuf.AsSpan(0, aligned), outBuf.AsSpan(0, aligned));
+                dst.Write(outBuf, 0, aligned);
+            }
+            carry = available - aligned;
+            if (carry > 0)
+            {
+                inBuf.AsSpan(aligned, carry).CopyTo(inBuf);
+            }
+        }
+
+        if (carry > 0)
+        {
+            dst.Write(inBuf, 0, carry);
+        }
+    }
+
+    private struct DeEmphasisState
+    {
+        private readonly double _b0;
+        private readonly double _b1;
+        private readonly double _p;
+        private double _xPrevL;
+        private double _yPrevL;
+        private double _xPrevR;
+        private double _yPrevR;
+
+        public DeEmphasisState(int sampleRate)
+        {
+            _p = Math.Exp(-1.0 / (sampleRate * 50e-6));
+            double z = Math.Exp(-1.0 / (sampleRate * 15e-6));
+            _b0 = (1.0 - _p) / (1.0 - z);
+            _b1 = -_b0 * z;
+        }
+
+        public void ProcessStereoFrames(ReadOnlySpan<byte> input, Span<byte> output)
+        {
+            int frames = input.Length / 4;
+            for (int i = 0; i < frames; i++)
+            {
+                int offset = i * 4;
+                double xL = BinaryPrimitives.ReadInt16LittleEndian(input.Slice(offset, 2));
+                double xR = BinaryPrimitives.ReadInt16LittleEndian(input.Slice(offset + 2, 2));
+
+                double yL = _b0 * xL + _b1 * _xPrevL + _p * _yPrevL;
+                double yR = _b0 * xR + _b1 * _xPrevR + _p * _yPrevR;
+
+                _xPrevL = xL;
+                _yPrevL = yL;
+                _xPrevR = xR;
+                _yPrevR = yR;
+
+                short outL = (short)Math.Clamp(Math.Round(yL), short.MinValue, short.MaxValue);
+                short outR = (short)Math.Clamp(Math.Round(yR), short.MinValue, short.MaxValue);
+                BinaryPrimitives.WriteInt16LittleEndian(output.Slice(offset, 2), outL);
+                BinaryPrimitives.WriteInt16LittleEndian(output.Slice(offset + 2, 2), outR);
+            }
+        }
+    }
 }

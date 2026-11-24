@@ -5,6 +5,13 @@ using CdBurner.Hardware.Scsi;
 
 namespace CdBurner.Hardware.Simulation;
 
+public enum SimulatedC2Mode
+{
+    Mode294,
+    Mode296Header,
+    Mode296PioneerFooter
+}
+
 /// <summary>
 /// A CD recorder at the SCSI command level, for testing the native writer without hardware. It answers the MMC
 /// commands a Session-at-Once audio write uses and enforces what a real drive enforces: write parameters before the
@@ -241,6 +248,9 @@ public sealed class VirtualMmcDrive : IScsiTransport
 
     /// <summary>READ CD asking for C2 error pointers is refused with 5/24/00, like a drive without them.</summary>
     public bool RejectsC2Pointers { get; set; }
+
+    /// <summary>C2 error pointer format returned by READ CD: 294-byte bitmap, 296-byte MMC header+bitmap, or 296-byte Pioneer bitmap+footer.</summary>
+    public SimulatedC2Mode C2Mode { get; set; } = SimulatedC2Mode.Mode294;
 
     /// <summary>READ CD commands that asked for C2 error pointers.</summary>
     public int C2ReadCommands { get; private set; }
@@ -1275,7 +1285,7 @@ public sealed class VirtualMmcDrive : IScsiTransport
     /// with sectorType 3, or any data read as CD-DA sectorType 1), extracts user payload (2048 bytes, or 2336 for Mode 2)
     /// when requested, and enforces the drive's read error and difference simulation.
     /// </summary>
-    private ScsiExecutionResult ReadDataSectors(int lba, int count, int sectorType, bool withC2, byte mainChannel, Span<byte> data,
+    private ScsiExecutionResult ReadDataSectors(int lba, int count, int sectorType, int c2Bytes, byte mainChannel, Span<byte> data,
         Func<int, byte[]> rawSector)
     {
         if (sectorType == 1 || sectorType > 5)
@@ -1300,7 +1310,7 @@ public sealed class VirtualMmcDrive : IScsiTransport
             return Sense(0x05, 0x24, 0x00);
         }
 
-        int size = payloadSize + (withC2 ? 294 : 0);
+        int size = payloadSize + c2Bytes;
         if (count < 0 || data.Length < (long)count * size)
         {
             return Sense(0x05, 0x24, 0x00);
@@ -1348,7 +1358,7 @@ public sealed class VirtualMmcDrive : IScsiTransport
                 destination[i * size + Math.Min(100, payloadSize - 1)] ^= 0x01;
             }
         }
-        if (withC2)
+        if (c2Bytes > 0)
         {
             C2ReadCommands++;
         }
@@ -1426,11 +1436,21 @@ public sealed class VirtualMmcDrive : IScsiTransport
         int lba = BinaryPrimitives.ReadInt32BigEndian(cdb.Slice(2, 4));
         int count = (cdb[6] << 16) | (cdb[7] << 8) | cdb[8];
         bool withMain = (cdb[9] & 0xF8) != 0;
-        bool withC2 = (cdb[9] & 0x06) == 0x02; // byte 9 bits 2-1 = 01b: 294-byte C2 error pointer block per sector
-        byte subChannel = (byte)(cdb[10] & 0x07);
-        if (withC2 && RejectsC2Pointers)
+        int errorFlags = (cdb[9] >> 1) & 0x03; // byte 9 bits 2-1: 01b = 294-byte C2, 10b = 296-byte C2 + block error
+        if (errorFlags == 3)
         {
             return Sense(0x05, 0x24, 0x00);
+        }
+        bool withC2 = errorFlags != 0;
+        byte subChannel = (byte)(cdb[10] & 0x07);
+        if (withC2)
+        {
+            if (RejectsC2Pointers ||
+                (C2Mode == SimulatedC2Mode.Mode294 && errorFlags != 1) ||
+                (C2Mode != SimulatedC2Mode.Mode294 && errorFlags != 2))
+            {
+                return Sense(0x05, 0x24, 0x00);
+            }
         }
         if (subChannel != 0 && (RejectsReadCdSubChannel || subChannel != MmcCommandBuilder.ReadCdSubChannelFormattedQ))
         {
@@ -1438,7 +1458,7 @@ public sealed class VirtualMmcDrive : IScsiTransport
         }
 
         int mainBytes = withMain ? 2352 : 0;
-        int c2Bytes = withC2 ? 294 : 0;
+        int c2Bytes = errorFlags switch { 1 => 294, 2 => 296, _ => 0 };
         int qBytes = subChannel == MmcCommandBuilder.ReadCdSubChannelFormattedQ ? 16 : 0;
         int stride = mainBytes + c2Bytes + qBytes;
         if (stride == 0)
@@ -1461,7 +1481,7 @@ public sealed class VirtualMmcDrive : IScsiTransport
                 return Sense(0x05, 0x21, 0x00);
             }
             byte[] programCopy = program.Slice((int)byteOffset, (int)byteCount).ToArray();
-            return ReadDataSectors(lba, count, sectorType, withC2, cdb[9], data, i => programCopy.AsSpan(i * 2352, 2352).ToArray());
+            return ReadDataSectors(lba, count, sectorType, c2Bytes, cdb[9], data, i => programCopy.AsSpan(i * 2352, 2352).ToArray());
         }
         if (Recorded && count > 0 && FindDataSession(lba) is { } session)
         {
@@ -1472,7 +1492,7 @@ public sealed class VirtualMmcDrive : IScsiTransport
                 return Sense(0x05, 0x21, 0x00);
             }
             byte[]? sub = session.SubHeader;
-            return ReadDataSectors(lba, count, sectorType, withC2, cdb[9], data, i =>
+            return ReadDataSectors(lba, count, sectorType, c2Bytes, cdb[9], data, i =>
             {
                 var block = user.AsSpan(at + i * 2048, 2048);
                 return session.DataMode == 2
@@ -1552,7 +1572,23 @@ public sealed class VirtualMmcDrive : IScsiTransport
                 audio.Slice(i * 2352, 2352).CopyTo(destination.Slice(i * stride));
                 if (withC2 && misread)
                 {
-                    destination[i * stride + mainBytes + 200 / 8] = 0x80; // the byte the drive could not correct
+                    int c2Offset = i * stride + mainBytes;
+                    const int bitmapIndex = 200 / 8;
+                    const byte errorBit = 0x80; // the byte the drive could not correct
+                    switch (C2Mode)
+                    {
+                        case SimulatedC2Mode.Mode294:
+                            destination[c2Offset + bitmapIndex] = errorBit;
+                            break;
+                        case SimulatedC2Mode.Mode296Header:
+                            destination[c2Offset] = errorBit;
+                            destination[c2Offset + 2 + bitmapIndex] = errorBit;
+                            break;
+                        case SimulatedC2Mode.Mode296PioneerFooter:
+                            destination[c2Offset + bitmapIndex] = errorBit;
+                            destination[c2Offset + 294] = errorBit;
+                            break;
+                    }
                 }
             }
 
