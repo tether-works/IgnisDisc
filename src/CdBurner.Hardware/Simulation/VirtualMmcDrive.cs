@@ -24,6 +24,7 @@ public sealed class VirtualMmcDrive : IScsiTransport
     private CueSheetState? _cue;
     private int _nextLba;
     private int _writesSinceBufferFull;
+    private bool _unitAttention628Pending;
 
     // ---- Disc and drive description ----
 
@@ -545,6 +546,12 @@ public sealed class VirtualMmcDrive : IScsiTransport
     /// <summary>FORMAT UNIT fails with 5/24/00.</summary>
     public bool RejectsFormatUnit { get; set; }
 
+    /// <summary>SEND OPC INFORMATION (0x54) fails with 5/20/00.</summary>
+    public bool RejectsSendOpc { get; set; }
+
+    /// <summary>SEND OPC INFORMATION (0x54) commands accepted.</summary>
+    public int SendOpcCount { get; private set; }
+
     /// <summary>FORMAT UNIT commands accepted.</summary>
     public int FormatUnitCount { get; private set; }
 
@@ -773,6 +780,14 @@ public sealed class VirtualMmcDrive : IScsiTransport
         {
             return Sense(0x02, 0x3A, 0x00);
         }
+        if (_unitAttention628Pending && op is not (0x12 or 0x1B or 0x46 or 0x5A or 0x55 or 0x5C))
+        {
+            if (!(op == 0x00 && NotReadyResponses > 0))
+            {
+                _unitAttention628Pending = false;
+                return Sense(0x06, 0x28, 0x00);
+            }
+        }
 
         return op switch
         {
@@ -780,6 +795,7 @@ public sealed class VirtualMmcDrive : IScsiTransport
             MmcCommandBuilder.OpCodeStartStopUnit => StartStopUnit(cdb),
             0x46 => GetConfiguration(cdb, dataBuffer),
             0x51 => ReadDiscInformation(dataBuffer),
+            MmcCommandBuilder.OpCodeSendOpcInformation => SendOpcInformation(cdb),
             0x5A => ModeSense(cdb, dataBuffer),
             NativeWriteCommands.OpCodeModeSelect10 => ModeSelect(dataBuffer),
             NativeWriteCommands.OpCodeSendCueSheet => SendCueSheet(cdb, dataBuffer),
@@ -855,6 +871,7 @@ public sealed class VirtualMmcDrive : IScsiTransport
         if (!start)
         {
             MediaPresent = false;
+            _unitAttention628Pending = false;
             TrayEjects++;
             return Good(0);
         }
@@ -865,7 +882,22 @@ public sealed class VirtualMmcDrive : IScsiTransport
         MediaPresent = DiscInTray;
         TrayLoads++;
         Reload();
+        _unitAttention628Pending = DiscInTray;
         NotReadyResponses = Math.Max(NotReadyResponses, 2); // spinning up after the load
+        return Good(0);
+    }
+
+    private ScsiExecutionResult SendOpcInformation(ReadOnlySpan<byte> cdb)
+    {
+        if (RejectsSendOpc)
+        {
+            return Sense(0x05, 0x20, 0x00);
+        }
+        if (cdb.Length < 10 || (cdb[1] & 0xFE) != 0)
+        {
+            return Sense(0x05, 0x24, 0x00);
+        }
+        SendOpcCount++;
         return Good(0);
     }
 
@@ -923,16 +955,31 @@ public sealed class VirtualMmcDrive : IScsiTransport
     {
         byte[] r = new byte[34];
         BinaryPrimitives.WriteUInt16BigEndian(r, 32);
-        r[2] = (byte)(DiscStatus & 0x03 | (Profile is NativeSaoAudioWriter.ProfileCdRw or NativeTaoDataWriter.ProfileDvdMinusRwSequential ? 0x10 : 0));
+        bool erasable = Profile is NativeSaoAudioWriter.ProfileCdRw
+            or NativeTaoDataWriter.ProfileDvdMinusRwSequential
+            or NativeTaoDataWriter.ProfileDvdMinusRwRestricted
+            or NativeTaoDataWriter.ProfileDvdPlusRw
+            or NativeTaoDataWriter.ProfileDvdRam
+            or NativeTaoDataWriter.ProfileBdRe;
+        r[2] = (byte)((DiscStatus & 0x03) | (erasable ? 0x10 : 0));
         r[3] = 1; r[4] = 1; r[5] = 1; r[6] = 1;
         int sessions = SessionsBeforeData + _dataSessions.Count;
-        if (sessions > 0)
+        int lastTrack = _audioSessionTracks + _dataSessions.Count;
+        if (_taoClosedSectors > 0)
+        {
+            // A flushed track whose session was not closed yet: incomplete last session (state 1).
+            int incompleteTrack = lastTrack + 1;
+            int count = sessions + 1;
+            r[2] = (byte)((r[2] & ~0x0C) | 0x04);
+            r[4] = (byte)count; r[5] = (byte)incompleteTrack; r[6] = (byte)incompleteTrack;
+            r[9] = (byte)(count >> 8); r[10] = (byte)(incompleteTrack >> 8); r[11] = (byte)(incompleteTrack >> 8);
+        }
+        else if (sessions > 0)
         {
             // MMC READ DISC INFORMATION: byte 4 number of sessions, bytes 5/6 first and last track in the last session
             // (MSBs in bytes 9-11). An open disc counts its empty last session and the invisible track in it; byte 2
             // bits 3-2 give that session's state (00b empty, 11b complete). A closed audio session holds all its tracks.
             bool open = DiscStatus == 1 && NextSessionAddress.HasValue;
-            int lastTrack = _audioSessionTracks + _dataSessions.Count;
             int count = open ? sessions + 1 : sessions;
             int firstInLast = open ? lastTrack + 1 : _dataSessions.Count > 0 ? lastTrack : 1;
             int lastInLast = open ? lastTrack + 1 : lastTrack;
@@ -1254,7 +1301,7 @@ public sealed class VirtualMmcDrive : IScsiTransport
         }
 
         int size = payloadSize + (withC2 ? 294 : 0);
-        if (data.Length < count * size)
+        if (count < 0 || data.Length < (long)count * size)
         {
             return Sense(0x05, 0x24, 0x00);
         }
@@ -1403,18 +1450,24 @@ public sealed class VirtualMmcDrive : IScsiTransport
         if (Recorded && lba >= 0 && count > 0 && lba < _recordedDataEndLba)
         {
             ReadOnlySpan<byte> program = ProgramAreaWritten.GetBuffer().AsSpan(0, (int)ProgramAreaWritten.Length);
-            if (lba + count > _recordedDataEndLba)
+            if ((long)lba + count > _recordedDataEndLba)
             {
                 return Sense(0x05, 0x64, 0x00);
             }
-            byte[] programCopy = program.Slice((lba + 150) * 2352, count * 2352).ToArray();
+            long byteOffset = (long)(lba + 150) * 2352;
+            long byteCount = (long)count * 2352;
+            if (byteOffset < 0 || byteOffset + byteCount > program.Length)
+            {
+                return Sense(0x05, 0x21, 0x00);
+            }
+            byte[] programCopy = program.Slice((int)byteOffset, (int)byteCount).ToArray();
             return ReadDataSectors(lba, count, sectorType, withC2, cdb[9], data, i => programCopy.AsSpan(i * 2352, 2352).ToArray());
         }
         if (Recorded && count > 0 && FindDataSession(lba) is { } session)
         {
             // A Track-at-Once data session (Mode 1, or Mode 2 Form 1 in a CD-ROM XA session): the drive returns each
             // sector as it was recorded, with sync, header (and sub-header) and EDC/ECC. A read past the track fails.
-            if (lba + count > session.TrackStartLba + session.TrackSectors || !TryFindRecorded(lba, count, out byte[]? user, out int at))
+            if ((long)lba + count > session.TrackStartLba + session.TrackSectors || !TryFindRecorded(lba, count, out byte[]? user, out int at))
             {
                 return Sense(0x05, 0x21, 0x00);
             }
@@ -1431,7 +1484,7 @@ public sealed class VirtualMmcDrive : IScsiTransport
         {
             return Sense(0x05, 0x64, 0x00); // illegal mode for this track: audio read as Mode 1/Mode 2
         }
-        if (!Recorded || lba < 0 || count == 0 || data.Length < count * stride || lba + count > RecordedLeadOutLba)
+        if (!Recorded || lba < 0 || count <= 0 || data.Length < (long)count * stride || (long)lba + count > RecordedLeadOutLba)
         {
             return Sense(0x05, 0x21, 0x00);
         }
@@ -2457,7 +2510,7 @@ public sealed class VirtualMmcDrive : IScsiTransport
         {
             return RamFormatInProgress(countPoll: false);
         }
-        if ((IsDvdPlusRw && BackgroundFormatStatus == 0) || (Profile == NativeTaoDataWriter.ProfileDvdRam && !RamFormatted) ||
+        if ((IsDvdPlusRw && BackgroundFormatStatus is 0 or 1) || (Profile == NativeTaoDataWriter.ProfileDvdRam && !RamFormatted) ||
             (Profile == NativeTaoDataWriter.ProfileBdRe && !BdReFormatted))
         {
             return Sense(0x05, 0x30, 0x10);
@@ -2578,6 +2631,11 @@ public sealed class VirtualMmcDrive : IScsiTransport
         }
         uint blocks = BinaryPrimitives.ReadUInt32BigEndian(list.Slice(4, 4));
         if (blocks != 0xFFFFFFFF && blocks > (uint)Capacity)
+        {
+            return Sense(0x05, 0x26, 0x00);
+        }
+        bool restart = (list[11] & 0x01) != 0;
+        if ((BackgroundFormatStatus == 1 && !restart) || (BackgroundFormatStatus == 0 && restart))
         {
             return Sense(0x05, 0x26, 0x00);
         }

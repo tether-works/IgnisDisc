@@ -106,12 +106,10 @@ public sealed class NativeOverwritableDvdWriterTests : IDisposable
         Assert.Equal(Speed4x, drive.WriteSpeedSet);
     }
 
-    [Theory]
-    [InlineData(1)]
-    [InlineData(3)]
-    public void FormattedOrPartlyFormattedBlankDisc_IsWrittenWithoutFormatting(int backgroundFormat)
+    [Fact]
+    public void FormattedBlankDisc_IsWrittenWithoutFormatting()
     {
-        var drive = DvdPlusRw(backgroundFormat);
+        var drive = DvdPlusRw(backgroundFormat: 3);
         byte[] image = Image(640);
 
         var result = Write(drive, image);
@@ -119,6 +117,21 @@ public sealed class NativeOverwritableDvdWriterTests : IDisposable
         Assert.True(result.Success, result.Message);
         Assert.Equal(0, drive.FormatUnitCount);
         Assert.Equal(image, drive.DataDiscImage);
+    }
+
+    [Fact]
+    public void PartlyFormattedDisc_RestartsBackgroundFormat_ThenWritesAndCloses()
+    {
+        var drive = DvdPlusRw(backgroundFormat: 1);
+        byte[] image = Image(640);
+
+        var result = Write(drive, image);
+
+        Assert.True(result.Success, result.Message);
+        Assert.Equal(1, drive.FormatUnitCount);
+        Assert.Equal(new byte[] { 0x00, 0x82, 0x00, 0x08, 0xFF, 0xFF, 0xFF, 0xFF, 0x98, 0x00, 0x00, 0x01 }, drive.LastFormatParameters);
+        Assert.Equal(image, drive.DataDiscImage);
+        Assert.Equal(NativeWriteCommands.CloseFunctionSession, drive.LastCloseFunction);
     }
 
     [Fact]

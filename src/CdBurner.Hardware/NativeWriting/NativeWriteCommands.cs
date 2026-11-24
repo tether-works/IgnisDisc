@@ -1,4 +1,6 @@
 using System.Buffers.Binary;
+using System.Diagnostics;
+using CdBurner.Hardware.Scsi;
 
 namespace CdBurner.Hardware.NativeWriting;
 
@@ -327,6 +329,66 @@ public static class NativeWriteCommands
 
         return (BinaryPrimitives.ReadUInt32BigEndian(response.Slice(4, 4)),
                 BinaryPrimitives.ReadUInt32BigEndian(response.Slice(8, 4)));
+    }
+
+    /// <summary>Maximum number of non-buffer-full transient retries (becoming ready, USB comms, seek, unit attention) per command.</summary>
+    public const int MaxTransientRetries = 5;
+
+    /// <summary>2/04/07 (operation in progress) and 2/04/08 (long write in progress): the drive buffer is full.</summary>
+    internal static bool IsBufferBusySense(ScsiSenseInfo? sense) =>
+        sense is { SenseKey: 0x02, Asc: 0x04, Ascq: 0x07 or 0x08 };
+
+    /// <summary>
+    /// Transient SCSI conditions on USB bridges and optical drives that merit a bounded retry: 2/04/01 (becoming
+    /// ready), 08/00..03 (logical unit communication failure/timeout/parity/CRC), ASC 02 (no seek complete), and 6/28
+    /// or 6/29 (unit attention: media changed or bus/device reset).
+    /// </summary>
+    internal static bool IsTransientRetrySense(ScsiSenseInfo? sense) => sense is
+        { SenseKey: 0x02, Asc: 0x04, Ascq: 0x01 } or
+        { Asc: 0x08, Ascq: <= 0x03 } or
+        { SenseKey: not 0x05, Asc: 0x02 } or
+        { SenseKey: 0x06, Asc: 0x28 or 0x29 };
+
+    /// <summary>USB communication (08/00..03) or seek (ASC 02) transient sense for TEST UNIT READY polling.</summary>
+    internal static bool IsTransientCommunicationOrSeekSense(ScsiSenseInfo? sense) => sense is
+        { Asc: 0x08, Ascq: <= 0x03 } or
+        { SenseKey: not 0x05, Asc: 0x02 };
+
+    /// <summary>
+    /// Runs 0x54 SEND OPC INFORMATION (DoOpc=1) before writing on CD/DVD-R/RW when not simulating. Refusal is logged
+    /// and non-fatal, matching libburn's mmc_perform_opc (many drives calibrate automatically on the first write).
+    /// </summary>
+    internal static void PerformPreWriteOpc(IScsiTransport transport, Action<string> note, Action<TimeSpan> sleep,
+        TimeSpan timeout, Action checkCancel)
+    {
+        byte[] cdb = MmcCommandBuilder.BuildSendOpcInformationCdb(doOpc: true);
+        var deadline = Stopwatch.StartNew();
+        int transientRetries = 0;
+        while (true)
+        {
+            checkCancel();
+            var r = transport.ExecuteCommand(cdb, Span<byte>.Empty, ScsiPassThroughNative.SCSI_IOCTL_DATA_UNSPECIFIED, timeout);
+            if (r.IsSuccess)
+            {
+                note("SEND OPC INFORMATION succeeded.");
+                return;
+            }
+            if (IsBufferBusySense(r.SenseInfo) && deadline.Elapsed < timeout)
+            {
+                checkCancel();
+                sleep(TimeSpan.FromMilliseconds(20));
+                continue;
+            }
+            if (IsTransientRetrySense(r.SenseInfo) && ++transientRetries <= MaxTransientRetries && deadline.Elapsed < timeout)
+            {
+                checkCancel();
+                sleep(TimeSpan.FromMilliseconds(50));
+                continue;
+            }
+            string detail = r.SenseInfo?.ToString() ?? r.ErrorMessage ?? $"status 0x{r.ScsiStatus:X2}";
+            note($"SEND OPC INFORMATION refused ({detail}); continuing.");
+            return;
+        }
     }
 }
 

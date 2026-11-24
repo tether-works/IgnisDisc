@@ -174,7 +174,7 @@ public sealed partial class NativeTaoDataWriter
         catch (WriteStop stop)
         {
             _note(stop.Message);
-            if (state.WritingStarted)
+            if (state.WritingStarted && !state.FormattingInProgress)
             {
                 TryFlush();
             }
@@ -259,7 +259,7 @@ public sealed partial class NativeTaoDataWriter
         AppendTarget? append = null;
         if (request.AppendsSession)
         {
-            append = FindAppendTarget(request, disc, state.ImageSectors);
+            append = FindAppendTarget(request, disc, state.ImageSectors, state, ct);
             startLba = append.Value.StartLba;
             freeSectors = append.Value.FreeSectors;
         }
@@ -327,6 +327,10 @@ public sealed partial class NativeTaoDataWriter
         // 4. Speed from the drive's own list for this disc, never left to chance.
         ChooseAndSetSpeed(request.WriteSpeedKiloBytesPerSecond, state);
         Check(ct, state);
+        if (!request.TestWrite)
+        {
+            NativeWriteCommands.PerformPreWriteOpc(_transport, _note, _sleep, FirstWriteTimeout, () => Check(ct, state));
+        }
 
         // 5. The data. From here on the drive is writing (laser at read power during a test write).
         request.Image.Position = request.StartPosition;
@@ -437,7 +441,7 @@ public sealed partial class NativeTaoDataWriter
             }
             remainingImage -= fromImage;
 
-            if (!WriteBlocks(lba, (ushort)n, buffer.AsSpan(0, bytes), state, canShrink: sectorsPerWrite > minimum, first: lba == startLba))
+            if (!WriteBlocks(lba, (ushort)n, buffer.AsSpan(0, bytes), state, canShrink: sectorsPerWrite > minimum, first: lba == startLba, ct))
             {
                 request.Image.Position -= fromImage;
                 remainingImage += fromImage;
@@ -534,13 +538,16 @@ public sealed partial class NativeTaoDataWriter
     /// <param name="first">The first WRITE of a run, which the drive may hold while it calibrates
     /// (<see cref="FirstWriteTimeout"/>).</param>
     /// <returns>False only when <paramref name="canShrink"/> is set and the adapter refused the transfer as too large.</returns>
-    private bool WriteBlocks(int lba, ushort count, Span<byte> data, RunState state, bool canShrink = false, bool first = false)
+    private bool WriteBlocks(int lba, ushort count, Span<byte> data, RunState state, bool canShrink = false, bool first = false,
+        CancellationToken ct = default)
     {
         byte[] cdb = NativeWriteCommands.BuildWrite10(lba, count);
         TimeSpan timeout = first ? FirstWriteTimeout : WriteTimeout;
         var deadline = Stopwatch.StartNew();
+        int transientRetries = 0;
         while (true)
         {
+            Check(ct, state);
             state.WritingStarted = true;
             var r = _transport.ExecuteCommand(cdb, data, ScsiPassThroughNative.SCSI_IOCTL_DATA_OUT, timeout);
             if (r.IsSuccess)
@@ -551,9 +558,19 @@ public sealed partial class NativeTaoDataWriter
             {
                 return false;
             }
-            if (r.SenseInfo is { SenseKey: 0x02, Asc: 0x04, Ascq: 0x07 or 0x08 } && deadline.Elapsed < timeout)
+            if (NativeWriteCommands.IsBufferBusySense(r.SenseInfo) && deadline.Elapsed < timeout)
             {
+                Check(ct, state);
                 _sleep(TimeSpan.FromMilliseconds(20)); // drive buffer full
+                continue;
+            }
+            if (NativeWriteCommands.IsTransientRetrySense(r.SenseInfo) &&
+                ++transientRetries <= NativeWriteCommands.MaxTransientRetries &&
+                deadline.Elapsed < timeout)
+            {
+                _note($"Transient drive error while writing at LBA {lba} ({Describe(r)}); retrying ({transientRetries}/{NativeWriteCommands.MaxTransientRetries}).");
+                Check(ct, state);
+                _sleep(TimeSpan.FromMilliseconds(50));
                 continue;
             }
             throw Stop($"The drive reported an error while writing at LBA {lba}: {Describe(r)}");
@@ -669,7 +686,7 @@ public sealed partial class NativeTaoDataWriter
     /// next writable address, that address is the one the image was laid out for, and the image's own ISO 9660 volume
     /// says so too.
     /// </summary>
-    private AppendTarget FindAppendTarget(NativeDataWriteRequest request, DiscInformation disc, int imageSectors)
+    private AppendTarget FindAppendTarget(NativeDataWriteRequest request, DiscInformation disc, int imageSectors, RunState state, CancellationToken ct)
     {
         int expected = request.SessionStartLba ?? 0;
         if (disc.Status == 0)
@@ -680,7 +697,15 @@ public sealed partial class NativeTaoDataWriter
         {
             throw Stop("The disc is closed (not blank): no more sessions can be added to it.");
         }
-        if (disc.LastSessionState != 0)
+        if (disc.LastSessionState == 1)
+        {
+            if (request.TestWrite)
+            {
+                throw Stop("The disc's last session was left unfinished (an incomplete track), so no session can be added during a test write.");
+            }
+            disc = RecoverIncompleteSessionCore(state, ct);
+        }
+        else if (disc.LastSessionState != 0)
         {
             throw Stop("The disc's last session was left unfinished (an incomplete track), so no session can be added to it.");
         }
@@ -698,6 +723,93 @@ public sealed partial class NativeTaoDataWriter
         int session = invisible.SessionNumber > 0 ? invisible.SessionNumber : invisible.TrackNumber;
         _note($"Open disc: track {invisible.TrackNumber} (invisible) of session {session} starts at {invisible.NextWritableAddress}, {invisible.FreeBlocks} sectors free.");
         return new AppendTarget(invisible.TrackNumber, invisible.NextWritableAddress, invisible.FreeBlocks, session);
+    }
+
+    /// <summary>
+    /// Closes an incomplete last session (READ DISC INFORMATION <c>LastSessionState == 1</c>) on an appendable disc
+    /// so it becomes readable or ready for another session. Returns <c>Success = true</c> when closed or already clean.
+    /// </summary>
+    public NativeDataWriteResult CloseIncompleteSession(CancellationToken cancellationToken = default)
+    {
+        var clock = Stopwatch.StartNew();
+        var state = new RunState();
+        try
+        {
+            WaitUntilReady(TimeSpan.FromSeconds(30), cancellationToken, state, "before closing incomplete session");
+            var disc = ReadDiscInformation() ?? throw Stop("The drive did not return disc information.");
+            if (disc.Status != 1 || disc.LastSessionState != 1)
+            {
+                return new NativeDataWriteResult
+                {
+                    Success = disc.Status is 1 or 2 && disc.LastSessionState != 1,
+                    StoppedBeforeWriting = true,
+                    Message = disc.Status == 0
+                        ? "The disc is blank; there is no incomplete session to close."
+                        : $"The disc has no incomplete session to close (status {disc.Status}, last session state {disc.LastSessionState}).",
+                    Elapsed = clock.Elapsed,
+                    SessionClosed = disc.LastSessionState != 1
+                };
+            }
+
+            var after = RecoverIncompleteSessionCore(state, cancellationToken, allowFinalized: true);
+            return new NativeDataWriteResult
+            {
+                Success = true,
+                StoppedBeforeWriting = false,
+                Message = after.Status == 2
+                    ? "The incomplete session was closed and the disc finalized."
+                    : "The incomplete session was closed; the disc is ready for another session.",
+                Elapsed = clock.Elapsed,
+                SessionClosed = true
+            };
+        }
+        catch (WriteStop stop)
+        {
+            _note(stop.Message);
+            return new NativeDataWriteResult
+            {
+                Success = false,
+                Cancelled = stop.Cancelled,
+                StoppedBeforeWriting = !state.WritingStarted,
+                Message = stop.Message,
+                Elapsed = clock.Elapsed
+            };
+        }
+    }
+
+    private DiscInformation RecoverIncompleteSessionCore(RunState state, CancellationToken ct, bool allowFinalized = false)
+    {
+        _note("The disc's last session is incomplete (state 1); attempting close-session recovery.");
+        WaitUntilReady(FlushTimeout, ct, state, "before closing the incomplete session");
+        var close = Close(NativeWriteCommands.CloseFunctionSession, 0, state);
+        if (!close.IsSuccess && close.SenseInfo is { SenseKey: 0x05, Asc: 0x2C })
+        {
+            int lastTrack = ReadLastTrackNumber() ?? 1;
+            var closeTrack = Close(NativeWriteCommands.CloseFunctionTrack, lastTrack, state);
+            if (closeTrack.IsSuccess)
+            {
+                close = Close(NativeWriteCommands.CloseFunctionSession, 0, state);
+            }
+        }
+        if (!close.IsSuccess)
+        {
+            throw Stop($"The disc's last session was left unfinished (an incomplete track) and closing it failed: {Describe(close)}");
+        }
+        state.WritingStarted = true;
+        var disc = ReadDiscInformation() ?? throw Stop("The drive did not return disc information after closing the incomplete session.");
+        if (disc.Status == 2)
+        {
+            if (allowFinalized)
+            {
+                return disc;
+            }
+            throw Stop("The incomplete session was closed, which finalized the disc; no more sessions can be added to it.");
+        }
+        if (disc.Status != 1 || disc.LastSessionState != 0)
+        {
+            throw Stop($"The disc's last session is still not ready for another session after recovery (disc status {disc.Status}, last session state {disc.LastSessionState}).");
+        }
+        return disc;
     }
 
     /// <summary>
@@ -958,6 +1070,7 @@ public sealed partial class NativeTaoDataWriter
     {
         var clock = Stopwatch.StartNew();
         int unitAttentions = 0;
+        int transientErrors = 0;
         while (true)
         {
             Check(ct, state);
@@ -980,6 +1093,14 @@ public sealed partial class NativeTaoDataWriter
             {
                 whileNotReady?.Invoke(r.SenseData);
                 _sleep(TimeSpan.FromMilliseconds(500));
+                continue;
+            }
+            if (NativeWriteCommands.IsTransientCommunicationOrSeekSense(s) &&
+                ++transientErrors <= NativeWriteCommands.MaxTransientRetries &&
+                clock.Elapsed < limit)
+            {
+                Check(ct, state);
+                _sleep(TimeSpan.FromMilliseconds(50));
                 continue;
             }
             throw Stop($"The drive is not ready {when}: {Describe(r)}");
@@ -1036,6 +1157,7 @@ public sealed partial class NativeTaoDataWriter
     private sealed class RunState
     {
         public bool WritingStarted;
+        public bool FormattingInProgress;
         public bool UnsupportedDisc;
         public bool TestWriteNotOffered;
         public int ImageSectors;

@@ -18,6 +18,7 @@ public static class MmcCommandBuilder
     public const byte OpCodeGetConfiguration     = 0x46;
     public const byte OpCodeReadDiscInformation  = 0x51;
     public const byte OpCodeReadTrackInformation = 0x52;
+    public const byte OpCodeSendOpcInformation   = 0x54;
     public const byte OpCodeModeSelect10         = 0x55;
     public const byte OpCodeModeSense10          = 0x5A;
     public const byte OpCodeCloseTrackSession    = 0x5B;
@@ -222,15 +223,33 @@ public static class MmcCommandBuilder
     {
         int pageOffset;
 
-        // Check if caller passed just the mode page (starts with Page Code 0x05, e.g. [0x05, length, ...])
-        if (modeSense10Response.Length >= 4 && (modeSense10Response[0] & 0x3F) == ModePageWriteParameters)
-        {
-            pageOffset = 0;
-        }
-        else if (modeSense10Response.Length >= 8)
+        if (modeSense10Response.Length >= 8)
         {
             ushort blockDescLen = BinaryPrimitives.ReadUInt16BigEndian(modeSense10Response.Slice(6, 2));
-            pageOffset = 8 + blockDescLen;
+            int headerCandidate = 8 + blockDescLen;
+            if (headerCandidate + 3 <= modeSense10Response.Length &&
+                (modeSense10Response[headerCandidate] & 0x7F) == ModePageWriteParameters &&
+                modeSense10Response[headerCandidate + 1] >= 1)
+            {
+                pageOffset = headerCandidate;
+            }
+            else if ((modeSense10Response[0] & 0x7F) == ModePageWriteParameters &&
+                     modeSense10Response[1] >= 2 &&
+                     2 + modeSense10Response[1] == modeSense10Response.Length)
+            {
+                // Bare mode page slice (starts with Page Code 0x05 and exact length byte)
+                pageOffset = 0;
+            }
+            else
+            {
+                return new MmcWriteCapabilityProbe();
+            }
+        }
+        else if (modeSense10Response.Length >= 4 &&
+                 (modeSense10Response[0] & 0x7F) == ModePageWriteParameters &&
+                 modeSense10Response[1] >= 2)
+        {
+            pageOffset = 0;
         }
         else
         {
@@ -516,6 +535,21 @@ public static class MmcCommandBuilder
         cdb[6] = (byte)((cueSheetLength >> 16) & 0xFF);
         cdb[7] = (byte)((cueSheetLength >> 8) & 0xFF);
         cdb[8] = (byte)(cueSheetLength & 0xFF);
+        return cdb;
+    }
+
+    /// <summary>
+    /// Builds a 10-byte MMC SEND OPC INFORMATION CDB (OpCode 0x54) for Optimum Power Calibration.
+    /// </summary>
+    /// <param name="doOpc">True to set DoOpc (bit 0 of byte 1) so the drive calibrates laser power for the current medium.</param>
+    /// <param name="parameterListLength">Length of optional OPC table parameter list (bytes 7..8).</param>
+    public static byte[] BuildSendOpcInformationCdb(bool doOpc = true, ushort parameterListLength = 0)
+    {
+        byte[] cdb = new byte[10];
+        cdb[0] = OpCodeSendOpcInformation;
+        cdb[1] = (byte)(doOpc ? 0x01 : 0x00);
+        cdb[7] = (byte)(parameterListLength >> 8);
+        cdb[8] = (byte)(parameterListLength & 0xFF);
         return cdb;
     }
 }

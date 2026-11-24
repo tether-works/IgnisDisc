@@ -67,6 +67,7 @@ public sealed partial class NativeTaoDataWriter
         var formats = report.FormattedCapacity;
         byte? formatType = null;          // the format to start before writing, if any
         uint formatBlocks = 0;            // BD-RE and DVD-RAM: the blocks the drive offered for format 00h
+        bool dvdPlusRwRestart = false;    // DVD+RW background format status 1 (partly formatted): restart=true
         bool mayHoldData = true;
         switch (kind)
         {
@@ -75,10 +76,14 @@ public sealed partial class NativeTaoDataWriter
                 var disc = ReadDiscInformation() ?? throw Stop("The drive did not return disc information.");
                 int background = disc.BackgroundFormat;
                 _note($"Background format status {background} ({background switch { 0 => "not formatted", 1 => "partly formatted", 2 => "formatting", _ => "formatted" }}).");
-                if (background == 0)
+                if (background is 0 or 1)
                 {
                     formatType = NativeWriteCommands.FormatTypeDvdPlusRw;
-                    mayHoldData = false;
+                    dvdPlusRwRestart = background == 1;
+                    if (background == 0)
+                    {
+                        mayHoldData = false;
+                    }
                 }
                 break;
             }
@@ -191,7 +196,7 @@ public sealed partial class NativeTaoDataWriter
         {
             byte[] parameters = kind switch
             {
-                OverwritableKind.DvdPlusRw => NativeWriteCommands.BuildDvdPlusRwFormatParameters(restart: false),
+                OverwritableKind.DvdPlusRw => NativeWriteCommands.BuildDvdPlusRwFormatParameters(restart: dvdPlusRwRestart),
                 OverwritableKind.BdRe => NativeWriteCommands.BuildBdReDefaultFormatParameters(formatBlocks),
                 OverwritableKind.DvdRam => NativeWriteCommands.BuildDvdRamFormatParameters(formatBlocks),
                 _ => NativeWriteCommands.BuildDvdMinusRwExpandParameters()
@@ -202,8 +207,10 @@ public sealed partial class NativeTaoDataWriter
                 throw Stop($"The drive refused to format the {name}: {Describe(format)}");
             }
             state.WritingStarted = true;
-            _note($"FORMAT UNIT type {type:X2}h sent.");
+            state.FormattingInProgress = true;
+            _note($"FORMAT UNIT type {type:X2}h{(dvdPlusRwRestart ? " (restart)" : "")} sent.");
             WaitForFormat(kind == OverwritableKind.DvdRam ? DvdRamFormatTimeout : FlushTimeout, ct, state, reporter);
+            state.FormattingInProgress = false;
         }
 
         // 6. The data, in 64 KiB WRITEs from LBA 0.

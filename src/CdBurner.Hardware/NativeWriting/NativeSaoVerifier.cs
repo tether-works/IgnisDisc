@@ -382,7 +382,7 @@ public sealed class NativeSaoVerifier
         }
 
         const int dataSize = 2048;
-        const int perRead = 32; // 64 KiB
+        int perRead = 32; // 64 KiB; shrinks on Win32 error 87
         int dataSectors = track.SectorCount - track.PostGapSectors;
         byte[] read = new byte[perRead * dataSize];
         byte[] expected = new byte[perRead * dataSize];
@@ -391,13 +391,18 @@ public sealed class NativeSaoVerifier
         bool imageEnded = false;
 
         using var image = openTrackAudio(0);
-        for (int lba = track.Index01Lba; lba < track.EndLba; lba += perRead)
+        for (int lba = track.Index01Lba; lba < track.EndLba; )
         {
             ct.ThrowIfCancellationRequested();
             int count = Math.Min(perRead, track.EndLba - lba);
             var r = _transport.ExecuteCommand(
                 MmcCommandBuilder.BuildReadCdCdb(lba, count, expectedSectorType: 2, mainChannelSelectionBits: 0x10),
                 read.AsSpan(0, count * dataSize), ScsiPassThroughNative.SCSI_IOCTL_DATA_IN, Timeout);
+            if (!r.IsSuccess && r.SenseInfo == null && r.Win32Error == 87 && perRead > 1)
+            {
+                perRead = Math.Max(1, perRead / 2);
+                continue;
+            }
             if (!r.IsSuccess || r.DataTransferLength < (uint)(count * dataSize))
             {
                 return $"The data track could not be read back at LBA {lba}: {Describe(r)}";
@@ -423,6 +428,7 @@ public sealed class NativeSaoVerifier
                     if (firstDifferent < 0) firstDifferent = lba + i;
                 }
             }
+            lba += count;
         }
 
         if (different > 0)
@@ -437,7 +443,7 @@ public sealed class NativeSaoVerifier
     {
         const int rawSize = CdBurner.Core.Images.RawSectorCodec.RawSectorSize;
         const int xaSize = NativeSaoAudioWriter.Mode2XaSectorSize;
-        const int perRead = 27; // 63,504 bytes <= 64 KiB
+        int perRead = 27; // 63,504 bytes <= 64 KiB; shrinks on Win32 error 87
         int dataSectors = track.SectorCount - track.PostGapSectors;
         byte[] read = new byte[perRead * rawSize];
         byte[] expected = new byte[xaSize];
@@ -446,13 +452,18 @@ public sealed class NativeSaoVerifier
         bool imageEnded = false;
 
         using var image = openTrackAudio(0);
-        for (int lba = track.Index01Lba; lba < track.EndLba; lba += perRead)
+        for (int lba = track.Index01Lba; lba < track.EndLba; )
         {
             ct.ThrowIfCancellationRequested();
             int count = Math.Min(perRead, track.EndLba - lba);
             var r = _transport.ExecuteCommand(
                 MmcCommandBuilder.BuildReadCdCdb(lba, count, expectedSectorType: 0, mainChannelSelectionBits: 0xF8),
                 read.AsSpan(0, count * rawSize), ScsiPassThroughNative.SCSI_IOCTL_DATA_IN, Timeout);
+            if (!r.IsSuccess && r.SenseInfo == null && r.Win32Error == 87 && perRead > 1)
+            {
+                perRead = Math.Max(1, perRead / 2);
+                continue;
+            }
             if (!r.IsSuccess || r.DataTransferLength < (uint)(count * rawSize))
             {
                 return $"The data track could not be read back at LBA {lba}: {Describe(r)}";
@@ -506,6 +517,7 @@ public sealed class NativeSaoVerifier
                     if (firstDifferent < 0) firstDifferent = lba + i;
                 }
             }
+            lba += count;
         }
 
         if (different > 0)

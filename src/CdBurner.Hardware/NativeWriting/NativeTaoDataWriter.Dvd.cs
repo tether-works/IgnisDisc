@@ -182,7 +182,7 @@ public sealed partial class NativeTaoDataWriter
         AppendTarget? append = null;
         if (request.AppendsSession)
         {
-            append = FindAppendTarget(request, disc, state.ImageSectors);
+            append = FindAppendTarget(request, disc, state.ImageSectors, state, ct);
         }
         else if (disc.Status != 0)
         {
@@ -264,6 +264,10 @@ public sealed partial class NativeTaoDataWriter
         int endLba = (int)Math.Min(int.MaxValue, Math.Max(startLba + trackSectors, startLba + freeSectors) - 1);
         ChooseAndSetSpeed(request.WriteSpeedKiloBytesPerSecond, state, streamingEndLba: endLba);
         Check(ct, state);
+        if (!plusR && !request.TestWrite)
+        {
+            NativeWriteCommands.PerformPreWriteOpc(_transport, _note, _sleep, FirstWriteTimeout, () => Check(ct, state));
+        }
 
         // 5. Disc-At-Once announces the track's size first. The reservation is recorded on the disc, so from here on
         //    the disc is no longer untouched.

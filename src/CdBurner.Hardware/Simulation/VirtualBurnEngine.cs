@@ -1,6 +1,7 @@
 using System.Diagnostics;
 using CdBurner.Core.Abstractions;
 using CdBurner.Core.Audio;
+using CdBurner.Core.Images;
 using CdBurner.Core.Primitives;
 
 namespace CdBurner.Hardware.Simulation;
@@ -27,6 +28,12 @@ public class VirtualBurnEngine : IBurnEngineBackend, ISecureAudioReader
     /// so it is never left open for more sessions.
     /// </summary>
     public bool FormatsBlankDvdMinusRwForOverwrite { get; set; } = true;
+
+    /// <summary>
+    /// When true, <see cref="BurnAudioTracksAsync"/> enforces the Red Book 300-frame track minimum and writes
+    /// 150-frame inter-track silent pre-gaps in Track-at-Once mode (and track pre-gaps), matching IMAPIv2.
+    /// </summary>
+    public bool EnforceRedBookTrackMinimumAndGaps { get; set; }
 
     public VirtualBurnEngine(VirtualDiscRecorder? defaultRecorder = null)
     {
@@ -63,6 +70,12 @@ public class VirtualBurnEngine : IBurnEngineBackend, ISecureAudioReader
         if (medium.IsFinalized && !(overwriteOnly && options.OverwriteExistingData))
         {
             return BurnOperationResult.Failed("Mounted virtual medium is finalized and cannot be written.");
+        }
+
+        if (imageStream.CanSeek && IsRaw2352Stream(imageStream))
+        {
+            return BurnOperationResult.Failed(
+                "Raw 2,352-byte sector images cannot be written as 2,048-byte Mode 1 data streams.");
         }
 
         long streamLength = imageStream.CanSeek ? (imageStream.Length - imageStream.Position) : -1;
@@ -153,6 +166,12 @@ public class VirtualBurnEngine : IBurnEngineBackend, ISecureAudioReader
             if (bytesRead < OpticalConstants.DataSectorSize)
             {
                 Array.Clear(sectorBuffer, bytesRead, OpticalConstants.DataSectorSize - bytesRead);
+            }
+
+            if (sectorsWritten == 0 && !imageStream.CanSeek && bytesRead >= 16 && LooksLikeRawCdHeader(sectorBuffer))
+            {
+                return BurnOperationResult.Failed(
+                    "Raw 2,352-byte sector images cannot be written as 2,048-byte Mode 1 data streams.");
             }
 
             int currentLba = startLba + sectorsWritten;
@@ -269,6 +288,7 @@ public class VirtualBurnEngine : IBurnEngineBackend, ISecureAudioReader
         // Calculate total required sectors
         int totalAudioSectors = 0;
         var trackSectorCounts = new int[tracks.Count];
+        var trackGapCounts = new int[tracks.Count];
         for (int i = 0; i < tracks.Count; i++)
         {
             var trk = tracks[i];
@@ -291,11 +311,22 @@ public class VirtualBurnEngine : IBurnEngineBackend, ISecureAudioReader
             }
             else
             {
-                trkSectors = OpticalConstants.CdLeadInFrames; // Minimum 150 frames (2.0s)
+                trkSectors = 300; // Minimum 300 frames (4.0s) per Red Book standard
+            }
+
+            if (EnforceRedBookTrackMinimumAndGaps)
+            {
+                trkSectors = Math.Max(300, trkSectors);
+                if (i > 0)
+                {
+                    trackGapCounts[i] = trk.PreGapFrames > 0
+                        ? trk.PreGapFrames
+                        : (!options.UseDiscAtOnce ? OpticalConstants.CdLeadInFrames : 0);
+                }
             }
 
             trackSectorCounts[i] = trkSectors;
-            totalAudioSectors += trkSectors;
+            totalAudioSectors += trackGapCounts[i] + trkSectors;
         }
 
         if (totalAudioSectors > medium.FreeSectors)
@@ -358,6 +389,21 @@ public class VirtualBurnEngine : IBurnEngineBackend, ISecureAudioReader
         {
             cancellationToken.ThrowIfCancellationRequested();
             var trk = tracks[i];
+            int gapSectors = trackGapCounts[i];
+            if (gapSectors > 0)
+            {
+                Array.Clear(frameBuffer, 0, OpticalConstants.RawSectorSize);
+                for (int g = 0; g < gapSectors; g++)
+                {
+                    cancellationToken.ThrowIfCancellationRequested();
+                    if (!options.Simulate)
+                    {
+                        medium.WriteSector(currentLba, frameBuffer, OpticalConstants.RawSectorSize);
+                    }
+                    currentLba++;
+                    sectorsWritten++;
+                }
+            }
             int trkSectors = trackSectorCounts[i];
             int trkStartLba = currentLba;
 
@@ -470,9 +516,17 @@ public class VirtualBurnEngine : IBurnEngineBackend, ISecureAudioReader
                 }
             }
 
-            if (options.UseDiscAtOnce)
+            if (options.UseDiscAtOnce && !options.LeaveSessionOpen)
             {
                 medium.IsFinalized = true;
+            }
+            else if (options.LeaveSessionOpen)
+            {
+                medium.IsFinalized = false;
+                int gap = medium.Sessions.Count <= 1
+                    ? VirtualMmcDrive.CdFirstSessionGapSectors
+                    : VirtualMmcDrive.CdLaterSessionGapSectors;
+                medium.NextWritableLba = sessionStartLba + sectorsWritten + gap;
             }
         }
 
@@ -736,4 +790,42 @@ public class VirtualBurnEngine : IBurnEngineBackend, ISecureAudioReader
         CacheFlushCount++;
         return Task.CompletedTask;
     }
+
+    private static bool IsRaw2352Stream(Stream stream)
+    {
+        long savedPos = stream.Position;
+        long remaining = stream.Length - savedPos;
+        if (remaining < OpticalConstants.RawSectorSize)
+        {
+            return false;
+        }
+        try
+        {
+            byte[] header = new byte[16];
+            if (stream.Read(header, 0, 16) < 16 || !LooksLikeRawCdHeader(header))
+            {
+                return false;
+            }
+            if (remaining >= OpticalConstants.RawSectorSize * 2L)
+            {
+                stream.Position = savedPos + OpticalConstants.RawSectorSize;
+                if (stream.Read(header, 0, 16) < 16 || !LooksLikeRawCdHeader(header))
+                {
+                    return false;
+                }
+            }
+            return true;
+        }
+        finally
+        {
+            stream.Position = savedPos;
+        }
+    }
+
+    private static bool LooksLikeRawCdHeader(ReadOnlySpan<byte> sectorPrefix) =>
+        sectorPrefix.Length >= 16 &&
+        sectorPrefix[0] == 0x00 &&
+        sectorPrefix[11] == 0x00 &&
+        sectorPrefix.Slice(1, 10).IndexOfAnyExcept((byte)0xFF) < 0 &&
+        sectorPrefix[15] is 1 or 2;
 }

@@ -99,7 +99,9 @@ public sealed class NativeSaoAudioWriter
 
     private static readonly TimeSpan ShortTimeout = TimeSpan.FromSeconds(30);
     private static readonly TimeSpan WriteTimeout = TimeSpan.FromSeconds(60);
+    private static readonly TimeSpan FirstWriteTimeout = NativeTaoDataWriter.FirstWriteTimeout;
     private static readonly TimeSpan FlushTimeout = TimeSpan.FromMinutes(10);
+    private const int ErrorInvalidParameter = 87;
 
     private readonly IScsiTransport _transport;
     private readonly Action<string> _note;
@@ -271,6 +273,11 @@ public sealed class NativeSaoAudioWriter
         {
             SetWriteSpeed(speed);
         }
+        Check(ct, state);
+        if (!request.TestWrite)
+        {
+            NativeWriteCommands.PerformPreWriteOpc(_transport, _note, _sleep, FirstWriteTimeout, () => Check(ct, state));
+        }
 
         // 5. From here on the drive is writing (with the laser at read power during a test write).
         int leadInSectors = cdText ? -151 - leadInStartLba + 1 : 0;
@@ -408,19 +415,20 @@ public sealed class NativeSaoAudioWriter
     private void WriteLeadIn(byte[] cycle, int startLba, int count, RunState state, ProgressReporter reporter, CancellationToken ct)
     {
         int cycleSectors = cycle.Length / CdTextLeadInEncoder.SubChannelBytesPerSector;
-        byte[] buffer = new byte[LeadInSectorsPerWrite * CdTextLeadInEncoder.SubChannelBytesPerSector];
+        int perWrite = LeadInSectorsPerWrite;
+        byte[] buffer = new byte[perWrite * CdTextLeadInEncoder.SubChannelBytesPerSector];
         int written = 0;
         while (written < count)
         {
             Check(ct, state);
-            int n = Math.Min(LeadInSectorsPerWrite, count - written);
+            int n = Math.Min(perWrite, count - written);
             for (int i = 0; i < n; i++)
             {
                 int s = (written + i) % cycleSectors;
                 Buffer.BlockCopy(cycle, s * 96, buffer, i * 96, 96);
             }
 
-            WriteBlocks(startLba + written, (ushort)n, buffer.AsSpan(0, n * 96), state);
+            WriteChunkWithShrink(startLba + written, n, CdTextLeadInEncoder.SubChannelBytesPerSector, ref perWrite, buffer.AsSpan(0, n * 96), state, ct);
             written += n;
             state.LeadInSectors = written;
             reporter.Report(written, "Writing the CD-Text lead-in");
@@ -439,14 +447,15 @@ public sealed class NativeSaoAudioWriter
             return;
         }
 
-        byte[] buffer = new byte[AudioSectorsPerWrite * sectorSize];
+        int perWrite = AudioSectorsPerWrite;
+        byte[] buffer = new byte[perWrite * sectorSize];
         int filled = 0;
         int chunkLba = layout.AudioStartLba; // -150, or right after a mixed-mode CD's data track
 
         void FlushChunk()
         {
             if (filled == 0) return;
-            WriteBlocks(chunkLba, (ushort)filled, buffer.AsSpan(0, filled * sectorSize), state);
+            WriteChunkWithShrink(chunkLba, filled, sectorSize, ref perWrite, buffer.AsSpan(0, filled * sectorSize), state, ct);
             state.AudioSectors += filled;
             reporter.Report(doneBefore + state.DataSectors + state.AudioSectors, "Writing audio");
             chunkLba += filled;
@@ -470,7 +479,7 @@ public sealed class NativeSaoAudioWriter
             {
                 break;
             }
-            if (++filled == AudioSectorsPerWrite)
+            if (++filled >= perWrite)
             {
                 Check(ct, state);
                 FlushChunk();
@@ -549,7 +558,7 @@ public sealed class NativeSaoAudioWriter
                     }
                 }
 
-                WriteBlocks(lba, (ushort)count, chunk, state);
+                WriteChunkWithShrink(lba, count, sectorSize, ref perWrite, chunk, state, ct);
                 state.DataSectors += count;
                 reporter.Report(doneBefore + state.DataSectors, "Writing the data track");
                 lba += count;
@@ -570,23 +579,61 @@ public sealed class NativeSaoAudioWriter
         return total;
     }
 
-    private void WriteBlocks(int lba, ushort count, Span<byte> data, RunState state)
+    private void WriteChunkWithShrink(int startLba, int sectorCount, int sectorSize, ref int maxSectorsPerWrite,
+        Span<byte> data, RunState state, CancellationToken ct)
+    {
+        int sent = 0;
+        while (sent < sectorCount)
+        {
+            Check(ct, state);
+            int n = Math.Min(maxSectorsPerWrite, sectorCount - sent);
+            var slice = data.Slice(sent * sectorSize, n * sectorSize);
+            if (!WriteBlocks(startLba + sent, (ushort)n, slice, state, canShrink: maxSectorsPerWrite > 1, first: state.FirstWritePending, ct))
+            {
+                maxSectorsPerWrite = Math.Max(1, maxSectorsPerWrite / 2);
+                _note($"The adapter refused {n} sectors in one WRITE; sending {maxSectorsPerWrite} per WRITE from LBA {startLba + sent}.");
+                continue;
+            }
+            state.FirstWritePending = false;
+            sent += n;
+        }
+    }
+
+    private bool WriteBlocks(int lba, ushort count, Span<byte> data, RunState state, bool canShrink = false, bool first = false,
+        CancellationToken ct = default)
     {
         byte[] cdb = NativeWriteCommands.BuildWrite10(lba, count);
+        TimeSpan timeout = first ? FirstWriteTimeout : WriteTimeout;
         var deadline = Stopwatch.StartNew();
+        int transientRetries = 0;
         while (true)
         {
+            Check(ct, state);
             state.WritingStarted = true;
-            var r = _transport.ExecuteCommand(cdb, data, ScsiPassThroughNative.SCSI_IOCTL_DATA_OUT, WriteTimeout);
+            var r = _transport.ExecuteCommand(cdb, data, ScsiPassThroughNative.SCSI_IOCTL_DATA_OUT, timeout);
             if (r.IsSuccess)
             {
-                return;
+                return true;
+            }
+            if (canShrink && r.SenseInfo == null && r.Win32Error == ErrorInvalidParameter)
+            {
+                return false;
             }
 
             // 2/04/08 (long write in progress) and 2/04/07 (operation in progress): the drive buffer is full.
-            if (r.SenseInfo is { SenseKey: 0x02, Asc: 0x04, Ascq: 0x07 or 0x08 } && deadline.Elapsed < WriteTimeout)
+            if (NativeWriteCommands.IsBufferBusySense(r.SenseInfo) && deadline.Elapsed < timeout)
             {
+                Check(ct, state);
                 _sleep(TimeSpan.FromMilliseconds(20));
+                continue;
+            }
+            if (NativeWriteCommands.IsTransientRetrySense(r.SenseInfo) &&
+                ++transientRetries <= NativeWriteCommands.MaxTransientRetries &&
+                deadline.Elapsed < timeout)
+            {
+                _note($"Transient drive error while writing at LBA {lba} ({Describe(r)}); retrying ({transientRetries}/{NativeWriteCommands.MaxTransientRetries}).");
+                Check(ct, state);
+                _sleep(TimeSpan.FromMilliseconds(50));
                 continue;
             }
 
@@ -749,6 +796,7 @@ public sealed class NativeSaoAudioWriter
     {
         var clock = Stopwatch.StartNew();
         int unitAttentions = 0;
+        int transientErrors = 0;
         while (true)
         {
             Check(ct);
@@ -770,6 +818,14 @@ public sealed class NativeSaoAudioWriter
             if (s is { SenseKey: 0x02, Asc: 0x04 } && clock.Elapsed < limit)
             {
                 _sleep(TimeSpan.FromMilliseconds(500));
+                continue;
+            }
+            if (NativeWriteCommands.IsTransientCommunicationOrSeekSense(s) &&
+                ++transientErrors <= NativeWriteCommands.MaxTransientRetries &&
+                clock.Elapsed < limit)
+            {
+                Check(ct);
+                _sleep(TimeSpan.FromMilliseconds(50));
                 continue;
             }
 
@@ -825,6 +881,7 @@ public sealed class NativeSaoAudioWriter
     private sealed class RunState
     {
         public bool WritingStarted;
+        public bool FirstWritePending = true;
         public bool TestWriteNotOffered;
         public int LeadInSectors;
         public int AudioSectors;
