@@ -18,6 +18,7 @@
         <converters:InverseBooleanToVisibilityConverter x:Key="InverseBoolToVis" />
         <converters:AudioRecordingModeToBooleanConverter x:Key="RecordingModeConverter" />
         <converters:RadioButtonBooleanConverter x:Key="RadioButtonBooleanConverter" />
+        <converters:PngBytesToImageSourceConverter x:Key="PngBytesToImageSource" />
     </UserControl.Resources>
 
     <Grid>
@@ -37,7 +38,9 @@
                             <RowDefinition Height="Auto" />
                             <!-- Row 3: Tracks DataGrid; never squeezed below a few rows, so files can be dropped and seen -->
                             <RowDefinition Height="*" MinHeight="150" />
-                            <!-- Row 4: Bottom Burn Bar -->
+                            <!-- Row 4: Selected Track Editor, HTOA & Cover Art Bar -->
+                            <RowDefinition Height="Auto" />
+                            <!-- Row 5: Bottom Burn Bar -->
                             <RowDefinition Height="Auto" />
                         </Grid.RowDefinitions>
 
@@ -446,17 +449,24 @@
                                 <DataGrid.Columns>
                                     <DataGridTextColumn Header="#"
                                                         Binding="{Binding TrackNumber}"
-                                                        Width="45"
+                                                        Width="40"
                                                         IsReadOnly="True" />
                                     <DataGridTextColumn Header="Title"
-                                                        Binding="{Binding Title}"
-                                                        Width="*" />
+                                                        Binding="{Binding Title, UpdateSourceTrigger=PropertyChanged}"
+                                                        Width="*"
+                                                        MinWidth="120" />
                                     <DataGridTextColumn Header="Performer / Artist"
-                                                        Binding="{Binding Performer}"
-                                                        Width="170" />
+                                                        Binding="{Binding Performer, UpdateSourceTrigger=PropertyChanged}"
+                                                        Width="135" />
+                                    <DataGridTextColumn Header="Album"
+                                                        Binding="{Binding Album, UpdateSourceTrigger=PropertyChanged}"
+                                                        Width="120" />
+                                    <DataGridTextColumn Header="Songwriter"
+                                                        Binding="{Binding Songwriter, UpdateSourceTrigger=PropertyChanged}"
+                                                        Width="110" />
                                     <DataGridTextColumn Header="ISRC"
                                                         Binding="{Binding Isrc, UpdateSourceTrigger=PropertyChanged}"
-                                                        Width="120">
+                                                        Width="110">
                                         <DataGridTextColumn.ElementStyle>
                                             <Style TargetType="TextBlock">
                                                 <Setter Property="ToolTip" Value="Recording code written to the disc by direct drive commands, e.g. USRC17607839. Leave empty if you have none." />
@@ -470,21 +480,44 @@
                                             </Style>
                                         </DataGridTextColumn.ElementStyle>
                                     </DataGridTextColumn>
+                                    <DataGridTextColumn Header="Pre-Gap (s)"
+                                                        Binding="{Binding PreGapSeconds, UpdateSourceTrigger=PropertyChanged, StringFormat=F2}"
+                                                        Width="80" />
+                                    <DataGridTemplateColumn Header="Pre-Emph" Width="88">
+                                        <DataGridTemplateColumn.CellTemplate>
+                                            <DataTemplate>
+                                                <StackPanel Orientation="Horizontal" VerticalAlignment="Center" Margin="4,0">
+                                                    <CheckBox IsChecked="{Binding PreEmphasis, UpdateSourceTrigger=PropertyChanged}"
+                                                              VerticalAlignment="Center"
+                                                              ToolTip="CUE FLAGS PRE: track mastered with Red Book 50/15 us pre-emphasis" />
+                                                    <Border Background="{DynamicResource WarningBannerBackgroundBrush}"
+                                                            BorderBrush="{DynamicResource WarningBannerBorderBrush}"
+                                                            BorderThickness="1"
+                                                            CornerRadius="3"
+                                                            Padding="4,1"
+                                                            Margin="6,0,0,0"
+                                                            VerticalAlignment="Center"
+                                                            Visibility="{Binding HasPreEmphasis, Converter={StaticResource BoolToVis}}">
+                                                        <TextBlock Text="PRE"
+                                                                   FontSize="10"
+                                                                   FontWeight="Bold"
+                                                                   Foreground="{DynamicResource WarningBannerForegroundBrush}" />
+                                                    </Border>
+                                                </StackPanel>
+                                            </DataTemplate>
+                                        </DataGridTemplateColumn.CellTemplate>
+                                    </DataGridTemplateColumn>
                                     <DataGridTextColumn Header="Format"
                                                         Binding="{Binding FormatSummary}"
-                                                        Width="145"
-                                                        IsReadOnly="True" />
-                                    <DataGridTextColumn Header="Pre-Gap"
-                                                        Binding="{Binding PreGapText}"
-                                                        Width="85"
+                                                        Width="130"
                                                         IsReadOnly="True" />
                                     <DataGridTextColumn Header="Duration"
                                                         Binding="{Binding DurationText}"
-                                                        Width="95"
+                                                        Width="85"
                                                         IsReadOnly="True" />
                                     <DataGridTextColumn Header="Size"
                                                         Binding="{Binding FileSizeFormatted}"
-                                                        Width="85"
+                                                        Width="80"
                                                         IsReadOnly="True" />
                                     <DataGridCheckBoxColumn Header="Normalize"
                                                             Binding="{Binding NormalizeAudio}"
@@ -515,8 +548,197 @@
                         </Grid>
                     </Border>
 
-                    <!-- ROW 4: BOTTOM BURN & STATUS BAR -->
+                    <!-- ROW 4: INLINE TRACK METADATA, HTOA & COVER ART EDITOR -->
                     <Border Grid.Row="4"
+                            Background="{DynamicResource CardBackgroundBrush}"
+                            BorderBrush="{DynamicResource CardBorderBrush}"
+                            BorderThickness="1,0,1,0"
+                            Padding="12,8">
+                        <StackPanel>
+                            <!-- Selected Track Inline Metadata -->
+                            <WrapPanel Orientation="Horizontal"
+                                       VerticalAlignment="Center"
+                                       IsEnabled="{Binding HasSelectedTrack}"
+                                       Margin="0,0,0,6">
+                                <TextBlock Text="Selected Track:"
+                                           FontWeight="SemiBold"
+                                           VerticalAlignment="Center"
+                                           Foreground="{DynamicResource TextSecondaryBrush}"
+                                           Margin="0,2,8,2" />
+                                <StackPanel Orientation="Horizontal" VerticalAlignment="Center" Margin="0,2,10,2">
+                                    <TextBlock Text="Title:" VerticalAlignment="Center" Foreground="{DynamicResource TextSecondaryBrush}" Margin="0,0,4,0" />
+                                    <TextBox Width="130"
+                                             AutomationProperties.Name="Selected Track Title"
+                                             Text="{Binding SelectedTrack.Title, UpdateSourceTrigger=PropertyChanged}"
+                                             Padding="6,3" />
+                                </StackPanel>
+                                <StackPanel Orientation="Horizontal" VerticalAlignment="Center" Margin="0,2,10,2">
+                                    <TextBlock Text="Performer:" VerticalAlignment="Center" Foreground="{DynamicResource TextSecondaryBrush}" Margin="0,0,4,0" />
+                                    <TextBox Width="120"
+                                             AutomationProperties.Name="Selected Track Performer"
+                                             Text="{Binding SelectedTrack.Performer, UpdateSourceTrigger=PropertyChanged}"
+                                             Padding="6,3" />
+                                </StackPanel>
+                                <StackPanel Orientation="Horizontal" VerticalAlignment="Center" Margin="0,2,10,2">
+                                    <TextBlock Text="Album:" VerticalAlignment="Center" Foreground="{DynamicResource TextSecondaryBrush}" Margin="0,0,4,0" />
+                                    <TextBox Width="115"
+                                             AutomationProperties.Name="Selected Track Album"
+                                             Text="{Binding SelectedTrack.Album, UpdateSourceTrigger=PropertyChanged}"
+                                             Padding="6,3" />
+                                </StackPanel>
+                                <StackPanel Orientation="Horizontal" VerticalAlignment="Center" Margin="0,2,10,2">
+                                    <TextBlock Text="Songwriter:" VerticalAlignment="Center" Foreground="{DynamicResource TextSecondaryBrush}" Margin="0,0,4,0" />
+                                    <TextBox Width="105"
+                                             AutomationProperties.Name="Selected Track Songwriter"
+                                             Text="{Binding SelectedTrack.Songwriter, UpdateSourceTrigger=PropertyChanged}"
+                                             Padding="6,3" />
+                                </StackPanel>
+                                <StackPanel Orientation="Horizontal" VerticalAlignment="Center" Margin="0,2,10,2">
+                                    <TextBlock Text="ISRC:" VerticalAlignment="Center" Foreground="{DynamicResource TextSecondaryBrush}" Margin="0,0,4,0" />
+                                    <TextBox Width="105"
+                                             AutomationProperties.Name="Selected Track ISRC"
+                                             Text="{Binding SelectedTrack.Isrc, UpdateSourceTrigger=PropertyChanged}"
+                                             MaxLength="15"
+                                             Padding="6,3" />
+                                </StackPanel>
+                                <StackPanel Orientation="Horizontal" VerticalAlignment="Center" Margin="0,2,10,2">
+                                    <TextBlock Text="Pre-Gap (s):" VerticalAlignment="Center" Foreground="{DynamicResource TextSecondaryBrush}" Margin="0,0,4,0" />
+                                    <TextBox Width="56"
+                                             AutomationProperties.Name="Selected Track Pre-Gap Seconds"
+                                             Text="{Binding SelectedTrack.PreGapSeconds, UpdateSourceTrigger=PropertyChanged, StringFormat=F2}"
+                                             TextAlignment="Center"
+                                             Padding="4,3" />
+                                </StackPanel>
+                                <CheckBox Content="Pre-Emphasis"
+                                          AutomationProperties.Name="Selected Track Pre-Emphasis"
+                                          IsChecked="{Binding SelectedTrack.PreEmphasis, UpdateSourceTrigger=PropertyChanged}"
+                                          VerticalAlignment="Center"
+                                          Margin="0,2,6,2" />
+                                <Border Background="{DynamicResource WarningBannerBackgroundBrush}"
+                                        BorderBrush="{DynamicResource WarningBannerBorderBrush}"
+                                        BorderThickness="1"
+                                        CornerRadius="4"
+                                        Padding="6,2"
+                                        VerticalAlignment="Center"
+                                        Margin="0,2,0,2"
+                                        Visibility="{Binding SelectedTrack.HasPreEmphasis, Converter={StaticResource BoolToVis}, FallbackValue=Collapsed}">
+                                    <TextBlock Text="PRE-EMPHASIS"
+                                               AutomationProperties.Name="Selected Track Pre-Emphasis Badge"
+                                               FontSize="10.5"
+                                               FontWeight="Bold"
+                                               Foreground="{DynamicResource WarningBannerForegroundBrush}" />
+                                </Border>
+                            </WrapPanel>
+
+                            <!-- HTOA Attachment & Preview Row -->
+                            <WrapPanel Orientation="Horizontal" VerticalAlignment="Center" Margin="0,0,0,6">
+                                <TextBlock Text="HTOA (Track 1 INDEX 00):"
+                                           FontWeight="SemiBold"
+                                           VerticalAlignment="Center"
+                                           Foreground="{DynamicResource TextSecondaryBrush}"
+                                           Margin="0,2,8,2" />
+                                <Button Content="Attach HTOA..."
+                                        AutomationProperties.Name="Attach HTOA"
+                                        Command="{Binding AttachHtoaCommand}"
+                                        Padding="8,3"
+                                        FontSize="11.5"
+                                        Margin="0,2,6,2"
+                                        ToolTip="Attach a Hidden Track One Audio file to Track 1's INDEX 00 pre-gap (requires direct drive commands)" />
+                                <Button Content="Preview HTOA"
+                                        AutomationProperties.Name="Preview HTOA"
+                                        Command="{Binding PreviewHtoaCommand}"
+                                        Padding="8,3"
+                                        FontSize="11.5"
+                                        Margin="0,2,6,2"
+                                        ToolTip="Play a 30-second preview of the attached Hidden Track One Audio" />
+                                <Button Content="Clear HTOA"
+                                        AutomationProperties.Name="Clear HTOA"
+                                        Command="{Binding ClearHtoaCommand}"
+                                        Visibility="{Binding HasHtoa, Converter={StaticResource BoolToVis}}"
+                                        Padding="8,3"
+                                        FontSize="11.5"
+                                        Margin="0,2,8,2" />
+                                <Border Background="{DynamicResource WarningBannerBackgroundBrush}"
+                                        BorderBrush="{DynamicResource WarningBannerBorderBrush}"
+                                        BorderThickness="1"
+                                        CornerRadius="4"
+                                        Padding="6,2"
+                                        VerticalAlignment="Center"
+                                        Margin="0,2,8,2"
+                                        Visibility="{Binding HasHtoa, Converter={StaticResource BoolToVis}}">
+                                    <TextBlock Text="HTOA"
+                                               AutomationProperties.Name="Authoring HTOA Badge"
+                                               FontSize="10.5"
+                                               FontWeight="Bold"
+                                               Foreground="{DynamicResource WarningBannerForegroundBrush}" />
+                                </Border>
+                                <TextBlock Text="{Binding HtoaStatusText}"
+                                           AutomationProperties.Name="HTOA Status"
+                                           VerticalAlignment="Center"
+                                           FontSize="11.5"
+                                           Foreground="{DynamicResource TextSecondaryBrush}"
+                                           Margin="0,2,0,2" />
+                            </WrapPanel>
+
+                            <!-- Cover Art Picker & Sharing Row -->
+                            <WrapPanel Orientation="Horizontal" VerticalAlignment="Center">
+                                <TextBlock Text="Cover Art:"
+                                           FontWeight="SemiBold"
+                                           VerticalAlignment="Center"
+                                           Foreground="{DynamicResource TextSecondaryBrush}"
+                                           Margin="0,2,8,2" />
+                                <Border Width="28"
+                                        Height="28"
+                                        Background="{DynamicResource SurfaceBackgroundBrush}"
+                                        BorderBrush="{DynamicResource CardBorderBrush}"
+                                        BorderThickness="1"
+                                        CornerRadius="3"
+                                        VerticalAlignment="Center"
+                                        Margin="0,2,8,2"
+                                        Visibility="{Binding HasCoverArt, Converter={StaticResource BoolToVis}}">
+                                    <Image Source="{Binding CoverArtBytes, Converter={StaticResource PngBytesToImageSource}}"
+                                           Stretch="UniformToFill" />
+                                </Border>
+                                <Button Content="Choose Cover..."
+                                        AutomationProperties.Name="Choose Cover Art"
+                                        Command="{Binding BrowseCoverArtCommand}"
+                                        Padding="8,3"
+                                        FontSize="11.5"
+                                        Margin="0,2,6,2"
+                                        ToolTip="Pick a local PNG, JPEG, GIF or WebP cover image for Jewel Case, Disc Art, and ripped metadata" />
+                                <Button Content="Fetch Cover Art Archive"
+                                        AutomationProperties.Name="Fetch Cover Art Archive"
+                                        Command="{Binding FetchCoverArtFromArchiveCommand}"
+                                        Padding="8,3"
+                                        FontSize="11.5"
+                                        Margin="0,2,6,2"
+                                        ToolTip="Fetch the front cover from Cover Art Archive by inserted disc, edition, or Album Title + Performer" />
+                                <Button Content="Send to Disc Art"
+                                        AutomationProperties.Name="Send Cover Art to Disc Art"
+                                        Command="{Binding ShareCoverArtWithDiscArtCommand}"
+                                        Padding="8,3"
+                                        FontSize="11.5"
+                                        Margin="0,2,6,2"
+                                        ToolTip="Share this cover art with the Disc Art picture disc generator and CD empty-space fill" />
+                                <Button Content="Clear Cover"
+                                        AutomationProperties.Name="Clear Album Cover Art"
+                                        Command="{Binding ClearCoverArtCommand}"
+                                        Visibility="{Binding HasCoverArt, Converter={StaticResource BoolToVis}}"
+                                        Padding="8,3"
+                                        FontSize="11.5"
+                                        Margin="0,2,8,2" />
+                                <TextBlock Text="{Binding CoverArtSummaryText}"
+                                           AutomationProperties.Name="Cover Art Summary"
+                                           VerticalAlignment="Center"
+                                           FontSize="11.5"
+                                           Foreground="{DynamicResource TextSecondaryBrush}"
+                                           Margin="0,2,0,2" />
+                            </WrapPanel>
+                        </StackPanel>
+                    </Border>
+
+                    <!-- ROW 5: BOTTOM BURN & STATUS BAR -->
+                    <Border Grid.Row="5"
                             Background="{DynamicResource CardBackgroundBrush}"
                             BorderBrush="{DynamicResource CardBorderBrush}"
                             BorderThickness="1"
@@ -896,6 +1118,7 @@
                                     <ColumnDefinition Width="*" />
                                     <ColumnDefinition Width="Auto" />
                                     <ColumnDefinition Width="Auto" />
+                                    <ColumnDefinition Width="Auto" />
                                 </Grid.ColumnDefinitions>
                                 <TextBlock Grid.Column="0"
                                            Text="Cover image:"
@@ -911,14 +1134,21 @@
                                          Foreground="{DynamicResource TextPrimaryBrush}"
                                          BorderBrush="{DynamicResource ControlBorderBrush}"
                                          Margin="0,0,8,0"
-                                         ToolTip="JPEG, PNG, GIF or WebP picture embedded as the front cover in FLAC and MP3 files. Empty embeds no cover." />
+                                         ToolTip="JPEG, PNG, GIF or WebP picture embedded as the front cover in FLAC, MP3 and Opus files. Empty uses Cover Art Archive if fetched or embeds no cover." />
                                 <Button Grid.Column="2"
                                         Content="Browse..."
                                         AutomationProperties.Name="Browse Cover Image"
                                         Command="{Binding BrowseRipCoverArtCommand}"
-                                        Margin="0,0,8,0"
+                                        Margin="0,0,6,0"
                                         VerticalAlignment="Center" />
                                 <Button Grid.Column="3"
+                                        Content="Fetch CAA"
+                                        AutomationProperties.Name="Fetch Cover Art Archive (Ripper)"
+                                        Command="{Binding FetchCoverArtFromArchiveCommand}"
+                                        Margin="0,0,6,0"
+                                        VerticalAlignment="Center"
+                                        ToolTip="Fetch the front cover from Cover Art Archive now for preview and embedding" />
+                                <Button Grid.Column="4"
                                         Content="Clear"
                                         AutomationProperties.Name="Clear Cover Image"
                                         Command="{Binding ClearRipCoverArtCommand}"
@@ -1089,8 +1319,22 @@
                                           AutomationProperties.Name="De-emphasize pre-emphasis tracks"
                                           IsChecked="{Binding DeEmphasizePreEmphasisTracks}"
                                           Foreground="{DynamicResource TextPrimaryBrush}"
-                                          Margin="0,2,0,2"
+                                          Margin="0,2,16,2"
                                           ToolTip="Apply the Red Book 50/15 us de-emphasis filter to tracks flagged with pre-emphasis so standalone files play with flat treble." />
+                                <Border Background="{DynamicResource WarningBannerBackgroundBrush}"
+                                        BorderBrush="{DynamicResource WarningBannerBorderBrush}"
+                                        BorderThickness="1"
+                                        CornerRadius="4"
+                                        Padding="8,3"
+                                        VerticalAlignment="Center"
+                                        Margin="0,2,0,2"
+                                        Visibility="{Binding HasRipHtoa, Converter={StaticResource BoolToVis}}">
+                                    <TextBlock Text="{Binding RipHtoaBadgeText}"
+                                               AutomationProperties.Name="Rip HTOA Badge"
+                                               FontSize="11.5"
+                                               FontWeight="SemiBold"
+                                               Foreground="{DynamicResource WarningBannerForegroundBrush}" />
+                                </Border>
                             </WrapPanel>
                         </StackPanel>
                     </Border>

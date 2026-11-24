@@ -125,6 +125,16 @@ public class AudioBurnViewModel : ObservableObject, IDisposable
     private int _releaseLookupGeneration;
     private string _ripBitrateKbps = string.Empty;
     private string _ripCoverArtPath = string.Empty;
+    private byte[]? _coverArtBytes;
+    private string? _coverArtMimeType;
+    private string _coverArtSource = string.Empty;
+    private bool _isFetchingCoverArt;
+    private string? _pendingHtoaFilePath;
+    private int _pendingHtoaFrames;
+    private Func<Stream>? _pendingHtoaFactory;
+    private bool _pendingHtoaIsPreGapPicture;
+    private bool _hasRipHtoa;
+    private string _ripHtoaBadgeText = string.Empty;
 
     private AudioTrackRowViewModel? _selectedTrack;
     private IDiscRecorderBackend? _selectedRecorder;
@@ -659,6 +669,7 @@ public class AudioBurnViewModel : ObservableObject, IDisposable
         {
             if (SetProperty(ref _selectedTrack, value))
             {
+                OnPropertyChanged(nameof(HasSelectedTrack));
                 MoveTrackUpCommand.RaiseCanExecuteChanged();
                 MoveTrackDownCommand.RaiseCanExecuteChanged();
                 RemoveTrackCommand.RaiseCanExecuteChanged();
@@ -666,6 +677,9 @@ public class AudioBurnViewModel : ObservableObject, IDisposable
             }
         }
     }
+
+    /// <summary>True when a track row is selected for inline metadata editing.</summary>
+    public bool HasSelectedTrack => _selectedTrack != null;
 
     /// <summary>
     /// Total duration in Red Book Minute:Second:Frame format across all compilation tracks.
@@ -748,6 +762,7 @@ public class AudioBurnViewModel : ObservableObject, IDisposable
             {
                 RecalculateTotals();
                 _ = RefreshReadOffsetAsync();
+                RefreshRipHtoaStatus();
             }
         }
     }
@@ -1345,13 +1360,146 @@ public class AudioBurnViewModel : ObservableObject, IDisposable
     }
 
     /// <summary>
-    /// Optional front-cover image (JPEG, PNG, GIF or WebP) embedded in ripped FLAC and MP3 files. Empty means no cover.
+    /// Optional front-cover image (JPEG, PNG, GIF or WebP) embedded in ripped FLAC, MP3 and Opus files. Empty means no file chosen.
     /// A chosen file is used instead of the Cover Art Archive.
     /// </summary>
     public string RipCoverArtPath
     {
         get => _ripCoverArtPath;
-        set => SetProperty(ref _ripCoverArtPath, value ?? string.Empty);
+        set
+        {
+            string normalized = value ?? string.Empty;
+            if (SetProperty(ref _ripCoverArtPath, normalized))
+            {
+                OnPropertyChanged(nameof(CoverArtPath));
+                SyncCoverArtBytesFromPath(normalized);
+            }
+        }
+    }
+
+    /// <summary>
+    /// Local cover art image path for the Audio CD project, Jewel Case insert, Disc Art sharing, and ripping.
+    /// Synced with <see cref="RipCoverArtPath"/>.
+    /// </summary>
+    public string CoverArtPath
+    {
+        get => _ripCoverArtPath;
+        set => RipCoverArtPath = value;
+    }
+
+    /// <summary>Loaded or fetched cover art image bytes (PNG, JPEG, GIF or WebP).</summary>
+    public byte[]? CoverArtBytes
+    {
+        get => _coverArtBytes;
+        private set
+        {
+            if (SetProperty(ref _coverArtBytes, value))
+            {
+                OnPropertyChanged(nameof(HasCoverArt));
+                OnPropertyChanged(nameof(CoverArtSummaryText));
+                ClearCoverArtCommand?.RaiseCanExecuteChanged();
+                ShareCoverArtWithDiscArtCommand?.RaiseCanExecuteChanged();
+            }
+        }
+    }
+
+    /// <summary>MIME type of <see cref="CoverArtBytes"/> (e.g. "image/png", "image/jpeg").</summary>
+    public string? CoverArtMimeType
+    {
+        get => _coverArtMimeType;
+        private set
+        {
+            if (SetProperty(ref _coverArtMimeType, value))
+            {
+                OnPropertyChanged(nameof(CoverArtSummaryText));
+            }
+        }
+    }
+
+    /// <summary>True when valid cover art bytes are loaded for this compilation or rip.</summary>
+    public bool HasCoverArt => _coverArtBytes is { Length: > 0 };
+
+    /// <summary>True while querying MusicBrainz / Cover Art Archive for cover artwork.</summary>
+    public bool IsFetchingCoverArt
+    {
+        get => _isFetchingCoverArt;
+        private set
+        {
+            if (SetProperty(ref _isFetchingCoverArt, value))
+            {
+                FetchCoverArtFromArchiveCommand?.RaiseCanExecuteChanged();
+            }
+        }
+    }
+
+    /// <summary>Human-readable summary of the active cover art source, MIME type, and size.</summary>
+    public string CoverArtSummaryText
+    {
+        get
+        {
+            if (_coverArtBytes is { Length: > 0 })
+            {
+                string kind = !string.IsNullOrWhiteSpace(_coverArtMimeType) ? _coverArtMimeType : "image";
+                string origin = !string.IsNullOrWhiteSpace(_ripCoverArtPath)
+                    ? Path.GetFileName(_ripCoverArtPath)
+                    : (_coverArtSource == "coverartarchive" ? "Cover Art Archive" : "Embedded cover");
+                return $"{origin} ({kind}, {_coverArtBytes.Length / 1024.0:F0} KB)";
+            }
+
+            if (!string.IsNullOrWhiteSpace(_ripCoverArtPath))
+            {
+                return Path.GetFileName(_ripCoverArtPath);
+            }
+
+            return "No cover art selected";
+        }
+    }
+
+    /// <summary>Optional host callback invoked when sharing Audio CD cover art to the Disc Art workspace.</summary>
+    public Action<string>? SendCoverArtToDiscArt { get; set; }
+
+    /// <summary>True when Track 1 has Hidden Track One Audio (HTOA) attached for authoring.</summary>
+    public bool HasHtoa => Tracks.Count > 0 ? Tracks[0].HiddenAudioFrames > 0 : _pendingHtoaFrames > 0;
+
+    /// <summary>Length of attached Hidden Track One Audio in 75 fps CD frames.</summary>
+    public int HtoaFrames => Tracks.Count > 0 ? Tracks[0].HiddenAudioFrames : _pendingHtoaFrames;
+
+    /// <summary>File path of attached standalone HTOA audio, or empty when sliced from a CUE album or absent.</summary>
+    public string HtoaFilePath => Tracks.Count > 0
+        ? (Tracks[0].HiddenAudioFilePath ?? string.Empty)
+        : (_pendingHtoaFilePath ?? string.Empty);
+
+    /// <summary>Summary text for the HTOA authoring control.</summary>
+    public string HtoaStatusText
+    {
+        get
+        {
+            int frames = HtoaFrames;
+            if (frames <= 0)
+            {
+                return "None attached (Track 1 INDEX 00)";
+            }
+
+            string msf = MsfAddress.FromFrameCount(frames).ToString();
+            string path = HtoaFilePath;
+            return !string.IsNullOrWhiteSpace(path)
+                ? $"HTOA: {Path.GetFileName(path)} ({msf}, {frames}f)"
+                : $"HTOA from CUE ({msf}, {frames}f)";
+        }
+    }
+
+    /// <summary>True when the Audio CD Ripper detected or extracted Hidden Track One Audio (HTOA).</summary>
+    public bool HasRipHtoa
+    {
+        get => _hasRipHtoa;
+        private set => SetProperty(ref _hasRipHtoa, value);
+    }
+
+    /// <summary>Badge text displayed in the Audio CD Ripper when HTOA is detected or extracted.</summary>
+    public string RipHtoaBadgeText
+    {
+        get => _ripHtoaBadgeText;
+        private set => SetProperty(ref _ripHtoaBadgeText, value);
     }
 
     /// <summary>
@@ -1460,6 +1608,27 @@ public class AudioBurnViewModel : ObservableObject, IDisposable
 
     /// <summary>Removes the chosen cover image.</summary>
     public RelayCommand ClearRipCoverArtCommand { get; }
+
+    /// <summary>Picks a local PNG/JPG/GIF/WebP cover art file for the compilation, Jewel Case, Disc Art, and ripping.</summary>
+    public RelayCommand BrowseCoverArtCommand { get; }
+
+    /// <summary>Clears the active cover art image.</summary>
+    public RelayCommand ClearCoverArtCommand { get; }
+
+    /// <summary>Fetches front cover art from MusicBrainz / Cover Art Archive.</summary>
+    public AsyncRelayCommand FetchCoverArtFromArchiveCommand { get; }
+
+    /// <summary>Shares the active cover art image with the Disc Art workspace (converting to PNG if needed).</summary>
+    public RelayCommand ShareCoverArtWithDiscArtCommand { get; }
+
+    /// <summary>Attaches a Hidden Track One Audio (HTOA) file to Track 1's INDEX 00 pre-gap.</summary>
+    public RelayCommand AttachHtoaCommand { get; }
+
+    /// <summary>Removes attached Hidden Track One Audio (HTOA) from Track 1.</summary>
+    public RelayCommand ClearHtoaCommand { get; }
+
+    /// <summary>Plays a 30-second preview of the attached Hidden Track One Audio (HTOA).</summary>
+    public RelayCommand PreviewHtoaCommand { get; }
 
     /// <summary>
     /// Decodes and plays a Red Book audio preview of the currently selected track.
@@ -1574,7 +1743,22 @@ public class AudioBurnViewModel : ObservableObject, IDisposable
         ReleaseChoices.CollectionChanged += (_, _) => OnPropertyChanged(nameof(HasReleaseChoice));
         Convert = new AudioConvertViewModel(_settingsService);
         BrowseRipCoverArtCommand = new RelayCommand(BrowseRipCoverArt);
-        ClearRipCoverArtCommand = new RelayCommand(_ => RipCoverArtPath = string.Empty);
+        ClearRipCoverArtCommand = new RelayCommand(_ => ClearCoverArt());
+        BrowseCoverArtCommand = new RelayCommand(p =>
+        {
+            if (p is string path && !string.IsNullOrWhiteSpace(path)) SetCoverArtFile(path);
+            else BrowseRipCoverArt();
+        });
+        ClearCoverArtCommand = new RelayCommand(_ => ClearCoverArt(), _ => HasCoverArt || !string.IsNullOrWhiteSpace(_ripCoverArtPath));
+        FetchCoverArtFromArchiveCommand = new AsyncRelayCommand(() => FetchCoverArtFromArchiveAsync(), () => !IsBusy && !IsFetchingCoverArt);
+        ShareCoverArtWithDiscArtCommand = new RelayCommand(_ => ShareCoverArtWithDiscArt(), _ => HasCoverArt || (!string.IsNullOrWhiteSpace(_ripCoverArtPath) && File.Exists(_ripCoverArtPath)));
+        AttachHtoaCommand = new RelayCommand(p =>
+        {
+            if (p is string path && !string.IsNullOrWhiteSpace(path)) AttachHtoaFile(path);
+            else BrowseAndAttachHtoa();
+        });
+        ClearHtoaCommand = new RelayCommand(_ => ClearHtoa(), _ => HasHtoa);
+        PreviewHtoaCommand = new RelayCommand(_ => _ = PreviewHtoaAsync(), _ => HasHtoa);
         PreviewSelectedTrackCommand = new RelayCommand(p => PreviewTrack(p as AudioTrackRowViewModel), _ => SelectedTrack != null || Tracks.Count > 0);
         StopPreviewCommand = new RelayCommand(_ => StopPreview(), _ => IsPreviewPlaying);
         ExportCoverSheetCommand = new RelayCommand(p => ExportJewelCaseCoverHtml(p as string), _ => Tracks.Count > 0);
@@ -1595,6 +1779,7 @@ public class AudioBurnViewModel : ObservableObject, IDisposable
                            ?? AvailableRecorders.FirstOrDefault();
 
         RecalculateTotals();
+        RefreshRipHtoaStatus();
     }
 
     #region Track Management Operations
@@ -1863,6 +2048,7 @@ public class AudioBurnViewModel : ObservableObject, IDisposable
                             SourceFilePath = cueTrk.SourceFilePath,
                             Title = cueTrk.Title,
                             Performer = cueTrk.Performer,
+                            Album = !string.IsNullOrWhiteSpace(cueTrk.Album) ? cueTrk.Album : (tempComp.AlbumTitle != "Untitled Album" ? tempComp.AlbumTitle : null),
                             Songwriter = cueTrk.Songwriter ?? AlbumSongwriter,
                             Composer = cueTrk.Composer,
                             Isrc = cueTrk.Isrc,
@@ -1880,6 +2066,7 @@ public class AudioBurnViewModel : ObservableObject, IDisposable
                             CopyPermitted = cueTrk.CopyPermitted,
                             Index00LeadFrames = cueTrk.Index00LeadFrames,
                             Index00Predecessor = cueTrk.Index00LeadFrames > 0 ? previousCueRow : null,
+                            HiddenAudioFilePath = cueTrk.HiddenAudioFilePath,
                             HiddenAudioPcmStreamFactory = cueTrk.HiddenAudioPcmStreamFactory,
                             HiddenAudioFrames = cueTrk.HiddenAudioFrames,
                             HiddenAudioIsPreGapPicture = cueTrk.HiddenAudioIsPreGapPicture,
@@ -1919,6 +2106,7 @@ public class AudioBurnViewModel : ObservableObject, IDisposable
             string fileName = Path.GetFileNameWithoutExtension(path);
             string title = fileName;
             string performer = AlbumPerformer;
+            string? trackAlbum = null;
             string? songwriter = AlbumSongwriter;
             string? composer = null;
             string? isrc = null;
@@ -1933,6 +2121,7 @@ public class AudioBurnViewModel : ObservableObject, IDisposable
                 var meta = _audioDecoder.ProbeAudioFile(path);
                 if (!string.IsNullOrWhiteSpace(meta.Title)) title = meta.Title;
                 if (!string.IsNullOrWhiteSpace(meta.Artist)) performer = meta.Artist;
+                if (!string.IsNullOrWhiteSpace(meta.Album)) trackAlbum = meta.Album;
                 if (!string.IsNullOrWhiteSpace(meta.Songwriter)) songwriter = meta.Songwriter;
                 if (!string.IsNullOrWhiteSpace(meta.Composer)) composer = meta.Composer;
                 if (!string.IsNullOrWhiteSpace(meta.Isrc)) isrc = meta.Isrc;
@@ -1995,6 +2184,7 @@ public class AudioBurnViewModel : ObservableObject, IDisposable
                 SourceFilePath = path,
                 Title = title,
                 Performer = performer,
+                Album = trackAlbum,
                 Songwriter = songwriter,
                 Composer = composer,
                 Isrc = isrc,
@@ -2006,6 +2196,18 @@ public class AudioBurnViewModel : ObservableObject, IDisposable
                 BitsPerSample = bitsPerSample,
                 Channels = channels
             };
+
+            if (trackNum == 1 && _pendingHtoaFrames > 0 && _pendingHtoaFactory != null)
+            {
+                row.HiddenAudioFilePath = _pendingHtoaFilePath;
+                row.HiddenAudioFrames = _pendingHtoaFrames;
+                row.HiddenAudioPcmStreamFactory = _pendingHtoaFactory;
+                row.HiddenAudioIsPreGapPicture = _pendingHtoaIsPreGapPicture;
+                _pendingHtoaFilePath = null;
+                _pendingHtoaFrames = 0;
+                _pendingHtoaFactory = null;
+                _pendingHtoaIsPreGapPicture = false;
+            }
 
             Tracks.Add(row);
             SelectedTrack = row;
@@ -2115,7 +2317,12 @@ public class AudioBurnViewModel : ObservableObject, IDisposable
 
         Tracks.Clear();
         SelectedTrack = null;
+        _pendingHtoaFilePath = null;
+        _pendingHtoaFrames = 0;
+        _pendingHtoaFactory = null;
+        _pendingHtoaIsPreGapPicture = false;
         RecalculateTotals();
+        OnHtoaChanged();
         MoveTrackUpCommand.RaiseCanExecuteChanged();
         MoveTrackDownCommand.RaiseCanExecuteChanged();
         RemoveTrackCommand.RaiseCanExecuteChanged();
@@ -2197,6 +2404,17 @@ public class AudioBurnViewModel : ObservableObject, IDisposable
         StartAudioBurnCommand.RaiseCanExecuteChanged();
         PreviewSelectedTrackCommand?.RaiseCanExecuteChanged();
         ExportCoverSheetCommand?.RaiseCanExecuteChanged();
+        OnHtoaChanged();
+    }
+
+    private void OnHtoaChanged()
+    {
+        OnPropertyChanged(nameof(HasHtoa));
+        OnPropertyChanged(nameof(HtoaFrames));
+        OnPropertyChanged(nameof(HtoaFilePath));
+        OnPropertyChanged(nameof(HtoaStatusText));
+        ClearHtoaCommand?.RaiseCanExecuteChanged();
+        PreviewHtoaCommand?.RaiseCanExecuteChanged();
     }
 
     /// <summary>
@@ -2456,6 +2674,11 @@ public class AudioBurnViewModel : ObservableObject, IDisposable
             ? target.CustomPcmStreamFactory()
             : _audioDecoder.OpenRedBookPcmStream(target.SourceFilePath);
 
+        return ReadCappedPreviewPcm(pcmStream, leveling, normalize, ct);
+    }
+
+    private static byte[] ReadCappedPreviewPcm(Stream pcmStream, bool leveling, bool normalize, CancellationToken ct)
+    {
         using (pcmStream)
         {
             ct.ThrowIfCancellationRequested();
@@ -2485,6 +2708,194 @@ public class AudioBurnViewModel : ObservableObject, IDisposable
             }
 
             return pcmBytes;
+        }
+    }
+
+    /// <summary>
+    /// Attaches a Hidden Track One Audio (HTOA) file to Track 1's INDEX 00 pre-gap.
+    /// </summary>
+    public bool AttachHtoaFile(string filePath)
+    {
+        if (string.IsNullOrWhiteSpace(filePath) || !File.Exists(filePath))
+        {
+            StatusMessage = $"HTOA file not found: '{filePath}'.";
+            return false;
+        }
+
+        string fullPath = Path.GetFullPath(filePath);
+        if (AudioDrmDetector.IsDrmProtected(fullPath, out string drmDesc))
+        {
+            StatusMessage = $"Cannot attach HTOA: {drmDesc}";
+            return false;
+        }
+
+        int frames = 0;
+        try
+        {
+            var meta = _audioDecoder.ProbeAudioFile(fullPath);
+            if (meta.TotalRedBookBytes > 0)
+            {
+                frames = OpticalConstants.BytesToSectors(meta.TotalRedBookBytes, OpticalConstants.RawSectorSize);
+            }
+            else if (meta.Duration > TimeSpan.Zero)
+            {
+                frames = (int)Math.Round(meta.Duration.TotalSeconds * OpticalConstants.AudioFramesPerSecond);
+            }
+        }
+        catch (Exception ex)
+        {
+            string ext = Path.GetExtension(fullPath);
+            if ((string.Equals(ext, ".raw", StringComparison.OrdinalIgnoreCase) ||
+                 string.Equals(ext, ".pcm", StringComparison.OrdinalIgnoreCase)) &&
+                new FileInfo(fullPath).Length is long len and > 0)
+            {
+                frames = OpticalConstants.BytesToSectors(len, OpticalConstants.RawSectorSize);
+            }
+            else
+            {
+                StatusMessage = $"Could not read HTOA audio '{Path.GetFileName(fullPath)}': {ex.Message}";
+                return false;
+            }
+        }
+
+        if (frames <= 0)
+        {
+            StatusMessage = $"HTOA audio '{Path.GetFileName(fullPath)}' has zero duration.";
+            return false;
+        }
+
+        Func<Stream> factory = () => _audioDecoder.OpenRedBookPcmStream(fullPath);
+        bool isPreGapPicture = CdBurner.Core.Iso.DiscArtSidecarInfo.IsPreGapPicture(fullPath);
+
+        if (Tracks.Count > 0)
+        {
+            Tracks[0].HiddenAudioFilePath = fullPath;
+            Tracks[0].HiddenAudioFrames = frames;
+            Tracks[0].HiddenAudioPcmStreamFactory = factory;
+            Tracks[0].HiddenAudioIsPreGapPicture = isPreGapPicture;
+            _pendingHtoaFilePath = null;
+            _pendingHtoaFrames = 0;
+            _pendingHtoaFactory = null;
+            _pendingHtoaIsPreGapPicture = false;
+        }
+        else
+        {
+            _pendingHtoaFilePath = fullPath;
+            _pendingHtoaFrames = frames;
+            _pendingHtoaFactory = factory;
+            _pendingHtoaIsPreGapPicture = isPreGapPicture;
+        }
+
+        if (!_useDirectDriveCommands)
+        {
+            UseDirectDriveCommands = true;
+        }
+
+        OnHtoaChanged();
+        StatusMessage = $"Attached HTOA '{Path.GetFileName(fullPath)}' ({MsfAddress.FromFrameCount(frames)}, {frames} frames) to Track 1 INDEX 00.";
+        return true;
+    }
+
+    /// <summary>Removes attached Hidden Track One Audio (HTOA) from Track 1.</summary>
+    public void ClearHtoa()
+    {
+        if (Tracks.Count > 0)
+        {
+            Tracks[0].HiddenAudioFilePath = null;
+            Tracks[0].HiddenAudioFrames = 0;
+            Tracks[0].HiddenAudioPcmStreamFactory = null;
+            Tracks[0].HiddenAudioIsPreGapPicture = false;
+        }
+
+        _pendingHtoaFilePath = null;
+        _pendingHtoaFrames = 0;
+        _pendingHtoaFactory = null;
+        _pendingHtoaIsPreGapPicture = false;
+        OnHtoaChanged();
+        StatusMessage = "Cleared Hidden Track One Audio (HTOA).";
+    }
+
+    /// <summary>Plays a 30-second preview of the attached Hidden Track One Audio (HTOA).</summary>
+    public async Task PreviewHtoaAsync()
+    {
+        Func<Stream>? factory = Tracks.Count > 0 ? Tracks[0].HiddenAudioPcmStreamFactory : _pendingHtoaFactory;
+        string? filePath = Tracks.Count > 0 ? Tracks[0].HiddenAudioFilePath : _pendingHtoaFilePath;
+        if (factory == null && (string.IsNullOrWhiteSpace(filePath) || !File.Exists(filePath)))
+        {
+            PreviewStatusText = "No Hidden Track One Audio (HTOA) attached to preview.";
+            return;
+        }
+
+        StopPreview();
+
+        var cts = new CancellationTokenSource();
+        var ct = cts.Token;
+        _previewCts = cts;
+        PreviewStatusText = "Preparing HTOA preview…";
+
+        try
+        {
+            byte[] pcmBytes = await Task.Run(() =>
+            {
+                Stream stream = factory != null ? factory() : _audioDecoder.OpenRedBookPcmStream(filePath!);
+                return ReadCappedPreviewPcm(stream, UseRmsLoudnessLeveling, NormalizeAllTracks, ct);
+            }, ct);
+
+            if (ct.IsCancellationRequested || !ReferenceEquals(_previewCts, cts))
+            {
+                return;
+            }
+
+            _previewWavStream = new MemoryStream(44 + pcmBytes.Length);
+            WavFileCodec.WriteWavHeader(_previewWavStream, pcmBytes.Length);
+            _previewWavStream.Write(pcmBytes, 0, pcmBytes.Length);
+            _previewWavStream.Position = 0;
+
+            if (CdBurner.App.Views.BurnTargetDialog.IsInteractiveSession)
+            {
+                _soundPlayer = new System.Media.SoundPlayer(_previewWavStream);
+                _soundPlayer.Play();
+            }
+
+            IsPreviewPlaying = true;
+            PreviewStatusText = $"🔊 Playing HTOA ({MsfAddress.FromFrameCount(HtoaFrames)})";
+            StatusMessage = PreviewStatusText;
+
+            double clipSeconds = (double)pcmBytes.Length / (OpticalConstants.CdAudioSampleRate * OpticalConstants.CdAudioBytesPerSample);
+            _ = ResetPreviewWhenClipEndsAsync(TimeSpan.FromSeconds(clipSeconds), cts, ct);
+        }
+        catch (OperationCanceledException)
+        {
+            if (ReferenceEquals(_previewCts, cts))
+            {
+                _previewCts = null;
+                cts.Dispose();
+            }
+        }
+        catch (Exception ex)
+        {
+            if (ReferenceEquals(_previewCts, cts))
+            {
+                _previewCts = null;
+                cts.Dispose();
+                IsPreviewPlaying = false;
+                PreviewStatusText = $"HTOA preview failed: {ex.Message}";
+                StatusMessage = PreviewStatusText;
+            }
+        }
+    }
+
+    private void BrowseAndAttachHtoa()
+    {
+        var dlg = new OpenFileDialog
+        {
+            Title = "Select Hidden Track One Audio (HTOA) File",
+            Filter = "Supported Audio (*.flac;*.wav;*.mp3;*.m4a;*.aac;*.ogg;*.opus;*.wma)|*.flac;*.fla;*.wav;*.mp3;*.m4a;*.aac;*.ogg;*.opus;*.wma|All Files (*.*)|*.*",
+            Multiselect = false
+        };
+        if (dlg.ShowDialog() == true && !string.IsNullOrWhiteSpace(dlg.FileName))
+        {
+            AttachHtoaFile(dlg.FileName);
         }
     }
 
@@ -2588,7 +2999,10 @@ public class AudioBurnViewModel : ObservableObject, IDisposable
                 : LoudnessPerAlbum ? LoudnessNormalizationMode.PerAlbum : LoudnessNormalizationMode.PerTrack,
             CrossfadeSeconds = CrossfadeSeconds,
             DefaultPreGapFrames = DefaultPreGapFrames,
-            IncludeCdText = IncludeCdText
+            IncludeCdText = IncludeCdText,
+            CoverArtPath = string.IsNullOrWhiteSpace(CoverArtPath) ? null : CoverArtPath,
+            CoverArtBytes = CoverArtBytes,
+            CoverArtMimeType = CoverArtMimeType
         };
 
         for (int i = 0; i < Tracks.Count; i++)
@@ -2605,6 +3019,7 @@ public class AudioBurnViewModel : ObservableObject, IDisposable
                 CustomPcmStreamFactory: row.CustomPcmStreamFactory
             )
             {
+                Album = row.Album,
                 Songwriter = row.Songwriter ?? AlbumSongwriter,
                 Composer = row.Composer,
                 DurationFrames = row.DurationFrames,
@@ -2617,6 +3032,7 @@ public class AudioBurnViewModel : ObservableObject, IDisposable
                 // A gap mark stays only while the track it came after is still directly in front of it.
                 Index00LeadFrames = i > 0 && row.Index00Predecessor != null && ReferenceEquals(Tracks[i - 1], row.Index00Predecessor)
                     ? row.Index00LeadFrames : 0,
+                HiddenAudioFilePath = row.HiddenAudioFilePath,
                 HiddenAudioPcmStreamFactory = row.HiddenAudioPcmStreamFactory,
                 HiddenAudioFrames = row.HiddenAudioFrames,
                 HiddenAudioIsPreGapPicture = row.HiddenAudioIsPreGapPicture,
@@ -2626,6 +3042,105 @@ public class AudioBurnViewModel : ObservableObject, IDisposable
         }
 
         return compilation;
+    }
+
+    /// <summary>
+    /// Loads a persisted or imported <see cref="AudioCdCompilation"/> into this view model, preserving tracks,
+    /// per-track metadata, pre-emphasis, pre-gaps, HTOA, and cover art.
+    /// </summary>
+    public void LoadCompilation(AudioCdCompilation compilation)
+    {
+        ArgumentNullException.ThrowIfNull(compilation);
+        StopPreview();
+
+        AlbumTitle = compilation.AlbumTitle;
+        AlbumPerformer = compilation.AlbumPerformer;
+        AlbumSongwriter = compilation.Songwriter;
+        UpcEanCode = compilation.UpcEan;
+        RecordingMode = compilation.RecordingMode;
+        IncludeCdText = compilation.IncludeCdText;
+        NormalizeAllTracks = compilation.NormalizeAllTracks;
+        UseRmsLoudnessLeveling = compilation.UseRmsLoudnessLeveling;
+        NormalizeLoudness = compilation.LoudnessNormalization != LoudnessNormalizationMode.Off;
+        LoudnessPerAlbum = compilation.LoudnessNormalization == LoudnessNormalizationMode.PerAlbum;
+        CrossfadeSeconds = compilation.CrossfadeSeconds;
+        DefaultPreGapFrames = compilation.DefaultPreGapFrames;
+
+        Tracks.Clear();
+        _pendingHtoaFilePath = null;
+        _pendingHtoaFrames = 0;
+        _pendingHtoaFactory = null;
+        _pendingHtoaIsPreGapPicture = false;
+
+        AudioTrackRowViewModel? previousRow = null;
+        foreach (var trk in compilation.Tracks)
+        {
+            long fileSize = 0;
+            if (!string.IsNullOrWhiteSpace(trk.SourceFilePath) && File.Exists(trk.SourceFilePath))
+            {
+                try { fileSize = new FileInfo(trk.SourceFilePath).Length; } catch { }
+            }
+
+            var row = new AudioTrackRowViewModel
+            {
+                TrackNumber = trk.TrackNumber,
+                SourceFilePath = trk.SourceFilePath,
+                Title = trk.Title,
+                Performer = trk.Performer,
+                Album = trk.Album,
+                Songwriter = trk.Songwriter,
+                Composer = trk.Composer,
+                Isrc = trk.Isrc,
+                PreGapFrames = trk.PreGapFrames,
+                NormalizeAudio = trk.NormalizeAudio,
+                DurationFrames = trk.DurationFrames,
+                FileSizeBytes = fileSize,
+                FormatName = trk.DataTrack != null
+                    ? (trk.DataTrack.Mode == 2 ? "Data (Mode 2 XA)" : "Data (Mode 1)")
+                    : Path.GetExtension(trk.SourceFilePath).TrimStart('.').ToUpperInvariant(),
+                CustomPcmStreamFactory = trk.CustomPcmStreamFactory,
+                DataTrack = trk.DataTrack,
+                RawFileType = trk.RawFileType,
+                PreEmphasis = trk.PreEmphasis,
+                CopyPermitted = trk.CopyPermitted,
+                Index00LeadFrames = trk.Index00LeadFrames,
+                Index00Predecessor = trk.Index00LeadFrames > 0 ? previousRow : null,
+                HiddenAudioFilePath = trk.HiddenAudioFilePath,
+                HiddenAudioPcmStreamFactory = trk.HiddenAudioPcmStreamFactory,
+                HiddenAudioFrames = trk.HiddenAudioFrames,
+                HiddenAudioIsPreGapPicture = trk.HiddenAudioIsPreGapPicture,
+                IsPictureTrack = trk.IsPictureTrack,
+                AlbumSource = trk.AlbumSource,
+                SourceStartFrame = trk.SourceStartFrame,
+                SourceFrameCount = trk.SourceFrameCount
+            };
+            Tracks.Add(row);
+            previousRow = row;
+        }
+
+        SelectedTrack = Tracks.FirstOrDefault();
+
+        _ripCoverArtPath = compilation.CoverArtPath ?? string.Empty;
+        OnPropertyChanged(nameof(RipCoverArtPath));
+        OnPropertyChanged(nameof(CoverArtPath));
+
+        if (compilation.CoverArtBytes is { Length: > 0 })
+        {
+            _coverArtSource = string.IsNullOrWhiteSpace(_ripCoverArtPath) ? "coverartarchive" : "file";
+            CoverArtMimeType = compilation.CoverArtMimeType ?? FlacEncoder.DetectImageMimeType(compilation.CoverArtBytes);
+            CoverArtBytes = compilation.CoverArtBytes;
+        }
+        else
+        {
+            SyncCoverArtBytesFromPath(_ripCoverArtPath);
+        }
+
+        if (HasHtoa && !_useDirectDriveCommands)
+        {
+            UseDirectDriveCommands = true;
+        }
+
+        ReindexTracks();
     }
 
     /// <summary>
@@ -2712,15 +3227,308 @@ public class AudioBurnViewModel : ObservableObject, IDisposable
     {
         var dlg = new OpenFileDialog
         {
-            Title = "Select Cover Image to Embed in Ripped Tracks",
+            Title = "Select Cover Image (PNG, JPEG, GIF, WebP)",
             Filter = "Images (*.jpg;*.jpeg;*.png;*.gif;*.webp)|*.jpg;*.jpeg;*.png;*.gif;*.webp|All Files (*.*)|*.*",
             Multiselect = false
         };
 
         if (dlg.ShowDialog() == true && !string.IsNullOrWhiteSpace(dlg.FileName))
         {
-            RipCoverArtPath = dlg.FileName;
+            SetCoverArtFile(dlg.FileName);
         }
+    }
+
+    /// <summary>
+    /// Loads and validates a local cover image (JPEG, PNG, GIF, or WebP) into the shared compilation/ripper cover state.
+    /// </summary>
+    public bool SetCoverArtFile(string filePath)
+    {
+        if (string.IsNullOrWhiteSpace(filePath) || !File.Exists(filePath))
+        {
+            StatusMessage = $"Cover image not found: '{filePath}'.";
+            return false;
+        }
+
+        string fullPath = Path.GetFullPath(filePath);
+        byte[] bytes;
+        try
+        {
+            bytes = File.ReadAllBytes(fullPath);
+        }
+        catch (Exception ex) when (ex is IOException or UnauthorizedAccessException)
+        {
+            StatusMessage = $"Cover image could not be read: {ex.Message}";
+            return false;
+        }
+
+        string? mime = FlacEncoder.DetectImageMimeType(bytes);
+        if (mime == null)
+        {
+            StatusMessage = $"'{Path.GetFileName(fullPath)}' is not a JPEG, PNG, GIF or WebP image.";
+            return false;
+        }
+
+        if (FlacEncoder.CoverArtSizeProblem(bytes.Length) is { } sizeProblem)
+        {
+            StatusMessage = sizeProblem;
+            return false;
+        }
+
+        _ripCoverArtPath = fullPath;
+        OnPropertyChanged(nameof(RipCoverArtPath));
+        OnPropertyChanged(nameof(CoverArtPath));
+        _coverArtSource = "file";
+        CoverArtMimeType = mime;
+        CoverArtBytes = bytes;
+        StatusMessage = $"Loaded cover art '{Path.GetFileName(fullPath)}' ({mime}, {bytes.Length / 1024.0:F0} KB).";
+        return true;
+    }
+
+    /// <summary>Clears any selected or fetched cover art image.</summary>
+    public void ClearCoverArt()
+    {
+        _ripCoverArtPath = string.Empty;
+        OnPropertyChanged(nameof(RipCoverArtPath));
+        OnPropertyChanged(nameof(CoverArtPath));
+        _coverArtSource = string.Empty;
+        CoverArtMimeType = null;
+        CoverArtBytes = null;
+        ClearCoverArtCommand?.RaiseCanExecuteChanged();
+        ShareCoverArtWithDiscArtCommand?.RaiseCanExecuteChanged();
+    }
+
+    private void SyncCoverArtBytesFromPath(string path)
+    {
+        if (string.IsNullOrWhiteSpace(path) || !File.Exists(path))
+        {
+            if (_coverArtSource == "file" || string.IsNullOrWhiteSpace(path))
+            {
+                _coverArtSource = string.Empty;
+                CoverArtMimeType = null;
+                CoverArtBytes = null;
+            }
+            ClearCoverArtCommand?.RaiseCanExecuteChanged();
+            ShareCoverArtWithDiscArtCommand?.RaiseCanExecuteChanged();
+            return;
+        }
+
+        try
+        {
+            byte[] bytes = File.ReadAllBytes(path);
+            string? mime = FlacEncoder.DetectImageMimeType(bytes);
+            if (mime != null && FlacEncoder.CoverArtSizeProblem(bytes.Length) == null)
+            {
+                _coverArtSource = "file";
+                CoverArtMimeType = mime;
+                CoverArtBytes = bytes;
+                return;
+            }
+        }
+        catch
+        {
+        }
+
+        _coverArtSource = string.Empty;
+        CoverArtMimeType = null;
+        CoverArtBytes = null;
+        ClearCoverArtCommand?.RaiseCanExecuteChanged();
+        ShareCoverArtWithDiscArtCommand?.RaiseCanExecuteChanged();
+    }
+
+    /// <summary>
+    /// Fetches front cover art from the Cover Art Archive using (in order): <paramref name="releaseId"/>,
+    /// the selected MusicBrainz edition, the inserted disc's TOC DiscID, or album/artist search.
+    /// </summary>
+    public async Task<bool> FetchCoverArtFromArchiveAsync(
+        HttpClient? httpClient = null,
+        string? releaseId = null,
+        CancellationToken ct = default,
+        string musicBrainzBaseUrl = MusicBrainzClient.DefaultBaseUrl,
+        string coverArtBaseUrl = CoverArtArchiveClient.DefaultBaseUrl)
+    {
+        IsFetchingCoverArt = true;
+        HttpClient? ownedHttp = null;
+        try
+        {
+            var http = httpClient ?? (ownedHttp = new HttpClient { Timeout = TimeSpan.FromSeconds(20) });
+            string? targetReleaseId = string.IsNullOrWhiteSpace(releaseId) ? null : releaseId.Trim();
+
+            if (targetReleaseId == null && _selectedReleaseIndex >= 0 && _selectedReleaseIndex < _releaseList.Count)
+            {
+                targetReleaseId = _releaseList[_selectedReleaseIdSafeIndex()].ReleaseId;
+            }
+            else if (targetReleaseId == null && _releaseList.Count == 1)
+            {
+                targetReleaseId = _releaseList[0].ReleaseId;
+            }
+
+            if (targetReleaseId == null && SelectedRecorder is { } rec)
+            {
+                try
+                {
+                    var ids = DiscIdCalculator.CalculateForRecorder(rec);
+                    if (ids != null)
+                    {
+                        var mbClient = new MusicBrainzClient(http, MusicBrainzClient.DefaultUserAgent, musicBrainzBaseUrl);
+                        var releases = await mbClient.LookupDiscIdAsync(ids.MusicBrainzId, ct).ConfigureAwait(true);
+                        if (releases.Count > 0)
+                        {
+                            targetReleaseId = releases[0].ReleaseId;
+                            if (string.IsNullOrWhiteSpace(AlbumTitle) || AlbumTitle == "Untitled Album")
+                            {
+                                AlbumTitle = releases[0].Title;
+                            }
+                            if (string.IsNullOrWhiteSpace(AlbumPerformer) || AlbumPerformer == "Various Artists")
+                            {
+                                AlbumPerformer = releases[0].Artist;
+                            }
+                        }
+                    }
+                }
+                catch (OperationCanceledException) { throw; }
+                catch { }
+            }
+
+            if (targetReleaseId != null)
+            {
+                StatusMessage = "Fetching front cover from Cover Art Archive...";
+                var image = await CoverArtArchiveClient.FetchFrontAsync(
+                    http, targetReleaseId, MusicBrainzClient.DefaultUserAgent, coverArtBaseUrl, ct).ConfigureAwait(true);
+                if (image != null)
+                {
+                    ApplyFetchedCoverArt(image);
+                    return true;
+                }
+            }
+
+            if (!string.IsNullOrWhiteSpace(AlbumTitle) && AlbumTitle != "Untitled Album" &&
+                !string.IsNullOrWhiteSpace(AlbumPerformer) && AlbumPerformer != "Various Artists")
+            {
+                StatusMessage = $"Searching MusicBrainz / Cover Art Archive for '{AlbumTitle}'...";
+                var mb = new MusicBrainzClient(http, MusicBrainzClient.DefaultUserAgent, musicBrainzBaseUrl);
+                var candidates = await mb.SearchReleaseIdsAsync(AlbumTitle, AlbumPerformer, 5, ct).ConfigureAwait(true);
+                foreach (string candidateId in candidates.Take(3))
+                {
+                    var image = await CoverArtArchiveClient.FetchFrontAsync(
+                        http, candidateId, MusicBrainzClient.DefaultUserAgent, coverArtBaseUrl, ct).ConfigureAwait(true);
+                    if (image != null)
+                    {
+                        ApplyFetchedCoverArt(image);
+                        return true;
+                    }
+                }
+            }
+
+            StatusMessage = "No front cover found on Cover Art Archive.";
+            return false;
+        }
+        catch (OperationCanceledException)
+        {
+            StatusMessage = "Cover art lookup cancelled.";
+            return false;
+        }
+        catch (Exception ex)
+        {
+            StatusMessage = $"Cover art lookup failed: {ex.Message}";
+            return false;
+        }
+        finally
+        {
+            ownedHttp?.Dispose();
+            IsFetchingCoverArt = false;
+        }
+    }
+
+    private int _selectedReleaseIdSafeIndex() => Math.Clamp(_selectedReleaseIndex, 0, Math.Max(0, _releaseList.Count - 1));
+
+    private void ApplyFetchedCoverArt(CoverArtImage image)
+    {
+        _ripCoverArtPath = string.Empty;
+        OnPropertyChanged(nameof(RipCoverArtPath));
+        OnPropertyChanged(nameof(CoverArtPath));
+        _coverArtSource = "coverartarchive";
+        CoverArtMimeType = image.MimeType;
+        CoverArtBytes = image.Bytes;
+        StatusMessage = $"Fetched front cover from Cover Art Archive ({image.MimeType}, {image.Bytes.Length / 1024.0:F0} KB).";
+    }
+
+    /// <summary>
+    /// Exports the active cover art as PNG and shares it with <see cref="DiscArtViewModel"/> (and <see cref="FillPicturePath"/>).
+    /// Returns the PNG path written on disk, or null if no cover art is available.
+    /// </summary>
+    public string? ShareCoverArtWithDiscArt(DiscArtViewModel? targetDiscArt = null, string? exportPngPath = null)
+    {
+        byte[]? bytes = _coverArtBytes;
+        string? mime = _coverArtMimeType;
+        if ((bytes == null || bytes.Length == 0) && !string.IsNullOrWhiteSpace(_ripCoverArtPath) && File.Exists(_ripCoverArtPath))
+        {
+            bytes = File.ReadAllBytes(_ripCoverArtPath);
+            mime = FlacEncoder.DetectImageMimeType(bytes);
+        }
+
+        if (bytes is not { Length: > 0 })
+        {
+            StatusMessage = "Select or fetch cover art before sharing with Disc Art.";
+            return null;
+        }
+
+        string destPath = exportPngPath ?? Path.Combine(
+            Path.GetTempPath(),
+            "IgnisDisc",
+            $"cover-{SanitizeFilePart(AlbumTitle)}.png");
+        string? dir = Path.GetDirectoryName(destPath);
+        if (!string.IsNullOrEmpty(dir))
+        {
+            Directory.CreateDirectory(dir);
+        }
+
+        byte[] pngBytes = ConvertToPngBytesIfNeeded(bytes, mime);
+        File.WriteAllBytes(destPath, pngBytes);
+        FillPicturePath = destPath;
+
+        if (targetDiscArt != null)
+        {
+            targetDiscArt.OpenPicture(destPath);
+        }
+        else
+        {
+            SendCoverArtToDiscArt?.Invoke(destPath);
+        }
+
+        StatusMessage = $"Shared cover art '{Path.GetFileName(destPath)}' with Disc Art.";
+        return destPath;
+    }
+
+    private static byte[] ConvertToPngBytesIfNeeded(byte[] bytes, string? mime)
+    {
+        string? detected = FlacEncoder.DetectImageMimeType(bytes) ?? mime;
+        if (string.Equals(detected, "image/png", StringComparison.OrdinalIgnoreCase))
+        {
+            return bytes;
+        }
+
+        try
+        {
+            using var src = new MemoryStream(bytes, writable: false);
+            var decoder = System.Windows.Media.Imaging.BitmapDecoder.Create(
+                src,
+                System.Windows.Media.Imaging.BitmapCreateOptions.PreservePixelFormat,
+                System.Windows.Media.Imaging.BitmapCacheOption.OnLoad);
+            if (decoder.Frames.Count > 0)
+            {
+                var encoder = new System.Windows.Media.Imaging.PngBitmapEncoder();
+                encoder.Frames.Add(System.Windows.Media.Imaging.BitmapFrame.Create(decoder.Frames[0]));
+                using var outMs = new MemoryStream();
+                encoder.Save(outMs);
+                return outMs.ToArray();
+            }
+        }
+        catch
+        {
+            // Minimal synthetic fixtures in tests may lack pixel payload; fall through to raw bytes.
+        }
+
+        return bytes;
     }
 
     #endregion
@@ -3926,6 +4734,7 @@ public class AudioBurnViewModel : ObservableObject, IDisposable
             }
 
             SetReleaseChoices(ids.MusicBrainzId, releases);
+            RefreshRipHtoaStatus();
             StatusMessage = releases.Count == 1
                 ? "MusicBrainz lists one edition of this disc."
                 : ReleaseDifferenceNote == null
@@ -4019,6 +4828,7 @@ public class AudioBurnViewModel : ObservableObject, IDisposable
         // Read and check the cover now, so a missing or wrong file fails before the disc is read (same rule as rip-audio --cover).
         byte[]? coverBytes = null;
         string? coverMime = null;
+        string? preloadedCoverSource = null;
         if (formatProblem == null && !string.IsNullOrWhiteSpace(RipCoverArtPath))
         {
             try
@@ -4032,11 +4842,26 @@ public class AudioBurnViewModel : ObservableObject, IDisposable
                 else
                 {
                     formatProblem = FlacEncoder.CoverArtSizeProblem(coverBytes.Length);
+                    preloadedCoverSource = "file";
                 }
             }
             catch (Exception ex) when (ex is IOException or UnauthorizedAccessException or ArgumentException or NotSupportedException)
             {
                 formatProblem = $"Cover image could not be read: {ex.Message}";
+            }
+        }
+        else if (formatProblem == null && _coverArtBytes is { Length: > 0 })
+        {
+            coverBytes = _coverArtBytes;
+            coverMime = _coverArtMimeType ?? FlacEncoder.DetectImageMimeType(_coverArtBytes);
+            if (coverMime == null)
+            {
+                formatProblem = "Selected cover art is not a JPEG, PNG, GIF or WebP image.";
+            }
+            else
+            {
+                formatProblem = FlacEncoder.CoverArtSizeProblem(coverBytes.Length);
+                preloadedCoverSource = string.IsNullOrEmpty(_coverArtSource) ? "coverartarchive" : _coverArtSource;
             }
         }
         if (formatProblem != null)
@@ -4196,6 +5021,19 @@ public class AudioBurnViewModel : ObservableObject, IDisposable
             }
             progress.Close(); // a late progress report must not overwrite the final status line
             LastRipResult = ripResult;
+            if (ripResult.Success)
+            {
+                if (ripResult.HiddenTrackOneAudioFrames > 0)
+                {
+                    HasRipHtoa = true;
+                    RipHtoaBadgeText = $"HTOA Extracted: {MsfAddress.FromFrameCount(ripResult.HiddenTrackOneAudioFrames)} ({ripResult.HiddenTrackOneAudioFrames} frames)";
+                }
+                else
+                {
+                    HasRipHtoa = false;
+                    RipHtoaBadgeText = string.Empty;
+                }
+            }
 
             if (ripResult.ReadOffset is { } resolvedOffset)
             {
@@ -4342,7 +5180,7 @@ public class AudioBurnViewModel : ObservableObject, IDisposable
             }
 
             // Cover art and export come after verification and any CTDB repair, which work on the ripped WAV files.
-            string? coverSource = coverBytes != null ? "file" : null;
+            string? coverSource = preloadedCoverSource ?? (coverBytes != null ? "file" : null);
             if (ripResult.Success && coverBytes == null && FetchCoverArt && chosenRelease != null)
             {
                 StatusMessage = "Fetching the front cover from the Cover Art Archive...";
@@ -4672,6 +5510,53 @@ public class AudioBurnViewModel : ObservableObject, IDisposable
             SelectedRecorder = defaultRec;
         }
         return defaultRec;
+    }
+
+    /// <summary>
+    /// Inspects the inserted disc in <see cref="SelectedRecorder"/> for a Track 1 pre-gap / HTOA region
+    /// and updates <see cref="HasRipHtoa"/> and <see cref="RipHtoaBadgeText"/>.
+    /// </summary>
+    public void RefreshRipHtoaStatus()
+    {
+        var recorder = SelectedRecorder;
+        if (recorder == null)
+        {
+            HasRipHtoa = false;
+            RipHtoaBadgeText = string.Empty;
+            return;
+        }
+
+        try
+        {
+            var media = recorder.QueryMediaStatus();
+            if (!media.MediaPresent || media.IsBlank)
+            {
+                HasRipHtoa = false;
+                RipHtoaBadgeText = string.Empty;
+                return;
+            }
+
+            if (!recorder.IsVirtual)
+            {
+                // Avoid blocking UI drive-selection changes with physical TOC reads until an explicit rip/lookup runs.
+                return;
+            }
+
+            var (tracks, _) = AudioCdRipperService.QueryTracksAndCdText(recorder);
+            if (tracks.Count > 0 && tracks[0].TrackNumber == 1 && tracks[0].StartLba > 0)
+            {
+                int htoaFrames = tracks[0].StartLba;
+                HasRipHtoa = true;
+                RipHtoaBadgeText = $"HTOA Detected: {MsfAddress.FromFrameCount(htoaFrames)} ({htoaFrames} frames)";
+                return;
+            }
+        }
+        catch
+        {
+        }
+
+        HasRipHtoa = false;
+        RipHtoaBadgeText = string.Empty;
     }
 
     #endregion

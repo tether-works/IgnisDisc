@@ -301,6 +301,11 @@ public static class ProjectSerializer
         }
 
         // 3. Validate audio track sources (AudioCd)
+        if (!string.IsNullOrWhiteSpace(project.CoverArtPath) && !File.Exists(project.CoverArtPath))
+        {
+            missingPaths.Add(project.CoverArtPath);
+        }
+
         if (project.AudioTracks != null)
         {
             foreach (var track in project.AudioTracks)
@@ -308,6 +313,10 @@ public static class ProjectSerializer
                 if (!string.IsNullOrWhiteSpace(track.SourceFilePath) && !File.Exists(track.SourceFilePath))
                 {
                     missingPaths.Add(track.SourceFilePath);
+                }
+                if (!string.IsNullOrWhiteSpace(track.HiddenAudioFilePath) && !File.Exists(track.HiddenAudioFilePath))
+                {
+                    missingPaths.Add(track.HiddenAudioFilePath);
                 }
             }
         }
@@ -607,6 +616,9 @@ public static class ProjectSerializer
             UseRmsLoudnessLeveling = compilation.UseRmsLoudnessLeveling,
             LoudnessNormalization = (int)compilation.LoudnessNormalization,
             CrossfadeSeconds = compilation.CrossfadeSeconds,
+            CoverArtPath = string.IsNullOrWhiteSpace(compilation.CoverArtPath) ? null : compilation.CoverArtPath,
+            CoverArtBase64 = compilation.CoverArtBytes is { Length: > 0 } ? Convert.ToBase64String(compilation.CoverArtBytes) : null,
+            CoverArtMimeType = string.IsNullOrWhiteSpace(compilation.CoverArtMimeType) ? null : compilation.CoverArtMimeType,
             CreatedAtUtc = DateTime.UtcNow,
             ModifiedAtUtc = DateTime.UtcNow,
             CdText = new SerializedCdText
@@ -631,9 +643,12 @@ public static class ProjectSerializer
                 SourceFilePath = track.SourceFilePath,
                 Title = track.Title,
                 Performer = track.Performer,
+                Album = track.Album,
                 Isrc = track.Isrc,
                 PreGapFrames = track.PreGapFrames,
+                HiddenAudioFilePath = track.HiddenAudioFilePath,
                 HiddenAudioFrames = track.HiddenAudioFrames,
+                HiddenAudioIsPreGapPicture = track.HiddenAudioIsPreGapPicture,
                 PreEmphasis = track.PreEmphasis,
                 CopyPermitted = track.CopyPermitted,
                 NormalizeAudio = track.NormalizeAudio,
@@ -664,6 +679,19 @@ public static class ProjectSerializer
     {
         ArgumentNullException.ThrowIfNull(document);
 
+        byte[]? coverArtBytes = null;
+        if (!string.IsNullOrWhiteSpace(document.CoverArtBase64))
+        {
+            try
+            {
+                coverArtBytes = Convert.FromBase64String(document.CoverArtBase64);
+            }
+            catch (FormatException ex)
+            {
+                throw new InvalidDataException("Invalid base64 cover art data in project file.", ex);
+            }
+        }
+
         var compilation = new AudioCdCompilation
         {
             RecordingMode = document.RecordingMode,
@@ -674,7 +702,10 @@ public static class ProjectSerializer
             LoudnessNormalization = Enum.IsDefined(typeof(LoudnessNormalizationMode), document.LoudnessNormalization)
                 ? (LoudnessNormalizationMode)document.LoudnessNormalization
                 : LoudnessNormalizationMode.Off,
-            CrossfadeSeconds = Math.Max(0.0, document.CrossfadeSeconds)
+            CrossfadeSeconds = Math.Max(0.0, document.CrossfadeSeconds),
+            CoverArtPath = document.CoverArtPath,
+            CoverArtBytes = coverArtBytes,
+            CoverArtMimeType = document.CoverArtMimeType ?? (coverArtBytes is { Length: > 0 } ? FlacEncoder.DetectImageMimeType(coverArtBytes) : null)
         };
 
         if (document.CdText != null)
@@ -739,6 +770,12 @@ public static class ProjectSerializer
                     }
                 }
 
+                if (hiddenFactory == null && track.HiddenAudioFrames > 0 && !string.IsNullOrWhiteSpace(track.HiddenAudioFilePath))
+                {
+                    string htoaPath = track.HiddenAudioFilePath;
+                    hiddenFactory = () => SingleFileAlbumSource.OpenRedBookPcm(htoaPath, audioDecoder);
+                }
+
                 var trackItem = new AudioCdTrackItem(
                     track.TrackNumber,
                     track.SourceFilePath,
@@ -749,6 +786,7 @@ public static class ProjectSerializer
                     track.NormalizeAudio,
                     sliceFactory)
                 {
+                    Album = track.Album,
                     DurationFrames = track.DurationFrames,
                     Songwriter = track.Songwriter ?? cdt?.Songwriter,
                     Composer = track.Composer ?? cdt?.Composer,
@@ -758,9 +796,11 @@ public static class ProjectSerializer
                     SourceFrameCount = track.SourceFrameCount,
                     AlbumSource = album,
                     RawFileType = track.RawFileType,
+                    HiddenAudioFilePath = track.HiddenAudioFilePath,
                     HiddenAudioFrames = Math.Max(0, track.HiddenAudioFrames),
                     HiddenAudioPcmStreamFactory = hiddenFactory,
-                    HiddenAudioAlbumSource = hiddenFactory != null ? album : null,
+                    HiddenAudioAlbumSource = hiddenFactory != null && track.HiddenAudioFilePath == null ? album : null,
+                    HiddenAudioIsPreGapPicture = track.HiddenAudioIsPreGapPicture,
                     PreEmphasis = track.PreEmphasis,
                     CopyPermitted = track.CopyPermitted,
                     DataTrack = dataTrack

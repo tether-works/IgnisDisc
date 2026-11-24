@@ -169,7 +169,7 @@ public sealed record GaplessStreamInfo(
 
     private static class OggReader
     {
-        private const int MaxCommentPacket = 4 * 1024 * 1024;
+        private const int MaxCommentPacket = 32 * 1024 * 1024;
 
         private sealed record Page(byte Flags, long Granule, uint Serial, byte[] SegmentTable, long DataOffset, int DataLength);
 
@@ -208,7 +208,8 @@ public sealed record GaplessStreamInfo(
             // Walk the page headers: the last granule position of this stream is its length in samples.
             long lastGranule = 0;
             long pos = first.DataOffset + first.DataLength;
-            Page? second = null;
+            var commentPages = new List<Page>();
+            bool collectingComments = true;
             while (pos < fs.Length)
             {
                 var page = ReadPage(fs, pos);
@@ -222,7 +223,14 @@ public sealed record GaplessStreamInfo(
                 }
                 if (page.Serial == first.Serial)
                 {
-                    second ??= page;
+                    if (collectingComments)
+                    {
+                        commentPages.Add(page);
+                        if (page.SegmentTable.Any(seg => seg < 255))
+                        {
+                            collectingComments = false;
+                        }
+                    }
                     if (page.Granule >= 0)
                     {
                         lastGranule = page.Granule;
@@ -232,7 +240,7 @@ public sealed record GaplessStreamInfo(
             }
 
             long trimmed = codec == GaplessCodec.Opus ? lastGranule - preSkip : lastGranule;
-            IReadOnlyDictionary<string, string>? comments = second is null ? null : ReadComments(fs, second, codec);
+            IReadOnlyDictionary<string, string>? comments = commentPages.Count == 0 ? null : ReadComments(fs, commentPages, codec);
             if (trimmed <= 0)
             {
                 return new GaplessStreamInfo(codec, rate, channels, 0, 0, 0, comments);
@@ -282,17 +290,29 @@ public sealed record GaplessStreamInfo(
             return total == count ? b : b[..total];
         }
 
-        private static IReadOnlyDictionary<string, string>? ReadComments(FileStream fs, Page page, GaplessCodec codec)
+        private static IReadOnlyDictionary<string, string>? ReadComments(FileStream fs, List<Page> pages, GaplessCodec codec)
         {
-            // The comment header is the first packet of the second page; take it only if it ends on this page.
+            // The comment header begins as the first packet of the second page and may span continuation pages.
             using var packet = new MemoryStream();
-            int p = 0;
             bool complete = false;
-            foreach (byte seg in page.SegmentTable)
+            foreach (var page in pages)
             {
-                packet.Write(ReadBytes(fs, page.DataOffset + p, seg));
-                p += seg;
-                if (seg < 255) { complete = true; break; }
+                int p = 0;
+                foreach (byte seg in page.SegmentTable)
+                {
+                    if (packet.Length + seg > MaxCommentPacket)
+                    {
+                        return null;
+                    }
+                    packet.Write(ReadBytes(fs, page.DataOffset + p, seg));
+                    p += seg;
+                    if (seg < 255)
+                    {
+                        complete = true;
+                        break;
+                    }
+                }
+                if (complete) break;
             }
             if (!complete || packet.Length > MaxCommentPacket)
             {

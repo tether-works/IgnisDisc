@@ -398,7 +398,7 @@ public static class FlacEncoder
         }
     }
 
-    private static byte[] CreatePictureBlockBody(byte[] pictureData, string? mimeType)
+    internal static byte[] CreatePictureBlockBody(byte[] pictureData, string? mimeType)
     {
         string mime = DetectImageMimeType(pictureData) ?? (!string.IsNullOrWhiteSpace(mimeType) ? mimeType : "image/jpeg");
         byte[] mimeBytes = Encoding.ASCII.GetBytes(mime);

@@ -53,6 +53,11 @@ public record AudioCdTrackItem(
     private int _durationFrames;
 
     /// <summary>
+    /// Per-track album title override or tag, when tracks come from different releases.
+    /// </summary>
+    public string? Album { get; init; }
+
+    /// <summary>
     /// Songwriter name for CD-Text.
     /// </summary>
     public string? Songwriter { get; init; }
@@ -101,6 +106,11 @@ public record AudioCdTrackItem(
     /// counts down through it. Zero when the CUE sheet has no INDEX 00 for the track.
     /// </summary>
     public int Index00LeadFrames { get; init; }
+
+    /// <summary>
+    /// Optional source file path for standalone Hidden Track One Audio (HTOA) attached to Track 1.
+    /// </summary>
+    public string? HiddenAudioFilePath { get; init; }
 
     /// <summary>
     /// Audio in front of track 1's INDEX 01 in a single-file CUE album ("hidden track one audio"), which a player
@@ -462,6 +472,21 @@ public class AudioCdCompilation
     /// UPC/EAN Media Catalog Number (13 decimal digits).
     /// </summary>
     public string? UpcEan { get; set; }
+
+    /// <summary>
+    /// Optional local cover art image file path associated with the compilation.
+    /// </summary>
+    public string? CoverArtPath { get; set; }
+
+    /// <summary>
+    /// Optional cover art image bytes (e.g. PNG/JPEG from disk or Cover Art Archive).
+    /// </summary>
+    public byte[]? CoverArtBytes { get; set; }
+
+    /// <summary>
+    /// Optional MIME type of <see cref="CoverArtBytes"/> (e.g. "image/png", "image/jpeg").
+    /// </summary>
+    public string? CoverArtMimeType { get; set; }
 
     /// <summary>
     /// Recording mode: Track-at-Once (TAO) or gapless Disc-at-Once (DAO).
@@ -893,9 +918,10 @@ public class AudioCdCompilation
                 Func<Stream>? hiddenFactory = null;
                 SingleFileAlbumSource? hiddenAlbum = null;
                 bool hiddenIsPreGapPicture = false;
+                string? hiddenFilePath = null;
                 if (trackNum == 1 && trk.SplitIndex00 is { DedicatedFileName: not null } htoa)
                 {
-                    (hiddenFrames, hiddenFactory, hiddenAlbum, hiddenIsPreGapPicture) = ReadDedicatedHiddenAudio(htoa, cueDirectory, audioDecoder);
+                    (hiddenFrames, hiddenFactory, hiddenAlbum, hiddenIsPreGapPicture, hiddenFilePath) = ReadDedicatedHiddenAudio(htoa, cueDirectory, audioDecoder);
                 }
                 else if (_tracks.Count > 0 && !_tracks[^1].IsDataTrack && trk.SplitIndex00 is { DedicatedFileName: null } prevSplit)
                 {
@@ -914,12 +940,14 @@ public class AudioCdCompilation
                     PreGapFrames: preGap,
                     CustomPcmStreamFactory: rawFactory)
                 {
+                    Album = meta?.Album,
                     Songwriter = trk.Songwriter ?? meta?.Songwriter ?? Songwriter,
                     Composer = meta?.Composer ?? Composer,
                     DurationFrames = rawFile ? rawFrames : totalFileFrames,
                     RawFileType = rawFile ? file.FileType.ToUpperInvariant() : null,
                     SourceStartFrame = rawFile ? (afterData ? GetIndex01Frames(trk) ?? 0 : 0) : null,
                     Index00LeadFrames = index00Lead,
+                    HiddenAudioFilePath = hiddenFilePath,
                     HiddenAudioFrames = hiddenFrames,
                     HiddenAudioPcmStreamFactory = hiddenFactory,
                     HiddenAudioAlbumSource = hiddenAlbum,
@@ -980,6 +1008,7 @@ public class AudioCdCompilation
                     Func<Stream>? hiddenFactory = null;
                     SingleFileAlbumSource? hiddenAlbum = null;
                     bool hiddenIsPreGapPicture = false;
+                    string? hiddenFilePath = null;
                     if (k > 0 && GetIndex00Frames(trk) is int index00 && index00 < startFrame)
                     {
                         int previousStart = GetIndex01Frames(audioTracks[k - 1]) ?? 0;
@@ -988,7 +1017,7 @@ public class AudioCdCompilation
                     else if (k == 0 && trackNum == 1 && trk.SplitIndex00 is { DedicatedFileName: not null } htoa)
                     {
                         // Hidden audio in its own file in front of a single-file album (EAC's layout).
-                        (hiddenFrames, hiddenFactory, hiddenAlbum, hiddenIsPreGapPicture) = ReadDedicatedHiddenAudio(htoa, cueDirectory, audioDecoder);
+                        (hiddenFrames, hiddenFactory, hiddenAlbum, hiddenIsPreGapPicture, hiddenFilePath) = ReadDedicatedHiddenAudio(htoa, cueDirectory, audioDecoder);
                     }
                     else if (k == 0 && trackNum == 1 && startFrame > 0)
                     {
@@ -1007,6 +1036,7 @@ public class AudioCdCompilation
                         PreGapFrames: preGap,
                         CustomPcmStreamFactory: Slice(startFrame, sliceFrameCount))
                     {
+                        Album = meta?.Album,
                         Songwriter = trk.Songwriter ?? Songwriter,
                         Composer = Composer,
                         DurationFrames = displayFrames,
@@ -1015,6 +1045,7 @@ public class AudioCdCompilation
                         AlbumSource = album,
                         RawFileType = rawFile ? file.FileType.ToUpperInvariant() : null,
                         Index00LeadFrames = index00Lead,
+                        HiddenAudioFilePath = hiddenFilePath,
                         HiddenAudioFrames = hiddenFrames,
                         HiddenAudioPcmStreamFactory = hiddenFrames > 0 ? hiddenFactory : null,
                         HiddenAudioAlbumSource = hiddenFrames > 0 ? hiddenAlbum : null,
@@ -1035,7 +1066,7 @@ public class AudioCdCompilation
     /// <summary>Audio before track 1 held in its own FILE (a CUE's dedicated INDEX 00 file): its length in frames from
     /// the INDEX 00 position to the end of the file, a reader for it, its optional album source, and whether its sidecar
     /// marks it as a pre-gap picture. (0, null, null, false) when the file is missing or empty.</summary>
-    private static (int Frames, Func<Stream>? Factory, SingleFileAlbumSource? AlbumSource, bool IsPreGapPicture) ReadDedicatedHiddenAudio(
+    private static (int Frames, Func<Stream>? Factory, SingleFileAlbumSource? AlbumSource, bool IsPreGapPicture, string? FilePath) ReadDedicatedHiddenAudio(
         CueSplitIndex00 htoa, string cueDirectory, IAudioDecoder? audioDecoder)
     {
         string htoaPath = Path.IsPathRooted(htoa.DedicatedFileName!)
@@ -1043,7 +1074,7 @@ public class AudioCdCompilation
             : Path.Combine(cueDirectory, htoa.DedicatedFileName!);
         if (!File.Exists(htoaPath))
         {
-            return (0, null, null, false);
+            return (0, null, null, false, null);
         }
 
         string htoaType = htoa.DedicatedFileType ?? "WAVE";
@@ -1053,7 +1084,7 @@ public class AudioCdCompilation
         int frames = Math.Max(0, htoaTotal - htoaStart);
         if (frames == 0)
         {
-            return (0, null, null, false);
+            return (0, null, null, false, null);
         }
 
         SingleFileAlbumSource? htoaAlbum = rawHtoa ? null : new SingleFileAlbumSource(htoaPath, audioDecoder);
@@ -1062,7 +1093,8 @@ public class AudioCdCompilation
                 ? htoaAlbum.CreateSliceFactory(htoaStart, frames)
                 : RawCdAudioFile.CreateSliceFactory(htoaPath, htoaStart, frames, string.Equals(htoaType, "MOTOROLA", StringComparison.OrdinalIgnoreCase)),
             htoaAlbum,
-            DiscArtSidecarInfo.IsPreGapPicture(htoaPath));
+            DiscArtSidecarInfo.IsPreGapPicture(htoaPath),
+            htoaPath);
     }
 
     private static int ProbeAudioFrames(string path, string fileType, IAudioDecoder? decoder)
@@ -1262,6 +1294,7 @@ public class AudioCdCompilation
                 Isrc: meta?.Isrc,
                 PreGapFrames: trackNum == 1 ? DefaultPreGapFrames : 0)
             {
+                Album = meta?.Album,
                 Songwriter = meta?.Songwriter ?? Songwriter,
                 Composer = meta?.Composer ?? Composer,
                 DurationFrames = frames

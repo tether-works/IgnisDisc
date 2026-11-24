@@ -13,11 +13,15 @@ public class AudioTrackRowViewModel : ObservableObject
     private string _sourceFilePath = string.Empty;
     private string _title = string.Empty;
     private string _performer = string.Empty;
+    private string? _album;
     private string? _songwriter;
     private string? _composer;
     private string? _isrc;
     private int _preGapFrames = 150;
+    private bool _preEmphasis;
     private bool _normalizeAudio;
+    private string? _hiddenAudioFilePath;
+    private int _hiddenAudioFrames;
     private int _durationFrames;
     private long _fileSizeBytes;
     private string _formatName = string.Empty;
@@ -43,7 +47,24 @@ public class AudioTrackRowViewModel : ObservableObject
     public string? RawFileType { get; set; }
 
     /// <summary>CUE "FLAGS PRE": mastered with pre-emphasis (written by the direct writer as the track's control bit).</summary>
-    public bool PreEmphasis { get; set; }
+    public bool PreEmphasis
+    {
+        get => _preEmphasis;
+        set
+        {
+            if (SetProperty(ref _preEmphasis, value))
+            {
+                OnPropertyChanged(nameof(HasPreEmphasis));
+                OnPropertyChanged(nameof(PreEmphasisBadgeText));
+            }
+        }
+    }
+
+    /// <summary>True when <see cref="PreEmphasis"/> is enabled for this track.</summary>
+    public bool HasPreEmphasis => _preEmphasis;
+
+    /// <summary>Short indicator badge text for pre-emphasis tracks ("PRE" or empty).</summary>
+    public string PreEmphasisBadgeText => _preEmphasis ? "PRE" : string.Empty;
 
     /// <summary>CUE "FLAGS DCP": digital copying permitted.</summary>
     public bool CopyPermitted { get; set; }
@@ -58,11 +79,22 @@ public class AudioTrackRowViewModel : ObservableObject
     /// <summary>The row whose audio ends in this track's INDEX 00 frames (the track before it in the CUE sheet).</summary>
     public AudioTrackRowViewModel? Index00Predecessor { get; set; }
 
-    /// <summary>Audio in front of track 1's INDEX 01 in a single-file CUE album; written only while this row is first.</summary>
+    /// <summary>Optional file path for standalone Hidden Track One Audio (HTOA) attached to Track 1.</summary>
+    public string? HiddenAudioFilePath
+    {
+        get => _hiddenAudioFilePath;
+        set => SetProperty(ref _hiddenAudioFilePath, value);
+    }
+
+    /// <summary>Audio in front of track 1's INDEX 01 in a single-file CUE album or attached HTOA file; written only while this row is first.</summary>
     public Func<Stream>? HiddenAudioPcmStreamFactory { get; set; }
 
     /// <summary>Length of <see cref="HiddenAudioPcmStreamFactory"/>'s audio in CD frames.</summary>
-    public int HiddenAudioFrames { get; set; }
+    public int HiddenAudioFrames
+    {
+        get => _hiddenAudioFrames;
+        set => SetProperty(ref _hiddenAudioFrames, value);
+    }
 
     /// <summary>True when <see cref="HiddenAudioPcmStreamFactory"/> holds a byte-level pre-gap picture.</summary>
     public bool HiddenAudioIsPreGapPicture { get; set; }
@@ -127,6 +159,15 @@ public class AudioTrackRowViewModel : ObservableObject
     }
 
     /// <summary>
+    /// Per-track album title metadata.
+    /// </summary>
+    public string? Album
+    {
+        get => _album;
+        set => SetProperty(ref _album, value);
+    }
+
+    /// <summary>
     /// Songwriter metadata for CD-Text.
     /// </summary>
     public string? Songwriter
@@ -173,10 +214,32 @@ public class AudioTrackRowViewModel : ObservableObject
         get => _preGapFrames;
         set
         {
-            if (SetProperty(ref _preGapFrames, value))
+            int clamped = Math.Max(0, value);
+            if (SetProperty(ref _preGapFrames, clamped))
             {
                 OnPropertyChanged(nameof(PreGapText));
+                OnPropertyChanged(nameof(PreGapSeconds));
             }
+        }
+    }
+
+    /// <summary>
+    /// Pre-gap duration in seconds (75 fps Red Book frames), editable inline.
+    /// </summary>
+    public double PreGapSeconds
+    {
+        get => Math.Round(_preGapFrames / (double)OpticalConstants.AudioFramesPerSecond, 2);
+        set
+        {
+            if (double.IsNaN(value) || double.IsInfinity(value))
+            {
+                PreGapFrames = 0;
+                return;
+            }
+            PreGapFrames = Math.Clamp(
+                (int)Math.Round(value * OpticalConstants.AudioFramesPerSecond),
+                0,
+                99 * 60 * OpticalConstants.AudioFramesPerSecond);
         }
     }
 

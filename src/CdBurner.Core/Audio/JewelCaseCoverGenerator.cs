@@ -55,13 +55,28 @@ public static class JewelCaseCoverGenerator
         var rowsBuilder = new StringBuilder();
         var trayRowsBuilder = new StringBuilder();
 
+        if (compilation.Tracks.Count > 0 && compilation.Tracks[0].HiddenAudioFrames > 0)
+        {
+            string htoaDur = MsfAddress.FromFrameCount(compilation.Tracks[0].HiddenAudioFrames).ToString();
+            rowsBuilder.AppendLine($"""
+                        <tr>
+                          <td class="num">00</td>
+                          <td class="title">Hidden Track One Audio (HTOA)</td>
+                          <td class="artist">{performer}</td>
+                          <td class="isrc">—</td>
+                          <td class="pregap">HTOA</td>
+                          <td class="dur">{htoaDur}</td>
+                        </tr>
+                """);
+        }
+
         foreach (var track in compilation.Tracks)
         {
             string trkTitle = WebUtility.HtmlEncode(string.IsNullOrWhiteSpace(track.Title) ? $"Track {track.TrackNumber:D2}" : track.Title);
             string trkPerformer = WebUtility.HtmlEncode(string.IsNullOrWhiteSpace(track.Performer) ? compilation.AlbumPerformer : track.Performer);
             string trkDuration = track.DurationMsf.ToString();
             string trkIsrc = WebUtility.HtmlEncode(track.Isrc ?? "—");
-            string preGapSec = $"{(track.PreGapFrames / 75.0):F2}s";
+            string preGapSec = $"{(track.PreGapFrames / 75.0):F2}s{(track.PreEmphasis ? " [PRE]" : string.Empty)}";
 
             rowsBuilder.AppendLine($"""
                         <tr>
@@ -83,6 +98,8 @@ public static class JewelCaseCoverGenerator
                         </div>
                 """);
         }
+
+        string coverImgHtml = BuildCoverImgHtml(compilation);
 
         string metaExtras = string.Empty;
         if (!string.IsNullOrWhiteSpace(songwriter))
@@ -164,6 +181,25 @@ public static class JewelCaseCoverGenerator
                   color: #f9fafb;
                   margin-bottom: 10mm;
                   position: relative;
+                  overflow: hidden;
+                }
+                .front-booklet .front-cover-img {
+                  position: absolute;
+                  inset: 0;
+                  width: 100%;
+                  height: 100%;
+                  object-fit: cover;
+                  z-index: 0;
+                }
+                .front-booklet .front-cover-scrim {
+                  position: absolute;
+                  inset: 0;
+                  background: linear-gradient(180deg, rgba(17,24,39,0.55) 0%, rgba(17,24,39,0.25) 45%, rgba(17,24,39,0.82) 100%);
+                  z-index: 1;
+                }
+                .front-booklet > *:not(.front-cover-img):not(.front-cover-scrim) {
+                  position: relative;
+                  z-index: 2;
                 }
                 .front-booklet .disc-badge {
                   display: inline-block;
@@ -330,6 +366,7 @@ public static class JewelCaseCoverGenerator
               <div class="sheet">
                 <h2 class="section-label">Front Booklet Insert (120 mm × 120 mm — Cut Along Dashed Line)</h2>
                 <div class="front-booklet">
+                  {{coverImgHtml}}
                   <div class="disc-badge">COMPACT DISC DIGITAL AUDIO</div>
                   <div>
                     <h1 class="album-title">{{albumTitle}}</h1>
@@ -380,5 +417,41 @@ public static class JewelCaseCoverGenerator
             </body>
             </html>
             """;
+    }
+
+    private static string BuildCoverImgHtml(AudioCdCompilation compilation)
+    {
+        byte[]? bytes = compilation.CoverArtBytes;
+        string? mime = compilation.CoverArtMimeType;
+        if ((bytes == null || bytes.Length == 0) && !string.IsNullOrWhiteSpace(compilation.CoverArtPath) && File.Exists(compilation.CoverArtPath))
+        {
+            try
+            {
+                bytes = File.ReadAllBytes(compilation.CoverArtPath);
+            }
+            catch (IOException)
+            {
+                bytes = null;
+            }
+            catch (UnauthorizedAccessException)
+            {
+                bytes = null;
+            }
+        }
+
+        if (bytes is not { Length: > 0 })
+        {
+            return string.Empty;
+        }
+
+        string? detected = FlacEncoder.DetectImageMimeType(bytes);
+        string? effectiveMime = detected ?? (mime is "image/jpeg" or "image/png" or "image/gif" or "image/webp" ? mime : null);
+        if (effectiveMime == null)
+        {
+            return string.Empty;
+        }
+
+        string b64 = Convert.ToBase64String(bytes);
+        return $"<img class=\"front-cover-img\" src=\"data:{effectiveMime};base64,{b64}\" alt=\"Album cover art\" />\n      <div class=\"front-cover-scrim\"></div>";
     }
 }

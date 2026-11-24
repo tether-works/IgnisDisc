@@ -504,6 +504,13 @@ public class MainViewModel : ObservableObject, IDisposable
         MountVirtualBlankDvdRCommand = new RelayCommand(MountVirtualBlankDvdR, CanMountVirtual);
         NavigateCommand = new RelayCommand(Navigate);
         ShowAboutCommand = new RelayCommand(_ => ShowAboutDialog());
+        _audioBurn.SendCoverArtToDiscArt = pngPath =>
+        {
+            if (_discArt.OpenPicture(pngPath))
+            {
+                NavigateCommand.Execute(NavigationTab.DiscArt);
+            }
+        };
 
         // Initialize Module Workspaces
         InitializeWorkspaces();

@@ -242,5 +242,9 @@ public static class FfmpegAudioEncoder
 
         var args = BuildArguments(format, wavPath, outputPath, tags, bitrateKbps, coverImagePath, mp3VbrQuality);
         await FfmpegProcess.RunAsync(ffmpegPath, args, $"{AudioRipFormats.DisplayName(format)} encoding", cancellationToken).ConfigureAwait(false);
+        if (format == AudioRipFormat.Opus && tags.CoverArtBytes is { Length: > 0 })
+        {
+            OggOpusMetadata.EmbedCoverArt(outputPath, tags.CoverArtBytes, tags.CoverArtMimeType);
+        }
     }
 }

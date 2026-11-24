@@ -148,6 +148,21 @@ public class CdBurnerProjectDocument
     /// </summary>
     public SerializedCdText? CdText { get; set; }
 
+    /// <summary>
+    /// Optional local cover art file path for Audio CD projects.
+    /// </summary>
+    public string? CoverArtPath { get; set; }
+
+    /// <summary>
+    /// Optional base64-encoded cover art image bytes (used when cover art was fetched from an online archive or embedded).
+    /// </summary>
+    public string? CoverArtBase64 { get; set; }
+
+    /// <summary>
+    /// Optional MIME type of the persisted cover art (e.g. "image/jpeg", "image/png").
+    /// </summary>
+    public string? CoverArtMimeType { get; set; }
+
     // --- DVD-Video Specific Settings ---
 
     /// <summary>
@@ -311,6 +326,11 @@ public class SerializedAudioTrack
     public string Performer { get; set; } = string.Empty;
 
     /// <summary>
+    /// Per-track album title tag/override, if specified.
+    /// </summary>
+    public string? Album { get; set; }
+
+    /// <summary>
     /// Songwriter name for CD-Text.
     /// </summary>
     public string? Songwriter { get; set; }
@@ -341,9 +361,19 @@ public class SerializedAudioTrack
     public int PreGapFrames { get; set; } = 150;
 
     /// <summary>
+    /// Optional source file path for standalone Hidden Track One Audio (HTOA) attached to track 1.
+    /// </summary>
+    public string? HiddenAudioFilePath { get; set; }
+
+    /// <summary>
     /// Length of hidden pre-gap audio before track 1 INDEX 01 in Red Book frames (75 fps), if any.
     /// </summary>
     public int HiddenAudioFrames { get; set; }
+
+    /// <summary>
+    /// True when the hidden pre-gap audio before track 1 is a byte-level pre-gap picture.
+    /// </summary>
+    public bool HiddenAudioIsPreGapPicture { get; set; }
 
     /// <summary>
     /// Whether the track is flagged with Red Book 50/15 us pre-emphasis (CUE FLAGS PRE).

@@ -147,6 +147,7 @@ public class MediaFoundationAudioDecoder : IAudioDecoder, IDisposable
         }
 
         long frames = RedBookFramesFor(info);
+        bool hasCover = OggOpusMetadata.TryExtractCoverArt(c, out byte[]? coverBytes, out string? coverMime);
         return new AudioFormatMetadata
         {
             FilePath = filePath,
@@ -166,7 +167,10 @@ public class MediaFoundationAudioDecoder : IAudioDecoder, IDisposable
             Isrc = Get("ISRC"),
             TrackNumber = Number("TRACKNUMBER"),
             TrackTotal = Number("TRACKTOTAL") ?? Number("TOTALTRACKS"),
-            Date = Get("DATE")
+            Date = Get("DATE"),
+            HasEmbeddedCoverArt = hasCover,
+            CoverArtBytes = coverBytes,
+            CoverArtMimeType = coverMime
         };
     }
 

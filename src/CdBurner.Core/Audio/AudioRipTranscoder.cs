@@ -109,9 +109,9 @@ public sealed class AudioRipTranscoder
                 coverTempPath = Path.Combine(Path.GetTempPath(), "ignisdisc-cover-" + Guid.NewGuid().ToString("N") + MimeExtension(coverArtMimeType));
                 await File.WriteAllBytesAsync(coverTempPath, coverArtBytes, cancellationToken).ConfigureAwait(false);
             }
-            else if (coverArtBytes is { Length: > 0 } && format is AudioRipFormat.Opus or AudioRipFormat.Aac)
+            else if (coverArtBytes is { Length: > 0 } && format == AudioRipFormat.Aac)
             {
-                warnings.Add($"Cover art is not embedded in {AudioRipFormats.DisplayName(format)} files (supported in FLAC and MP3).");
+                warnings.Add($"Cover art is not embedded in {AudioRipFormats.DisplayName(format)} files (supported in FLAC, MP3, and Opus).");
             }
 
             if (rip.HiddenTrackOneAudioPath is { } htoaWav && File.Exists(htoaWav))

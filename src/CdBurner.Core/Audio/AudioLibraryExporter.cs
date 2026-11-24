@@ -233,9 +233,9 @@ public sealed class AudioLibraryExporter
                 currentFormat = plan.Target.Format;
                 var format = plan.Target.Format;
                 int bitrate = plan.Target.BitrateKbps > 0 ? plan.Target.BitrateKbps : AudioRipFormats.DefaultBitrateKbps(format);
-                if (album.CoverBytes is { Length: > 0 } && format is AudioRipFormat.Opus or AudioRipFormat.Aac)
+                if (album.CoverBytes is { Length: > 0 } && format == AudioRipFormat.Aac)
                 {
-                    warnings.Add($"Cover art is not embedded in {AudioRipFormats.DisplayName(format)} files (supported in FLAC and MP3).");
+                    warnings.Add($"Cover art is not embedded in {AudioRipFormats.DisplayName(format)} files (supported in FLAC, MP3, and Opus).");
                 }
 
                 int done = 0;
