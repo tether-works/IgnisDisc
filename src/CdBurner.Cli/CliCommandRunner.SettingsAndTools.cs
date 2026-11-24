@@ -148,6 +148,7 @@ public static partial class CliCommandRunner
                     throw new CommandLineException("audioReadOffsetSamples must be an integer between -10000 and 10000.");
                 }
                 settings.AudioReadOffsetSamples = offset;
+                settings.AudioReadOffsetOverrideSamples = offset;
                 break;
             case "secureAudioRipByDefault":
                 settings.SecureAudioRipByDefault = ParseSettingBool(canonicalKey, rawValue);

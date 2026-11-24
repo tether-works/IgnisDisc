@@ -330,6 +330,47 @@
                               ToolTip="Opt-in: sends the disc's table of contents to db.cuetools.net to verify extracted track and disc CRCs. A rip that differs is repaired from the database's repair data and confirmed with AccurateRip."
                               Margin="0,0,0,12" />
 
+                    <!-- AccurateRip Drive Read-Offset Database -->
+                    <StackPanel Margin="0,0,0,12">
+                        <WrapPanel Orientation="Horizontal" VerticalAlignment="Center" Margin="0,0,0,4">
+                            <TextBlock Text="AccurateRip Drive Offsets:"
+                                       FontWeight="SemiBold"
+                                       VerticalAlignment="Center"
+                                       Foreground="{DynamicResource TextSecondaryBrush}"
+                                       Margin="0,2,10,2" />
+                            <Button Content="Refresh Offset Database"
+                                    AutomationProperties.Name="Refresh Offset Database"
+                                    Command="{Binding RefreshOffsetDatabaseCommand}"
+                                    Padding="12,5"
+                                    Margin="0,2,10,2"
+                                    ToolTip="Download or refresh AccurateRip's DriveOffsets.bin cache in local app data (refreshed automatically every 30 days)" />
+                            <TextBlock Text="{Binding OffsetDatabaseStatusText}"
+                                       AutomationProperties.Name="Offset Database Status"
+                                       VerticalAlignment="Center"
+                                       Foreground="{DynamicResource TextMutedBrush}"
+                                       FontSize="12" />
+                        </WrapPanel>
+                        <WrapPanel Orientation="Horizontal" VerticalAlignment="Center">
+                            <TextBlock Text="Read-offset mode:"
+                                       VerticalAlignment="Center"
+                                       Foreground="{DynamicResource TextSecondaryBrush}"
+                                       FontSize="12"
+                                       Margin="0,2,8,2" />
+                            <TextBlock Text="{Binding AudioReadOffsetSummaryText}"
+                                       AutomationProperties.Name="Audio Read Offset Mode"
+                                       VerticalAlignment="Center"
+                                       Foreground="{DynamicResource TextPrimaryBrush}"
+                                       FontSize="12"
+                                       Margin="0,2,10,2" />
+                            <Button Content="Use Automatic"
+                                    AutomationProperties.Name="Use Automatic Read Offset"
+                                    Command="{Binding ClearAudioReadOffsetOverrideCommand}"
+                                    Visibility="{Binding HasManualAudioReadOffsetOverride, Converter={StaticResource BoolToVis}}"
+                                    Padding="10,3"
+                                    FontSize="11.5" />
+                        </WrapPanel>
+                    </StackPanel>
+
                     <!-- Opt-in Checkbox -->
                     <CheckBox Content="Check for newer versions automatically on startup (strictly opt-in)"
                               AutomationProperties.Name="Check for newer versions automatically on startup"

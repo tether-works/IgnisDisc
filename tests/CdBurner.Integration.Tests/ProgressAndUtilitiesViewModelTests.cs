@@ -559,5 +559,65 @@ public sealed class ProgressAndUtilitiesViewModelTests : IDisposable
         Assert.Equal(8.0, mainVm.SelectedWriteSpeed!.Value.Multiplier);
     }
 
+    [Fact]
+    public async Task SettingsViewModel_RefreshOffsetDatabase_HandlesOnlineAndOfflineFallback()
+    {
+        string tempDir = Path.Combine(Path.GetTempPath(), $"cdburner_settings_offsets_{Guid.NewGuid():N}");
+        Directory.CreateDirectory(tempDir);
+        try
+        {
+            string settingsPath = Path.Combine(tempDir, "settings.json");
+            string cachePath = Path.Combine(tempDir, "DriveOffsets.bin");
+            var service = new AppSettingsService(settingsPath);
+            service.CurrentSettings = new AppSettings
+            {
+                AudioReadOffsetSamples = 12,
+                AudioReadOffsetOverrideSamples = 12
+            };
+
+            var vm = new SettingsViewModel(service, driveOffsetsCachePath: cachePath);
+            Assert.True(vm.HasManualAudioReadOffsetOverride);
+            Assert.Contains("+12", vm.AudioReadOffsetSummaryText);
+
+            vm.ClearAudioReadOffsetOverrideCommand.Execute(null);
+            Assert.False(vm.HasManualAudioReadOffsetOverride);
+            Assert.Null(service.CurrentSettings.AudioReadOffsetOverrideSamples);
+
+            byte[] rec = new byte[CdBurner.Core.Audio.AccurateRipDriveOffsets.RecordSize];
+            System.Buffers.Binary.BinaryPrimitives.WriteInt16LittleEndian(rec.AsSpan(0, 2), 6);
+            System.Text.Encoding.ASCII.GetBytes("HL-DT-ST - DVDRAM GP60NB50").CopyTo(rec.AsSpan(2, 33));
+            System.Buffers.Binary.BinaryPrimitives.WriteInt32LittleEndian(rec.AsSpan(35, 4), 255);
+
+            using (var offline = new System.Net.Http.HttpClient(new StubMessageHandler(_ => throw new System.Net.Http.HttpRequestException("Offline"))))
+            {
+                var emptyRes = await vm.RefreshOffsetDatabaseAsync(offline);
+                Assert.Equal(CdBurner.Core.Audio.DriveOffsetDatabaseStatus.Unavailable, emptyRes.Status);
+                Assert.Contains("Unavailable", vm.OffsetDatabaseStatusText);
+            }
+
+            using (var online = new System.Net.Http.HttpClient(new StubMessageHandler(_ => new System.Net.Http.HttpResponseMessage(System.Net.HttpStatusCode.OK)
+            {
+                Content = new System.Net.Http.ByteArrayContent(rec)
+            })))
+            {
+                var okRes = await vm.RefreshOffsetDatabaseAsync(online);
+                Assert.Equal(CdBurner.Core.Audio.DriveOffsetDatabaseStatus.Downloaded, okRes.Status);
+                Assert.Contains("Updated: 1 drives", vm.OffsetDatabaseStatusText);
+            }
+        }
+        finally
+        {
+            try { Directory.Delete(tempDir, recursive: true); } catch { }
+        }
+    }
+
+    private sealed class StubMessageHandler(Func<System.Net.Http.HttpRequestMessage, System.Net.Http.HttpResponseMessage> respond)
+        : System.Net.Http.HttpMessageHandler
+    {
+        protected override Task<System.Net.Http.HttpResponseMessage> SendAsync(
+            System.Net.Http.HttpRequestMessage request,
+            CancellationToken cancellationToken) => Task.FromResult(respond(request));
+    }
+
     #endregion
 }

@@ -413,11 +413,34 @@ public class ReadOffsetDetectorTests
 
             var engine = new VirtualBurnEngine(recorder);
             var (tracks, _) = AudioCdRipperService.QueryTracksAndCdText(recorder);
-            var result = await ReadOffsetDetector.DetectAsync(engine, recorder, tracks, [pressing], maxOffsetSamples: 3000);
+            string storePath = Path.Combine(tempDir, "drive-offsets.json");
+            string cachePath = Path.Combine(tempDir, "DriveOffsets.bin");
+            byte[] dbRec = new byte[AccurateRipDriveOffsets.RecordSize];
+            System.Buffers.Binary.BinaryPrimitives.WriteInt16LittleEndian(dbRec.AsSpan(0, 2), planted);
+            System.Text.Encoding.ASCII.GetBytes(AccurateRipDriveOffsets.DriveName(recorder.VendorId, recorder.ProductId))
+                .CopyTo(dbRec.AsSpan(2, 33));
+            System.Buffers.Binary.BinaryPrimitives.WriteInt32LittleEndian(dbRec.AsSpan(35, 4), 10);
+            await File.WriteAllBytesAsync(cachePath, dbRec);
+
+            var result = await ReadOffsetDetector.DetectAsync(
+                engine,
+                recorder,
+                tracks,
+                [pressing],
+                maxOffsetSamples: 3000,
+                driveOffsetStorePath: storePath,
+                driveOffsetsCachePath: cachePath);
 
             Assert.Null(result.ErrorMessage);
             Assert.NotNull(result.Best);
             Assert.Equal(planted, result.Best.OffsetSamples);
+            Assert.True(result.SavedCalibration);
+            Assert.NotNull(result.DatabaseEntry);
+            Assert.Equal(planted, result.DatabaseEntry!.ReadOffsetSamples);
+            var saved = new DriveOffsetStore(storePath).GetCalibratedReadOffset(
+                AccurateRipDriveOffsets.DriveName(recorder.VendorId, recorder.ProductId));
+            Assert.NotNull(saved);
+            Assert.Equal(planted, saved!.ReadOffsetSamples);
         }
         finally
         {

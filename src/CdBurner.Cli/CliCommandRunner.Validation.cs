@@ -25,7 +25,7 @@ public static partial class CliCommandRunner
         "fixed-time", "format", "from", "health-json", "image", "images", "inner-radius-mm", "input", "iso",
         "json-output", "key", "label", "language", "layer-break", "library", "log-dir",
         "loudness", "media", "media-id", "menu", "menu-autoplay", "menu-title", "mp3-bitrate",
-        "mp3-quality", "naming", "offset-x-mm", "offset-y-mm", "opus-bitrate", "order", "out",
+        "mp3-quality", "naming", "offset-cache", "offset-store", "offset-x-mm", "offset-y-mm", "opus-bitrate", "order", "out",
         "outer-radius-mm", "output", "pages-radius", "par2", "path", "picture", "pitch-cubic",
         "pitch-linear", "pitch-quadratic", "points", "post-action", "pregap", "pregap-art",
         "pregap-seconds", "read-offset", "redundancy", "release", "retries", "rotate", "scale",
@@ -230,7 +230,8 @@ public static partial class CliCommandRunner
         Add(CommandOptionSpec.Empty, "check-update");
         Add(CommandOptionSpec.Of([], ["virtual-state"]), "drives", "list-drives");
         Add(CommandOptionSpec.Of([], ["drive", "virtual-media", "virtual-state"]), "media-info", "mediainfo", "info", "drive-report", "drivereport");
-        Add(CommandOptionSpec.Of([], ["drive", "virtual-state"]), "eject", "load", "detect-offset", "detectoffset");
+        Add(CommandOptionSpec.Of([], ["drive", "virtual-state"]), "eject", "load");
+        Add(CommandOptionSpec.Of([], ["drive", "offset-cache", "offset-store", "virtual-state"]), "detect-offset", "detectoffset");
         Add(CommandOptionSpec.Of([], ["drive", "blank", "image", "virtual-state"]), "virtual-mount", "virtualmount");
         Add(CommandOptionSpec.Of([], ["drive", "virtual-state"]), "virtual-eject", "virtualeject", "virtual-status", "virtualstatus");
         Add(CommandOptionSpec.Of(["udf", "joliet", "sha256sums", "blake3sums"], ["input", "output", "label", "boot-bios", "boot-uefi", "udf-rev", "fixed-time"]), "build-iso", "buildiso");
@@ -240,8 +241,8 @@ public static partial class CliCommandRunner
         Add(BurnDvdSpec, "burn-dvd", "burndvd");
         Add(CommandOptionSpec.Of(["raw"], ["drive", "output", "virtual-media", "virtual-state"]), "rip", "rip-disc");
         Add(CommandOptionSpec.Of(
-            ["lookup", "keep-wav", "no-folder-image", "overwrite", "continue-on-error", "verify-accuraterip", "verify-ctdb", "no-ctdb-repair", "no-cover-lookup", "repair", "repair-from-recovery", "no-secure", "secure", "no-replaygain", "de-emphasis"],
-            ["drive", "library", "output", "release", "naming", "tracks", "read-offset", "cover", "cover-art", "virtual-media", "virtual-state", .. AudioTargetOptions]),
+            ["lookup", "keep-wav", "no-folder-image", "overwrite", "continue-on-error", "verify-accuraterip", "verify-ctdb", "no-ctdb-repair", "no-cover-lookup", "repair", "repair-from-recovery", "no-secure", "secure", "no-replaygain", "de-emphasis", "refresh-offsets"],
+            ["drive", "library", "output", "release", "naming", "tracks", "read-offset", "offset-cache", "offset-store", "cover", "cover-art", "virtual-media", "virtual-state", .. AudioTargetOptions]),
             "rip-audio", "ripaudio");
         Add(CommandOptionSpec.Of(["overwrite", "recursive"], ["input", "output", "naming", .. AudioTargetOptions]), "convert-audio", "convertaudio");
         Add(CommandOptionSpec.Of([], ["drive", "compare", "virtual-state"]), "check-disc", "checkdisc");

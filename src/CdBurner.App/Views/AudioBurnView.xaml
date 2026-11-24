@@ -733,36 +733,65 @@
                             Padding="16,12">
                         <StackPanel>
                             <!-- Read Offset Row -->
-                            <Grid Margin="0,0,0,10">
-                                <Grid.ColumnDefinitions>
-                                    <ColumnDefinition Width="Auto" />
-                                    <ColumnDefinition Width="100" />
-                                    <ColumnDefinition Width="Auto" />
-                                    <ColumnDefinition Width="*" />
-                                </Grid.ColumnDefinitions>
-
-                                <TextBlock Grid.Column="0"
-                                           Text="Read offset (samples):"
-                                           FontWeight="SemiBold"
-                                           VerticalAlignment="Center"
-                                           Foreground="{DynamicResource TextSecondaryBrush}"
-                                           Margin="0,0,10,0" />
-                                <TextBox Grid.Column="1"
-                                         AutomationProperties.Name="Read offset (samples)"
-                                         Text="{Binding ReadOffsetSamples, UpdateSourceTrigger=PropertyChanged}"
-                                         Padding="8,6"
-                                         Background="{DynamicResource ControlBackgroundBrush}"
-                                         Foreground="{DynamicResource TextPrimaryBrush}"
-                                         BorderBrush="{DynamicResource ControlBorderBrush}"
-                                         Margin="0,0,8,0"
-                                         ToolTip="Drive read offset correction in samples (-10000 to +10000) for sample-accurate ripping" />
-                                <Button Grid.Column="2"
-                                        Content="🔎 Detect"
-                                        AutomationProperties.Name="Detect Read Offset"
-                                        Command="{Binding DetectReadOffsetCommand}"
-                                        VerticalAlignment="Center"
-                                        ToolTip="Detect drive read offset using an inserted commercial Audio CD against AccurateRip" />
-                            </Grid>
+                            <StackPanel Margin="0,0,0,10">
+                                <WrapPanel Orientation="Horizontal" VerticalAlignment="Center">
+                                    <TextBlock Text="Read offset (samples):"
+                                               FontWeight="SemiBold"
+                                               VerticalAlignment="Center"
+                                               Foreground="{DynamicResource TextSecondaryBrush}"
+                                               Margin="0,2,10,2" />
+                                    <TextBox Width="88"
+                                             AutomationProperties.Name="Read offset (samples)"
+                                             Text="{Binding ReadOffsetSamples, UpdateSourceTrigger=PropertyChanged}"
+                                             Padding="8,6"
+                                             Background="{DynamicResource ControlBackgroundBrush}"
+                                             Foreground="{DynamicResource TextPrimaryBrush}"
+                                             BorderBrush="{DynamicResource ControlBorderBrush}"
+                                             Margin="0,2,8,2"
+                                             ToolTip="Drive read offset correction in samples (-10000 to +10000) for sample-accurate ripping" />
+                                    <Button Content="Auto"
+                                            AutomationProperties.Name="Use Automatic Read Offset"
+                                            Command="{Binding ClearReadOffsetOverrideCommand}"
+                                            Visibility="{Binding HasExplicitReadOffsetOverride, Converter={StaticResource BoolToVis}}"
+                                            VerticalAlignment="Center"
+                                            Padding="8,5"
+                                            Margin="0,2,8,2"
+                                            ToolTip="Clear manual override and resolve automatically from key-disc calibration or AccurateRip DB" />
+                                    <Button Content="🔎 Detect"
+                                            AutomationProperties.Name="Detect Read Offset"
+                                            Command="{Binding DetectReadOffsetCommand}"
+                                            VerticalAlignment="Center"
+                                            Margin="0,2,8,2"
+                                            ToolTip="Detect drive read offset using an inserted commercial Audio CD against AccurateRip" />
+                                    <Border Background="{DynamicResource SurfaceBackgroundBrush}"
+                                            BorderBrush="{DynamicResource CardBorderBrush}"
+                                            BorderThickness="1"
+                                            CornerRadius="4"
+                                            Padding="8,4"
+                                            VerticalAlignment="Center"
+                                            Margin="0,2,8,2">
+                                        <TextBlock Text="{Binding ReadOffsetBadgeText}"
+                                                   AutomationProperties.Name="Resolved Read Offset Badge"
+                                                   Foreground="{DynamicResource TextPrimaryBrush}"
+                                                   FontSize="12"
+                                                   FontWeight="SemiBold" />
+                                    </Border>
+                                    <Button Content="Refresh Offset Database"
+                                            AutomationProperties.Name="Refresh Offset Database"
+                                            Command="{Binding RefreshOffsetDatabaseCommand}"
+                                            VerticalAlignment="Center"
+                                            Padding="10,5"
+                                            Margin="0,2,0,2"
+                                            ToolTip="Download or refresh AccurateRip's cached DriveOffsets.bin database" />
+                                </WrapPanel>
+                                <TextBlock Text="{Binding ReadOffsetWarning}"
+                                           AutomationProperties.Name="Read Offset Warning"
+                                           Visibility="{Binding HasReadOffsetWarning, Converter={StaticResource BoolToVis}}"
+                                           Foreground="{DynamicResource TextMutedBrush}"
+                                           FontSize="11.5"
+                                           TextWrapping="Wrap"
+                                           Margin="0,4,0,0" />
+                            </StackPanel>
 
                             <!-- Output formats row -->
                             <WrapPanel Orientation="Horizontal" Margin="0,0,0,6">

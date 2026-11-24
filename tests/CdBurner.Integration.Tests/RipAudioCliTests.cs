@@ -1051,6 +1051,75 @@ public sealed class RipAudioCliTests : IAsyncLifetime, IDisposable
         Assert.Equal(preEmphPcm, stillRawTrack1);
     }
 
+    [Fact]
+    public async Task RipAudio_ResolvesOffsetWithStrictPrecedence_AndHandlesOfflineRefresh()
+    {
+        string cachePath = Path.Combine(_tempDir, "DriveOffsets.bin");
+        string storePath = Path.Combine(_tempDir, "drive-offsets.json");
+
+        // 4. Empty cache -> 0 with clear warning
+        var (emptyOut, emptyErr) = CreateStringWriters();
+        int emptyCode = await CliCommandRunner.RunAsync(
+            ["rip-audio", "--drive", "VDRV-01", "--output", Path.Combine(_tempDir, "cli-off-empty"),
+             "--offset-cache", cachePath, "--offset-store", storePath, "--json"],
+            emptyOut, emptyErr, _deviceService, _burnEngine);
+        Assert.Equal(0, emptyCode);
+        using (var emptyDoc = ParseJsonOutput(emptyOut))
+        {
+            Assert.Equal(0, emptyDoc.RootElement.GetProperty("readOffset").GetInt32());
+            Assert.False(string.IsNullOrWhiteSpace(emptyDoc.RootElement.GetProperty("warning").GetString()));
+        }
+
+        // 3. Stale DriveOffsets.bin + offline refresh -> falls back to stale cache (+6) without throwing
+        byte[] rec = new byte[AccurateRipDriveOffsets.RecordSize];
+        System.Buffers.Binary.BinaryPrimitives.WriteInt16LittleEndian(rec.AsSpan(0, 2), 6);
+        string driveName = AccurateRipDriveOffsets.DriveName(_recorder.VendorId, _recorder.ProductId);
+        Encoding.ASCII.GetBytes(driveName).CopyTo(rec.AsSpan(2, 33));
+        System.Buffers.Binary.BinaryPrimitives.WriteInt32LittleEndian(rec.AsSpan(35, 4), 99);
+        await File.WriteAllBytesAsync(cachePath, rec);
+        File.SetLastWriteTimeUtc(cachePath, DateTime.UtcNow - TimeSpan.FromDays(45));
+
+        using var offlineHttp = new HttpClient(new SpyHttpHandler(_ => throw new HttpRequestException("Offline")));
+        var (dbOut, dbErr) = CreateStringWriters();
+        int dbCode = await CliCommandRunner.RunAsync(
+            ["rip-audio", "--drive", "VDRV-01", "--output", Path.Combine(_tempDir, "cli-off-db"),
+             "--offset-cache", cachePath, "--offset-store", storePath, "--refresh-offsets", "--json"],
+            dbOut, dbErr, _deviceService, _burnEngine, offlineHttp);
+        Assert.Equal(0, dbCode);
+        using (var dbDoc = ParseJsonOutput(dbOut))
+        {
+            Assert.Equal(6, dbDoc.RootElement.GetProperty("readOffset").GetInt32());
+            Assert.Equal("+6 samples via AccurateRip DB", dbDoc.RootElement.GetProperty("readOffsetBadge").GetString());
+        }
+
+        // 2. Local key-disc calibration (+12) beats AccurateRip DB (+6)
+        new DriveOffsetStore(storePath).RecordCalibratedReadOffset(driveName, 12, confidence: 8);
+        var (calOut, calErr) = CreateStringWriters();
+        int calCode = await CliCommandRunner.RunAsync(
+            ["rip-audio", "--drive", "VDRV-01", "--output", Path.Combine(_tempDir, "cli-off-cal"),
+             "--offset-cache", cachePath, "--offset-store", storePath, "--json"],
+            calOut, calErr, _deviceService, _burnEngine);
+        Assert.Equal(0, calCode);
+        using (var calDoc = ParseJsonOutput(calOut))
+        {
+            Assert.Equal(12, calDoc.RootElement.GetProperty("readOffset").GetInt32());
+            Assert.Equal("+12 samples via key-disc calibration", calDoc.RootElement.GetProperty("readOffsetBadge").GetString());
+        }
+
+        // 1. Explicit --read-offset (-6) beats both calibration (+12) and DB (+6)
+        var (ovOut, ovErr) = CreateStringWriters();
+        int ovCode = await CliCommandRunner.RunAsync(
+            ["rip-audio", "--drive", "VDRV-01", "--output", Path.Combine(_tempDir, "cli-off-ov"),
+             "--offset-cache", cachePath, "--offset-store", storePath, "--read-offset", "-6", "--json"],
+            ovOut, ovErr, _deviceService, _burnEngine);
+        Assert.Equal(0, ovCode);
+        using (var ovDoc = ParseJsonOutput(ovOut))
+        {
+            Assert.Equal(-6, ovDoc.RootElement.GetProperty("readOffset").GetInt32());
+            Assert.Equal("-6 samples (manual override)", ovDoc.RootElement.GetProperty("readOffsetBadge").GetString());
+        }
+    }
+
     private sealed class SpyHttpHandler(Func<HttpRequestMessage, HttpResponseMessage> respond) : HttpMessageHandler
     {
         public List<Uri> Requests { get; } = [];

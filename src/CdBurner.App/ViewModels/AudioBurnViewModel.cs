@@ -55,6 +55,8 @@ public class AudioBurnViewModel : ObservableObject, IDisposable
     private readonly AudioCdBurnService _audioBurnService;
     private readonly AudioCdRipperService _ripperService;
     private readonly AppSettingsService? _settingsService;
+    private readonly string? _driveOffsetStorePath;
+    private readonly string? _driveOffsetsCachePath;
 
     private string _albumTitle = "Untitled Album";
     private string _albumPerformer = "Various Artists";
@@ -78,6 +80,14 @@ public class AudioBurnViewModel : ObservableObject, IDisposable
     private double _discUsagePercent;
     private string _ripOutputFolder = string.Empty;
     private int _readOffsetSamples;
+    private int? _explicitReadOffsetOverride;
+    private string _readOffsetBadgeText = "0 samples (uncalibrated)";
+    private ReadOffsetSource _resolvedReadOffsetSource = ReadOffsetSource.DefaultZero;
+    private string? _readOffsetWarning;
+    private string _offsetDatabaseStatusText = "AccurateRip DB: not cached";
+    private bool _isRefreshingOffsetDatabase;
+    private bool _applyingResolvedOffset;
+    private int _readOffsetResolutionGeneration;
     private bool _secureRip = true; // matches AppSettings.SecureAudioRipByDefault
     private bool _lookupMetadata = true;
     private bool _verifyAccurateRip = true;
@@ -736,6 +746,7 @@ public class AudioBurnViewModel : ObservableObject, IDisposable
             if (SetProperty(ref _selectedRecorder, value))
             {
                 RecalculateTotals();
+                _ = RefreshReadOffsetAsync();
             }
         }
     }
@@ -765,6 +776,8 @@ public class AudioBurnViewModel : ObservableObject, IDisposable
                 StartAudioBurnCommand.RaiseCanExecuteChanged();
                 RipAudioCdCommand.RaiseCanExecuteChanged();
                 DetectReadOffsetCommand?.RaiseCanExecuteChanged();
+                RefreshOffsetDatabaseCommand?.RaiseCanExecuteChanged();
+                ClearReadOffsetOverrideCommand?.RaiseCanExecuteChanged();
                 CancelBurnCommand.RaiseCanExecuteChanged();
                 ClearAllTracksCommand.RaiseCanExecuteChanged();
             }
@@ -827,6 +840,8 @@ public class AudioBurnViewModel : ObservableObject, IDisposable
 
     /// <summary>
     /// Hardware read offset correction in samples (-10000 to +10000) applied during Digital Audio Extraction.
+    /// Setting this value directly records a manual override; use <see cref="ClearReadOffsetOverrideCommand"/>
+    /// to return to automatic key-disc / AccurateRip database resolution.
     /// </summary>
     public int ReadOffsetSamples
     {
@@ -834,6 +849,10 @@ public class AudioBurnViewModel : ObservableObject, IDisposable
         set
         {
             int clamped = Math.Clamp(value, -10000, 10000);
+            if (!_applyingSettings && !_applyingResolvedOffset)
+            {
+                SetExplicitReadOffsetOverrideInternal(clamped);
+            }
             if (_readOffsetSamples != clamped)
             {
                 _readOffsetSamples = clamped;
@@ -844,8 +863,102 @@ public class AudioBurnViewModel : ObservableObject, IDisposable
             {
                 OnPropertyChanged();
             }
+            else if (!_applyingSettings && !_applyingResolvedOffset)
+            {
+                SaveSettingsIfAvailable();
+            }
         }
     }
+
+    /// <summary>Explicit manual read-offset override in samples, or null when automatic resolution is active.</summary>
+    public int? ExplicitReadOffsetOverride
+    {
+        get => _explicitReadOffsetOverride;
+        set
+        {
+            int? clamped = value.HasValue ? Math.Clamp(value.Value, -10000, 10000) : null;
+            if (_explicitReadOffsetOverride != clamped)
+            {
+                _explicitReadOffsetOverride = clamped;
+                OnPropertyChanged();
+                OnPropertyChanged(nameof(HasExplicitReadOffsetOverride));
+                ClearReadOffsetOverrideCommand?.RaiseCanExecuteChanged();
+                if (!_applyingSettings)
+                {
+                    if (clamped is int manual)
+                    {
+                        ApplyReadOffsetResolution(new ReadOffsetResolution(
+                            manual,
+                            ReadOffsetSource.ExplicitOverride,
+                            $"{ReadOffsetResolver.FormatSignedSamples(manual)} samples (manual override)",
+                            "manual override"));
+                        SaveSettingsIfAvailable();
+                    }
+                    else
+                    {
+                        SaveSettingsIfAvailable();
+                        _ = RefreshReadOffsetAsync();
+                    }
+                }
+            }
+        }
+    }
+
+    /// <summary>True when a manual read-offset override is active instead of automatic resolution.</summary>
+    public bool HasExplicitReadOffsetOverride => _explicitReadOffsetOverride.HasValue;
+
+    /// <summary>Live badge displaying the resolved read offset and its source (e.g. "+6 samples via AccurateRip DB").</summary>
+    public string ReadOffsetBadgeText
+    {
+        get => _readOffsetBadgeText;
+        private set => SetProperty(ref _readOffsetBadgeText, value);
+    }
+
+    /// <summary>Active source that supplied <see cref="ReadOffsetSamples"/>.</summary>
+    public ReadOffsetSource ResolvedReadOffsetSource
+    {
+        get => _resolvedReadOffsetSource;
+        private set => SetProperty(ref _resolvedReadOffsetSource, value);
+    }
+
+    /// <summary>Warning shown when no override, key-disc calibration, or AccurateRip database match is available.</summary>
+    public string? ReadOffsetWarning
+    {
+        get => _readOffsetWarning;
+        private set
+        {
+            if (SetProperty(ref _readOffsetWarning, value))
+            {
+                OnPropertyChanged(nameof(HasReadOffsetWarning));
+            }
+        }
+    }
+
+    /// <summary>True when <see cref="ReadOffsetWarning"/> has text to display.</summary>
+    public bool HasReadOffsetWarning => !string.IsNullOrWhiteSpace(_readOffsetWarning);
+
+    /// <summary>Summary of the local AccurateRip <c>DriveOffsets.bin</c> cache state.</summary>
+    public string OffsetDatabaseStatusText
+    {
+        get => _offsetDatabaseStatusText;
+        private set => SetProperty(ref _offsetDatabaseStatusText, value);
+    }
+
+    /// <summary>True while refreshing the AccurateRip drive offset database.</summary>
+    public bool IsRefreshingOffsetDatabase
+    {
+        get => _isRefreshingOffsetDatabase;
+        private set
+        {
+            if (SetProperty(ref _isRefreshingOffsetDatabase, value))
+            {
+                RefreshOffsetDatabaseCommand?.RaiseCanExecuteChanged();
+            }
+        }
+    }
+
+    /// <summary>The most recent background read-offset resolution task, exposed so tests can await it.</summary>
+    public Task? ResolveReadOffsetTask { get; private set; }
 
     /// <summary>
     /// Whether to use C2 error pointer based secure extraction and re-read suspect sectors.
@@ -1257,6 +1370,12 @@ public class AudioBurnViewModel : ObservableObject, IDisposable
     /// </summary>
     public AsyncRelayCommand DetectReadOffsetCommand { get; }
 
+    /// <summary>Downloads or refreshes the cached AccurateRip <c>DriveOffsets.bin</c> database.</summary>
+    public AsyncRelayCommand RefreshOffsetDatabaseCommand { get; }
+
+    /// <summary>Clears any manual read-offset override and restores automatic offset resolution.</summary>
+    public RelayCommand ClearReadOffsetOverrideCommand { get; }
+
     /// <summary>
     /// Queries MusicBrainz with 1 click for the inserted Audio CD's table-of-contents DiscID.
     /// </summary>
@@ -1313,7 +1432,9 @@ public class AudioBurnViewModel : ObservableObject, IDisposable
         IDiscDeviceService? deviceService = null,
         IBurnEngineBackend? burnEngine = null,
         IAudioDecoder? audioDecoder = null,
-        AppSettingsService? settingsService = null)
+        AppSettingsService? settingsService = null,
+        string? driveOffsetStorePath = null,
+        string? driveOffsetsCachePath = null)
     {
         _deviceService = deviceService ?? new DiscDeviceManager(enablePhysicalEnumeration: false);
         _burnEngine = burnEngine ?? new VirtualBurnEngine();
@@ -1321,11 +1442,14 @@ public class AudioBurnViewModel : ObservableObject, IDisposable
         _audioBurnService = new AudioCdBurnService(_burnEngine, _audioDecoder);
         _ripperService = new AudioCdRipperService();
         _settingsService = settingsService;
+        _driveOffsetStorePath = driveOffsetStorePath;
+        _driveOffsetsCachePath = driveOffsetsCachePath;
 
         if (_settingsService != null)
         {
             var s = _settingsService.CurrentSettings;
-            _readOffsetSamples = Math.Clamp(s.AudioReadOffsetSamples, -10000, 10000);
+            _explicitReadOffsetOverride = s.GetEffectiveReadOffsetOverride();
+            _readOffsetSamples = _explicitReadOffsetOverride ?? 0;
             _secureRip = s.SecureAudioRipByDefault;
             _lookupMetadata = s.LookupMusicBrainzByDefault;
             _verifyAccurateRip = s.VerifyAccurateRipByDefault;
@@ -1340,6 +1464,12 @@ public class AudioBurnViewModel : ObservableObject, IDisposable
             _lookupMetadata = true;
             _verifyAccurateRip = true;
             _verifyCtdb = false;
+        }
+        if (_explicitReadOffsetOverride is int initialManual)
+        {
+            _readOffsetBadgeText = $"{ReadOffsetResolver.FormatSignedSamples(initialManual)} samples (manual override)";
+            _resolvedReadOffsetSource = ReadOffsetSource.ExplicitOverride;
+            _readOffsetWarning = null;
         }
         _continueOnUnreadable = false;
         _ripReport = string.Empty;
@@ -1374,6 +1504,8 @@ public class AudioBurnViewModel : ObservableObject, IDisposable
         CancelBurnCommand = new RelayCommand(_ => CancelActiveBurn(), _ => IsBusy);
         RipAudioCdCommand = new AsyncRelayCommand(async p => await RipAudioCdAsync(p as string), _ => !IsBusy);
         DetectReadOffsetCommand = new AsyncRelayCommand(DetectReadOffsetAsync, () => !IsBusy);
+        RefreshOffsetDatabaseCommand = new AsyncRelayCommand(() => RefreshOffsetDatabaseAsync(), () => !IsBusy && !IsRefreshingOffsetDatabase);
+        ClearReadOffsetOverrideCommand = new RelayCommand(_ => ExplicitReadOffsetOverride = null, _ => HasExplicitReadOffsetOverride && !IsBusy);
         LookupDiscMetadataCommand = new AsyncRelayCommand(async _ => await LookupDiscMetadataAsync(), _ => !IsBusy);
         BrowseRipOutputFolderCommand = new RelayCommand(BrowseRipOutputFolder);
         BrowseRipLibraryFolderCommand = new RelayCommand(BrowseRipLibraryFolder);
@@ -3080,7 +3212,24 @@ public class AudioBurnViewModel : ObservableObject, IDisposable
         _applyingSettings = true;
         try
         {
-            ReadOffsetSamples = settings.AudioReadOffsetSamples;
+            int? ov = settings.GetEffectiveReadOffsetOverride();
+            _explicitReadOffsetOverride = ov;
+            OnPropertyChanged(nameof(ExplicitReadOffsetOverride));
+            OnPropertyChanged(nameof(HasExplicitReadOffsetOverride));
+            ClearReadOffsetOverrideCommand?.RaiseCanExecuteChanged();
+            if (ov is int manual)
+            {
+                ReadOffsetSamples = manual;
+                ApplyReadOffsetResolution(new ReadOffsetResolution(
+                    manual,
+                    ReadOffsetSource.ExplicitOverride,
+                    $"{ReadOffsetResolver.FormatSignedSamples(manual)} samples (manual override)",
+                    "manual override"), updateNumericValue: false);
+            }
+            else
+            {
+                ReadOffsetSamples = 0;
+            }
             SecureRip = settings.SecureAudioRipByDefault;
             LookupMetadata = settings.LookupMusicBrainzByDefault;
             VerifyAccurateRip = settings.VerifyAccurateRipByDefault;
@@ -3091,6 +3240,11 @@ public class AudioBurnViewModel : ObservableObject, IDisposable
         finally
         {
             _applyingSettings = false;
+        }
+
+        if (_explicitReadOffsetOverride == null)
+        {
+            _ = RefreshReadOffsetAsync();
         }
     }
 
@@ -3141,7 +3295,8 @@ public class AudioBurnViewModel : ObservableObject, IDisposable
         try
         {
             var settings = _settingsService.CurrentSettings;
-            settings.AudioReadOffsetSamples = _readOffsetSamples;
+            settings.AudioReadOffsetSamples = _explicitReadOffsetOverride ?? 0;
+            settings.AudioReadOffsetOverrideSamples = _explicitReadOffsetOverride;
             settings.SecureAudioRipByDefault = _secureRip;
             settings.LookupMusicBrainzByDefault = _lookupMetadata;
             settings.VerifyAccurateRipByDefault = _verifyAccurateRip;
@@ -3262,6 +3417,187 @@ public class AudioBurnViewModel : ObservableObject, IDisposable
         }
     }
 
+    private void SetExplicitReadOffsetOverrideInternal(int clamped)
+    {
+        if (_explicitReadOffsetOverride != clamped)
+        {
+            _explicitReadOffsetOverride = clamped;
+            OnPropertyChanged(nameof(ExplicitReadOffsetOverride));
+            OnPropertyChanged(nameof(HasExplicitReadOffsetOverride));
+            ClearReadOffsetOverrideCommand?.RaiseCanExecuteChanged();
+        }
+        ApplyReadOffsetResolution(new ReadOffsetResolution(
+            clamped,
+            ReadOffsetSource.ExplicitOverride,
+            $"{ReadOffsetResolver.FormatSignedSamples(clamped)} samples (manual override)",
+            "manual override"), updateNumericValue: false);
+    }
+
+    private void ApplyReadOffsetResolution(ReadOffsetResolution resolution, bool updateNumericValue = true)
+    {
+        if (updateNumericValue)
+        {
+            _applyingResolvedOffset = true;
+            try
+            {
+                if (_readOffsetSamples != resolution.OffsetSamples)
+                {
+                    _readOffsetSamples = resolution.OffsetSamples;
+                    OnPropertyChanged(nameof(ReadOffsetSamples));
+                }
+            }
+            finally
+            {
+                _applyingResolvedOffset = false;
+            }
+        }
+
+        ResolvedReadOffsetSource = resolution.Source;
+        ReadOffsetBadgeText = resolution.BadgeText;
+        ReadOffsetWarning = resolution.Warning;
+    }
+
+    /// <summary>
+    /// Resolves the active drive's read offset from local calibration and cached <c>DriveOffsets.bin</c>
+    /// without throwing on offline failures.
+    /// </summary>
+    public Task RefreshReadOffsetAsync(HttpClient? httpClient = null, bool forceRefresh = false)
+    {
+        var task = RefreshReadOffsetCoreAsync(httpClient, forceRefresh);
+        ResolveReadOffsetTask = task;
+        return task;
+    }
+
+    private async Task RefreshReadOffsetCoreAsync(HttpClient? httpClient, bool forceRefresh)
+    {
+        int generation = ++_readOffsetResolutionGeneration;
+        var recorder = SelectedRecorder;
+        if (recorder == null)
+        {
+            if (generation == _readOffsetResolutionGeneration)
+            {
+                ApplyReadOffsetResolution(new ReadOffsetResolution(
+                    _explicitReadOffsetOverride ?? 0,
+                    _explicitReadOffsetOverride.HasValue ? ReadOffsetSource.ExplicitOverride : ReadOffsetSource.DefaultZero,
+                    _explicitReadOffsetOverride.HasValue
+                        ? $"{ReadOffsetResolver.FormatSignedSamples(_explicitReadOffsetOverride.Value)} samples (manual override)"
+                        : "0 samples (uncalibrated)",
+                    _explicitReadOffsetOverride.HasValue ? "manual override" : "no drive selected"));
+                await UpdateOffsetDatabaseStatusAsync(forceRefresh: false, httpClient: null);
+            }
+            return;
+        }
+
+        if (_explicitReadOffsetOverride is int manual && !forceRefresh)
+        {
+            if (generation == _readOffsetResolutionGeneration)
+            {
+                ApplyReadOffsetResolution(new ReadOffsetResolution(
+                    manual,
+                    ReadOffsetSource.ExplicitOverride,
+                    $"{ReadOffsetResolver.FormatSignedSamples(manual)} samples (manual override)",
+                    "manual override"));
+            }
+            return;
+        }
+
+        var resolution = await ReadOffsetResolver.ResolveAsync(
+            recorder,
+            _explicitReadOffsetOverride,
+            _driveOffsetStorePath,
+            _driveOffsetsCachePath,
+            httpClient,
+            forceRefresh);
+
+        if (generation != _readOffsetResolutionGeneration)
+        {
+            return;
+        }
+
+        ApplyReadOffsetResolution(resolution);
+        OffsetDatabaseStatusText = FormatDatabaseStatus(resolution.DatabaseStatus, count: null, error: null);
+    }
+
+    /// <summary>
+    /// Downloads/refreshes AccurateRip's <c>DriveOffsets.bin</c> cache and updates the live read-offset badge.
+    /// Offline failures fall back gracefully to a stale cache or 0 without throwing.
+    /// </summary>
+    public async Task RefreshOffsetDatabaseAsync(HttpClient? httpClient = null)
+    {
+        IsRefreshingOffsetDatabase = true;
+        HttpClient? ownedHttp = null;
+        try
+        {
+            var client = httpClient ?? (ownedHttp = new HttpClient { Timeout = TimeSpan.FromSeconds(15) });
+            string cachePath = _driveOffsetsCachePath ?? AccurateRipDriveOffsets.DefaultCachePath;
+            var dbResult = await AccurateRipDriveOffsets.LoadDatabaseAsync(client, cachePath, forceRefresh: true);
+            OffsetDatabaseStatusText = FormatDatabaseStatus(dbResult.Status, dbResult.Entries.Count, dbResult.ErrorMessage);
+
+            var recorder = SelectedRecorder;
+            if (recorder != null)
+            {
+                DriveOffsetStore.CalibratedReadOffset? calibrated = null;
+                if (!recorder.IsVirtual || _driveOffsetStorePath != null)
+                {
+                    calibrated = new DriveOffsetStore(_driveOffsetStorePath ?? DriveOffsetStore.DefaultPath)
+                        .GetCalibratedReadOffset(AccurateRipDriveOffsets.DriveName(recorder.VendorId, recorder.ProductId));
+                }
+
+                var resolution = ReadOffsetResolver.ResolveFromData(
+                    recorder.VendorId,
+                    recorder.ProductId,
+                    _explicitReadOffsetOverride,
+                    calibrated,
+                    dbResult);
+                ApplyReadOffsetResolution(resolution);
+                StatusMessage = dbResult.Status == DriveOffsetDatabaseStatus.Downloaded
+                    ? $"Offset database updated ({dbResult.Entries.Count:N0} drives): {resolution.BadgeText}."
+                    : $"Offset database refresh fell back ({OffsetDatabaseStatusText}): {resolution.BadgeText}.";
+            }
+            else
+            {
+                StatusMessage = OffsetDatabaseStatusText;
+            }
+        }
+        catch (Exception ex)
+        {
+            OffsetDatabaseStatusText = $"AccurateRip DB: refresh failed ({ex.Message})";
+            StatusMessage = OffsetDatabaseStatusText;
+        }
+        finally
+        {
+            ownedHttp?.Dispose();
+            IsRefreshingOffsetDatabase = false;
+        }
+    }
+
+    private async Task UpdateOffsetDatabaseStatusAsync(bool forceRefresh, HttpClient? httpClient)
+    {
+        string? cachePath = _driveOffsetsCachePath ?? (SelectedRecorder is { IsVirtual: false } ? AccurateRipDriveOffsets.DefaultCachePath : null);
+        if (cachePath == null)
+        {
+            OffsetDatabaseStatusText = "AccurateRip DB: not cached";
+            return;
+        }
+
+        var dbResult = await AccurateRipDriveOffsets.LoadDatabaseAsync(httpClient, cachePath, forceRefresh);
+        OffsetDatabaseStatusText = FormatDatabaseStatus(dbResult.Status, dbResult.Entries.Count, dbResult.ErrorMessage);
+    }
+
+    private static string FormatDatabaseStatus(DriveOffsetDatabaseStatus status, int? count, string? error)
+    {
+        string countText = count.HasValue ? $"{count.Value:N0} drives" : "ready";
+        return status switch
+        {
+            DriveOffsetDatabaseStatus.Downloaded => $"AccurateRip DB: updated ({countText})",
+            DriveOffsetDatabaseStatus.FreshCache => $"AccurateRip DB: cached ({countText})",
+            DriveOffsetDatabaseStatus.StaleCacheFallback => $"AccurateRip DB: offline, stale cache ({countText})",
+            _ => string.IsNullOrWhiteSpace(error)
+                ? "AccurateRip DB: not cached"
+                : $"AccurateRip DB: offline ({error})"
+        };
+    }
+
     public async Task DetectReadOffsetAsync()
     {
         var recorder = ResolveRecorder();
@@ -3301,7 +3637,13 @@ public class AudioBurnViewModel : ObservableObject, IDisposable
                 return;
             }
 
-            var detection = await ReadOffsetDetector.DetectAsync(_burnEngine, recorder, tracks, pressings).ConfigureAwait(false);
+            var detection = await ReadOffsetDetector.DetectAsync(
+                _burnEngine,
+                recorder,
+                tracks,
+                pressings,
+                driveOffsetStorePath: _driveOffsetStorePath,
+                driveOffsetsCachePath: _driveOffsetsCachePath);
             var best = detection.Best;
 
             if (best == null)
@@ -3312,7 +3654,33 @@ public class AudioBurnViewModel : ObservableObject, IDisposable
                 return;
             }
 
-            ReadOffsetSamples = best.OffsetSamples;
+            _applyingSettings = true;
+            try
+            {
+                _explicitReadOffsetOverride = null;
+                OnPropertyChanged(nameof(ExplicitReadOffsetOverride));
+                OnPropertyChanged(nameof(HasExplicitReadOffsetOverride));
+                ClearReadOffsetOverrideCommand?.RaiseCanExecuteChanged();
+                if (_settingsService != null)
+                {
+                    var s = _settingsService.CurrentSettings;
+                    s.AudioReadOffsetOverrideSamples = null;
+                    s.AudioReadOffsetSamples = 0;
+                    _settingsService.CurrentSettings = s;
+                    _settingsService.Save();
+                }
+            }
+            finally
+            {
+                _applyingSettings = false;
+            }
+
+            ApplyReadOffsetResolution(new ReadOffsetResolution(
+                best.OffsetSamples,
+                ReadOffsetSource.KeyDiscCalibration,
+                $"{ReadOffsetResolver.FormatSignedSamples(best.OffsetSamples)} samples via key-disc calibration",
+                best.Confidence > 0 ? $"key-disc calibration (confidence {best.Confidence})" : "key-disc calibration",
+                SubmissionsOrConfidence: best.Confidence));
             StatusMessage = $"Read offset detected: {best.OffsetSamples:+0;-0;0} samples (confidence {best.Confidence}).";
 
             var sb = new StringBuilder();
@@ -3321,6 +3689,14 @@ public class AudioBurnViewModel : ObservableObject, IDisposable
             sb.AppendLine($"  Read Offset:    {best.OffsetSamples:+0;-0;0} samples");
             sb.AppendLine($"  Confidence:     {best.Confidence} matching submissions");
             sb.AppendLine($"  Tracks Checked: {string.Join(", ", detection.ProbedTracks)}");
+            if (detection.SavedCalibration)
+            {
+                sb.AppendLine("  Calibration:    saved for this drive");
+            }
+            if (detection.DatabaseEntry != null)
+            {
+                sb.AppendLine($"  AccurateRip DB: {detection.DatabaseEntry.ReadOffsetSamples:+0;-0;0} samples ({detection.DatabaseEntry.Submissions} submissions)");
+            }
             RipReport = sb.ToString().TrimEnd();
         }
         catch (OperationCanceledException)
@@ -3668,24 +4044,61 @@ public class AudioBurnViewModel : ObservableObject, IDisposable
                 }
             }
 
-            var options = new AudioRipOptions
+            HttpClient? ownedOffsetHttp = null;
+            HttpClient? offsetHttp = null;
+            if (_explicitReadOffsetOverride == null && (!recorder.IsVirtual || _driveOffsetsCachePath != null))
             {
-                GenerateCueSheet = true,
-                CueSheetFileName = "album.cue",
-                ContinueOnUnreadableSector = ContinueOnUnreadable,
-                MetadataOverride = metadataOverride,
-                ReadOffsetSamples = ReadOffsetSamples,
-                SecureMode = SecureRip,
-                CalculateReplayGain = true, // track and album ReplayGain 2.0, same as rip-audio without --no-replaygain
-                CoverArtBytes = coverBytes,
-                CoverArtMimeType = coverMime,
-                RepairFromRecoverySession = RepairFromRecoverySession,
-                ApplyDeEmphasis = DeEmphasizePreEmphasisTracks
-            };
+                if (httpClient != null)
+                {
+                    if (VerifyAccurateRip)
+                    {
+                        offsetHttp = httpClient;
+                    }
+                }
+                else if (VerifyAccurateRip && !recorder.IsVirtual)
+                {
+                    offsetHttp = ownedOffsetHttp = new HttpClient { Timeout = TimeSpan.FromSeconds(15) };
+                }
+            }
 
-            var ripResult = await _ripperService.RipAudioCdAsync(recorder, _burnEngine, targetFolder, options, progress, activeToken);
+            AudioCdRipResult ripResult;
+            try
+            {
+                var options = new AudioRipOptions
+                {
+                    GenerateCueSheet = true,
+                    CueSheetFileName = "album.cue",
+                    ContinueOnUnreadableSector = ContinueOnUnreadable,
+                    MetadataOverride = metadataOverride,
+                    ExplicitReadOffsetSamples = _explicitReadOffsetOverride,
+                    DriveOffsetStorePath = _driveOffsetStorePath,
+                    DriveOffsetsCachePath = _driveOffsetsCachePath,
+                    OffsetDatabaseHttpClient = offsetHttp,
+                    SecureMode = SecureRip,
+                    CalculateReplayGain = true, // track and album ReplayGain 2.0, same as rip-audio without --no-replaygain
+                    CoverArtBytes = coverBytes,
+                    CoverArtMimeType = coverMime,
+                    RepairFromRecoverySession = RepairFromRecoverySession,
+                    ApplyDeEmphasis = DeEmphasizePreEmphasisTracks
+                };
+
+                ripResult = await _ripperService.RipAudioCdAsync(recorder, _burnEngine, targetFolder, options, progress, activeToken);
+            }
+            finally
+            {
+                ownedOffsetHttp?.Dispose();
+            }
             progress.Close(); // a late progress report must not overwrite the final status line
             LastRipResult = ripResult;
+
+            if (ripResult.ReadOffset is { } resolvedOffset)
+            {
+                ApplyReadOffsetResolution(resolvedOffset);
+                if (!string.IsNullOrWhiteSpace(resolvedOffset.Warning))
+                {
+                    warning = (warning == null ? "" : warning + "\n") + resolvedOffset.Warning;
+                }
+            }
 
             string metadataSource = metadataOverride != null
                 ? "musicbrainz"
@@ -3733,7 +4146,8 @@ public class AudioBurnViewModel : ObservableObject, IDisposable
                     }
                 }
 
-                if (ReadOffsetSamples == 0 && accurateRipStatus == "checked" && accurateRipTracks.Any(t => t.Verdict is { IsAccurate: false }))
+                if (ReadOffsetSamples == 0 && accurateRipStatus == "checked" && accurateRipTracks.Any(t => t.Verdict is { IsAccurate: false })
+                    && ripResult.ReadOffset?.Warning == null)
                 {
                     warning = (warning == null ? "" : warning + "\n") +
                         "No read offset was configured; AccurateRip only matches when the drive's read offset is corrected (use 'Detect' or check the AccurateRip drive offset list).";
@@ -3913,7 +4327,7 @@ public class AudioBurnViewModel : ObservableObject, IDisposable
                 sb.AppendLine($"  AccurateRip:      {ids?.AccurateRipDatabasePath ?? "n/a"}");
                 sb.AppendLine($"  CTDB TOCID:       {ids?.CtdbTocId ?? "n/a"}");
                 sb.AppendLine($"  Metadata Source:  {metadataSource}");
-                sb.AppendLine($"  Read Offset:      {ReadOffsetSamples:+0;-0;0} samples");
+                sb.AppendLine($"  Read Offset:      {ripResult.ReadOffset?.BadgeText ?? $"{ReadOffsetSamples:+0;-0;0} samples"}");
                 if (SecureRip)
                 {
                     sb.AppendLine(ripResult.SecureModeUsed

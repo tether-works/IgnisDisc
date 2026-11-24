@@ -358,6 +358,66 @@ public sealed class AudioRipOptionsViewModelTests : IDisposable
         Assert.Contains(server.Requests, u => u.Host == "p.cuetools.net");
     }
 
+    [Fact]
+    public async Task ReadOffsetBadge_FollowsPrecedence_AndRefreshHandlesOfflineGracefully()
+    {
+        string cachePath = Path.Combine(_tempDir, "DriveOffsets.bin");
+        string storePath = Path.Combine(_tempDir, "drive-offsets.json");
+        var recorder = _deviceManager.GetRecorders().First(r => r.UniqueId == "VDRV-01");
+        string driveName = AccurateRipDriveOffsets.DriveName(recorder.VendorId, recorder.ProductId);
+
+        byte[] dbRecord = new byte[AccurateRipDriveOffsets.RecordSize];
+        System.Buffers.Binary.BinaryPrimitives.WriteInt16LittleEndian(dbRecord.AsSpan(0, 2), 6);
+        Encoding.ASCII.GetBytes(driveName).CopyTo(dbRecord.AsSpan(2, 33));
+        System.Buffers.Binary.BinaryPrimitives.WriteInt32LittleEndian(dbRecord.AsSpan(35, 4), 255);
+
+        // Start with empty cache -> 0 with warning
+        var vm = new AudioBurnViewModel(_deviceManager, _burnEngine, driveOffsetStorePath: storePath, driveOffsetsCachePath: cachePath);
+        if (vm.ResolveReadOffsetTask != null) await vm.ResolveReadOffsetTask;
+        Assert.Equal(0, vm.ReadOffsetSamples);
+        Assert.Equal("0 samples (uncalibrated)", vm.ReadOffsetBadgeText);
+        Assert.True(vm.HasReadOffsetWarning);
+
+        // Refresh Offset Database online -> downloads DriveOffsets.bin and updates live badge
+        using (var okHttp = new HttpClient(new SpyHttpHandler(_ => new HttpResponseMessage(HttpStatusCode.OK)
+        {
+            Content = new ByteArrayContent(dbRecord)
+        })))
+        {
+            await vm.RefreshOffsetDatabaseAsync(okHttp);
+        }
+        Assert.Equal(6, vm.ReadOffsetSamples);
+        Assert.Equal("+6 samples via AccurateRip DB", vm.ReadOffsetBadgeText);
+        Assert.False(vm.HasReadOffsetWarning);
+
+        // Stale cache + offline Refresh Offset Database -> falls back gracefully without throwing
+        File.SetLastWriteTimeUtc(cachePath, DateTime.UtcNow - TimeSpan.FromDays(45));
+        using (var offlineHttp = new HttpClient(new SpyHttpHandler(_ => throw new HttpRequestException("Offline"))))
+        {
+            await vm.RefreshOffsetDatabaseAsync(offlineHttp);
+        }
+        Assert.Equal(6, vm.ReadOffsetSamples);
+        Assert.Equal("+6 samples via AccurateRip DB", vm.ReadOffsetBadgeText);
+        Assert.Contains("offline", vm.OffsetDatabaseStatusText, StringComparison.OrdinalIgnoreCase);
+
+        // Key-disc calibration beats AccurateRip DB
+        new DriveOffsetStore(storePath).RecordCalibratedReadOffset(driveName, 12, confidence: 9);
+        await vm.RefreshReadOffsetAsync();
+        Assert.Equal(12, vm.ReadOffsetSamples);
+        Assert.Equal("+12 samples via key-disc calibration", vm.ReadOffsetBadgeText);
+
+        // Explicit manual override beats key-disc calibration; Clear returns to calibration
+        vm.ReadOffsetSamples = -24;
+        Assert.True(vm.HasExplicitReadOffsetOverride);
+        Assert.Equal("-24 samples (manual override)", vm.ReadOffsetBadgeText);
+
+        vm.ClearReadOffsetOverrideCommand.Execute(null);
+        if (vm.ResolveReadOffsetTask != null) await vm.ResolveReadOffsetTask;
+        Assert.False(vm.HasExplicitReadOffsetOverride);
+        Assert.Equal(12, vm.ReadOffsetSamples);
+        Assert.Equal("+12 samples via key-disc calibration", vm.ReadOffsetBadgeText);
+    }
+
     private sealed class SpyHttpHandler(Func<HttpRequestMessage, HttpResponseMessage> respond) : HttpMessageHandler
     {
         public List<Uri> Requests { get; } = [];

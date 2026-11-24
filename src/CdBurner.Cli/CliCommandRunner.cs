@@ -59,7 +59,7 @@ public static partial class CliCommandRunner
         "no-cover-lookup", "no-folder-image", "recursive", "no-rim", "rim-header",
         "sha256sums", "blake3sums", "native", "test-write", "test-first", "recovery-session", "blue-book", "streaming",
         "allow-suspect", "repair", "repair-from-recovery", "no-replaygain", "health-certificate", "files-outer", "read-compat", "force-old",
-        "get", "require-book-type", "allow-overburn"
+        "get", "require-book-type", "allow-overburn", "refresh-offsets"
     };
 
     private static void WriteJsonResult(TextWriter stdout, object payload)
@@ -2318,14 +2318,21 @@ public static partial class CliCommandRunner
             }
         }
 
-        int readOffset = 0;
+        int? explicitReadOffset = null;
         string? readOffsetOpt = cmd.GetOption("read-offset");
-        if (readOffsetOpt != null &&
-            (!int.TryParse(readOffsetOpt, NumberStyles.AllowLeadingSign, CultureInfo.InvariantCulture, out readOffset) ||
-             Math.Abs(readOffset) > 10_000))
+        if (readOffsetOpt != null)
         {
-            throw new CommandLineException($"Invalid read offset '{readOffsetOpt}'. Expected an integer number of samples between -10000 and 10000 (e.g. --read-offset 6).");
+            if (!int.TryParse(readOffsetOpt, NumberStyles.AllowLeadingSign, CultureInfo.InvariantCulture, out int parsedOffset) ||
+                Math.Abs(parsedOffset) > 10_000)
+            {
+                throw new CommandLineException($"Invalid read offset '{readOffsetOpt}'. Expected an integer number of samples between -10000 and 10000 (e.g. --read-offset 6).");
+            }
+            explicitReadOffset = parsedOffset;
         }
+
+        string? offsetCachePath = cmd.GetOption("offset-cache");
+        string? offsetStorePath = cmd.GetOption("offset-store");
+        bool refreshOffsets = cmd.HasFlag("refresh-offsets");
 
         var recorder = FindRecorder(deviceService, driveId);
 
@@ -2414,22 +2421,57 @@ public static partial class CliCommandRunner
 
         bool repairFromRecovery = cmd.HasFlag("repair") || cmd.HasFlag("repair-from-recovery");
         bool applyDeEmphasis = cmd.HasFlag("de-emphasis");
-        var options = new AudioRipOptions
+        HttpClient? ownedOffsetHttp = null;
+        HttpClient? offsetHttp = null;
+        if (explicitReadOffset == null && (!recorder.IsVirtual || offsetCachePath != null))
         {
-            ContinueOnUnreadableSector = cmd.HasFlag("continue-on-error"),
-            TrackNumbersToRip = requestedTracks,
-            MetadataOverride = metadataOverride,
-            ReadOffsetSamples = readOffset,
-            SecureMode = !cmd.HasFlag("no-secure"), // on by default; a drive without C2 pointers falls back to a plain read
-            CalculateReplayGain = !cmd.HasFlag("no-replaygain"),
-            CoverArtBytes = coverBytes,
-            CoverArtMimeType = coverMime,
-            RepairFromRecoverySession = repairFromRecovery,
-            ApplyDeEmphasis = applyDeEmphasis
-        };
+            if (customHttpClient != null)
+            {
+                if (cmd.HasFlag("verify-accuraterip") || refreshOffsets || offsetCachePath != null)
+                {
+                    offsetHttp = customHttpClient;
+                }
+            }
+            else if (!recorder.IsVirtual || refreshOffsets)
+            {
+                offsetHttp = ownedOffsetHttp = new HttpClient { Timeout = TimeSpan.FromSeconds(15) };
+            }
+        }
 
-        var ripper = new AudioCdRipperService();
-        var result = await ripper.RipAudioCdAsync(recorder, burnEngine, outputFolder, options).ConfigureAwait(false);
+        AudioCdRipResult result;
+        try
+        {
+            var options = new AudioRipOptions
+            {
+                ContinueOnUnreadableSector = cmd.HasFlag("continue-on-error"),
+                TrackNumbersToRip = requestedTracks,
+                MetadataOverride = metadataOverride,
+                ExplicitReadOffsetSamples = explicitReadOffset,
+                DriveOffsetStorePath = offsetStorePath,
+                DriveOffsetsCachePath = offsetCachePath,
+                OffsetDatabaseHttpClient = offsetHttp,
+                ForceRefreshOffsetDatabase = refreshOffsets,
+                SecureMode = !cmd.HasFlag("no-secure"), // on by default; a drive without C2 pointers falls back to a plain read
+                CalculateReplayGain = !cmd.HasFlag("no-replaygain"),
+                CoverArtBytes = coverBytes,
+                CoverArtMimeType = coverMime,
+                RepairFromRecoverySession = repairFromRecovery,
+                ApplyDeEmphasis = applyDeEmphasis
+            };
+
+            var ripper = new AudioCdRipperService();
+            result = await ripper.RipAudioCdAsync(recorder, burnEngine, outputFolder, options).ConfigureAwait(false);
+        }
+        finally
+        {
+            ownedOffsetHttp?.Dispose();
+        }
+
+        int readOffset = result.ReadOffsetSamples;
+        if (result.ReadOffset?.Warning is { } offsetWarning)
+        {
+            warning = string.IsNullOrEmpty(warning) ? offsetWarning : warning + " " + offsetWarning;
+        }
 
         string metadataSource = metadataOverride != null
             ? "musicbrainz"
@@ -2504,7 +2546,8 @@ public static partial class CliCommandRunner
                 }
             }
 
-            if (readOffset == 0 && accurateRipStatus == "checked" && accurateRipTracks.Any(t => t.Verdict is { IsAccurate: false }))
+            if (readOffset == 0 && accurateRipStatus == "checked" && accurateRipTracks.Any(t => t.Verdict is { IsAccurate: false })
+                && result.ReadOffset?.Warning == null)
             {
                 warning = (warning == null ? "" : warning + " ") +
                     "No --read-offset was given; AccurateRip only matches when the drive's read offset is corrected (see the AccurateRip drive offset list).";
@@ -2725,6 +2768,8 @@ public static partial class CliCommandRunner
                     country = chosenRelease.Country
                 },
                 readOffset,
+                readOffsetSource = result.ReadOffset?.SourceDescription,
+                readOffsetBadge = result.ReadOffset?.BadgeText,
                 badSectors = result.BadSectorLbas,
                 trackChecksums = result.TrackInfos.Select(t => new
                 {
@@ -2803,7 +2848,7 @@ public static partial class CliCommandRunner
         stdout.WriteLine($"  AccurateRip:      {ids?.AccurateRipDatabasePath ?? "n/a"}");
         stdout.WriteLine($"  CTDB TOCID:       {ids?.CtdbTocId ?? "n/a"}");
         stdout.WriteLine($"  Metadata Source:  {metadataSource}");
-        stdout.WriteLine($"  Read Offset:      {readOffset:+0;-0;0} samples");
+        stdout.WriteLine($"  Read Offset:      {result.ReadOffset?.BadgeText ?? $"{readOffset:+0;-0;0} samples"}");
         if (!cmd.HasFlag("no-secure"))
         {
             stdout.WriteLine(result.SecureModeUsed
@@ -2932,7 +2977,13 @@ public static partial class CliCommandRunner
                 "This disc is not in the AccurateRip database, so it cannot be used to detect the offset. Try a well-known commercial CD.");
         }
 
-        var detection = await ReadOffsetDetector.DetectAsync(burnEngine, recorder, tracks, pressings).ConfigureAwait(false);
+        var detection = await ReadOffsetDetector.DetectAsync(
+            burnEngine,
+            recorder,
+            tracks,
+            pressings,
+            driveOffsetStorePath: cmd.GetOption("offset-store"),
+            driveOffsetsCachePath: cmd.GetOption("offset-cache")).ConfigureAwait(false);
         var best = detection.Best;
 
         if (cmd.IsJson)
@@ -2943,6 +2994,8 @@ public static partial class CliCommandRunner
                 driveId = recorder.UniqueId,
                 readOffset = best?.OffsetSamples,
                 confidence = best?.Confidence,
+                savedCalibration = detection.SavedCalibration,
+                accurateRipDbOffset = detection.DatabaseEntry?.ReadOffsetSamples,
                 probedTracks = detection.ProbedTracks,
                 candidates = detection.Candidates.Select(c => new { offset = c.OffsetSamples, c.Confidence, c.TrackNumber }),
                 accurateRipPath = ids.AccurateRipDatabasePath,
@@ -2962,6 +3015,14 @@ public static partial class CliCommandRunner
         stdout.WriteLine($"  Read Offset:    {best.OffsetSamples:+0;-0;0} samples");
         stdout.WriteLine($"  Confidence:     {best.Confidence} matching submissions");
         stdout.WriteLine($"  Tracks Checked: {string.Join(", ", detection.ProbedTracks)}");
+        if (detection.SavedCalibration)
+        {
+            stdout.WriteLine("  Calibration:    saved for this drive");
+        }
+        if (detection.DatabaseEntry != null)
+        {
+            stdout.WriteLine($"  AccurateRip DB: {detection.DatabaseEntry.ReadOffsetSamples:+0;-0;0} samples ({detection.DatabaseEntry.Submissions} submissions)");
+        }
         stdout.WriteLine($"  Use it with:    rip-audio --drive {driveId} --read-offset {best.OffsetSamples:+0;-0;0} --verify-accuraterip ...");
         return 0;
     }
@@ -4152,7 +4213,7 @@ public static partial class CliCommandRunner
         stdout.WriteLine("      Makes machine-generated subtitles for a movie (FFmpeg + whisper.cpp). Fast on a graphics card, slower on integrated graphics, slowest on the processor; names are often misheard.");
         stdout.WriteLine("  rip --drive <id> --output <file.iso|file.bin> [--raw] [--json]");
         stdout.WriteLine("      Rips optical disc to an ISO or raw BIN+CUE image.");
-        stdout.WriteLine("  rip-audio --drive <id> --output <folder> [--format wav|flac|mp3|opus|aac[,...]] [--bitrate <kbps>] [--mp3-bitrate <kbps> | --mp3-quality V0..V9] [--opus-bitrate <kbps>] [--aac-bitrate <kbps>] [--library <folder>] [--naming <template>] [--tracks 1,3,5] [--lookup] [--release <n|mbid>] [--no-cover-lookup] [--no-folder-image] [--overwrite] [--keep-wav] [--continue-on-error] [--read-offset <samples>] [--verify-accuraterip] [--verify-ctdb] [--no-ctdb-repair] [--no-secure] [--repair] [--de-emphasis] [--json]");
+        stdout.WriteLine("  rip-audio --drive <id> --output <folder> [--format wav|flac|mp3|opus|aac[,...]] [--bitrate <kbps>] [--mp3-bitrate <kbps> | --mp3-quality V0..V9] [--opus-bitrate <kbps>] [--aac-bitrate <kbps>] [--library <folder>] [--naming <template>] [--tracks 1,3,5] [--lookup] [--release <n|mbid>] [--no-cover-lookup] [--no-folder-image] [--overwrite] [--keep-wav] [--continue-on-error] [--read-offset <samples>] [--refresh-offsets] [--verify-accuraterip] [--verify-ctdb] [--no-ctdb-repair] [--no-secure] [--repair] [--de-emphasis] [--json]");
         stdout.WriteLine("  convert-audio --input <file|folder>[;<more>] --output <folder> --format flac|mp3|opus|aac[,...] [--recursive] [--naming <template>] [--overwrite] [--bitrate <kbps>] [--mp3-bitrate <kbps> | --mp3-quality V0..V9] [--opus-bitrate <kbps>] [--aac-bitrate <kbps>] [--json]");
         stdout.WriteLine("      Rips Red Book Audio CD to WAV, FLAC, MP3, Opus or AAC (FLAC, MP3, Opus need the optional ffmpeg; AAC uses the Windows encoder) with CD-Text and optional MusicBrainz lookup. Exit code 2 when sectors may be wrong (still suspect or unreadable).");
         stdout.WriteLine("  copy-disc --source <id> [--target <id>] [--copies <n>] [--speed <X|max>] [--raw] [--native [--log-dir <folder>]] [--allow-suspect] [--keep-image <folder>] [--wait-minutes <n>] [--json]");
@@ -4299,7 +4360,7 @@ public static partial class CliCommandRunner
         {
             stdout.WriteLine(LegalBanner.VersionNotice);
             stdout.WriteLine();
-            stdout.WriteLine("  rip-audio --drive <id> --output <folder> [--format wav|flac|mp3|opus|aac[,...]] [--bitrate <kbps>] [--mp3-bitrate <kbps> | --mp3-quality V0..V9] [--opus-bitrate <kbps>] [--aac-bitrate <kbps>] [--library <folder>] [--naming <template>] [--tracks 1,3,5] [--lookup] [--release <n|mbid>] [--no-cover-lookup] [--no-folder-image] [--overwrite] [--keep-wav] [--continue-on-error] [--read-offset <samples>] [--verify-accuraterip] [--verify-ctdb] [--no-ctdb-repair] [--no-secure] [--repair] [--de-emphasis] [--cover <image>] [--no-replaygain] [--json]");
+            stdout.WriteLine("  rip-audio --drive <id> --output <folder> [--format wav|flac|mp3|opus|aac[,...]] [--bitrate <kbps>] [--mp3-bitrate <kbps> | --mp3-quality V0..V9] [--opus-bitrate <kbps>] [--aac-bitrate <kbps>] [--library <folder>] [--naming <template>] [--tracks 1,3,5] [--lookup] [--release <n|mbid>] [--no-cover-lookup] [--no-folder-image] [--overwrite] [--keep-wav] [--continue-on-error] [--read-offset <samples>] [--refresh-offsets] [--verify-accuraterip] [--verify-ctdb] [--no-ctdb-repair] [--no-secure] [--repair] [--de-emphasis] [--cover <image>] [--no-replaygain] [--json]");
             stdout.WriteLine("      Rips Red Book Audio CD to WAV, FLAC, MP3, Opus or AAC (FLAC, MP3, Opus need the optional ffmpeg; AAC uses the Windows encoder) with CD-Text and optional MusicBrainz lookup. Exit code 2 when sectors may be wrong (still suspect or unreadable).");
             stdout.WriteLine("      --repair checks and repairs damaged samples from session 2 PAR2 recovery data on Enhanced CDs.");
             stdout.WriteLine("      --de-emphasis applies the Red Book 50/15 us de-emphasis filter to tracks flagged with pre-emphasis.");

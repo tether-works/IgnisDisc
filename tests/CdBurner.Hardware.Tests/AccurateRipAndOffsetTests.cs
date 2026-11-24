@@ -1,4 +1,5 @@
 using System.Buffers.Binary;
+using System.Text;
 using CdBurner.Core.Abstractions;
 using CdBurner.Core.Audio;
 using CdBurner.Core.Primitives;
@@ -703,5 +704,78 @@ public class AccurateRipAndOffsetTests : IClassFixture<VirtualAudioDiscFixture>
         Assert.Empty(posRes.BadSectorLbas);
         byte[] t3Pos = (await File.ReadAllBytesAsync(posRes.TrackInfos[2].FilePath))[44..];
         Assert.All(t3Pos[^24..], b => Assert.Equal((byte)0, b));
+    }
+
+    private static byte[] BuildDriveOffsetRecord(string name, short offsetSamples, int submissions)
+    {
+        byte[] rec = new byte[AccurateRipDriveOffsets.RecordSize];
+        BinaryPrimitives.WriteInt16LittleEndian(rec.AsSpan(0, 2), offsetSamples);
+        byte[] ascii = Encoding.ASCII.GetBytes(name);
+        ascii.AsSpan(0, Math.Min(33, ascii.Length)).CopyTo(rec.AsSpan(2, 33));
+        BinaryPrimitives.WriteInt32LittleEndian(rec.AsSpan(35, 4), submissions);
+        return rec;
+    }
+
+    [Fact]
+    public async Task Rip_AutoResolvesOffsetWithStrictPrecedence_AndAppliesToPcm()
+    {
+        byte[] whole = await GetZeroOffsetWholeAudioPcmAsync();
+        string cachePath = Path.Combine(_fixture.TempDir, "DriveOffsets.bin");
+        string storePath = Path.Combine(_fixture.TempDir, "drive-offsets.json");
+        var ripper = new AudioCdRipperService();
+
+        // 4. Empty cache + no calibration -> 0 with clear warning
+        var zeroResult = await ripper.RipAudioCdAsync(
+            _fixture.Recorder,
+            _fixture.Engine,
+            Path.Combine(_fixture.TempDir, "rip_auto_empty"),
+            new AudioRipOptions { DriveOffsetsCachePath = cachePath, DriveOffsetStorePath = storePath });
+        Assert.True(zeroResult.Success, zeroResult.ErrorMessage);
+        Assert.Equal(0, zeroResult.ReadOffsetSamples);
+        Assert.Equal(ReadOffsetSource.DefaultZero, zeroResult.ReadOffset!.Source);
+        Assert.False(string.IsNullOrWhiteSpace(zeroResult.ReadOffset.Warning));
+
+        // 3. Cached DriveOffsets.bin match (+6) -> applies +6 samples to ripped PCM
+        string driveName = AccurateRipDriveOffsets.DriveName(_fixture.Recorder.VendorId, _fixture.Recorder.ProductId);
+        await File.WriteAllBytesAsync(cachePath, BuildDriveOffsetRecord(driveName, 6, 42));
+        var dbResult = await ripper.RipAudioCdAsync(
+            _fixture.Recorder,
+            _fixture.Engine,
+            Path.Combine(_fixture.TempDir, "rip_auto_db"),
+            new AudioRipOptions { DriveOffsetsCachePath = cachePath, DriveOffsetStorePath = storePath });
+        Assert.True(dbResult.Success, dbResult.ErrorMessage);
+        Assert.Equal(6, dbResult.ReadOffsetSamples);
+        Assert.Equal("+6 samples via AccurateRip DB", dbResult.ReadOffset!.BadgeText);
+        Assert.Null(dbResult.ReadOffset.Warning);
+        byte[] track1FromDb = (await File.ReadAllBytesAsync(dbResult.TrackInfos[0].FilePath))[44..];
+        Assert.Equal(SliceWithZeroPadding(whole, 6 * 4, _fixture.Track1Pcm.Length), track1FromDb);
+
+        // 2. Local key-disc calibration (+12) beats AccurateRip DB (+6)
+        new DriveOffsetStore(storePath).RecordCalibratedReadOffset(driveName, 12, confidence: 5);
+        var calResult = await ripper.RipAudioCdAsync(
+            _fixture.Recorder,
+            _fixture.Engine,
+            Path.Combine(_fixture.TempDir, "rip_auto_cal"),
+            new AudioRipOptions { DriveOffsetsCachePath = cachePath, DriveOffsetStorePath = storePath });
+        Assert.True(calResult.Success, calResult.ErrorMessage);
+        Assert.Equal(12, calResult.ReadOffsetSamples);
+        Assert.Equal(ReadOffsetSource.KeyDiscCalibration, calResult.ReadOffset!.Source);
+        byte[] track1FromCal = (await File.ReadAllBytesAsync(calResult.TrackInfos[0].FilePath))[44..];
+        Assert.Equal(SliceWithZeroPadding(whole, 12 * 4, _fixture.Track1Pcm.Length), track1FromCal);
+
+        // 1. Explicit override (-6) beats key-disc calibration (+12) and DB (+6)
+        var overrideResult = await ripper.RipAudioCdAsync(
+            _fixture.Recorder,
+            _fixture.Engine,
+            Path.Combine(_fixture.TempDir, "rip_auto_override"),
+            new AudioRipOptions
+            {
+                ExplicitReadOffsetSamples = -6,
+                DriveOffsetsCachePath = cachePath,
+                DriveOffsetStorePath = storePath
+            });
+        Assert.True(overrideResult.Success, overrideResult.ErrorMessage);
+        Assert.Equal(-6, overrideResult.ReadOffsetSamples);
+        Assert.Equal(ReadOffsetSource.ExplicitOverride, overrideResult.ReadOffset!.Source);
     }
 }

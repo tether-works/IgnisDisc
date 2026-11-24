@@ -92,6 +92,17 @@ public class AppSettings
     public int AudioReadOffsetSamples { get; set; } = 0;
 
     /// <summary>
+    /// Optional explicit manual read-offset override in samples (-10000 to +10000). When null (and
+    /// <see cref="AudioReadOffsetSamples"/> is 0), Audio CD ripping resolves the drive offset automatically from
+    /// local key-disc calibration or the cached AccurateRip drive offset list.
+    /// </summary>
+    public int? AudioReadOffsetOverrideSamples { get; set; }
+
+    /// <summary>Returns the effective explicit manual read-offset override, or null for automatic resolution.</summary>
+    public int? GetEffectiveReadOffsetOverride() =>
+        AudioReadOffsetOverrideSamples ?? (AudioReadOffsetSamples != 0 ? AudioReadOffsetSamples : null);
+
+    /// <summary>
     /// Whether to enable C2 error pointer based secure extraction by default when ripping Audio CDs.
     /// </summary>
     public bool SecureAudioRipByDefault { get; set; } = true;
@@ -201,6 +212,7 @@ public class AppSettings
             EnableVirtualDrive = EnableVirtualDrive,
             LogRingBufferCapacity = LogRingBufferCapacity,
             AudioReadOffsetSamples = AudioReadOffsetSamples,
+            AudioReadOffsetOverrideSamples = AudioReadOffsetOverrideSamples,
             SecureAudioRipByDefault = SecureAudioRipByDefault,
             LookupMusicBrainzByDefault = LookupMusicBrainzByDefault,
             VerifyAccurateRipByDefault = VerifyAccurateRipByDefault,
@@ -615,6 +627,10 @@ public class AppSettingsService
     {
         settings.LogRingBufferCapacity = Math.Clamp(settings.LogRingBufferCapacity, 10, 100_000);
         settings.AudioReadOffsetSamples = Math.Clamp(settings.AudioReadOffsetSamples, -10000, 10000);
+        if (settings.AudioReadOffsetOverrideSamples is int ov)
+        {
+            settings.AudioReadOffsetOverrideSamples = Math.Clamp(ov, -10000, 10000);
+        }
         settings.UpgradeToCurrentVersion();
     }
 

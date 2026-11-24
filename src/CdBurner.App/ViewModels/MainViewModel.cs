@@ -493,6 +493,7 @@ public class MainViewModel : ObservableObject, IDisposable
         _driveUtilities.PropertyChanged += OnDriveUtilitiesPropertyChanged;
         _settings.PropertyChanged += OnSettingsPropertyChanged;
         _settings.SettingsSaved += OnSettingsSaved;
+        _settings.OffsetDatabaseRefreshed += OnOffsetDatabaseRefreshed;
 
         // Initialize Commands
         RefreshDrivesCommand = new RelayCommand(RefreshDrives);
@@ -1318,6 +1319,7 @@ public class MainViewModel : ObservableObject, IDisposable
                 _driveUtilities.PropertyChanged -= OnDriveUtilitiesPropertyChanged;
                 _settings.PropertyChanged -= OnSettingsPropertyChanged;
                 _settings.SettingsSaved -= OnSettingsSaved;
+                _settings.OffsetDatabaseRefreshed -= OnOffsetDatabaseRefreshed;
                 _audioBurn.Dispose(); // stops audio preview playback on shutdown
                 _imageStudio.Dispose();
                 _deviceService.DeviceChanged -= OnDeviceChanged;
@@ -1420,5 +1422,10 @@ public class MainViewModel : ObservableObject, IDisposable
         }
         ApplySettingsToWorkspaces();
         SelectDefaultWriteSpeed();
+    }
+
+    private void OnOffsetDatabaseRefreshed(object? sender, EventArgs e)
+    {
+        _ = _audioBurn?.RefreshReadOffsetAsync();
     }
 }

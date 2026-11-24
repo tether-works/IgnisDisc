@@ -15,10 +15,14 @@ public sealed record ReadOffsetCandidate(int OffsetSamples, int Confidence, int 
 /// <param name="Candidates">Matching offsets across the probed tracks, best first. Empty if nothing matched.</param>
 /// <param name="ProbedTracks">Track numbers that were read and checked.</param>
 /// <param name="ErrorMessage">Set when detection could not run (too few tracks, read error).</param>
+/// <param name="DatabaseEntry">Matching entry from AccurateRip's cached <c>DriveOffsets.bin</c>, if available.</param>
+/// <param name="SavedCalibration">True when the best detected offset was saved to <see cref="DriveOffsetStore"/>.</param>
 public sealed record ReadOffsetDetectionResult(
     IReadOnlyList<ReadOffsetCandidate> Candidates,
     IReadOnlyList<int> ProbedTracks,
-    string? ErrorMessage = null)
+    string? ErrorMessage = null,
+    DriveOffsetEntry? DatabaseEntry = null,
+    bool SavedCalibration = false)
 {
     /// <summary>The most likely offset: the candidate confirmed by the most tracks, then the highest confidence.</summary>
     public ReadOffsetCandidate? Best => Candidates.Count == 0
@@ -165,7 +169,9 @@ public static class ReadOffsetDetector
     /// <summary>
     /// Reads up to <paramref name="tracksToProbe"/> middle tracks (or frame 450 via
     /// <see cref="AccurateRipTrackEntry.Frame450Crc"/> on 1- or 2-track discs) with a margin of
-    /// <paramref name="maxOffsetSamples"/> samples on each side and looks for matching offsets in the database.
+    /// <paramref name="maxOffsetSamples"/> samples on each side, looks for matching offsets in the database,
+    /// saves the detected calibration to <see cref="DriveOffsetStore"/> (when <paramref name="saveCalibration"/> is true),
+    /// and cross-checks against AccurateRip's cached drive offset list.
     /// </summary>
     public static async Task<ReadOffsetDetectionResult> DetectAsync(
         IBurnEngineBackend engine,
@@ -174,7 +180,11 @@ public static class ReadOffsetDetector
         IReadOnlyList<AccurateRipPressing> pressings,
         int maxOffsetSamples = DefaultMaxOffsetSamples,
         int tracksToProbe = 2,
-        CancellationToken cancellationToken = default)
+        CancellationToken cancellationToken = default,
+        string? driveOffsetStorePath = null,
+        string? driveOffsetsCachePath = null,
+        HttpClient? httpClient = null,
+        bool saveCalibration = true)
     {
         ArgumentNullException.ThrowIfNull(engine);
         ArgumentNullException.ThrowIfNull(recorder);
@@ -257,9 +267,15 @@ public static class ReadOffsetDetector
                     track.TrackNumber));
             }
 
-            return new ReadOffsetDetectionResult(
+            return await FinalizeDetectionResultAsync(
+                recorder,
                 candidates.OrderByDescending(c => c.Confidence).ToList(),
-                probed);
+                probed,
+                driveOffsetStorePath,
+                driveOffsetsCachePath,
+                httpClient,
+                saveCalibration,
+                cancellationToken).ConfigureAwait(false);
         }
 
         // Prefer the longest middle tracks up to 10 minutes: more samples make an accidental match less likely, but each
@@ -327,8 +343,47 @@ public static class ReadOffsetDetector
                 track.TrackNumber));
         }
 
-        return new ReadOffsetDetectionResult(
+        return await FinalizeDetectionResultAsync(
+            recorder,
             candidates.OrderByDescending(c => c.Confidence).ToList(),
-            probed);
+            probed,
+            driveOffsetStorePath,
+            driveOffsetsCachePath,
+            httpClient,
+            saveCalibration,
+            cancellationToken).ConfigureAwait(false);
+    }
+
+    private static async Task<ReadOffsetDetectionResult> FinalizeDetectionResultAsync(
+        IDiscRecorderBackend recorder,
+        IReadOnlyList<ReadOffsetCandidate> orderedCandidates,
+        IReadOnlyList<int> probed,
+        string? driveOffsetStorePath,
+        string? driveOffsetsCachePath,
+        HttpClient? httpClient,
+        bool saveCalibration,
+        CancellationToken cancellationToken)
+    {
+        DriveOffsetEntry? dbEntry = null;
+        if (!recorder.IsVirtual || driveOffsetsCachePath != null)
+        {
+            var db = await AccurateRipDriveOffsets.LoadDatabaseAsync(
+                httpClient,
+                driveOffsetsCachePath ?? AccurateRipDriveOffsets.DefaultCachePath,
+                forceRefresh: false,
+                cancellationToken).ConfigureAwait(false);
+            dbEntry = AccurateRipDriveOffsets.Find(db.Entries, recorder.VendorId, recorder.ProductId);
+        }
+
+        var result = new ReadOffsetDetectionResult(orderedCandidates, probed, null, dbEntry);
+        if (result.Best is { } best && saveCalibration && (!recorder.IsVirtual || driveOffsetStorePath != null))
+        {
+            string driveName = AccurateRipDriveOffsets.DriveName(recorder.VendorId, recorder.ProductId);
+            new DriveOffsetStore(driveOffsetStorePath ?? DriveOffsetStore.DefaultPath)
+                .RecordCalibratedReadOffset(driveName, best.OffsetSamples, best.Confidence);
+            result = result with { SavedCalibration = true };
+        }
+
+        return result;
     }
 }

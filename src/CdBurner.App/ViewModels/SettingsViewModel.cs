@@ -7,6 +7,7 @@ using CdBurner.App.Mvvm;
 using CdBurner.App.Themes;
 using CdBurner.Core.Abstractions;
 using CdBurner.Core.Archival;
+using CdBurner.Core.Audio;
 using CdBurner.Core.DvdVideo;
 using CdBurner.Core.Persistence;
 using CdBurner.Core.Platform;
@@ -25,6 +26,7 @@ public class SettingsViewModel : ObservableObject
     private readonly MainViewModel? _mainViewModel;
     private readonly IShellIntegrationRegistry _shellIntegrationRegistry;
     private readonly Func<string?> _appExecutablePathProvider;
+    private readonly string _driveOffsetsCachePath;
 
     private int _defaultWriteSpeedMultiplier;
     private bool _verifyAfterBurnByDefault;
@@ -78,11 +80,18 @@ public class SettingsViewModel : ObservableObject
     private bool _isPar2Installed;
     private bool _isPar2UpdateAvailable;
     private string _par2StatusText = string.Empty;
+    private string _offsetDatabaseStatusText = "Not cached — click 'Refresh Offset Database' to download AccurateRip drive offsets.";
+    private bool _isRefreshingOffsetDatabase;
+    private string _audioReadOffsetSummaryText = "Automatic (key-disc calibration or AccurateRip DB)";
+    private bool _hasManualAudioReadOffsetOverride;
 
     /// <summary>
     /// Raised when settings are saved or reset so the shell can apply changes immediately.
     /// </summary>
     public event EventHandler? SettingsSaved;
+
+    /// <summary>Raised when the cached AccurateRip <c>DriveOffsets.bin</c> database is refreshed.</summary>
+    public event EventHandler? OffsetDatabaseRefreshed;
 
     #region Properties
 
@@ -331,6 +340,46 @@ public class SettingsViewModel : ObservableObject
         set => SetProperty(ref _updateStatusMessage, value);
     }
 
+    /// <summary>Human-readable status of the local AccurateRip <c>DriveOffsets.bin</c> cache.</summary>
+    public string OffsetDatabaseStatusText
+    {
+        get => _offsetDatabaseStatusText;
+        private set => SetProperty(ref _offsetDatabaseStatusText, value);
+    }
+
+    /// <summary>True while downloading/refreshing <c>DriveOffsets.bin</c>.</summary>
+    public bool IsRefreshingOffsetDatabase
+    {
+        get => _isRefreshingOffsetDatabase;
+        private set
+        {
+            if (SetProperty(ref _isRefreshingOffsetDatabase, value))
+            {
+                RefreshOffsetDatabaseCommand?.RaiseCanExecuteChanged();
+            }
+        }
+    }
+
+    /// <summary>Summary of how Audio CD rip read offsets are currently resolved.</summary>
+    public string AudioReadOffsetSummaryText
+    {
+        get => _audioReadOffsetSummaryText;
+        private set => SetProperty(ref _audioReadOffsetSummaryText, value);
+    }
+
+    /// <summary>True when a manual Audio CD read-offset override is saved in settings.</summary>
+    public bool HasManualAudioReadOffsetOverride
+    {
+        get => _hasManualAudioReadOffsetOverride;
+        private set
+        {
+            if (SetProperty(ref _hasManualAudioReadOffsetOverride, value))
+            {
+                ClearAudioReadOffsetOverrideCommand?.RaiseCanExecuteChanged();
+            }
+        }
+    }
+
     /// <summary>
     /// User-facing status notification message.
     /// </summary>
@@ -380,6 +429,12 @@ public class SettingsViewModel : ObservableObject
     /// </summary>
     public AsyncRelayCommand CheckForUpdatesCommand { get; }
 
+    /// <summary>Downloads or refreshes the cached AccurateRip <c>DriveOffsets.bin</c> database.</summary>
+    public AsyncRelayCommand RefreshOffsetDatabaseCommand { get; }
+
+    /// <summary>Clears any saved manual Audio CD read-offset override so automatic resolution is used.</summary>
+    public RelayCommand ClearAudioReadOffsetOverrideCommand { get; }
+
     /// <summary>
     /// Saves current settings to disk.
     /// </summary>
@@ -404,17 +459,23 @@ public class SettingsViewModel : ObservableObject
         AppSettingsService? settingsService = null,
         MainViewModel? mainViewModel = null,
         IShellIntegrationRegistry? shellIntegrationRegistry = null,
-        Func<string?>? appExecutablePathProvider = null)
+        Func<string?>? appExecutablePathProvider = null,
+        string? driveOffsetsCachePath = null)
     {
         _settingsService = settingsService ?? new AppSettingsService();
         _mainViewModel = mainViewModel;
         _shellIntegrationRegistry = shellIntegrationRegistry ?? WindowsShellIntegrationRegistry.Instance;
         _appExecutablePathProvider = appExecutablePathProvider ?? ResolveDefaultAppExecutablePath;
+        _driveOffsetsCachePath = string.IsNullOrWhiteSpace(driveOffsetsCachePath)
+            ? AccurateRipDriveOffsets.DefaultCachePath
+            : driveOffsetsCachePath;
 
         SaveSettingsCommand = new RelayCommand(SaveSettings);
         ResetSettingsCommand = new RelayCommand(ResetSettings);
         ReloadSettingsCommand = new RelayCommand(LoadSettings);
         CheckForUpdatesCommand = new AsyncRelayCommand(async _ => await CheckForUpdatesAsync(), _ => !_isCheckingForUpdates);
+        RefreshOffsetDatabaseCommand = new AsyncRelayCommand(async _ => await RefreshOffsetDatabaseAsync(), _ => !_isRefreshingOffsetDatabase);
+        ClearAudioReadOffsetOverrideCommand = new RelayCommand(_ => ClearAudioReadOffsetOverride(), _ => _hasManualAudioReadOffsetOverride);
         InstallFfmpegCommand = new AsyncRelayCommand(async _ => await InstallFfmpegAsync(), _ => !_isInstallingTool);
         InstallPar2Command = new AsyncRelayCommand(async _ => await InstallPar2Async(), _ => !_isInstallingTool);
 
@@ -459,6 +520,101 @@ public class SettingsViewModel : ObservableObject
         Par2StatusText = IsPar2Installed
             ? $"Installed: {ExternalToolInstallerService.DescribeInstalledPar2(resolvedPar2!, par2Version)}"
             :"Not found — click 'Install par2 (1-Click)' to enable PAR2 archive recovery.";
+
+        RefreshOffsetDatabaseStatusFromCache();
+    }
+
+    /// <summary>Reads the local <c>DriveOffsets.bin</c> cache status without making network calls.</summary>
+    public void RefreshOffsetDatabaseStatusFromCache()
+    {
+        try
+        {
+            if (File.Exists(_driveOffsetsCachePath))
+            {
+                var entries = AccurateRipDriveOffsets.Parse(File.ReadAllBytes(_driveOffsetsCachePath));
+                if (entries.Count > 0)
+                {
+                    DateTime mtime = File.GetLastWriteTimeUtc(_driveOffsetsCachePath);
+                    bool fresh = DateTime.UtcNow - mtime < AccurateRipDriveOffsets.MaxCacheAge;
+                    OffsetDatabaseStatusText = fresh
+                        ? $"Cached: {entries.Count:N0} drives (updated {mtime:yyyy-MM-dd})"
+                        : $"Cached (stale, >30 days): {entries.Count:N0} drives (updated {mtime:yyyy-MM-dd})";
+                    return;
+                }
+            }
+        }
+        catch (Exception ex) when (ex is IOException or UnauthorizedAccessException)
+        {
+        }
+
+        OffsetDatabaseStatusText = "Not cached — click 'Refresh Offset Database' to download AccurateRip drive offsets.";
+    }
+
+    /// <summary>
+    /// Downloads or refreshes AccurateRip's <c>DriveOffsets.bin</c> cache; offline failures fall back gracefully
+    /// to an existing stale cache or empty list without throwing.
+    /// </summary>
+    public async Task<DriveOffsetDatabaseLoadResult> RefreshOffsetDatabaseAsync(HttpClient? httpClient = null, CancellationToken ct = default)
+    {
+        IsRefreshingOffsetDatabase = true;
+        OffsetDatabaseStatusText = "Refreshing AccurateRip drive offset database...";
+        HttpClient? ownedHttp = null;
+        try
+        {
+            var client = httpClient ?? (ownedHttp = new HttpClient { Timeout = TimeSpan.FromSeconds(15) });
+            var result = await AccurateRipDriveOffsets.LoadDatabaseAsync(client, _driveOffsetsCachePath, forceRefresh: true, ct);
+            OffsetDatabaseStatusText = result.Status switch
+            {
+                DriveOffsetDatabaseStatus.Downloaded =>
+                    $"Updated: {result.Entries.Count:N0} drives ({result.CacheTimestampUtc:yyyy-MM-dd})",
+                DriveOffsetDatabaseStatus.FreshCache =>
+                    $"Cached: {result.Entries.Count:N0} drives",
+                DriveOffsetDatabaseStatus.StaleCacheFallback =>
+                    $"Offline fallback (using cached copy: {result.Entries.Count:N0} drives)",
+                _ => string.IsNullOrWhiteSpace(result.ErrorMessage)
+                    ? "Unavailable (offline and no cached DriveOffsets.bin)"
+                    : $"Unavailable ({result.ErrorMessage})"
+            };
+            StatusMessage = $"Offset database: {OffsetDatabaseStatusText}";
+            OffsetDatabaseRefreshed?.Invoke(this, EventArgs.Empty);
+            return result;
+        }
+        catch (Exception ex) when (!ct.IsCancellationRequested)
+        {
+            OffsetDatabaseStatusText = $"Unavailable ({ex.Message})";
+            StatusMessage = $"Offset database refresh failed: {ex.Message}";
+            return new DriveOffsetDatabaseLoadResult([], DriveOffsetDatabaseStatus.Unavailable, null, ex.Message);
+        }
+        finally
+        {
+            ownedHttp?.Dispose();
+            IsRefreshingOffsetDatabase = false;
+        }
+    }
+
+    /// <summary>Clears any saved manual Audio CD read-offset override so automatic resolution is used.</summary>
+    public void ClearAudioReadOffsetOverride()
+    {
+        var settings = _settingsService.CurrentSettings.Clone();
+        settings.AudioReadOffsetOverrideSamples = null;
+        settings.AudioReadOffsetSamples = 0;
+        _settingsService.CurrentSettings = settings;
+        if (_autoSave)
+        {
+            _settingsService.Save();
+        }
+        UpdateReadOffsetSummary(settings);
+        StatusMessage = "Audio CD read offset reset to automatic resolution.";
+        SettingsSaved?.Invoke(this, EventArgs.Empty);
+    }
+
+    private void UpdateReadOffsetSummary(AppSettings settings)
+    {
+        int? ov = settings.GetEffectiveReadOffsetOverride();
+        HasManualAudioReadOffsetOverride = ov.HasValue;
+        AudioReadOffsetSummaryText = ov is int manual
+            ? $"Manual override active: {ReadOffsetResolver.FormatSignedSamples(manual)} samples"
+            : "Automatic (key-disc calibration > AccurateRip DB > 0)";
     }
 
     /// <summary>
@@ -502,6 +658,7 @@ public class SettingsViewModel : ObservableObject
         DirectWritingForDvdRw = settings.DirectWritingForDvdRw;
         EnableExplorerShellIntegration = settings.EnableExplorerShellIntegration
             || ShellIntegrationManager.IsRegistered(_shellIntegrationRegistry);
+        UpdateReadOffsetSummary(settings);
     }
 
     /// <summary>

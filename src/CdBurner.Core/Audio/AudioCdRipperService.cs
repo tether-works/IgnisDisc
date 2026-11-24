@@ -42,12 +42,57 @@ public class AudioRipOptions
     /// </summary>
     public CdTextAlbumMetadata? MetadataOverride { get; set; }
 
+    private int _readOffsetSamples;
+    private int? _explicitReadOffsetSamples;
+
     /// <summary>
     /// Drive read offset correction in samples (one sample = 4 bytes of 16-bit stereo), as listed in the AccurateRip
     /// drive offset table (e.g. +6). Audio is taken from that many samples later on the disc; samples before the start
-    /// or past the end of the audio area are filled with silence. Default 0 (no correction).
+    /// or past the end of the audio area are filled with silence. Setting this property sets
+    /// <see cref="ExplicitReadOffsetSamples"/> as an explicit override.
     /// </summary>
-    public int ReadOffsetSamples { get; set; }
+    public int ReadOffsetSamples
+    {
+        get => _readOffsetSamples;
+        set
+        {
+            _readOffsetSamples = value;
+            _explicitReadOffsetSamples = value;
+        }
+    }
+
+    /// <summary>
+    /// Optional explicit user override for drive read offset in samples. When null and
+    /// <see cref="AutoResolveReadOffset"/> is true, the ripper resolves the offset with precedence:
+    /// explicit override &gt; local key-disc calibration &gt; cached AccurateRip DriveOffsets.bin &gt; 0.
+    /// </summary>
+    public int? ExplicitReadOffsetSamples
+    {
+        get => _explicitReadOffsetSamples;
+        set
+        {
+            _explicitReadOffsetSamples = value;
+            if (value.HasValue)
+            {
+                _readOffsetSamples = value.Value;
+            }
+        }
+    }
+
+    /// <summary>When true (default) and <see cref="ExplicitReadOffsetSamples"/> is null, resolves the drive read offset automatically.</summary>
+    public bool AutoResolveReadOffset { get; set; } = true;
+
+    /// <summary>Optional path override for <see cref="DriveOffsetStore"/> (defaults to local app data on physical drives).</summary>
+    public string? DriveOffsetStorePath { get; set; }
+
+    /// <summary>Optional path override for cached <c>DriveOffsets.bin</c> (defaults to local app data on physical drives).</summary>
+    public string? DriveOffsetsCachePath { get; set; }
+
+    /// <summary>Optional <see cref="HttpClient"/> used when <c>DriveOffsets.bin</c> needs to be downloaded or refreshed.</summary>
+    public HttpClient? OffsetDatabaseHttpClient { get; set; }
+
+    /// <summary>When true, refreshes <c>DriveOffsets.bin</c> before resolving the read offset.</summary>
+    public bool ForceRefreshOffsetDatabase { get; set; }
 
     /// <summary>
     /// Secure extraction: read with C2 error pointers and re-read flagged sectors after flushing the drive cache
@@ -169,6 +214,12 @@ public class AudioCdRipResult
     /// <summary>Whole-disc CUETools Database (CTDB) CRC-32 when all audio tracks were ripped, otherwise null.</summary>
     public uint? CtdbDiscCrc { get; init; }
 
+    /// <summary>How the drive read offset was resolved for this rip.</summary>
+    public ReadOffsetResolution? ReadOffset { get; init; }
+
+    /// <summary>Resolved read offset in samples applied during ripping.</summary>
+    public int ReadOffsetSamples => ReadOffset?.OffsetSamples ?? 0;
+
     public static AudioCdRipResult Succeeded(
         IReadOnlyList<string> filePaths,
         int totalSectors,
@@ -182,7 +233,8 @@ public class AudioCdRipResult
         double? replayGainAlbumPeak = null,
         AudioRecoveryRepairResult? recoveryRepair = null,
         string? hiddenTrackOneAudioPath = null,
-        uint? ctdbDiscCrc = null) => new()
+        uint? ctdbDiscCrc = null,
+        ReadOffsetResolution? readOffset = null) => new()
     {
         SecureModeUsed = secureModeUsed,
         Success = true,
@@ -198,7 +250,8 @@ public class AudioCdRipResult
         ReplayGainAlbumGain = replayGainAlbumGain,
         ReplayGainAlbumPeak = replayGainAlbumPeak,
         RecoveryRepair = recoveryRepair,
-        CtdbDiscCrc = ctdbDiscCrc
+        CtdbDiscCrc = ctdbDiscCrc,
+        ReadOffset = readOffset
     };
 
     public static AudioCdRipResult Failed(string error, Exception? ex = null) => new()
@@ -457,6 +510,44 @@ public class AudioCdRipperService
         {
             return AudioCdRipResult.Failed("No optical media present in recorder.");
         }
+
+        ReadOffsetResolution offsetResolution;
+        if (options.ExplicitReadOffsetSamples is not null || options.AutoResolveReadOffset)
+        {
+            offsetResolution = await ReadOffsetResolver.ResolveAsync(
+                recorder,
+                options.ExplicitReadOffsetSamples,
+                options.DriveOffsetStorePath,
+                options.DriveOffsetsCachePath,
+                options.OffsetDatabaseHttpClient,
+                options.ForceRefreshOffsetDatabase,
+                cancellationToken).ConfigureAwait(false);
+        }
+        else
+        {
+            offsetResolution = new ReadOffsetResolution(
+                0,
+                ReadOffsetSource.DefaultZero,
+                "0 samples (uncalibrated)",
+                "default 0 (uncalibrated)");
+        }
+
+        options = new AudioRipOptions
+        {
+            MaxRetriesPerSector = options.MaxRetriesPerSector,
+            ContinueOnUnreadableSector = options.ContinueOnUnreadableSector,
+            GenerateCueSheet = options.GenerateCueSheet,
+            CueSheetFileName = options.CueSheetFileName,
+            TrackNumbersToRip = options.TrackNumbersToRip,
+            MetadataOverride = options.MetadataOverride,
+            ReadOffsetSamples = offsetResolution.OffsetSamples,
+            SecureMode = options.SecureMode,
+            CalculateReplayGain = options.CalculateReplayGain,
+            CoverArtBytes = options.CoverArtBytes,
+            CoverArtMimeType = options.CoverArtMimeType,
+            RepairFromRecoverySession = options.RepairFromRecoverySession,
+            ApplyDeEmphasis = options.ApplyDeEmphasis
+        };
 
         Directory.CreateDirectory(outputDirectory);
 
@@ -890,7 +981,8 @@ public class AudioCdRipperService
             albumPeak,
             recoveryRepair,
             hiddenTrackOneAudioPath,
-            ctdbDiscCrc);
+            ctdbDiscCrc,
+            offsetResolution);
     }
 
     private readonly record struct RangeExtractOutcome(bool Completed, int? StoppedAtLba, int BadSectors, int RecoveredSectors, int SuspectSectors);
