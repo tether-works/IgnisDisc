@@ -146,6 +146,12 @@ public static class CtdbRepairService
                 "Repair from CTDB parity needs a complete rip of every audio track.");
         }
 
+        if (rip.Mode == AudioRipMode.ImageCue)
+        {
+            return new CtdbRepairResult(CtdbRepairStatus.NotPossible,
+                "Repair from CTDB parity is only supported for track-by-track WAV rips.");
+        }
+
         if (entries.Any(e => e.Crc32 == discCrc))
         {
             return new CtdbRepairResult(CtdbRepairStatus.NotNeeded, "The rip already matches the CUETools database.");

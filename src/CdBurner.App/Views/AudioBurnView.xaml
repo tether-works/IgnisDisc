@@ -17,6 +17,7 @@
         <converters:BooleanToVisibilityConverter x:Key="BoolToVis" />
         <converters:InverseBooleanToVisibilityConverter x:Key="InverseBoolToVis" />
         <converters:AudioRecordingModeToBooleanConverter x:Key="RecordingModeConverter" />
+        <converters:RadioButtonBooleanConverter x:Key="RadioButtonBooleanConverter" />
     </UserControl.Resources>
 
     <Grid>
@@ -793,6 +794,29 @@
                                            Margin="0,4,0,0" />
                             </StackPanel>
 
+                            <!-- Rip mode row -->
+                            <WrapPanel Orientation="Horizontal" Margin="0,0,0,6">
+                                <TextBlock Text="Rip mode:"
+                                           FontWeight="SemiBold"
+                                           VerticalAlignment="Center"
+                                           Foreground="{DynamicResource TextSecondaryBrush}"
+                                           Margin="0,0,12,0" />
+                                <RadioButton Content="Track-by-track"
+                                             GroupName="AudioRipMode"
+                                             AutomationProperties.Name="Track-by-track"
+                                             IsChecked="{Binding IsImageCueMode, Converter={StaticResource RadioButtonBooleanConverter}, ConverterParameter=False}"
+                                             Foreground="{DynamicResource TextPrimaryBrush}"
+                                             Margin="0,2,16,2"
+                                             ToolTip="Save each audio track as a separate file alongside a companion CUE sheet." />
+                                <RadioButton Content="Single-file Image + CUE"
+                                             GroupName="AudioRipMode"
+                                             AutomationProperties.Name="Single-file Image + CUE"
+                                             IsChecked="{Binding IsImageCueMode, Converter={StaticResource RadioButtonBooleanConverter}, ConverterParameter=True}"
+                                             Foreground="{DynamicResource TextPrimaryBrush}"
+                                             Margin="0,2,0,2"
+                                             ToolTip="Rip the full Audio CD (including HTOA and pre-gaps) into one WAV or FLAC image with an exact CUE sheet and archival rip log." />
+                            </WrapPanel>
+
                             <!-- Output formats row -->
                             <WrapPanel Orientation="Horizontal" Margin="0,0,0,6">
                                 <TextBlock Text="Formats:"
@@ -811,25 +835,28 @@
                                           IsChecked="{Binding RipAsFlac}"
                                           Foreground="{DynamicResource TextPrimaryBrush}"
                                           Margin="0,2,16,2"
-                                          ToolTip="Lossless FLAC files. Uses the optional ffmpeg download." />
+                                          ToolTip="Lossless FLAC files (built-in encoder for Single-file Image + CUE, or optional ffmpeg for Track-by-track)." />
                                 <CheckBox Content="MP3"
                                           AutomationProperties.Name="Save as MP3"
                                           IsChecked="{Binding RipAsMp3}"
+                                          IsEnabled="{Binding IsTrackByTrackMode}"
                                           Foreground="{DynamicResource TextPrimaryBrush}"
                                           Margin="0,2,16,2"
-                                          ToolTip="MP3 files. Uses the optional ffmpeg download." />
+                                          ToolTip="MP3 files. Uses the optional ffmpeg download (Track-by-track mode)." />
                                 <CheckBox Content="Opus"
                                           AutomationProperties.Name="Save as Opus"
                                           IsChecked="{Binding RipAsOpus}"
+                                          IsEnabled="{Binding IsTrackByTrackMode}"
                                           Foreground="{DynamicResource TextPrimaryBrush}"
                                           Margin="0,2,16,2"
-                                          ToolTip="Opus files. Uses the optional ffmpeg download." />
+                                          ToolTip="Opus files. Uses the optional ffmpeg download (Track-by-track mode)." />
                                 <CheckBox Content="AAC"
                                           AutomationProperties.Name="Save as AAC"
                                           IsChecked="{Binding RipAsAac}"
+                                          IsEnabled="{Binding IsTrackByTrackMode}"
                                           Foreground="{DynamicResource TextPrimaryBrush}"
                                           Margin="0,2,0,2"
-                                          ToolTip="AAC (.m4a) files made with the Windows AAC encoder. Needs nothing extra." />
+                                          ToolTip="AAC (.m4a) files made with the Windows AAC encoder (Track-by-track mode)." />
                             </WrapPanel>
 
                             <!-- Quality row -->

@@ -676,6 +676,9 @@ public class AudioTrackSource
     /// <summary>Digital copying of the track is permitted (CUE "FLAGS DCP").</summary>
     public bool CopyPermitted { get; init; }
 
+    /// <summary>The track uses four-channel audio (CUE "FLAGS 4CH").</summary>
+    public bool FourChannel { get; init; }
+
     /// <summary>
     /// A CD-ROM data track (track 1 of a mixed-mode CD): for Mode 1 (<see cref="DataTrackMode"/> == 1), the streams
     /// give 2,048 bytes per sector; for Mode 2 XA (<see cref="DataTrackMode"/> == 2), 2,336 bytes per sector.

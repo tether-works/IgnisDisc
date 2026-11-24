@@ -377,7 +377,7 @@ public sealed class NativeAudioBurnEngine : IBurnEngineBackend, IAudioDiscVerifi
                 preGap = Math.Max(preGap, OpticalConstants.CdLeadInFrames + gapAudio); // two seconds after the data (Yellow Book)
             }
             saoTracks.Add(new SaoTrack(i + 1, sectors, preGap, t.Isrc, gapAudio, t.PreEmphasis, t.CopyPermitted,
-                IsPictureTrack: t.IsPictureTrack, IsPreGapPicture: t.IsPreGapPicture));
+                IsPictureTrack: t.IsPictureTrack, IsPreGapPicture: t.IsPreGapPicture, FourChannel: t.FourChannel));
         }
 
         int? speed = options.Speed is { Multiplier: > 0 } s ? (int)Math.Round(s.Multiplier * 176.4) : null;
@@ -716,6 +716,7 @@ public sealed class NativeAudioBurnEngine : IBurnEngineBackend, IAudioDiscVerifi
                 Isrc = drive.LosesCatalogAndIsrc ? null : source?.Isrc,
                 PreEmphasis = isAudio && !drive.DropsControlBits && (recorded[i].CueControl & 0x10) != 0,
                 CopyPermitted = isAudio && !drive.DropsControlBits && (recorded[i].CueControl & 0x20) != 0,
+                FourChannel = isAudio && !drive.DropsControlBits && (recorded[i].CueControl & 0x80) != 0,
                 Index00Lba = idx00
             });
         }

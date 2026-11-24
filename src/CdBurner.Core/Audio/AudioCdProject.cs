@@ -129,6 +129,9 @@ public record AudioCdTrackItem(
     /// <summary>CUE "FLAGS DCP": digital copying is permitted.</summary>
     public bool CopyPermitted { get; init; }
 
+    /// <summary>CUE "FLAGS 4CH": four-channel audio.</summary>
+    public bool FourChannel { get; init; }
+
     /// <summary>
     /// Set when this is a CD-ROM Mode 1 data track rather than audio: track 1 of a mixed-mode CD (data, then audio),
     /// imported from a CUE sheet. Only the direct drive-command writer can write one.
@@ -923,7 +926,8 @@ public class AudioCdCompilation
                     HiddenAudioIsPreGapPicture = hiddenIsPreGapPicture,
                     IsPictureTrack = isPictureTrack,
                     PreEmphasis = trk.Flags.Contains("PRE"),
-                    CopyPermitted = trk.Flags.Contains("DCP")
+                    CopyPermitted = trk.Flags.Contains("DCP"),
+                    FourChannel = trk.Flags.Contains("4CH")
                 });
                 added++;
             }
@@ -1017,7 +1021,8 @@ public class AudioCdCompilation
                         HiddenAudioIsPreGapPicture = hiddenFrames > 0 && hiddenIsPreGapPicture,
                         IsPictureTrack = isPictureTrack,
                         PreEmphasis = trk.Flags.Contains("PRE"),
-                        CopyPermitted = trk.Flags.Contains("DCP")
+                        CopyPermitted = trk.Flags.Contains("DCP"),
+                        FourChannel = trk.Flags.Contains("4CH")
                     });
                     added++;
                 }

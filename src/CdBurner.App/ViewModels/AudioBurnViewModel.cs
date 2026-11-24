@@ -106,6 +106,7 @@ public class AudioBurnViewModel : ObservableObject, IDisposable
     private string _recoverySessionCapacityText = string.Empty;
     private AudioRecoveryEstimate? _recoveryEstimate;
     private string _ripReport = string.Empty;
+    private AudioRipMode _ripMode = AudioRipMode.TrackByTrack;
     private bool _ripAsWav = true;
     private bool _ripAsFlac;
     private bool _ripAsMp3;
@@ -1036,6 +1037,49 @@ public class AudioBurnViewModel : ObservableObject, IDisposable
         }
     }
 
+    /// <summary>Audio CD extraction mode: Track-by-track or Single-file Image + CUE.</summary>
+    public AudioRipMode RipMode
+    {
+        get => _ripMode;
+        set
+        {
+            if (SetProperty(ref _ripMode, value))
+            {
+                OnPropertyChanged(nameof(IsTrackByTrackMode));
+                OnPropertyChanged(nameof(IsImageCueMode));
+                OnPropertyChanged(nameof(RipBitrateApplies));
+                OnPropertyChanged(nameof(RipMp3Selected));
+                OnPropertyChanged(nameof(RipNamingPreview));
+                if (value == AudioRipMode.ImageCue)
+                {
+                    bool keepFlac = _ripAsFlac && !_ripAsWav;
+                    _ripAsWav = !keepFlac;
+                    _ripAsFlac = keepFlac;
+                    _ripAsMp3 = false;
+                    _ripAsOpus = false;
+                    _ripAsAac = false;
+                    OnPropertyChanged(nameof(RipAsWav));
+                    OnPropertyChanged(nameof(RipAsFlac));
+                    OnPropertyChanged(nameof(RipAsMp3));
+                    OnPropertyChanged(nameof(RipAsOpus));
+                    OnPropertyChanged(nameof(RipAsAac));
+                    OnPropertyChanged(nameof(SelectedRipFormat));
+                }
+                SaveSettingsIfAvailable();
+            }
+        }
+    }
+
+    /// <summary>True when ripping each track to its own audio file.</summary>
+    public bool IsTrackByTrackMode => _ripMode == AudioRipMode.TrackByTrack;
+
+    /// <summary>True when ripping the full Audio CD into one WAV or FLAC image + exact CUE sheet.</summary>
+    public bool IsImageCueMode
+    {
+        get => _ripMode == AudioRipMode.ImageCue;
+        set => RipMode = value ? AudioRipMode.ImageCue : AudioRipMode.TrackByTrack;
+    }
+
     /// <summary>Save the rip as uncompressed WAV files.</summary>
     public bool RipAsWav
     {
@@ -1109,6 +1153,19 @@ public class AudioBurnViewModel : ObservableObject, IDisposable
     {
         if (SetProperty(ref field, value, name))
         {
+            if (_ripMode == AudioRipMode.ImageCue && value)
+            {
+                if (name == nameof(RipAsWav) && _ripAsFlac)
+                {
+                    _ripAsFlac = false;
+                    OnPropertyChanged(nameof(RipAsFlac));
+                }
+                else if (name == nameof(RipAsFlac) && _ripAsWav)
+                {
+                    _ripAsWav = false;
+                    OnPropertyChanged(nameof(RipAsWav));
+                }
+            }
             RipFormatSelectionChanged();
         }
     }
@@ -1122,11 +1179,11 @@ public class AudioBurnViewModel : ObservableObject, IDisposable
         SaveSettingsIfAvailable();
     }
 
-    /// <summary>Whether the bitrate box applies: Opus or AAC is checked.</summary>
-    public bool RipBitrateApplies => _ripAsOpus || _ripAsAac;
+    /// <summary>Whether the bitrate box applies: Opus or AAC is checked in track-by-track mode.</summary>
+    public bool RipBitrateApplies => IsTrackByTrackMode && (_ripAsOpus || _ripAsAac);
 
-    /// <summary>Whether the MP3 quality box applies: MP3 is checked.</summary>
-    public bool RipMp3Selected => _ripAsMp3;
+    /// <summary>Whether the MP3 quality box applies: MP3 is checked in track-by-track mode.</summary>
+    public bool RipMp3Selected => IsTrackByTrackMode && _ripAsMp3;
 
     /// <summary>MP3 qualities offered: constant bitrates and the two common VBR settings.</summary>
     public IReadOnlyList<string> Mp3QualityChoices => AudioTargetChoices.Mp3Qualities;
@@ -3269,11 +3326,21 @@ public class AudioBurnViewModel : ObservableObject, IDisposable
                 formats.Add(AudioRipFormat.Wav);
             }
 
+            RipMode = string.Equals(settings.RipMode, "image-cue", StringComparison.OrdinalIgnoreCase)
+                ? AudioRipMode.ImageCue
+                : AudioRipMode.TrackByTrack;
             RipAsWav = formats.Contains(AudioRipFormat.Wav);
             RipAsFlac = formats.Contains(AudioRipFormat.Flac);
-            RipAsMp3 = formats.Contains(AudioRipFormat.Mp3);
-            RipAsOpus = formats.Contains(AudioRipFormat.Opus);
-            RipAsAac = formats.Contains(AudioRipFormat.Aac);
+            if (_ripMode == AudioRipMode.TrackByTrack)
+            {
+                RipAsMp3 = formats.Contains(AudioRipFormat.Mp3);
+                RipAsOpus = formats.Contains(AudioRipFormat.Opus);
+                RipAsAac = formats.Contains(AudioRipFormat.Aac);
+            }
+            else if (!_ripAsWav && !_ripAsFlac)
+            {
+                RipAsWav = true;
+            }
             SelectedMp3Quality = AudioTargetChoices.Mp3Qualities.Contains(settings.Mp3Quality) ? settings.Mp3Quality : AudioTargetChoices.DefaultMp3Quality;
             RipLibraryFolder = settings.RipLibraryFolder ?? string.Empty;
             RipNamingTemplate = string.IsNullOrWhiteSpace(settings.RipNamingTemplate) ? AudioNamingTemplate.Default : settings.RipNamingTemplate;
@@ -3301,6 +3368,7 @@ public class AudioBurnViewModel : ObservableObject, IDisposable
             settings.LookupMusicBrainzByDefault = _lookupMetadata;
             settings.VerifyAccurateRipByDefault = _verifyAccurateRip;
             settings.VerifyCtdbByDefault = _verifyCtdb;
+            settings.RipMode = _ripMode == AudioRipMode.ImageCue ? "image-cue" : "track";
             settings.RipFormats = string.Join(",", CheckedRipFormats().Select(f => AudioRipFormats.Extension(f).TrimStart('.')));
             settings.Mp3Quality = _selectedMp3Quality;
             settings.RipLibraryFolder = _ripLibraryFolder;
@@ -3716,21 +3784,39 @@ public class AudioBurnViewModel : ObservableObject, IDisposable
     }
 
     /// <summary>The rip result with the files of the first chosen format as its file list (the other formats are in the report).</summary>
-    private static AudioCdRipResult WithExportedFiles(AudioCdRipResult rip, AudioExportResult exported, AudioRipFormat primary)
+    private static AudioCdRipResult WithExportedFiles(AudioCdRipResult rip, AudioExportResult exported, AudioRipFormat primary, string? ripLogPath = null)
     {
         var primaryFiles = exported.Files.Where(f => f.Format == primary).OrderBy(f => f.TrackNumber).ToList();
-        if (primaryFiles.Count == 0)
-        {
-            return rip;
-        }
+        IReadOnlyList<string> paths = primaryFiles.Count > 0
+            ? primaryFiles.Select(f => f.Path).ToList()
+            : rip.RippedFilePaths;
+        string? imagePath = rip.Mode == AudioRipMode.ImageCue
+            ? (paths.FirstOrDefault() ?? rip.ImageFilePath)
+            : rip.ImageFilePath;
 
         return AudioCdRipResult.Succeeded(
-            primaryFiles.Select(f => f.Path).ToList(), rip.TotalSectorsRead, rip.TotalTime,
+            paths, rip.TotalSectorsRead, rip.TotalTime,
             exported.CueSheets.FirstOrDefault() ?? rip.CueSheetPath, rip.CdText, rip.TrackInfos,
             rip.BadSectorLbas, rip.SecureModeUsed, rip.ReplayGainAlbumGain, rip.ReplayGainAlbumPeak,
             rip.RecoveryRepair,
-            hiddenTrackOneAudioPath: primaryFiles.FirstOrDefault(f => f.TrackNumber == 0)?.Path,
-            ctdbDiscCrc: rip.CtdbDiscCrc);
+            hiddenTrackOneAudioPath: rip.Mode == AudioRipMode.ImageCue
+                ? null
+                : (primaryFiles.FirstOrDefault(f => f.TrackNumber == 0)?.Path ?? rip.HiddenTrackOneAudioPath),
+            ctdbDiscCrc: rip.CtdbDiscCrc,
+            readOffset: rip.ReadOffset,
+            mode: rip.Mode,
+            imageFilePath: imagePath,
+            hiddenTrackOneAudioFrames: rip.HiddenTrackOneAudioFrames,
+            ripLogPath: ripLogPath ?? rip.RipLogPath,
+            discTocTracks: rip.DiscTocTracks,
+            mediaCatalogNumber: rip.MediaCatalogNumber,
+            gapDetectionPerformed: rip.GapDetectionPerformed,
+            overreadIntoLeadInOut: rip.OverreadIntoLeadInOut,
+            secureModeRequested: rip.SecureModeRequested,
+            driveUniqueId: rip.DriveUniqueId,
+            driveVendorId: rip.DriveVendorId,
+            driveProductId: rip.DriveProductId,
+            driveProductRevision: rip.DriveProductRevision);
     }
 
     /// <summary>
@@ -3890,9 +3976,25 @@ public class AudioBurnViewModel : ObservableObject, IDisposable
         var exporter = new AudioLibraryExporter(new MediaFoundationAacEncoder());
         var formats = CheckedRipFormats();
         var targets = new List<AudioExportTarget>();
-        string? formatProblem = formats.Count == 0
-            ? "Choose at least one output format."
-            : AudioTargetChoices.BuildTargets(formats, SelectedMp3Quality, RipBitrateKbps, targets);
+        string? formatProblem;
+        if (IsImageCueMode)
+        {
+            if (formats.Count != 1 || formats[0] is not (AudioRipFormat.Wav or AudioRipFormat.Flac))
+            {
+                formatProblem = "Single-file Image + CUE mode supports a single WAV or FLAC output format.";
+            }
+            else
+            {
+                targets.Add(new AudioExportTarget(formats[0]));
+                formatProblem = null;
+            }
+        }
+        else
+        {
+            formatProblem = formats.Count == 0
+                ? "Choose at least one output format."
+                : AudioTargetChoices.BuildTargets(formats, SelectedMp3Quality, RipBitrateKbps, targets);
+        }
         bool useLibrary = !string.IsNullOrWhiteSpace(RipLibraryFolder);
         if (formatProblem == null && useLibrary)
         {
@@ -3909,7 +4011,7 @@ public class AudioBurnViewModel : ObservableObject, IDisposable
             new AudioAlbumInfo(string.Empty, string.Empty, null), ffmpegPath,
             KeepWav: false, WriteFolderImage: WriteFolderImage, Overwrite: OverwriteExistingFiles,
             ApplyDeEmphasis: DeEmphasizePreEmphasisTracks);
-        if (formatProblem == null)
+        if (formatProblem == null && !IsImageCueMode)
         {
             formatProblem = exporter.CheckPrerequisites(exportCheck);
         }
@@ -4079,7 +4181,11 @@ public class AudioBurnViewModel : ObservableObject, IDisposable
                     CoverArtBytes = coverBytes,
                     CoverArtMimeType = coverMime,
                     RepairFromRecoverySession = RepairFromRecoverySession,
-                    ApplyDeEmphasis = DeEmphasizePreEmphasisTracks
+                    ApplyDeEmphasis = DeEmphasizePreEmphasisTracks,
+                    Mode = _ripMode,
+                    ImageFormat = IsImageCueMode ? targets[0].Format : AudioRipFormat.Wav,
+                    FfmpegPath = ffmpegPath,
+                    WriteRipLog = false
                 };
 
                 ripResult = await _ripperService.RipAudioCdAsync(recorder, _burnEngine, targetFolder, options, progress, activeToken);
@@ -4272,6 +4378,7 @@ public class AudioBurnViewModel : ObservableObject, IDisposable
 
             string? exportNote = null;
             AudioExportResult? exported = null;
+            var ripLogPaths = new List<string>();
             if (ripResult.Success)
             {
                 StatusMessage = "Writing the album files...";
@@ -4284,7 +4391,9 @@ public class AudioBurnViewModel : ObservableObject, IDisposable
                     coverMime);
                 try
                 {
-                    exported = await exporter.ExportAsync(ripResult, exportCheck with { Album = album }, exportProgress, activeToken);
+                    exported = IsImageCueMode
+                        ? await exporter.ExportImageCueAsync(ripResult, exportCheck with { Album = album }, activeToken)
+                        : await exporter.ExportAsync(ripResult, exportCheck with { Album = album }, exportProgress, activeToken);
                     if (exported.Warnings.Count > 0)
                     {
                         warning = (warning == null ? "" : warning + "\n") + string.Join("\n", exported.Warnings);
@@ -4301,6 +4410,46 @@ public class AudioBurnViewModel : ObservableObject, IDisposable
                 finally
                 {
                     exportProgress.Close();
+                }
+
+                var logDirectories = (exported?.CueSheets ?? Array.Empty<string>())
+                    .Select(Path.GetDirectoryName)
+                    .Where(d => !string.IsNullOrWhiteSpace(d))
+                    .Distinct(StringComparer.OrdinalIgnoreCase)
+                    .Cast<string>()
+                    .ToList();
+                if (logDirectories.Count == 0)
+                {
+                    string fallbackDir = exported is { Files.Count: > 0 }
+                        ? Path.GetDirectoryName(exported.Files[0].Path) ?? targetFolder
+                        : targetFolder;
+                    logDirectories.Add(fallbackDir);
+                }
+
+                string logFileName = AudioCdRipperService.ResolveLogFileName(
+                    null,
+                    ripResult.CdText?.AlbumTitle,
+                    ripResult.ImageFilePath != null ? Path.GetFileNameWithoutExtension(ripResult.ImageFilePath) : "album");
+                var logContext = new RipLogContext(
+                    ripResult,
+                    ids,
+                    accurateRipStatus,
+                    accurateRipTracks.ToDictionary(x => x.Info.TrackNumber, x => x.Verdict),
+                    ctdbStatus,
+                    ctdbDiscMatch,
+                    ctdbTracks.ToDictionary(x => x.Info.TrackNumber, x => x.Verdict),
+                    ctdbRepair,
+                    OutputFormatLabel: string.Join(", ", targets.Select(t => AudioRipFormats.DisplayName(t.Format))));
+                foreach (string logDir in logDirectories)
+                {
+                    string logPath = Path.Combine(logDir, logFileName);
+                    await RipLogFormatter.WriteToFileAsync(logPath, logContext, activeToken).ConfigureAwait(false);
+                    ripLogPaths.Add(logPath);
+                }
+                if (ripLogPaths.Count > 0)
+                {
+                    ripResult = WithExportedFiles(ripResult, exported ?? new AudioExportResult([], [], [], []), targets[0].Format, ripLogPaths[0]);
+                    LastRipResult = ripResult;
                 }
             }
 
@@ -4427,6 +4576,10 @@ public class AudioBurnViewModel : ObservableObject, IDisposable
                     foreach (string image in exported.FolderImages)
                     {
                         sb.AppendLine($"  Folder Image:     {Path.GetFullPath(image)}");
+                    }
+                    foreach (string log in ripLogPaths)
+                    {
+                        sb.AppendLine($"  Rip Log:          {Path.GetFullPath(log)}");
                     }
                 }
                 else

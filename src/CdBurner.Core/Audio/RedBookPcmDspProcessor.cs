@@ -767,6 +767,70 @@ public static class RedBookPcmDspProcessor
         }
     }
 
+    /// <summary>
+    /// Applies the Red Book 50/15 us digital de-emphasis filter in-place to a byte range of 16-bit stereo PCM
+    /// inside an open read/write <paramref name="stream"/>.
+    /// </summary>
+    public static void ApplyDeEmphasisToStreamRangeInPlace(
+        Stream stream,
+        long pcmOffset,
+        long pcmLength,
+        int sampleRate = OpticalConstants.CdAudioSampleRate)
+    {
+        ArgumentNullException.ThrowIfNull(stream);
+        ArgumentOutOfRangeException.ThrowIfNegative(pcmOffset);
+        ArgumentOutOfRangeException.ThrowIfNegative(pcmLength);
+        if (pcmLength == 0)
+        {
+            return;
+        }
+
+        if (!stream.CanRead || !stream.CanWrite || !stream.CanSeek)
+        {
+            throw new ArgumentException("Stream must support reading, writing, and seeking.", nameof(stream));
+        }
+
+        var state = new DeEmphasisState(sampleRate > 0 ? sampleRate : OpticalConstants.CdAudioSampleRate);
+        byte[] inBuf = new byte[65536];
+        byte[] outBuf = new byte[65536];
+        long remaining = pcmLength & ~3L;
+        long pos = pcmOffset;
+
+        while (remaining > 0)
+        {
+            int want = (int)Math.Min(inBuf.Length, remaining);
+            want &= ~3;
+            if (want <= 0)
+            {
+                break;
+            }
+
+            stream.Position = pos;
+            int read = 0;
+            while (read < want)
+            {
+                int n = stream.Read(inBuf, read, want - read);
+                if (n <= 0)
+                {
+                    break;
+                }
+                read += n;
+            }
+
+            int aligned = read & ~3;
+            if (aligned <= 0)
+            {
+                break;
+            }
+
+            state.ProcessStereoFrames(inBuf.AsSpan(0, aligned), outBuf.AsSpan(0, aligned));
+            stream.Position = pos;
+            stream.Write(outBuf, 0, aligned);
+            pos += aligned;
+            remaining -= aligned;
+        }
+    }
+
     private struct DeEmphasisState
     {
         private readonly double _b0;

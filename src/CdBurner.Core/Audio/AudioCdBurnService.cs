@@ -740,7 +740,8 @@ public class AudioCdBurnService
                     IsPreGapPicture = isPreGapPicture,
                     IsPictureTrack = trackItem.IsPictureTrack,
                     PreEmphasis = trackItem.PreEmphasis,
-                    CopyPermitted = trackItem.CopyPermitted
+                    CopyPermitted = trackItem.CopyPermitted,
+                    FourChannel = trackItem.FourChannel
                 });
             }
 

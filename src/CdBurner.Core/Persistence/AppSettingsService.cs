@@ -124,6 +124,11 @@ public class AppSettings
     public bool VerifyCtdbByDefault { get; set; } = false;
 
     /// <summary>
+    /// Audio CD extraction mode ("track" for Track-by-Track or "image-cue" for Single-file Image + CUE).
+    /// </summary>
+    public string RipMode { get; set; } = "track";
+
+    /// <summary>
     /// Output formats chosen on the Audio CD Ripper screen, as a comma list ("wav", "flac", "mp3", "opus", "aac").
     /// Files saved before this setting existed have no value and read as "wav".
     /// </summary>
@@ -217,6 +222,7 @@ public class AppSettings
             LookupMusicBrainzByDefault = LookupMusicBrainzByDefault,
             VerifyAccurateRipByDefault = VerifyAccurateRipByDefault,
             VerifyCtdbByDefault = VerifyCtdbByDefault,
+            RipMode = RipMode,
             RipFormats = RipFormats,
             Mp3Quality = Mp3Quality,
             RipLibraryFolder = RipLibraryFolder,

@@ -33,6 +33,7 @@ public class VirtualTrack
     public string? Isrc { get; set; }
     public bool PreEmphasis { get; set; }
     public bool CopyPermitted { get; set; }
+    public bool FourChannel { get; set; }
     public int? Index00Lba { get; set; }
 }
 

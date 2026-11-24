@@ -9,13 +9,15 @@ namespace CdBurner.Core.Abstractions;
 /// <param name="IsAudio">True for CD-DA audio tracks; false for data tracks.</param>
 /// <param name="PreEmphasis">True if the track's control nibble has pre-emphasis (bit 0) set.</param>
 /// <param name="CopyPermitted">True if the track's control nibble has digital copy permitted (bit 1) set.</param>
+/// <param name="FourChannel">True if the track's control nibble has four-channel audio (bit 3) set.</param>
 public record DiscTocTrack(
     int TrackNumber,
     int StartLba,
     int SectorCount,
     bool IsAudio,
     bool PreEmphasis = false,
-    bool CopyPermitted = false);
+    bool CopyPermitted = false,
+    bool FourChannel = false);
 
 /// <summary>
 /// Optional capability for recorders that can read the physical disc Table of Contents

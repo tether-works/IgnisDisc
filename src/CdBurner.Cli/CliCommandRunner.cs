@@ -2265,7 +2265,35 @@ public static partial class CliCommandRunner
             outputFolder = cmd.GetRequiredOption("output", "--output <folder>");
         }
 
+        string? modeOpt = cmd.GetOption("mode");
+        AudioRipMode ripMode = AudioRipMode.TrackByTrack;
+        if (modeOpt != null)
+        {
+            switch (modeOpt.Trim().ToLowerInvariant())
+            {
+                case "track" or "track-by-track" or "tracks":
+                    ripMode = AudioRipMode.TrackByTrack;
+                    break;
+                case "image-cue" or "image" or "single-file":
+                    ripMode = AudioRipMode.ImageCue;
+                    break;
+                default:
+                    throw new CommandLineException($"Invalid rip mode '{modeOpt}'. Expected 'track' or 'image-cue'.");
+            }
+        }
+
         var exportTargets = ParseAudioTargets(cmd, "wav");
+        if (ripMode == AudioRipMode.ImageCue)
+        {
+            if (exportTargets.Count != 1 || exportTargets[0].Format is not (AudioRipFormat.Wav or AudioRipFormat.Flac))
+            {
+                throw new CommandLineException("Single-file Image + CUE mode (--mode image-cue) supports a single WAV or FLAC output format.");
+            }
+            if (!string.IsNullOrWhiteSpace(cmd.GetOption("tracks")))
+            {
+                throw new CommandLineException("--tracks cannot be used with --mode image-cue because single-file Image + CUE mode rips the full Audio CD.");
+            }
+        }
         string? releaseOpt = cmd.GetOption("release");
         if (releaseOpt != null && string.IsNullOrWhiteSpace(releaseOpt))
         {
@@ -2286,7 +2314,9 @@ public static partial class CliCommandRunner
             WriteFolderImage: !cmd.HasFlag("no-folder-image"),
             Overwrite: cmd.HasFlag("overwrite"),
             ApplyDeEmphasis: cmd.HasFlag("de-emphasis"));
-        string? prerequisiteError = exporter.CheckPrerequisites(exportCheck);
+        string? prerequisiteError = ripMode == AudioRipMode.ImageCue
+            ? ValidateImageCuePrerequisites(exportCheck)
+            : exporter.CheckPrerequisites(exportCheck);
         if (prerequisiteError != null)
         {
             throw new CommandLineException(prerequisiteError);
@@ -2456,7 +2486,11 @@ public static partial class CliCommandRunner
                 CoverArtBytes = coverBytes,
                 CoverArtMimeType = coverMime,
                 RepairFromRecoverySession = repairFromRecovery,
-                ApplyDeEmphasis = applyDeEmphasis
+                ApplyDeEmphasis = applyDeEmphasis,
+                Mode = ripMode,
+                ImageFormat = ripMode == AudioRipMode.ImageCue ? exportTargets[0].Format : AudioRipFormat.Wav,
+                FfmpegPath = ffmpegPath,
+                WriteRipLog = false
             };
 
             var ripper = new AudioCdRipperService();
@@ -2665,7 +2699,9 @@ public static partial class CliCommandRunner
         AudioExportResult exported;
         try
         {
-            exported = await exporter.ExportAsync(result, exportOptions).ConfigureAwait(false);
+            exported = ripMode == AudioRipMode.ImageCue
+                ? await exporter.ExportImageCueAsync(result, exportOptions).ConfigureAwait(false)
+                : await exporter.ExportAsync(result, exportOptions).ConfigureAwait(false);
             if (exported.Warnings.Count > 0)
             {
                 warning = (warning == null ? "" : warning + " ") + string.Join(" ", exported.Warnings);
@@ -2685,6 +2721,79 @@ public static partial class CliCommandRunner
         }
 
         var finalOutputFiles = exported.Files.Select(f => f.Path).ToList();
+        string? primaryImageFile = ripMode == AudioRipMode.ImageCue
+            ? finalOutputFiles.FirstOrDefault() ?? result.ImageFilePath
+            : null;
+
+        var logDirectories = exported.CueSheets
+            .Select(Path.GetDirectoryName)
+            .Where(d => !string.IsNullOrWhiteSpace(d))
+            .Distinct(StringComparer.OrdinalIgnoreCase)
+            .Cast<string>()
+            .ToList();
+        if (logDirectories.Count == 0)
+        {
+            string fallbackDir = exported.Files.Count > 0
+                ? Path.GetDirectoryName(exported.Files[0].Path) ?? outputFolder
+                : outputFolder;
+            logDirectories.Add(fallbackDir);
+        }
+
+        string logFileName = AudioCdRipperService.ResolveLogFileName(
+            null,
+            result.CdText?.AlbumTitle,
+            primaryImageFile != null ? Path.GetFileNameWithoutExtension(primaryImageFile) : "album");
+        var arVerdictsMap = accurateRipTracks.ToDictionary(x => x.Info.TrackNumber, x => x.Verdict);
+        var ctdbVerdictsMap = ctdbTracks.ToDictionary(x => x.Info.TrackNumber, x => x.Verdict);
+        var logResultSnapshot = ripMode == AudioRipMode.ImageCue && primaryImageFile != null
+            ? AudioCdRipResult.Succeeded(
+                finalOutputFiles,
+                result.TotalSectorsRead,
+                result.TotalTime,
+                exported.CueSheets.FirstOrDefault() ?? result.CueSheetPath,
+                result.CdText,
+                result.TrackInfos,
+                result.BadSectorLbas,
+                result.SecureModeUsed,
+                result.ReplayGainAlbumGain,
+                result.ReplayGainAlbumPeak,
+                result.RecoveryRepair,
+                result.HiddenTrackOneAudioPath,
+                result.CtdbDiscCrc,
+                result.ReadOffset,
+                result.Mode,
+                primaryImageFile,
+                result.HiddenTrackOneAudioFrames,
+                result.RipLogPath,
+                result.DiscTocTracks,
+                result.MediaCatalogNumber,
+                result.GapDetectionPerformed,
+                result.OverreadIntoLeadInOut,
+                result.SecureModeRequested,
+                result.DriveUniqueId,
+                result.DriveVendorId,
+                result.DriveProductId,
+                result.DriveProductRevision)
+            : result;
+        var logContext = new RipLogContext(
+            logResultSnapshot,
+            ids,
+            accurateRipStatus,
+            arVerdictsMap,
+            ctdbStatus,
+            ctdbDiscMatch,
+            ctdbVerdictsMap,
+            ctdbRepair,
+            OutputFormatLabel: formatLabel);
+        var ripLogPaths = new List<string>(logDirectories.Count);
+        foreach (string logDir in logDirectories)
+        {
+            string logPath = Path.Combine(logDir, logFileName);
+            await RipLogFormatter.WriteToFileAsync(logPath, logContext).ConfigureAwait(false);
+            ripLogPaths.Add(logPath);
+        }
+        string? primaryRipLogPath = ripLogPaths.FirstOrDefault();
+
         if (ownsWorkFolder)
         {
             try
@@ -2733,6 +2842,7 @@ public static partial class CliCommandRunner
                     summary = result.RecoveryRepair.Summary
                 },
                 driveId = recorder.UniqueId,
+                mode = ripMode == AudioRipMode.ImageCue ? "image-cue" : "track",
                 outputFolder = Path.GetFullPath(outputFolder),
                 format = formatLabel,
                 bitrateKbps = effectiveBitrate,
@@ -2747,6 +2857,9 @@ public static partial class CliCommandRunner
                 metadataSource = metadataSource,
                 warning = warning,
                 files = finalOutputFiles.Select(Path.GetFullPath).ToList(),
+                imageFile = primaryImageFile == null ? null : Path.GetFullPath(primaryImageFile),
+                ripLog = primaryRipLogPath == null ? null : Path.GetFullPath(primaryRipLogPath),
+                ripLogs = ripLogPaths.Select(Path.GetFullPath).ToList(),
                 formats = exportTargets.Select(t => FormatLabel(t.Format)).ToList(),
                 exports = exported.Files
                     .GroupBy(f => f.Format)
@@ -2780,7 +2893,11 @@ public static partial class CliCommandRunner
                     ctdbCrc = t.CtdbTrackCrc.ToString("X8"),
                     unreadableSectors = t.UnreadableSectors,
                     recoveredSectors = t.RecoveredSectors,
-                    suspectSectors = t.SuspectSectors
+                    suspectSectors = t.SuspectSectors,
+                    startLba = t.StartLba,
+                    sectorCount = t.SectorCount,
+                    preGapFrames = t.PreGapFrames,
+                    peakPercent = t.PeakLevelPercent
                 }).ToList(),
                 secureMode = cmd.HasFlag("no-secure") ? "off" : result.SecureModeUsed ? "c2" : "unsupported",
                 accurateRip = accurateRipStatus == null ? null : new
@@ -2944,8 +3061,39 @@ public static partial class CliCommandRunner
         {
             stdout.WriteLine($"  Folder Image:     {Path.GetFullPath(image)}");
         }
+        foreach (string log in ripLogPaths)
+        {
+            stdout.WriteLine($"  Rip Log:          {Path.GetFullPath(log)}");
+        }
 
         return exitCode;
+    }
+
+    private static string? ValidateImageCuePrerequisites(AudioExportOptions options)
+    {
+        if (string.IsNullOrWhiteSpace(options.RootFolder))
+        {
+            return "The destination folder is empty.";
+        }
+
+        string? templateProblem = AudioNamingTemplate.Validate(options.NamingTemplate);
+        if (templateProblem != null)
+        {
+            return templateProblem;
+        }
+
+        if (options.Targets.Count != 1 || options.Targets[0].Format is not (AudioRipFormat.Wav or AudioRipFormat.Flac))
+        {
+            return "Single-file Image + CUE mode supports a single WAV or FLAC output format.";
+        }
+
+        if (options.Targets[0].Format == AudioRipFormat.Flac && options.Album?.CoverBytes is { Length: > 0 } cover &&
+            FlacEncoder.CoverArtSizeProblem(cover.Length) is { } coverProblem)
+        {
+            return coverProblem;
+        }
+
+        return null;
     }
 
     private static async Task<int> HandleDetectOffsetAsync(
@@ -4213,7 +4361,7 @@ public static partial class CliCommandRunner
         stdout.WriteLine("      Makes machine-generated subtitles for a movie (FFmpeg + whisper.cpp). Fast on a graphics card, slower on integrated graphics, slowest on the processor; names are often misheard.");
         stdout.WriteLine("  rip --drive <id> --output <file.iso|file.bin> [--raw] [--json]");
         stdout.WriteLine("      Rips optical disc to an ISO or raw BIN+CUE image.");
-        stdout.WriteLine("  rip-audio --drive <id> --output <folder> [--format wav|flac|mp3|opus|aac[,...]] [--bitrate <kbps>] [--mp3-bitrate <kbps> | --mp3-quality V0..V9] [--opus-bitrate <kbps>] [--aac-bitrate <kbps>] [--library <folder>] [--naming <template>] [--tracks 1,3,5] [--lookup] [--release <n|mbid>] [--no-cover-lookup] [--no-folder-image] [--overwrite] [--keep-wav] [--continue-on-error] [--read-offset <samples>] [--refresh-offsets] [--verify-accuraterip] [--verify-ctdb] [--no-ctdb-repair] [--no-secure] [--repair] [--de-emphasis] [--json]");
+        stdout.WriteLine("  rip-audio --drive <id> --output <folder> [--mode track|image-cue] [--format wav|flac|mp3|opus|aac[,...]] [--bitrate <kbps>] [--mp3-bitrate <kbps> | --mp3-quality V0..V9] [--opus-bitrate <kbps>] [--aac-bitrate <kbps>] [--library <folder>] [--naming <template>] [--tracks 1,3,5] [--lookup] [--release <n|mbid>] [--no-cover-lookup] [--no-folder-image] [--overwrite] [--keep-wav] [--continue-on-error] [--read-offset <samples>] [--refresh-offsets] [--verify-accuraterip] [--verify-ctdb] [--no-ctdb-repair] [--no-secure] [--repair] [--de-emphasis] [--json]");
         stdout.WriteLine("  convert-audio --input <file|folder>[;<more>] --output <folder> --format flac|mp3|opus|aac[,...] [--recursive] [--naming <template>] [--overwrite] [--bitrate <kbps>] [--mp3-bitrate <kbps> | --mp3-quality V0..V9] [--opus-bitrate <kbps>] [--aac-bitrate <kbps>] [--json]");
         stdout.WriteLine("      Rips Red Book Audio CD to WAV, FLAC, MP3, Opus or AAC (FLAC, MP3, Opus need the optional ffmpeg; AAC uses the Windows encoder) with CD-Text and optional MusicBrainz lookup. Exit code 2 when sectors may be wrong (still suspect or unreadable).");
         stdout.WriteLine("  copy-disc --source <id> [--target <id>] [--copies <n>] [--speed <X|max>] [--raw] [--native [--log-dir <folder>]] [--allow-suspect] [--keep-image <folder>] [--wait-minutes <n>] [--json]");
@@ -4360,8 +4508,9 @@ public static partial class CliCommandRunner
         {
             stdout.WriteLine(LegalBanner.VersionNotice);
             stdout.WriteLine();
-            stdout.WriteLine("  rip-audio --drive <id> --output <folder> [--format wav|flac|mp3|opus|aac[,...]] [--bitrate <kbps>] [--mp3-bitrate <kbps> | --mp3-quality V0..V9] [--opus-bitrate <kbps>] [--aac-bitrate <kbps>] [--library <folder>] [--naming <template>] [--tracks 1,3,5] [--lookup] [--release <n|mbid>] [--no-cover-lookup] [--no-folder-image] [--overwrite] [--keep-wav] [--continue-on-error] [--read-offset <samples>] [--refresh-offsets] [--verify-accuraterip] [--verify-ctdb] [--no-ctdb-repair] [--no-secure] [--repair] [--de-emphasis] [--cover <image>] [--no-replaygain] [--json]");
-            stdout.WriteLine("      Rips Red Book Audio CD to WAV, FLAC, MP3, Opus or AAC (FLAC, MP3, Opus need the optional ffmpeg; AAC uses the Windows encoder) with CD-Text and optional MusicBrainz lookup. Exit code 2 when sectors may be wrong (still suspect or unreadable).");
+            stdout.WriteLine("  rip-audio --drive <id> --output <folder> [--mode track|image-cue] [--format wav|flac|mp3|opus|aac[,...]] [--bitrate <kbps>] [--mp3-bitrate <kbps> | --mp3-quality V0..V9] [--opus-bitrate <kbps>] [--aac-bitrate <kbps>] [--library <folder>] [--naming <template>] [--tracks 1,3,5] [--lookup] [--release <n|mbid>] [--no-cover-lookup] [--no-folder-image] [--overwrite] [--keep-wav] [--continue-on-error] [--read-offset <samples>] [--refresh-offsets] [--verify-accuraterip] [--verify-ctdb] [--no-ctdb-repair] [--no-secure] [--repair] [--de-emphasis] [--cover <image>] [--no-replaygain] [--json]");
+            stdout.WriteLine("      Rips Red Book Audio CD to WAV, FLAC, MP3, Opus or AAC (FLAC, MP3, Opus need the optional ffmpeg; AAC uses the Windows encoder) with CD-Text, an EAC-style <Album>.log with SHA-256/HMAC-SHA256 integrity footer, and optional MusicBrainz lookup. Exit code 2 when sectors may be wrong (still suspect or unreadable).");
+            stdout.WriteLine("      --mode image-cue rips the entire Audio CD (including optional HTOA and pre-gaps) into one .wav or .flac image + exact .cue.");
             stdout.WriteLine("      --repair checks and repairs damaged samples from session 2 PAR2 recovery data on Enhanced CDs.");
             stdout.WriteLine("      --de-emphasis applies the Red Book 50/15 us de-emphasis filter to tracks flagged with pre-emphasis.");
             stdout.WriteLine("      FLAC files get ReplayGain 2.0 tags (unless --no-replaygain) and, with --cover, embedded front cover art.");

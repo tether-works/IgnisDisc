@@ -1,3 +1,4 @@
+using System.Buffers.Binary;
 using System.Diagnostics;
 using System.Text;
 using CdBurner.Core.Abstractions;
@@ -7,7 +8,19 @@ using CdBurner.Core.Primitives;
 namespace CdBurner.Core.Audio;
 
 /// <summary>
-/// Configuration options for ripping Audio CD tracks to uncompressed WAV files and companion CUE sheet.
+/// Audio CD extraction layout mode.
+/// </summary>
+public enum AudioRipMode
+{
+    /// <summary>Extract each track to its own audio file alongside a multi-FILE CUE sheet.</summary>
+    TrackByTrack = 0,
+
+    /// <summary>Extract the entire Audio CD (including optional HTOA and pre-gaps) into one image file plus an exact single-FILE CUE sheet.</summary>
+    ImageCue = 1
+}
+
+/// <summary>
+/// Configuration options for ripping Audio CD tracks to uncompressed WAV files or a single-file image and companion CUE sheet.
 /// </summary>
 public class AudioRipOptions
 {
@@ -127,6 +140,38 @@ public class AudioRipOptions
     /// AccurateRip and CTDB checksums are still computed on the raw disc PCM before de-emphasis.
     /// </summary>
     public bool ApplyDeEmphasis { get; set; } = false;
+
+    /// <summary>
+    /// Extraction layout mode: <see cref="AudioRipMode.TrackByTrack"/> (default) or <see cref="AudioRipMode.ImageCue"/>.
+    /// </summary>
+    public AudioRipMode Mode { get; set; } = AudioRipMode.TrackByTrack;
+
+    /// <summary>
+    /// Target audio format when <see cref="Mode"/> is <see cref="AudioRipMode.ImageCue"/> (<see cref="AudioRipFormat.Wav"/> or <see cref="AudioRipFormat.Flac"/>).
+    /// </summary>
+    public AudioRipFormat ImageFormat { get; set; } = AudioRipFormat.Wav;
+
+    /// <summary>
+    /// Optional base file name (without or with extension) for single-file <see cref="AudioRipMode.ImageCue"/> output.
+    /// Defaults to the sanitized album title or <c>"album"</c>.
+    /// </summary>
+    public string? ImageFileName { get; set; }
+
+    /// <summary>
+    /// Optional path to <c>ffmpeg.exe</c> used when encoding a single-file FLAC image with compression.
+    /// When omitted, IgnisDisc uses its built-in lossless RFC 9639 FLAC encoder.
+    /// </summary>
+    public string? FfmpegPath { get; set; }
+
+    /// <summary>
+    /// Whether <see cref="AudioCdRipperService"/> writes an EAC-style extraction log (<c>&lt;Album&gt;.log</c>) in the output directory.
+    /// </summary>
+    public bool WriteRipLog { get; set; } = true;
+
+    /// <summary>
+    /// Optional override for the extraction log file name. Defaults to the sanitized album title (or image stem) + <c>.log</c>.
+    /// </summary>
+    public string? RipLogFileName { get; set; }
 }
 
 /// <summary>
@@ -159,7 +204,13 @@ public sealed record AudioTrackRipInfo(
     double? ReplayGainTrackPeak = null,
     uint CtdbTrackCrc = 0,
     bool PreEmphasis = false,
-    bool DeEmphasisApplied = false);
+    bool DeEmphasisApplied = false,
+    int StartLba = 0,
+    int SectorCount = 0,
+    int PreGapFrames = 0,
+    bool CopyPermitted = false,
+    bool FourChannel = false,
+    double? PeakLevelPercent = null);
 
 /// <summary>
 /// Discovered audio track descriptor extracted from optical medium TOC or session metadata.
@@ -175,7 +226,8 @@ public record AudioDiscoveredTrack(
     string? Composer = null,
     string? Isrc = null,
     bool PreEmphasis = false,
-    bool CopyPermitted = false);
+    bool CopyPermitted = false,
+    bool FourChannel = false);
 
 /// <summary>
 /// Final result of an Audio CD ripping operation.
@@ -220,6 +272,45 @@ public class AudioCdRipResult
     /// <summary>Resolved read offset in samples applied during ripping.</summary>
     public int ReadOffsetSamples => ReadOffset?.OffsetSamples ?? 0;
 
+    /// <summary>Extraction mode used for this rip (<see cref="AudioRipMode.TrackByTrack"/> or <see cref="AudioRipMode.ImageCue"/>).</summary>
+    public AudioRipMode Mode { get; init; } = AudioRipMode.TrackByTrack;
+
+    /// <summary>Full path to the single-file disc image when <see cref="Mode"/> is <see cref="AudioRipMode.ImageCue"/>.</summary>
+    public string? ImageFilePath { get; init; }
+
+    /// <summary>Length of Hidden Track One Audio (HTOA) in CD frames when present and ripped.</summary>
+    public int HiddenTrackOneAudioFrames { get; init; }
+
+    /// <summary>Full path to the written EAC-style extraction log (<c>.log</c>), if generated.</summary>
+    public string? RipLogPath { get; init; }
+
+    /// <summary>Full disc TOC entries recorded during ripping (audio and any data tracks).</summary>
+    public IReadOnlyList<DiscTocTrack> DiscTocTracks { get; init; } = Array.Empty<DiscTocTrack>();
+
+    /// <summary>Media Catalog Number (UPC/EAN) discovered from subcode or CD-Text.</summary>
+    public string? MediaCatalogNumber { get; init; }
+
+    /// <summary>True if Q sub-channel gap detection ran during this rip.</summary>
+    public bool GapDetectionPerformed { get; init; }
+
+    /// <summary>True if read offset correction overread into lead-in/lead-out boundaries.</summary>
+    public bool OverreadIntoLeadInOut { get; init; }
+
+    /// <summary>True if secure mode (C2 error pointers) was requested.</summary>
+    public bool SecureModeRequested { get; init; }
+
+    /// <summary>Recorder unique identifier.</summary>
+    public string? DriveUniqueId { get; init; }
+
+    /// <summary>Drive INQUIRY vendor identifier.</summary>
+    public string? DriveVendorId { get; init; }
+
+    /// <summary>Drive INQUIRY product identifier.</summary>
+    public string? DriveProductId { get; init; }
+
+    /// <summary>Drive INQUIRY firmware revision.</summary>
+    public string? DriveProductRevision { get; init; }
+
     public static AudioCdRipResult Succeeded(
         IReadOnlyList<string> filePaths,
         int totalSectors,
@@ -234,7 +325,20 @@ public class AudioCdRipResult
         AudioRecoveryRepairResult? recoveryRepair = null,
         string? hiddenTrackOneAudioPath = null,
         uint? ctdbDiscCrc = null,
-        ReadOffsetResolution? readOffset = null) => new()
+        ReadOffsetResolution? readOffset = null,
+        AudioRipMode mode = AudioRipMode.TrackByTrack,
+        string? imageFilePath = null,
+        int hiddenTrackOneAudioFrames = 0,
+        string? ripLogPath = null,
+        IReadOnlyList<DiscTocTrack>? discTocTracks = null,
+        string? mediaCatalogNumber = null,
+        bool gapDetectionPerformed = false,
+        bool overreadIntoLeadInOut = false,
+        bool secureModeRequested = false,
+        string? driveUniqueId = null,
+        string? driveVendorId = null,
+        string? driveProductId = null,
+        string? driveProductRevision = null) => new()
     {
         SecureModeUsed = secureModeUsed,
         Success = true,
@@ -251,7 +355,20 @@ public class AudioCdRipResult
         ReplayGainAlbumPeak = replayGainAlbumPeak,
         RecoveryRepair = recoveryRepair,
         CtdbDiscCrc = ctdbDiscCrc,
-        ReadOffset = readOffset
+        ReadOffset = readOffset,
+        Mode = mode,
+        ImageFilePath = imageFilePath,
+        HiddenTrackOneAudioFrames = hiddenTrackOneAudioFrames,
+        RipLogPath = ripLogPath,
+        DiscTocTracks = discTocTracks ?? Array.Empty<DiscTocTrack>(),
+        MediaCatalogNumber = mediaCatalogNumber,
+        GapDetectionPerformed = gapDetectionPerformed,
+        OverreadIntoLeadInOut = overreadIntoLeadInOut,
+        SecureModeRequested = secureModeRequested,
+        DriveUniqueId = driveUniqueId,
+        DriveVendorId = driveVendorId,
+        DriveProductId = driveProductId,
+        DriveProductRevision = driveProductRevision
     };
 
     public static AudioCdRipResult Failed(string error, Exception? ex = null) => new()
@@ -343,7 +460,8 @@ public class AudioCdRipperService
                     composer,
                     isrc,
                     t.PreEmphasis,
-                    t.CopyPermitted));
+                    t.CopyPermitted,
+                    t.FourChannel));
             }
 
             if (tracks.Count > 0)
@@ -393,6 +511,7 @@ public class AudioCdRipperService
                             string? isrc = tType.GetProperty("Isrc")?.GetValue(t) as string;
                             bool preEmphasis = tType.GetProperty("PreEmphasis")?.GetValue(t) is bool pe && pe;
                             bool copyPermitted = tType.GetProperty("CopyPermitted")?.GetValue(t) is bool cp && cp;
+                            bool fourChannel = tType.GetProperty("FourChannel")?.GetValue(t) is bool fc && fc;
 
                             var merged = MergeCdText(trkNum, title, performer, songwriter, composer, isrc, cdText);
                             tracks.Add(new AudioDiscoveredTrack(
@@ -406,7 +525,8 @@ public class AudioCdRipperService
                                 merged.Composer,
                                 merged.Isrc,
                                 preEmphasis,
-                                copyPermitted));
+                                copyPermitted,
+                                fourChannel));
                         }
                     }
                 }
@@ -505,6 +625,18 @@ public class AudioCdRipperService
 
         cancellationToken.ThrowIfCancellationRequested();
 
+        if (options.Mode == AudioRipMode.ImageCue)
+        {
+            if (options.TrackNumbersToRip is { Count: > 0 })
+            {
+                return AudioCdRipResult.Failed("Single-file Image + CUE mode requires ripping the full Audio CD and cannot be combined with a track subset.");
+            }
+            if (options.ImageFormat is not (AudioRipFormat.Wav or AudioRipFormat.Flac))
+            {
+                return AudioCdRipResult.Failed($"Single-file Image + CUE mode supports WAV or FLAC output, not {AudioRipFormats.DisplayName(options.ImageFormat)}.");
+            }
+        }
+
         var mediaStatus = recorder.QueryMediaStatus();
         if (!mediaStatus.MediaPresent)
         {
@@ -546,12 +678,28 @@ public class AudioCdRipperService
             CoverArtBytes = options.CoverArtBytes,
             CoverArtMimeType = options.CoverArtMimeType,
             RepairFromRecoverySession = options.RepairFromRecoverySession,
-            ApplyDeEmphasis = options.ApplyDeEmphasis
+            ApplyDeEmphasis = options.ApplyDeEmphasis,
+            Mode = options.Mode,
+            ImageFormat = options.ImageFormat,
+            ImageFileName = options.ImageFileName,
+            FfmpegPath = options.FfmpegPath,
+            WriteRipLog = options.WriteRipLog,
+            RipLogFileName = options.RipLogFileName
         };
 
         Directory.CreateDirectory(outputDirectory);
 
+        IReadOnlyList<DiscTocTrack> discTocTracks = recorder is IDiscTocProvider tocProvider
+            ? tocProvider.ReadTableOfContents()
+            : Array.Empty<DiscTocTrack>();
+
         var (allTracks, cdText) = QueryTracksAndCdText(recorder);
+        if (discTocTracks.Count == 0 && allTracks.Count > 0)
+        {
+            discTocTracks = allTracks
+                .Select(t => new DiscTocTrack(t.TrackNumber, t.StartLba, t.SectorCount, true, t.PreEmphasis, t.CopyPermitted, t.FourChannel))
+                .ToList();
+        }
         if (options.MetadataOverride is { } metadataOverride)
         {
             allTracks = allTracks.Select(t =>
@@ -610,13 +758,15 @@ public class AudioCdRipperService
                 {
                     Isrc = !string.IsNullOrWhiteSpace(t.Isrc) ? t.Isrc : det.Isrc,
                     PreEmphasis = t.PreEmphasis || det.PreEmphasis,
-                    CopyPermitted = t.CopyPermitted || det.CopyPermitted
+                    CopyPermitted = t.CopyPermitted || det.CopyPermitted,
+                    FourChannel = t.FourChannel || det.FourChannel
                 }
                 : t;
 
         allTracks = allTracks.Select(ApplySubcode).ToList();
         tracksToRip = tracksToRip.Select(ApplySubcode).OrderBy(t => t.StartLba).ToList();
         audioOrder = allTracks.OrderBy(t => t.StartLba).ToList();
+        string? discCatalog = subcodeMap.MediaCatalogNumber ?? AudioGapDetector.NormalizeMcn(cdText?.UpcEan);
 
         // CTDB sample windows are computed over the full disc audio area (excluding HTOA before Track 1 INDEX 01).
         long totalDiscAudioSamples = 0;
@@ -639,7 +789,33 @@ public class AudioCdRipperService
             && AudioRecoverySessionService.FindRecoverySessionLocation(recorder) != null;
         bool continueOnUnreadable = options.ContinueOnUnreadableSector || hasRecoverySession;
 
+        if (options.Mode == AudioRipMode.ImageCue)
+        {
+            return await RipImageCueAsync(
+                recorder,
+                engine,
+                outputDirectory,
+                options,
+                offsetResolution,
+                cdText,
+                audioOrder,
+                subcodeMap,
+                discCatalog,
+                discTocTracks,
+                secureReader,
+                continueOnUnreadable,
+                silence,
+                badSectorLbas,
+                trackStartSamples,
+                totalDiscAudioSamples,
+                audioEndLba,
+                sw,
+                progress,
+                cancellationToken).ConfigureAwait(false);
+        }
+
         string? hiddenTrackOneAudioPath = null;
+        int hiddenTrackOneAudioFrames = 0;
         int track1SilentPreGapFrames = 0;
         if (audioOrder[0].TrackNumber == 1 &&
             audioOrder[0].StartLba > 0 &&
@@ -697,6 +873,7 @@ public class AudioCdRipperService
             {
                 rippedFilePaths.Add(htoaWavPath);
                 hiddenTrackOneAudioPath = htoaWavPath;
+                hiddenTrackOneAudioFrames = htoaSectors;
                 totalSectorsRead += htoaSectors;
             }
             else
@@ -727,6 +904,7 @@ public class AudioCdRipperService
                 isLastTrack: audioIndex == audioOrder.Count - 1);
             var ctdbChecksum = CtdbChecksum.ForTrack(trackStartSamples[audioIndex], trackSamples, totalDiscAudioSamples);
             var crc32 = new Crc32Algorithm();
+            int maxAbsSample = 0;
 
             long sectorsBeforeTrack = totalSectorsRead - (hiddenTrackOneAudioPath != null ? audioOrder[0].StartLba : 0);
             RangeExtractOutcome trackExtract;
@@ -758,6 +936,7 @@ public class AudioCdRipperService
                         arChecksum.Append(slice);
                         ctdbChecksum.Append(slice);
                         crc32.Append(slice);
+                        maxAbsSample = MeasureMaxAbsSample(slice, maxAbsSample);
                     },
                     cancellationToken).ConfigureAwait(false);
 
@@ -786,7 +965,7 @@ public class AudioCdRipperService
             wavNameByTrackNumber[track.TrackNumber] = fileName;
 
             double? trackGain = null;
-            double? trackPeak = null;
+            double? trackPeak = maxAbsSample / 32768.0;
             if (options.CalculateReplayGain && File.Exists(targetWavPath))
             {
                 try
@@ -802,6 +981,7 @@ public class AudioCdRipperService
                 }
             }
 
+            int preGapFrames = ResolveTrackPreGapFrames(track, subcodeMap, track1SilentPreGapFrames, hiddenTrackOneAudioFrames);
             trackInfos.Add(new AudioTrackRipInfo(
                 track.TrackNumber,
                 targetWavPath,
@@ -819,7 +999,13 @@ public class AudioCdRipperService
                 trackPeak,
                 ctdbChecksum.Value,
                 track.PreEmphasis,
-                deEmphasisApplied));
+                deEmphasisApplied,
+                track.StartLba,
+                track.SectorCount,
+                preGapFrames,
+                track.CopyPermitted,
+                track.FourChannel,
+                trackPeak.HasValue ? trackPeak.Value * 100.0 : null));
             totalSectorsRead += track.SectorCount;
         }
 
@@ -910,9 +1096,7 @@ public class AudioCdRipperService
                 var trk = tracksToRip[i];
                 string wavFileName = wavNameByTrackNumber[trk.TrackNumber];
 
-                var flags = new List<string>(2);
-                if (trk.CopyPermitted) flags.Add("DCP");
-                if (trk.PreEmphasis && !options.ApplyDeEmphasis) flags.Add("PRE");
+                var flags = BuildCueFlags(trk.CopyPermitted, trk.FourChannel, trk.PreEmphasis && !options.ApplyDeEmphasis);
 
                 CueSplitIndex00? splitIndex00 = null;
                 MsfAddress? preGap = null;
@@ -957,7 +1141,7 @@ public class AudioCdRipperService
             }
 
             var cueSheet = new CueSheet(
-                Catalog: subcodeMap.MediaCatalogNumber ?? AudioGapDetector.NormalizeMcn(cdText?.UpcEan),
+                Catalog: discCatalog,
                 Title: cdText?.AlbumTitle,
                 Performer: cdText?.AlbumPerformer,
                 Songwriter: cdText?.Songwriter,
@@ -968,7 +1152,7 @@ public class AudioCdRipperService
         }
 
         sw.Stop();
-        return AudioCdRipResult.Succeeded(
+        var ripResult = AudioCdRipResult.Succeeded(
             rippedFilePaths,
             totalSectorsRead,
             sw.Elapsed,
@@ -982,7 +1166,605 @@ public class AudioCdRipperService
             recoveryRepair,
             hiddenTrackOneAudioPath,
             ctdbDiscCrc,
-            offsetResolution);
+            offsetResolution,
+            mode: AudioRipMode.TrackByTrack,
+            imageFilePath: null,
+            hiddenTrackOneAudioFrames: hiddenTrackOneAudioFrames,
+            ripLogPath: null,
+            discTocTracks: discTocTracks,
+            mediaCatalogNumber: discCatalog,
+            gapDetectionPerformed: true,
+            overreadIntoLeadInOut: offsetResolution.OffsetSamples != 0,
+            secureModeRequested: options.SecureMode,
+            driveUniqueId: recorder.UniqueId,
+            driveVendorId: recorder.VendorId,
+            driveProductId: recorder.ProductId,
+            driveProductRevision: recorder.ProductRevision);
+
+        if (options.WriteRipLog)
+        {
+            string logFileName = ResolveLogFileName(options.RipLogFileName, cdText?.AlbumTitle);
+            string ripLogPath = Path.Combine(outputDirectory, logFileName);
+            await RipLogFormatter.WriteToFileAsync(
+                ripLogPath,
+                new RipLogContext(ripResult, OutputFormatLabel: "WAV"),
+                cancellationToken).ConfigureAwait(false);
+            ripResult = WithRipLogPath(ripResult, ripLogPath);
+        }
+
+        return ripResult;
+    }
+
+    private async Task<AudioCdRipResult> RipImageCueAsync(
+        IDiscRecorderBackend recorder,
+        IBurnEngineBackend engine,
+        string outputDirectory,
+        AudioRipOptions options,
+        ReadOffsetResolution offsetResolution,
+        CdTextAlbumMetadata? cdText,
+        List<AudioDiscoveredTrack> audioOrder,
+        DiscSubcodeMap subcodeMap,
+        string? discCatalog,
+        IReadOnlyList<DiscTocTrack> discTocTracks,
+        ISecureAudioReader? secureReader,
+        bool continueOnUnreadable,
+        byte[] silence,
+        List<int> badSectorLbas,
+        long[] trackStartSamples,
+        long totalDiscAudioSamples,
+        int audioEndLba,
+        Stopwatch sw,
+        IProgress<BurnProgressSnapshot>? progress,
+        CancellationToken cancellationToken)
+    {
+        string stem = !string.IsNullOrWhiteSpace(options.ImageFileName)
+            ? SanitizeFileName(Path.GetFileNameWithoutExtension(options.ImageFileName))
+            : (!string.IsNullOrWhiteSpace(cdText?.AlbumTitle) ? SanitizeFileName(cdText.AlbumTitle) : "album");
+        if (string.IsNullOrEmpty(stem))
+        {
+            stem = "album";
+        }
+
+        string finalExt = options.ImageFormat == AudioRipFormat.Flac ? ".flac" : ".wav";
+        string finalImagePath = Path.Combine(outputDirectory, stem + finalExt);
+        string wavImagePath = options.ImageFormat == AudioRipFormat.Flac
+            ? Path.Combine(outputDirectory, $".~{stem}-{Guid.NewGuid():N}.wav")
+            : finalImagePath;
+
+        string? cueSheetPath = null;
+        if (options.GenerateCueSheet)
+        {
+            string requestedCue = options.CueSheetFileName;
+            string cueBaseName = !string.IsNullOrWhiteSpace(requestedCue) &&
+                                 !string.Equals(requestedCue, "album.cue", StringComparison.OrdinalIgnoreCase)
+                ? SanitizeFileName(Path.GetFileNameWithoutExtension(requestedCue))
+                : stem;
+            if (string.IsNullOrEmpty(cueBaseName))
+            {
+                cueBaseName = stem;
+            }
+            cueSheetPath = Path.Combine(outputDirectory, cueBaseName + ".cue");
+        }
+
+        string? htoaTempWav = null;
+        int hiddenTrackOneAudioFrames = 0;
+        int track1SilentPreGapFrames = 0;
+        int totalSectorsRead = 0;
+        int htoaBadSectors = 0;
+        int htoaRecoveredSectors = 0;
+        int htoaSuspectSectors = 0;
+
+        try
+        {
+            if (audioOrder[0].TrackNumber == 1 && audioOrder[0].StartLba > 0)
+            {
+                int htoaSectors = audioOrder[0].StartLba;
+                htoaTempWav = Path.Combine(outputDirectory, $".~htoa-{Guid.NewGuid():N}.wav");
+                bool hasNonSilentAudio = false;
+                var htoaExtract = await ExtractSectorRangeToWavAsync(
+                    recorder,
+                    engine,
+                    secureReader,
+                    htoaTempWav,
+                    startLba: 0,
+                    sectorCount: htoaSectors,
+                    audioEndLba,
+                    options,
+                    continueOnUnreadable,
+                    silence,
+                    badSectorLbas,
+                    progress: null,
+                    onChunk: slice =>
+                    {
+                        if (!hasNonSilentAudio && slice.IndexOfAnyExcept((byte)0) >= 0)
+                        {
+                            hasNonSilentAudio = true;
+                        }
+                    },
+                    cancellationToken).ConfigureAwait(false);
+
+                if (!htoaExtract.Completed)
+                {
+                    return AudioCdRipResult.Failed(
+                        $"Failed to rip hidden track one audio: unrecovered read error at LBA {htoaExtract.StoppedAtLba} after {options.MaxRetriesPerSector} retries.",
+                        new IOException($"Unrecovered read error at LBA {htoaExtract.StoppedAtLba}."));
+                }
+
+                if (hasNonSilentAudio)
+                {
+                    hiddenTrackOneAudioFrames = htoaSectors;
+                    totalSectorsRead += htoaSectors;
+                    htoaBadSectors = htoaExtract.BadSectors;
+                    htoaRecoveredSectors = htoaExtract.RecoveredSectors;
+                    htoaSuspectSectors = htoaExtract.SuspectSectors;
+                }
+                else
+                {
+                    TryDeleteFile(htoaTempWav);
+                    htoaTempWav = null;
+                    track1SilentPreGapFrames = htoaSectors;
+                }
+            }
+
+            int imageStartLba = hiddenTrackOneAudioFrames > 0 ? 0 : audioOrder[0].StartLba;
+            int totalImageSectors = Math.Max(0, audioEndLba - imageStartLba);
+            long totalImagePcmBytes = (long)totalImageSectors * OpticalConstants.RawSectorSize;
+            long totalTracksSectors = audioOrder.Sum(t => (long)t.SectorCount);
+            byte[] wavHeader = WavFileCodec.CreateWavHeader(
+                totalImagePcmBytes,
+                OpticalConstants.CdAudioSampleRate,
+                OpticalConstants.CdAudioChannels,
+                OpticalConstants.CdAudioBitsPerSample);
+
+            var trackInfos = new List<AudioTrackRipInfo>(audioOrder.Count);
+            var replayGainResults = new List<ReplayGainResult>(audioOrder.Count);
+            var trackByteRanges = new List<(long Offset, long Length, AudioDiscoveredTrack Track)>(audioOrder.Count);
+
+            bool keepWav = false;
+            try
+            {
+                await using (var imageStream = new FileStream(wavImagePath, FileMode.Create, FileAccess.ReadWrite, FileShare.None, 65536, useAsync: true))
+                {
+                    await imageStream.WriteAsync(wavHeader, cancellationToken).ConfigureAwait(false);
+
+                    if (htoaTempWav != null && File.Exists(htoaTempWav))
+                    {
+                        await using var htoaStream = new FileStream(htoaTempWav, FileMode.Open, FileAccess.Read, FileShare.Read, 65536, useAsync: true);
+                        var (htoaOffset, htoaLength) = WavFileCodec.LocateRedBookPcmData(htoaStream);
+                        htoaStream.Position = htoaOffset;
+                        byte[] copyBuf = new byte[65536];
+                        long rem = htoaLength;
+                        while (rem > 0)
+                        {
+                            int n = await htoaStream.ReadAsync(copyBuf.AsMemory(0, (int)Math.Min(copyBuf.Length, rem)), cancellationToken).ConfigureAwait(false);
+                            if (n <= 0) break;
+                            await imageStream.WriteAsync(copyBuf.AsMemory(0, n), cancellationToken).ConfigureAwait(false);
+                            rem -= n;
+                        }
+                    }
+
+                    long sectorsDoneBeforeTrack = 0;
+                    for (int i = 0; i < audioOrder.Count; i++)
+                    {
+                        cancellationToken.ThrowIfCancellationRequested();
+                        var track = audioOrder[i];
+                        long trackPcmOffset = imageStream.Position;
+                        long trackPcmLength = (long)track.SectorCount * OpticalConstants.RawSectorSize;
+                        long trackSamples = (long)track.SectorCount * CtdbChecksum.SamplesPerSector;
+
+                        var arChecksum = new AccurateRipChecksum(
+                            trackPcmLength / 4,
+                            isFirstTrack: i == 0,
+                            isLastTrack: i == audioOrder.Count - 1);
+                        var ctdbChecksum = CtdbChecksum.ForTrack(trackStartSamples[i], trackSamples, totalDiscAudioSamples);
+                        var crc32 = new Crc32Algorithm();
+                        int maxAbsSample = 0;
+
+                        long baseSectors = sectorsDoneBeforeTrack;
+                        var outcome = await ExtractSectorRangeToStreamAsync(
+                            recorder,
+                            engine,
+                            secureReader,
+                            imageStream,
+                            track.StartLba,
+                            track.SectorCount,
+                            audioEndLba,
+                            options,
+                            continueOnUnreadable,
+                            silence,
+                            badSectorLbas,
+                            done => progress?.Report(new BurnProgressSnapshot
+                            {
+                                ElapsedTime = sw.Elapsed,
+                                CurrentLba = (int)Math.Min(int.MaxValue, baseSectors + done),
+                                TotalLba = (int)Math.Min(int.MaxValue, totalTracksSectors),
+                                BufferLevelPercent = 100.0,
+                                CurrentActionDescription = $"RippingTrack{track.TrackNumber:D2}"
+                            }),
+                            slice =>
+                            {
+                                arChecksum.Append(slice);
+                                ctdbChecksum.Append(slice);
+                                crc32.Append(slice);
+                                maxAbsSample = MeasureMaxAbsSample(slice, maxAbsSample);
+                            },
+                            cancellationToken).ConfigureAwait(false);
+
+                        if (!outcome.Completed)
+                        {
+                            return AudioCdRipResult.Failed(
+                                $"Failed to rip track {track.TrackNumber} ('{track.Title}'): unrecovered read error at LBA {outcome.StoppedAtLba} after {options.MaxRetriesPerSector} retries.",
+                                new IOException($"Unrecovered read error at LBA {outcome.StoppedAtLba}."));
+                        }
+
+                        bool deEmphasisApplied = false;
+                        if (options.ApplyDeEmphasis && track.PreEmphasis)
+                        {
+                            long savedPos = imageStream.Position;
+                            RedBookPcmDspProcessor.ApplyDeEmphasisToStreamRangeInPlace(imageStream, trackPcmOffset, trackPcmLength);
+                            imageStream.Position = savedPos;
+                            deEmphasisApplied = true;
+                        }
+
+                        trackByteRanges.Add((trackPcmOffset, trackPcmLength, track));
+                        sectorsDoneBeforeTrack += track.SectorCount;
+                        totalSectorsRead += track.SectorCount;
+
+                        int preGapFrames = ResolveTrackPreGapFrames(track, subcodeMap, track1SilentPreGapFrames, hiddenTrackOneAudioFrames);
+                        int trackBad = outcome.BadSectors + (i == 0 ? htoaBadSectors : 0);
+                        int trackRecovered = outcome.RecoveredSectors + (i == 0 ? htoaRecoveredSectors : 0);
+                        int trackSuspect = outcome.SuspectSectors + (i == 0 ? htoaSuspectSectors : 0);
+                        double peakAmplitude = maxAbsSample / 32768.0;
+
+                        trackInfos.Add(new AudioTrackRipInfo(
+                            track.TrackNumber,
+                            finalImagePath,
+                            crc32.GetCurrentHashAsUInt32(),
+                            arChecksum.V1,
+                            arChecksum.V2,
+                            i,
+                            trackBad,
+                            trackRecovered,
+                            trackSuspect,
+                            track.Title,
+                            track.Performer,
+                            track.Isrc,
+                            null,
+                            peakAmplitude,
+                            ctdbChecksum.Value,
+                            track.PreEmphasis,
+                            deEmphasisApplied,
+                            track.StartLba,
+                            track.SectorCount,
+                            preGapFrames,
+                            track.CopyPermitted,
+                            track.FourChannel,
+                            peakAmplitude * 100.0));
+                    }
+
+                    if (options.CalculateReplayGain)
+                    {
+                        for (int i = 0; i < trackByteRanges.Count; i++)
+                        {
+                            var (off, len, _) = trackByteRanges[i];
+                            try
+                            {
+                                imageStream.Position = off;
+                                using var slice = new BoundedReadStream(imageStream, len);
+                                var rg = ReplayGainCalculator.CalculateTrackReplayGain(slice);
+                                replayGainResults.Add(rg);
+                                trackInfos[i] = trackInfos[i] with
+                                {
+                                    ReplayGainTrackGain = rg.GainDb,
+                                    ReplayGainTrackPeak = rg.PeakAmplitude,
+                                    PeakLevelPercent = rg.PeakAmplitude * 100.0
+                                };
+                            }
+                            catch
+                            {
+                            }
+                        }
+                    }
+                }
+
+                double? albumGain = null;
+                double? albumPeak = null;
+                if (options.CalculateReplayGain && replayGainResults.Count > 0 && replayGainResults.Count == trackInfos.Count)
+                {
+                    var albumResult = ReplayGainCalculator.CalculateAlbumReplayGain(replayGainResults);
+                    albumGain = albumResult.AlbumGainDb;
+                    albumPeak = albumResult.AlbumPeakAmplitude;
+                }
+
+                if (options.ImageFormat == AudioRipFormat.Flac)
+                {
+                    string albumTitle = !string.IsNullOrWhiteSpace(cdText?.AlbumTitle) ? cdText.AlbumTitle : stem;
+                    string albumPerformer = !string.IsNullOrWhiteSpace(cdText?.AlbumPerformer) ? cdText.AlbumPerformer : "Unknown Artist";
+                    var albumTags = new AudioTrackTags(
+                        Title: albumTitle,
+                        Artist: albumPerformer,
+                        Album: albumTitle,
+                        TrackNumber: 0,
+                        TrackTotal: trackInfos.Count,
+                        ReplayGainAlbumGain: albumGain.HasValue ? ReplayGainCalculator.FormatGainDb(albumGain.Value) : null,
+                        ReplayGainAlbumPeak: albumPeak.HasValue ? ReplayGainCalculator.FormatPeak(albumPeak.Value) : null,
+                        CoverArtBytes: options.CoverArtBytes,
+                        CoverArtMimeType: options.CoverArtMimeType);
+
+                    string tempFlacPath = Path.Combine(outputDirectory, $".~{stem}-{Guid.NewGuid():N}.flac");
+                    try
+                    {
+                        if (!string.IsNullOrWhiteSpace(options.FfmpegPath) && File.Exists(options.FfmpegPath))
+                        {
+                            await FlacEncoder.EncodeAsync(options.FfmpegPath, wavImagePath, tempFlacPath, albumTags, cancellationToken).ConfigureAwait(false);
+                            if (albumTags.CoverArtBytes is { Length: > 0 } || albumTags.ReplayGainAlbumGain != null)
+                            {
+                                FlacEncoder.EmbedCoverArtAndReplayGain(tempFlacPath, albumTags);
+                            }
+                        }
+                        else
+                        {
+                            FlacFileCodec.WriteFlacFromWavFile(wavImagePath, tempFlacPath, albumTags, cdText?.Songwriter, cdText?.Composer);
+                        }
+
+                        File.Move(tempFlacPath, finalImagePath, overwrite: true);
+                    }
+                    finally
+                    {
+                        TryDeleteFile(tempFlacPath);
+                    }
+                }
+                else
+                {
+                    keepWav = true;
+                }
+
+                if (cueSheetPath != null)
+                {
+                    var cueTracks = new List<CueTrack>(audioOrder.Count);
+                    for (int i = 0; i < audioOrder.Count; i++)
+                    {
+                        var trk = audioOrder[i];
+                        var flags = BuildCueFlags(trk.CopyPermitted, trk.FourChannel, trk.PreEmphasis && !options.ApplyDeEmphasis);
+                        var indices = new List<CueIndex>(2);
+                        MsfAddress? preGap = null;
+
+                        if (i == 0)
+                        {
+                            if (hiddenTrackOneAudioFrames > 0)
+                            {
+                                indices.Add(new CueIndex(0, new MsfAddress(0, 0, 0)));
+                                indices.Add(new CueIndex(1, MsfAddress.FromFrameCount(trk.StartLba)));
+                            }
+                            else
+                            {
+                                if (track1SilentPreGapFrames > 0)
+                                {
+                                    preGap = MsfAddress.FromFrameCount(track1SilentPreGapFrames);
+                                }
+                                indices.Add(new CueIndex(1, new MsfAddress(0, 0, 0)));
+                            }
+                        }
+                        else
+                        {
+                            if (subcodeMap.Tracks.TryGetValue(trk.TrackNumber, out var det) &&
+                                det.Index00Lba is int idx00 &&
+                                idx00 < trk.StartLba &&
+                                idx00 >= imageStartLba)
+                            {
+                                indices.Add(new CueIndex(0, MsfAddress.FromFrameCount(idx00 - imageStartLba)));
+                            }
+
+                            indices.Add(new CueIndex(1, MsfAddress.FromFrameCount(trk.StartLba - imageStartLba)));
+                        }
+
+                        cueTracks.Add(new CueTrack(
+                            TrackNumber: trk.TrackNumber,
+                            DataType: CueTrackDataType.Audio,
+                            Title: trk.Title,
+                            Performer: trk.Performer,
+                            Songwriter: trk.Songwriter,
+                            Isrc: trk.Isrc,
+                            PreGap: preGap,
+                            Flags: flags,
+                            Indices: indices));
+                    }
+
+                    var cueSheet = new CueSheet(
+                        Catalog: discCatalog,
+                        Title: cdText?.AlbumTitle,
+                        Performer: cdText?.AlbumPerformer,
+                        Songwriter: cdText?.Songwriter,
+                        Files: new[] { new CueFileEntry(Path.GetFileName(finalImagePath), "WAVE", cueTracks) });
+
+                    await CueSheetWriter.WriteToFileAsync(cueSheet, cueSheetPath, cancellationToken).ConfigureAwait(false);
+                }
+
+                uint? ctdbDiscCrc = CtdbChecksum.CombineTrackCrcs(trackInfos, trackStartSamples, totalDiscAudioSamples);
+                sw.Stop();
+                var ripResult = AudioCdRipResult.Succeeded(
+                    new[] { finalImagePath },
+                    totalSectorsRead,
+                    sw.Elapsed,
+                    cueSheetPath,
+                    cdText,
+                    trackInfos,
+                    badSectorLbas,
+                    secureReader != null,
+                    albumGain,
+                    albumPeak,
+                    recoveryRepair: null,
+                    hiddenTrackOneAudioPath: null,
+                    ctdbDiscCrc: ctdbDiscCrc,
+                    readOffset: offsetResolution,
+                    mode: AudioRipMode.ImageCue,
+                    imageFilePath: finalImagePath,
+                    hiddenTrackOneAudioFrames: hiddenTrackOneAudioFrames,
+                    ripLogPath: null,
+                    discTocTracks: discTocTracks,
+                    mediaCatalogNumber: discCatalog,
+                    gapDetectionPerformed: true,
+                    overreadIntoLeadInOut: offsetResolution.OffsetSamples != 0,
+                    secureModeRequested: options.SecureMode,
+                    driveUniqueId: recorder.UniqueId,
+                    driveVendorId: recorder.VendorId,
+                    driveProductId: recorder.ProductId,
+                    driveProductRevision: recorder.ProductRevision);
+
+                if (options.WriteRipLog)
+                {
+                    string logFileName = ResolveLogFileName(options.RipLogFileName, cdText?.AlbumTitle, stem);
+                    string ripLogPath = Path.Combine(outputDirectory, logFileName);
+                    await RipLogFormatter.WriteToFileAsync(
+                        ripLogPath,
+                        new RipLogContext(ripResult, OutputFormatLabel: AudioRipFormats.DisplayName(options.ImageFormat)),
+                        cancellationToken).ConfigureAwait(false);
+                    ripResult = WithRipLogPath(ripResult, ripLogPath);
+                }
+
+                return ripResult;
+            }
+            finally
+            {
+                if (!keepWav)
+                {
+                    TryDeleteFile(wavImagePath);
+                }
+            }
+        }
+        finally
+        {
+            if (htoaTempWav != null)
+            {
+                TryDeleteFile(htoaTempWav);
+            }
+        }
+    }
+
+    private static AudioCdRipResult WithRipLogPath(AudioCdRipResult rip, string ripLogPath) =>
+        AudioCdRipResult.Succeeded(
+            rip.RippedFilePaths,
+            rip.TotalSectorsRead,
+            rip.TotalTime,
+            rip.CueSheetPath,
+            rip.CdText,
+            rip.TrackInfos,
+            rip.BadSectorLbas,
+            rip.SecureModeUsed,
+            rip.ReplayGainAlbumGain,
+            rip.ReplayGainAlbumPeak,
+            rip.RecoveryRepair,
+            rip.HiddenTrackOneAudioPath,
+            rip.CtdbDiscCrc,
+            rip.ReadOffset,
+            rip.Mode,
+            rip.ImageFilePath,
+            rip.HiddenTrackOneAudioFrames,
+            ripLogPath,
+            rip.DiscTocTracks,
+            rip.MediaCatalogNumber,
+            rip.GapDetectionPerformed,
+            rip.OverreadIntoLeadInOut,
+            rip.SecureModeRequested,
+            rip.DriveUniqueId,
+            rip.DriveVendorId,
+            rip.DriveProductId,
+            rip.DriveProductRevision);
+
+    public static string ResolveLogFileName(string? explicitLogFileName, string? albumTitle, string fallbackStem = "album")
+    {
+        string raw = !string.IsNullOrWhiteSpace(explicitLogFileName)
+            ? Path.GetFileNameWithoutExtension(explicitLogFileName)
+            : (!string.IsNullOrWhiteSpace(albumTitle) ? albumTitle : fallbackStem);
+        string safe = SanitizeFileName(raw);
+        if (string.IsNullOrEmpty(safe))
+        {
+            safe = fallbackStem;
+        }
+        return safe + ".log";
+    }
+
+    private static List<string> BuildCueFlags(bool copyPermitted, bool fourChannel, bool preEmphasis)
+    {
+        var flags = new List<string>(3);
+        if (copyPermitted) flags.Add("DCP");
+        if (fourChannel) flags.Add("4CH");
+        if (preEmphasis) flags.Add("PRE");
+        return flags;
+    }
+
+    private static int ResolveTrackPreGapFrames(
+        AudioDiscoveredTrack track,
+        DiscSubcodeMap subcodeMap,
+        int track1SilentPreGapFrames,
+        int hiddenTrackOneAudioFrames)
+    {
+        if (track.TrackNumber == 1)
+        {
+            if (hiddenTrackOneAudioFrames > 0)
+            {
+                return hiddenTrackOneAudioFrames;
+            }
+            return track1SilentPreGapFrames;
+        }
+
+        if (subcodeMap.Tracks.TryGetValue(track.TrackNumber, out var det) &&
+            det.Index00Lba is int idx00 &&
+            idx00 < track.StartLba)
+        {
+            return track.StartLba - idx00;
+        }
+
+        return 0;
+    }
+
+    private static int MeasureMaxAbsSample(ReadOnlySpan<byte> pcm, int currentMax)
+    {
+        int whole = pcm.Length & ~1;
+        for (int i = 0; i < whole; i += 2)
+        {
+            short s = BinaryPrimitives.ReadInt16LittleEndian(pcm.Slice(i, 2));
+            int abs = s == short.MinValue ? 32768 : Math.Abs(s);
+            if (abs > currentMax)
+            {
+                currentMax = abs;
+            }
+        }
+        return currentMax;
+    }
+
+    private sealed class BoundedReadStream : Stream
+    {
+        private readonly Stream _inner;
+        private readonly long _length;
+        private long _remaining;
+
+        public BoundedReadStream(Stream inner, long remainingBytes)
+        {
+            _inner = inner;
+            _length = remainingBytes;
+            _remaining = remainingBytes;
+        }
+
+        public override bool CanRead => true;
+        public override bool CanSeek => false;
+        public override bool CanWrite => false;
+        public override long Length => _length;
+        public override long Position { get => _length - _remaining; set => throw new NotSupportedException(); }
+
+        public override int Read(byte[] buffer, int offset, int count)
+        {
+            if (_remaining <= 0 || count <= 0) return 0;
+            int toRead = (int)Math.Min(count, _remaining);
+            int read = _inner.Read(buffer, offset, toRead);
+            _remaining -= read;
+            return read;
+        }
+
+        public override void Flush() { }
+        public override long Seek(long offset, SeekOrigin origin) => throw new NotSupportedException();
+        public override void SetLength(long value) => throw new NotSupportedException();
+        public override void Write(byte[] buffer, int offset, int count) => throw new NotSupportedException();
     }
 
     private readonly record struct RangeExtractOutcome(bool Completed, int? StoppedAtLba, int BadSectors, int RecoveredSectors, int SuspectSectors);
@@ -1005,10 +1787,60 @@ public class AudioCdRipperService
     {
         long totalBytes = (long)sectorCount * OpticalConstants.RawSectorSize;
         byte[] wavHeader = WavFileCodec.CreateWavHeader(
-            (int)totalBytes,
+            totalBytes,
             OpticalConstants.CdAudioSampleRate,
             OpticalConstants.CdAudioChannels,
             OpticalConstants.CdAudioBitsPerSample);
+
+        bool keepFile = false;
+        try
+        {
+            await using var fileStream = new FileStream(targetWavPath, FileMode.Create, FileAccess.Write, FileShare.None, 65536, useAsync: true);
+            await fileStream.WriteAsync(wavHeader, cancellationToken).ConfigureAwait(false);
+            var outcome = await ExtractSectorRangeToStreamAsync(
+                recorder,
+                engine,
+                secureReader,
+                fileStream,
+                startLba,
+                sectorCount,
+                audioEndLba,
+                options,
+                continueOnUnreadable,
+                silence,
+                badSectorLbas,
+                progress,
+                onChunk,
+                cancellationToken).ConfigureAwait(false);
+            keepFile = outcome.Completed;
+            return outcome;
+        }
+        finally
+        {
+            if (!keepFile)
+            {
+                TryDeleteFile(targetWavPath);
+            }
+        }
+    }
+
+    private static async Task<RangeExtractOutcome> ExtractSectorRangeToStreamAsync(
+        IDiscRecorderBackend recorder,
+        IBurnEngineBackend engine,
+        ISecureAudioReader? secureReader,
+        Stream destinationStream,
+        int startLba,
+        int sectorCount,
+        int audioEndLba,
+        AudioRipOptions options,
+        bool continueOnUnreadable,
+        byte[] silence,
+        List<int> badSectorLbas,
+        Action<int>? progress,
+        Action<ReadOnlySpan<byte>> onChunk,
+        CancellationToken cancellationToken)
+    {
+        long totalBytes = (long)sectorCount * OpticalConstants.RawSectorSize;
 
         // Offset correction: audio starts ReadOffsetSamples samples later on disc than its LBA says,
         // so read the covering sector range and drop the leading `bytesToSkip` bytes.
@@ -1025,115 +1857,100 @@ public class AudioCdRipperService
         bool completed = true;
         int? stoppedAtLba = null;
 
-        bool keepFile = false;
-        try
+        async ValueTask EmitAsync(ReadOnlyMemory<byte> sector)
         {
-            await using var fileStream = new FileStream(targetWavPath, FileMode.Create, FileAccess.Write, FileShare.None, 65536, useAsync: true);
-            await fileStream.WriteAsync(wavHeader, cancellationToken).ConfigureAwait(false);
-
-            async ValueTask EmitAsync(ReadOnlyMemory<byte> sector)
+            if (bytesToSkip > 0)
             {
-                if (bytesToSkip > 0)
-                {
-                    int skip = Math.Min(bytesToSkip, sector.Length);
-                    sector = sector[skip..];
-                    bytesToSkip -= skip;
-                }
-                if (bytesRemaining <= 0 || sector.IsEmpty)
-                {
-                    return;
-                }
-                if (sector.Length > bytesRemaining)
-                {
-                    sector = sector[..(int)bytesRemaining];
-                }
-
-                await fileStream.WriteAsync(sector, cancellationToken).ConfigureAwait(false);
-                onChunk(sector.Span);
-                bytesRemaining -= sector.Length;
+                int skip = Math.Min(bytesToSkip, sector.Length);
+                sector = sector[skip..];
+                bytesToSkip -= skip;
+            }
+            if (bytesRemaining <= 0 || sector.IsEmpty)
+            {
+                return;
+            }
+            if (sector.Length > bytesRemaining)
+            {
+                sector = sector[..(int)bytesRemaining];
             }
 
-            async Task EmitOverreadRangeAsync(int overStart, int overEnd)
-            {
-                for (int s = overStart; s < overEnd; s++)
-                {
-                    cancellationToken.ThrowIfCancellationRequested();
-                    byte[]? overreadSector = options.ReadOffsetSamples != 0
-                        ? await TryReadOverreadSectorAsync(recorder, engine, secureReader, s, audioEndLba, options.MaxRetriesPerSector, cancellationToken).ConfigureAwait(false)
-                        : null;
-                    await EmitAsync(overreadSector ?? silence).ConfigureAwait(false);
-                }
-            }
-
-            if (firstSector < readStart)
-            {
-                await EmitOverreadRangeAsync(firstSector, Math.Min(readStart, endSector)).ConfigureAwait(false);
-            }
-
-            if (readEnd > readStart)
-            {
-                async ValueTask<bool> OnUnreadableAsync(int lba)
-                {
-                    badSectorLbas.Add(lba);
-                    badSectors++;
-                    if (!continueOnUnreadable)
-                    {
-                        return false;
-                    }
-                    await EmitAsync(silence).ConfigureAwait(false);
-                    return true;
-                }
-
-                if (secureReader != null)
-                {
-                    var secure = await SecureAudioReader.ReadRangeAsync(
-                        secureReader,
-                        recorder,
-                        readStart,
-                        readEnd - readStart,
-                        audioEndLba,
-                        options.MaxRetriesPerSector,
-                        onSector: (_, data) => EmitAsync(data),
-                        onUnreadable: OnUnreadableAsync,
-                        onProgress: progress,
-                        cancellationToken: cancellationToken).ConfigureAwait(false);
-                    (completed, stoppedAtLba) = (secure.Completed, secure.StoppedAtLba);
-                    recoveredSectors = secure.RecoveredSectors;
-                    suspectSectors = secure.SuspectSectors;
-                }
-                else
-                {
-                    var batched = await BatchedSectorReader.ReadRangeAsync(
-                        engine,
-                        recorder,
-                        readStart,
-                        readEnd - readStart,
-                        raw2352Mode: true,
-                        options.MaxRetriesPerSector,
-                        onSector: (_, data) => EmitAsync(data),
-                        onUnreadable: OnUnreadableAsync,
-                        onProgress: progress,
-                        cancellationToken: cancellationToken).ConfigureAwait(false);
-                    (completed, stoppedAtLba) = (batched.Completed, batched.StoppedAtLba);
-                }
-            }
-
-            int tailOverStart = Math.Max(readEnd, readStart);
-            if (tailOverStart < endSector)
-            {
-                await EmitOverreadRangeAsync(tailOverStart, endSector).ConfigureAwait(false);
-            }
-
-            keepFile = completed;
-            return new RangeExtractOutcome(completed, stoppedAtLba, badSectors, recoveredSectors, suspectSectors);
+            await destinationStream.WriteAsync(sector, cancellationToken).ConfigureAwait(false);
+            onChunk(sector.Span);
+            bytesRemaining -= sector.Length;
         }
-        finally
+
+        async Task EmitOverreadRangeAsync(int overStart, int overEnd)
         {
-            if (!keepFile)
+            for (int s = overStart; s < overEnd; s++)
             {
-                TryDeleteFile(targetWavPath);
+                cancellationToken.ThrowIfCancellationRequested();
+                byte[]? overreadSector = options.ReadOffsetSamples != 0
+                    ? await TryReadOverreadSectorAsync(recorder, engine, secureReader, s, audioEndLba, options.MaxRetriesPerSector, cancellationToken).ConfigureAwait(false)
+                    : null;
+                await EmitAsync(overreadSector ?? silence).ConfigureAwait(false);
             }
         }
+
+        if (firstSector < readStart)
+        {
+            await EmitOverreadRangeAsync(firstSector, Math.Min(readStart, endSector)).ConfigureAwait(false);
+        }
+
+        if (readEnd > readStart)
+        {
+            async ValueTask<bool> OnUnreadableAsync(int lba)
+            {
+                badSectorLbas.Add(lba);
+                badSectors++;
+                if (!continueOnUnreadable)
+                {
+                    return false;
+                }
+                await EmitAsync(silence).ConfigureAwait(false);
+                return true;
+            }
+
+            if (secureReader != null)
+            {
+                var secure = await SecureAudioReader.ReadRangeAsync(
+                    secureReader,
+                    recorder,
+                    readStart,
+                    readEnd - readStart,
+                    audioEndLba,
+                    options.MaxRetriesPerSector,
+                    onSector: (_, data) => EmitAsync(data),
+                    onUnreadable: OnUnreadableAsync,
+                    onProgress: progress,
+                    cancellationToken: cancellationToken).ConfigureAwait(false);
+                (completed, stoppedAtLba) = (secure.Completed, secure.StoppedAtLba);
+                recoveredSectors = secure.RecoveredSectors;
+                suspectSectors = secure.SuspectSectors;
+            }
+            else
+            {
+                var batched = await BatchedSectorReader.ReadRangeAsync(
+                    engine,
+                    recorder,
+                    readStart,
+                    readEnd - readStart,
+                    raw2352Mode: true,
+                    options.MaxRetriesPerSector,
+                    onSector: (_, data) => EmitAsync(data),
+                    onUnreadable: OnUnreadableAsync,
+                    onProgress: progress,
+                    cancellationToken: cancellationToken).ConfigureAwait(false);
+                (completed, stoppedAtLba) = (batched.Completed, batched.StoppedAtLba);
+            }
+        }
+
+        int tailOverStart = Math.Max(readEnd, readStart);
+        if (tailOverStart < endSector)
+        {
+            await EmitOverreadRangeAsync(tailOverStart, endSector).ConfigureAwait(false);
+        }
+
+        return new RangeExtractOutcome(completed, stoppedAtLba, badSectors, recoveredSectors, suspectSectors);
     }
 
     private static async Task<byte[]?> TryReadOverreadSectorAsync(

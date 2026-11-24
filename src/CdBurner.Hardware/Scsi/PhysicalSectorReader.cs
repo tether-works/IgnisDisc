@@ -795,7 +795,8 @@ public static partial class PhysicalSectorReader
                             byte control = trackControls.GetValueOrDefault(cur.Number);
                             bool preEmphasis = !cur.IsData && (control & 0x01) != 0;
                             bool copyPermitted = !cur.IsData && (control & 0x02) != 0;
-                            tracks.Add(new DiscTocTrack(cur.Number, cur.Lba, count, !cur.IsData, preEmphasis, copyPermitted));
+                            bool fourChannel = !cur.IsData && (control & 0x08) != 0;
+                            tracks.Add(new DiscTocTrack(cur.Number, cur.Lba, count, !cur.IsData, preEmphasis, copyPermitted, fourChannel));
                         }
                     }
 
@@ -1066,7 +1067,7 @@ public static partial class PhysicalSectorReader
         }
 
         var sessionLeadOuts = new Dictionary<int, int>();
-        var rawTracks = new List<(int Number, int Session, int StartLba, bool IsData, bool PreEmphasis, bool CopyPermitted)>();
+        var rawTracks = new List<(int Number, int Session, int StartLba, bool IsData, bool PreEmphasis, bool CopyPermitted, bool FourChannel)>();
 
         for (int off = 4; off + 11 <= endOffset; off += 11)
         {
@@ -1087,7 +1088,7 @@ public static partial class PhysicalSectorReader
             else if (point is >= 1 and <= 99)
             {
                 bool isData = (control & 0x04) != 0;
-                rawTracks.Add((point, session, pLba, isData, !isData && (control & 0x01) != 0, !isData && (control & 0x02) != 0));
+                rawTracks.Add((point, session, pLba, isData, !isData && (control & 0x01) != 0, !isData && (control & 0x02) != 0, !isData && (control & 0x08) != 0));
             }
         }
 
@@ -1127,7 +1128,7 @@ public static partial class PhysicalSectorReader
             int count = endLba - cur.StartLba;
             if (count > 0)
             {
-                result.Add(new DiscTocTrack(cur.Number, cur.StartLba, count, !cur.IsData, cur.PreEmphasis, cur.CopyPermitted));
+                result.Add(new DiscTocTrack(cur.Number, cur.StartLba, count, !cur.IsData, cur.PreEmphasis, cur.CopyPermitted, cur.FourChannel));
             }
         }
 

@@ -24,7 +24,7 @@ public static partial class CliCommandRunner
         "disc-presets-file", "drive", "drives", "drive-model", "entry", "ffmpeg", "files", "fill-picture", "fit",
         "fixed-time", "format", "from", "health-json", "image", "images", "inner-radius-mm", "input", "iso",
         "json-output", "key", "label", "language", "layer-break", "library", "log-dir",
-        "loudness", "media", "media-id", "menu", "menu-autoplay", "menu-title", "mp3-bitrate",
+        "loudness", "media", "media-id", "menu", "menu-autoplay", "menu-title", "mode", "mp3-bitrate",
         "mp3-quality", "naming", "offset-cache", "offset-store", "offset-x-mm", "offset-y-mm", "opus-bitrate", "order", "out",
         "outer-radius-mm", "output", "pages-radius", "par2", "path", "picture", "pitch-cubic",
         "pitch-linear", "pitch-quadratic", "points", "post-action", "pregap", "pregap-art",
@@ -242,7 +242,7 @@ public static partial class CliCommandRunner
         Add(CommandOptionSpec.Of(["raw"], ["drive", "output", "virtual-media", "virtual-state"]), "rip", "rip-disc");
         Add(CommandOptionSpec.Of(
             ["lookup", "keep-wav", "no-folder-image", "overwrite", "continue-on-error", "verify-accuraterip", "verify-ctdb", "no-ctdb-repair", "no-cover-lookup", "repair", "repair-from-recovery", "no-secure", "secure", "no-replaygain", "de-emphasis", "refresh-offsets"],
-            ["drive", "library", "output", "release", "naming", "tracks", "read-offset", "offset-cache", "offset-store", "cover", "cover-art", "virtual-media", "virtual-state", .. AudioTargetOptions]),
+            ["drive", "mode", "library", "output", "release", "naming", "tracks", "read-offset", "offset-cache", "offset-store", "cover", "cover-art", "virtual-media", "virtual-state", .. AudioTargetOptions]),
             "rip-audio", "ripaudio");
         Add(CommandOptionSpec.Of(["overwrite", "recursive"], ["input", "output", "naming", .. AudioTargetOptions]), "convert-audio", "convertaudio");
         Add(CommandOptionSpec.Of([], ["drive", "compare", "virtual-state"]), "check-disc", "checkdisc");

@@ -200,9 +200,9 @@ public sealed class NativeSaoVerifier
                     ? $"Track {expected.TrackNumber} was written as a data track but is marked as audio on the disc."
                     : $"Track {expected.TrackNumber} is marked as a data track on the disc.";
             }
-            if (!expected.IsData && (control & 0x03) != expected.TocControl)
+            if (!expected.IsData && (control & 0x0B) != expected.TocControl)
             {
-                return $"Track {expected.TrackNumber} has control bits 0x{control:X} on the disc; pre-emphasis {(expected.PreEmphasis ? "on" : "off")} and copy permitted {(expected.CopyPermitted ? "on" : "off")} were written.";
+                return $"Track {expected.TrackNumber} has control bits 0x{control:X} on the disc; pre-emphasis {(expected.PreEmphasis ? "on" : "off")}, copy permitted {(expected.CopyPermitted ? "on" : "off")}, 4ch {(expected.FourChannel ? "on" : "off")} were written.";
             }
         }
 

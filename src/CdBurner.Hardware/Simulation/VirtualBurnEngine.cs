@@ -488,7 +488,10 @@ public class VirtualBurnEngine : IBurnEngineBackend, ISecureAudioReader
                 Performer = trk.Performer,
                 Songwriter = trk.Songwriter,
                 Composer = trk.Composer,
-                Isrc = trk.Isrc
+                Isrc = trk.Isrc,
+                PreEmphasis = trk.PreEmphasis,
+                CopyPermitted = trk.CopyPermitted,
+                FourChannel = trk.FourChannel
             });
         }
 

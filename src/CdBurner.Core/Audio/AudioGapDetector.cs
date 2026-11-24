@@ -10,7 +10,8 @@ public sealed record DetectedTrackSubcode(
     int? Index00Lba,
     bool PreEmphasis,
     bool CopyPermitted,
-    string? Isrc);
+    string? Isrc,
+    bool FourChannel = false);
 
 /// <summary>
 /// Disc-wide Media Catalog Number and per-track sub-channel properties detected from Q sub-channel data.
@@ -73,6 +74,8 @@ public static class AudioGapDetector
                                (gotInside && insideFrame.TrackNumber == t.TrackNumber && insideFrame.PreEmphasis);
             bool copyPermitted = t.CopyPermitted ||
                                  (gotInside && insideFrame.TrackNumber == t.TrackNumber && insideFrame.CopyPermitted);
+            bool fourChannel = t.FourChannel ||
+                               (gotInside && insideFrame.TrackNumber == t.TrackNumber && insideFrame.FourChannel);
             string? isrc = !string.IsNullOrWhiteSpace(t.Isrc) ? t.Isrc : session?.ReadTrackIsrc(t.TrackNumber);
 
             int? index00Lba = null;
@@ -129,7 +132,7 @@ public static class AudioGapDetector
                 }
             }
 
-            tracks[t.TrackNumber] = new DetectedTrackSubcode(t.TrackNumber, index00Lba, preEmphasis, copyPermitted, isrc);
+            tracks[t.TrackNumber] = new DetectedTrackSubcode(t.TrackNumber, index00Lba, preEmphasis, copyPermitted, isrc, fourChannel);
         }
 
         return new DiscSubcodeMap(mcn, tracks);

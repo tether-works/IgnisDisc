@@ -452,7 +452,8 @@ public class VirtualDiscRecorder : IDiscRecorderBackend, IAudioSubChannelProvide
 
             byte ctl = (byte)((chosen.PreEmphasis ? 0x01 : 0) |
                               (chosen.CopyPermitted ? 0x02 : 0) |
-                              (!chosen.IsAudio ? 0x04 : 0));
+                              (!chosen.IsAudio ? 0x04 : 0) |
+                              (chosen.FourChannel ? 0x08 : 0));
             int relFrames = index == 0 ? Math.Max(0, chosen.StartLba - lba) : Math.Max(0, lba - chosen.StartLba);
             var rel = MsfAddress.FromFrameCount(relFrames);
             var abs = MsfAddress.FromLba(lba);

@@ -32,7 +32,8 @@ public sealed record SaoTrack(
     bool IsData = false,
     SaoDataMode DataMode = SaoDataMode.None,
     bool IsPictureTrack = false,
-    bool IsPreGapPicture = false)
+    bool IsPreGapPicture = false,
+    bool FourChannel = false)
 {
     public SaoDataMode EffectiveDataMode => DataMode != SaoDataMode.None ? DataMode : (IsData ? SaoDataMode.Mode1 : SaoDataMode.None);
 }
@@ -48,6 +49,7 @@ public sealed record SaoTrackPlacement(int TrackNumber, int PreGapLba, int Index
 
     public bool PreEmphasis { get; init; }
     public bool CopyPermitted { get; init; }
+    public bool FourChannel { get; init; }
 
     /// <summary>True when this track holds a CD-DA surface picture track (not compared sample-for-sample).</summary>
     public bool IsPictureTrack { get; init; }
@@ -69,10 +71,10 @@ public sealed record SaoTrackPlacement(int TrackNumber, int PreGapLba, int Index
 
     /// <summary>
     /// The control bits as SEND CUE SHEET wants them (high nibble of the CTL/ADR byte): 0x10 pre-emphasis,
-    /// 0x20 digital copy permitted, 0x40 data track. The same bits appear in the low nibble of the TOC's ADR/CONTROL
+    /// 0x20 digital copy permitted, 0x40 data track, 0x80 four-channel audio. The same bits appear in the low nibble of the TOC's ADR/CONTROL
     /// byte (<see cref="TocControl"/>).
     /// </summary>
-    public byte CueControl => (byte)(IsData || DataMode != SaoDataMode.None ? 0x40 : (PreEmphasis ? 0x10 : 0) | (CopyPermitted ? 0x20 : 0));
+    public byte CueControl => (byte)(IsData || DataMode != SaoDataMode.None ? 0x40 : (PreEmphasis ? 0x10 : 0) | (CopyPermitted ? 0x20 : 0) | (FourChannel ? 0x80 : 0));
 
     public byte TocControl => (byte)(CueControl >> 4);
 }
@@ -166,6 +168,7 @@ public sealed class SaoAudioLayout
                 PreGapAudioSectors = t.PreGapAudioSectors,
                 PreEmphasis = t.PreEmphasis,
                 CopyPermitted = t.CopyPermitted,
+                FourChannel = t.FourChannel,
                 IsData = isData,
                 DataMode = mode,
                 PostGapSectors = postGap,

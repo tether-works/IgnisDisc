@@ -392,6 +392,215 @@ public sealed class AudioLibraryExporter
         return new AudioExportResult(files, cueSheets, folderImages, warnings);
     }
 
+    /// <summary>
+    /// Finalizes a single-file <see cref="AudioRipMode.ImageCue"/> rip: moves or copies the image and CUE sheet into
+    /// the target library folder (when different from the rip folder), embeds cover art into FLAC images if fetched
+    /// after ripping, and writes <c>folder.jpg</c>.
+    /// </summary>
+    public async Task<AudioExportResult> ExportImageCueAsync(
+        AudioCdRipResult rip,
+        AudioExportOptions options,
+        CancellationToken cancellationToken = default)
+    {
+        ArgumentNullException.ThrowIfNull(rip);
+        ArgumentNullException.ThrowIfNull(options);
+        if (rip.Mode != AudioRipMode.ImageCue || string.IsNullOrWhiteSpace(rip.ImageFilePath) || !File.Exists(rip.ImageFilePath))
+        {
+            throw new InvalidOperationException("ExportImageCueAsync requires a completed single-file Image + CUE rip.");
+        }
+        if (string.IsNullOrWhiteSpace(options.RootFolder))
+        {
+            throw new InvalidOperationException("The destination folder is empty.");
+        }
+
+        string? templateProblem = AudioNamingTemplate.Validate(options.NamingTemplate);
+        if (templateProblem != null)
+        {
+            throw new InvalidOperationException(templateProblem);
+        }
+
+        var album = options.Album;
+        string albumTitle = !string.IsNullOrWhiteSpace(album.Album) ? album.Album.Trim() : "Unknown Album";
+        string albumArtist = !string.IsNullOrWhiteSpace(album.AlbumArtist) ? album.AlbumArtist.Trim() : "Unknown Artist";
+        string root = Path.GetFullPath(options.RootFolder);
+        string rootPrefix = root.TrimEnd('\\', '/') + Path.DirectorySeparatorChar;
+
+        AudioRipFormat format = string.Equals(Path.GetExtension(rip.ImageFilePath), ".flac", StringComparison.OrdinalIgnoreCase)
+            ? AudioRipFormat.Flac
+            : AudioRipFormat.Wav;
+        if (format == AudioRipFormat.Flac && album.CoverBytes is { Length: > 0 } cover &&
+            FlacEncoder.CoverArtSizeProblem(cover.Length) is { } coverProblem)
+        {
+            throw new InvalidOperationException(coverProblem);
+        }
+
+        string sourceDir = Path.GetDirectoryName(Path.GetFullPath(rip.ImageFilePath))!;
+        string targetDir = root;
+        if (!string.Equals(options.NamingTemplate, AudioNamingTemplate.Flat, StringComparison.Ordinal))
+        {
+            var sampleFields = new AudioNamingFields(albumArtist, albumArtist, albumTitle, album.Year, 1, rip.TrackInfos.Count, albumTitle, format);
+            string renderedSample = AudioNamingTemplate.Render(options.NamingTemplate, sampleFields, AudioRipFormats.Extension(format));
+            string? relDir = Path.GetDirectoryName(renderedSample);
+            if (!string.IsNullOrEmpty(relDir))
+            {
+                string candidateDir = Path.GetFullPath(Path.Combine(root, relDir));
+                if (!candidateDir.StartsWith(rootPrefix, StringComparison.OrdinalIgnoreCase))
+                {
+                    throw new InvalidOperationException($"The naming template put '{relDir}' outside the destination folder.");
+                }
+                targetDir = candidateDir;
+            }
+        }
+
+        string stem = AudioCdRipperService.SanitizeFileName(albumTitle);
+        if (string.IsNullOrEmpty(stem) || string.Equals(albumTitle, "Unknown Album", StringComparison.Ordinal))
+        {
+            stem = Path.GetFileNameWithoutExtension(rip.ImageFilePath);
+        }
+
+        bool sameDir = SamePath(sourceDir, targetDir);
+        string destImagePath = sameDir
+            ? Path.GetFullPath(rip.ImageFilePath)
+            : Path.Combine(targetDir, stem + AudioRipFormats.Extension(format));
+        string? destCuePath = rip.CueSheetPath != null && File.Exists(rip.CueSheetPath)
+            ? (sameDir ? Path.GetFullPath(rip.CueSheetPath) : Path.Combine(targetDir, stem + ".cue"))
+            : null;
+
+        if (!sameDir)
+        {
+            if (File.Exists(destImagePath) && !options.Overwrite)
+            {
+                throw new InvalidOperationException($"'{destImagePath}' already exists. Use --overwrite (or choose another folder) to replace it.");
+            }
+            if (destCuePath != null && File.Exists(destCuePath) && !options.Overwrite)
+            {
+                throw new InvalidOperationException($"'{destCuePath}' already exists. Use --overwrite (or choose another folder) to replace it.");
+            }
+        }
+
+        var created = new List<string>();
+        var createdDirs = new List<string>();
+        var cueSheets = new List<string>();
+        var folderImages = new List<string>();
+        var warnings = new List<string>();
+
+        try
+        {
+            EnsureDirectory(targetDir, createdDirs);
+
+            if (!sameDir)
+            {
+                bool imageExisted = File.Exists(destImagePath);
+                if (options.KeepWav && format == AudioRipFormat.Wav)
+                {
+                    File.Copy(rip.ImageFilePath, destImagePath, overwrite: true);
+                }
+                else
+                {
+                    File.Move(rip.ImageFilePath, destImagePath, overwrite: true);
+                }
+                if (!imageExisted)
+                {
+                    created.Add(destImagePath);
+                }
+
+                if (destCuePath != null && rip.CueSheetPath != null && File.Exists(rip.CueSheetPath))
+                {
+                    string cueText = await File.ReadAllTextAsync(rip.CueSheetPath, cancellationToken).ConfigureAwait(false);
+                    string rewritten = RewriteSingleImageCueFileName(cueText, Path.GetFileName(rip.ImageFilePath), Path.GetFileName(destImagePath));
+                    bool cueExisted = File.Exists(destCuePath);
+                    await File.WriteAllTextAsync(destCuePath, rewritten, cancellationToken).ConfigureAwait(false);
+                    if (!cueExisted)
+                    {
+                        created.Add(destCuePath);
+                    }
+                    cueSheets.Add(destCuePath);
+
+                    if (!options.KeepWav || format != AudioRipFormat.Wav)
+                    {
+                        TryDelete(rip.CueSheetPath, warnings);
+                    }
+                }
+            }
+            else if (destCuePath != null)
+            {
+                cueSheets.Add(destCuePath);
+            }
+
+            if (format == AudioRipFormat.Flac && album.CoverBytes is { Length: > 0 })
+            {
+                var tags = new AudioTrackTags(
+                    Title: albumTitle,
+                    Artist: albumArtist,
+                    Album: albumTitle,
+                    TrackNumber: 0,
+                    TrackTotal: rip.TrackInfos.Count,
+                    Date: string.IsNullOrWhiteSpace(album.Year) ? null : album.Year.Trim(),
+                    ReplayGainAlbumGain: rip.ReplayGainAlbumGain.HasValue ? ReplayGainCalculator.FormatGainDb(rip.ReplayGainAlbumGain.Value) : null,
+                    ReplayGainAlbumPeak: rip.ReplayGainAlbumPeak.HasValue ? ReplayGainCalculator.FormatPeak(rip.ReplayGainAlbumPeak.Value) : null,
+                    CoverArtBytes: album.CoverBytes,
+                    CoverArtMimeType: CoverMime(album));
+                FlacEncoder.EmbedCoverArtAndReplayGain(destImagePath, tags);
+            }
+
+            if (album.CoverBytes is { Length: > 0 } && options.WriteFolderImage)
+            {
+                string imagePath = Path.Combine(targetDir, "folder" + MimeExtension(CoverMime(album)));
+                bool existed = File.Exists(imagePath);
+                if (!existed || options.Overwrite)
+                {
+                    await File.WriteAllBytesAsync(imagePath, album.CoverBytes, cancellationToken).ConfigureAwait(false);
+                    if (!existed)
+                    {
+                        created.Add(imagePath);
+                    }
+                    folderImages.Add(imagePath);
+                }
+            }
+        }
+        catch (Exception ex) when (ex is not OperationCanceledException)
+        {
+            var leftovers = Rollback(created, createdDirs);
+            string message = $"Image + CUE export failed: {ex.Message}";
+            if (leftovers.Count > 0)
+            {
+                message += " Could not remove: " + string.Join("; ", leftovers) + ".";
+            }
+            throw new InvalidOperationException(message, ex);
+        }
+
+        return new AudioExportResult(
+            new[] { new AudioExportedFile(format, 0, destImagePath) },
+            cueSheets,
+            folderImages,
+            warnings);
+    }
+
+    private static string RewriteSingleImageCueFileName(string cueText, string oldFileName, string newFileName)
+    {
+        if (string.Equals(oldFileName, newFileName, StringComparison.Ordinal))
+        {
+            return cueText;
+        }
+
+        string separator = cueText.Contains("\r\n") ? "\r\n" : "\n";
+        var lines = cueText.Split(["\r\n", "\r", "\n"], StringSplitOptions.None);
+        for (int i = 0; i < lines.Length; i++)
+        {
+            string trimmed = lines[i].TrimStart();
+            var match = CueFileLine.Match(trimmed);
+            if (!match.Success)
+            {
+                continue;
+            }
+
+            string prefix = lines[i][..(lines[i].Length - trimmed.Length)];
+            lines[i] = $"{prefix}FILE \"{newFileName}\" {match.Groups["type"].Value.ToUpperInvariant()}";
+        }
+
+        return string.Join(separator, lines);
+    }
+
     private static List<TargetPlan> PlanTargets(
         AudioCdRipResult rip,
         AudioExportOptions options,

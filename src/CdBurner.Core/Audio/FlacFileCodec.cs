@@ -116,6 +116,118 @@ public static class FlacFileCodec
     }
 
     /// <summary>
+    /// Streams a canonical RIFF WAVE file into a valid RFC 9639 lossless FLAC file without loading the full PCM into memory,
+    /// computing the RFC 9639 PCM MD5 signature in STREAMINFO.
+    /// </summary>
+    public static void WriteFlacFromWavFile(
+        string wavPath,
+        string flacPath,
+        AudioTrackTags? tags = null,
+        string? songwriter = null,
+        string? composer = null)
+    {
+        ArgumentException.ThrowIfNullOrWhiteSpace(wavPath);
+        ArgumentException.ThrowIfNullOrWhiteSpace(flacPath);
+
+        string? dir = Path.GetDirectoryName(flacPath);
+        if (!string.IsNullOrEmpty(dir) && !Directory.Exists(dir))
+        {
+            Directory.CreateDirectory(dir);
+        }
+
+        using var wavStream = new FileStream(wavPath, FileMode.Open, FileAccess.Read, FileShare.Read);
+        var (dataOffset, dataLength) = WavFileCodec.LocateRedBookPcmData(wavStream);
+        wavStream.Position = dataOffset;
+
+        using var outStream = new FileStream(flacPath, FileMode.Create, FileAccess.ReadWrite, FileShare.None, 65536);
+        WriteFlacFromPcmStream(
+            wavStream,
+            dataLength,
+            outStream,
+            OpticalConstants.CdAudioSampleRate,
+            OpticalConstants.CdAudioChannels,
+            OpticalConstants.CdAudioBitsPerSample,
+            tags,
+            songwriter,
+            composer);
+    }
+
+    /// <summary>
+    /// Streams interleaved little-endian PCM bytes from <paramref name="pcmStream"/> into <paramref name="outputStream"/>
+    /// as a valid RFC 9639 lossless FLAC stream with STREAMINFO (including MD5 when seekable) and optional metadata blocks.
+    /// </summary>
+    public static void WriteFlacFromPcmStream(
+        Stream pcmStream,
+        long pcmByteLength,
+        Stream outputStream,
+        int sampleRate = OpticalConstants.CdAudioSampleRate,
+        short channels = OpticalConstants.CdAudioChannels,
+        short bitsPerSample = OpticalConstants.CdAudioBitsPerSample,
+        AudioTrackTags? tags = null,
+        string? songwriter = null,
+        string? composer = null)
+    {
+        ArgumentNullException.ThrowIfNull(pcmStream);
+        ArgumentNullException.ThrowIfNull(outputStream);
+        ArgumentOutOfRangeException.ThrowIfNegative(pcmByteLength);
+
+        ValidateEncodeParameters(channels, bitsPerSample);
+
+        int bytesPerSample = bitsPerSample / 8;
+        int bytesPerFrame = channels * bytesPerSample;
+        long totalSamples = bytesPerFrame > 0 ? pcmByteLength / bytesPerFrame : 0;
+        const int maxBlockSize = 4096;
+        int minBlockSize = totalSamples > 0 ? (int)Math.Min(totalSamples, maxBlockSize) : maxBlockSize;
+
+        long md5Position = WriteFlacHeaderBlocks(
+            outputStream,
+            sampleRate,
+            channels,
+            bitsPerSample,
+            minBlockSize,
+            maxBlockSize,
+            totalSamples,
+            tags,
+            songwriter,
+            composer);
+
+        byte sampleSizeCode = GetSampleSizeCode(bitsPerSample);
+        byte[] chunkBuf = new byte[maxBlockSize * bytesPerFrame];
+        using var frameMem = new MemoryStream(chunkBuf.Length + 64);
+        using var md5 = outputStream.CanSeek
+            ? System.Security.Cryptography.IncrementalHash.CreateHash(System.Security.Cryptography.HashAlgorithmName.MD5)
+            : null;
+
+        long sampleOffset = 0;
+        int frameNumber = 0;
+        while (sampleOffset < totalSamples)
+        {
+            int blockSamples = (int)Math.Min(maxBlockSize, totalSamples - sampleOffset);
+            int wantBytes = blockSamples * bytesPerFrame;
+            int read = ReadFully(pcmStream, chunkBuf.AsSpan(0, wantBytes));
+            if (read < wantBytes)
+            {
+                throw new EndOfStreamException($"Expected {wantBytes} PCM bytes, got {read}.");
+            }
+
+            var blockSpan = chunkBuf.AsSpan(0, wantBytes);
+            md5?.AppendData(blockSpan);
+            WriteVerbatimFlacFrame(outputStream, frameMem, blockSpan, blockSamples, frameNumber, channels, bitsPerSample, sampleSizeCode);
+
+            sampleOffset += blockSamples;
+            frameNumber++;
+        }
+
+        if (md5 != null && outputStream.CanSeek)
+        {
+            long endPos = outputStream.Position;
+            outputStream.Position = md5Position;
+            outputStream.Write(md5.GetHashAndReset());
+            outputStream.Position = endPos;
+        }
+    }
+
+    /// <summary>
     /// Encodes interleaved little-endian PCM bytes (8, 16, or 24-bit) into a valid RFC 9639 FLAC byte stream
     /// with STREAMINFO and optional VORBIS_COMMENT metadata blocks.
     /// </summary>
@@ -128,6 +240,47 @@ public static class FlacFileCodec
         string? songwriter = null,
         string? composer = null)
     {
+        ValidateEncodeParameters(channels, bitsPerSample);
+
+        int bytesPerSample = bitsPerSample / 8;
+        int bytesPerFrame = channels * bytesPerSample;
+        int totalSamples = bytesPerFrame > 0 ? pcmData.Length / bytesPerFrame : 0;
+        const int maxBlockSize = 4096;
+        int minBlockSize = totalSamples > 0 ? Math.Min(totalSamples, maxBlockSize) : maxBlockSize;
+
+        using var ms = new MemoryStream(pcmData.Length + 512);
+        WriteFlacHeaderBlocks(
+            ms,
+            sampleRate,
+            channels,
+            bitsPerSample,
+            minBlockSize,
+            maxBlockSize,
+            totalSamples,
+            tags,
+            songwriter,
+            composer);
+
+        byte sampleSizeCode = GetSampleSizeCode(bitsPerSample);
+        int sampleOffset = 0;
+        int frameNumber = 0;
+        using var frameMem = new MemoryStream(maxBlockSize * bytesPerFrame + 64);
+
+        while (sampleOffset < totalSamples)
+        {
+            int blockSamples = Math.Min(maxBlockSize, totalSamples - sampleOffset);
+            var blockSpan = pcmData.Slice(sampleOffset * bytesPerFrame, blockSamples * bytesPerFrame);
+            WriteVerbatimFlacFrame(ms, frameMem, blockSpan, blockSamples, frameNumber, channels, bitsPerSample, sampleSizeCode);
+
+            sampleOffset += blockSamples;
+            frameNumber++;
+        }
+
+        return ms.ToArray();
+    }
+
+    private static void ValidateEncodeParameters(short channels, short bitsPerSample)
+    {
         if (channels is < 1 or > 8)
         {
             throw new ArgumentOutOfRangeException(nameof(channels), "FLAC supports 1 to 8 channels.");
@@ -137,15 +290,28 @@ public static class FlacFileCodec
         {
             throw new ArgumentOutOfRangeException(nameof(bitsPerSample), "WriteFlacFile supports 8, 16, or 24 bits per sample.");
         }
+    }
 
-        int bytesPerSample = bitsPerSample / 8;
-        int bytesPerFrame = channels * bytesPerSample;
-        int totalSamples = bytesPerFrame > 0 ? pcmData.Length / bytesPerFrame : 0;
-        const int maxBlockSize = 4096;
-        int minBlockSize = totalSamples > 0 ? Math.Min(totalSamples, maxBlockSize) : maxBlockSize;
+    private static byte GetSampleSizeCode(short bitsPerSample) => bitsPerSample switch
+    {
+        8 => 1,
+        16 => 4,
+        24 => 6,
+        _ => 0
+    };
 
-        using var ms = new MemoryStream(pcmData.Length + 512);
-
+    private static long WriteFlacHeaderBlocks(
+        Stream ms,
+        int sampleRate,
+        short channels,
+        short bitsPerSample,
+        int minBlockSize,
+        int maxBlockSize,
+        long totalSamples,
+        AudioTrackTags? tags,
+        string? songwriter,
+        string? composer)
+    {
         // 1. "fLaC" magic
         ms.Write(FlacMagic);
 
@@ -167,7 +333,7 @@ public static class FlacFileCodec
                      | ((ulong)(bitsPerSample - 1) << 36)
                      | ((ulong)totalSamples & 0x0FFFFFFFFFUL);
         BinaryPrimitives.WriteUInt64BigEndian(streamInfoBlock.Slice(14, 8), packed);
-        // 16-byte MD5 signature left as 0 (valid per RFC 9639 when uncomputed)
+        long md5Position = ms.Position + 4 + 18;
         ms.Write(streamInfoBlock);
 
         // 3. Optional VORBIS_COMMENT metadata block (type 4)
@@ -261,88 +427,81 @@ public static class FlacFileCodec
             ms.Write(picArray);
         }
 
-        // 4. Write audio frames using SUBFRAME_VERBATIM
-        byte sampleSizeCode = bitsPerSample switch
+        return md5Position;
+    }
+
+    private static void WriteVerbatimFlacFrame(
+        Stream output,
+        MemoryStream frameMem,
+        ReadOnlySpan<byte> blockPcm,
+        int blockSamples,
+        int frameNumber,
+        short channels,
+        short bitsPerSample,
+        byte sampleSizeCode)
+    {
+        int bytesPerSample = bitsPerSample / 8;
+        int bytesPerFrame = channels * bytesPerSample;
+        frameMem.SetLength(0);
+
+        // Frame header:
+        // Sync (0xFFF8 = fixed blocksize strategy), blockSizeCode = 7 (16-bit blockSize-1 at end of header),
+        // sampleRateCode = 0 (get from STREAMINFO)
+        frameMem.WriteByte(0xFF);
+        frameMem.WriteByte(0xF8);
+        frameMem.WriteByte(0x70); // blockSizeCode=7 (0111), sampleRateCode=0 (0000)
+        byte chAndBps = (byte)(((channels - 1) << 4) | (sampleSizeCode << 1));
+        frameMem.WriteByte(chAndBps);
+
+        // UTF-8 coded frame number
+        WriteUtf8Number(frameMem, (ulong)frameNumber);
+
+        // 16-bit big-endian (blockSamples - 1)
+        frameMem.WriteByte((byte)(((blockSamples - 1) >> 8) & 0xFF));
+        frameMem.WriteByte((byte)((blockSamples - 1) & 0xFF));
+
+        // Header CRC-8
+        byte[] hdrBytes = frameMem.ToArray();
+        byte crc8 = ComputeCrc8(hdrBytes);
+        frameMem.WriteByte(crc8);
+
+        // Subframes: one per channel
+        for (int c = 0; c < channels; c++)
         {
-            8 => 1,
-            16 => 4,
-            24 => 6,
-            _ => 0
-        };
+            // Subframe header: 0 (pad) | 000001 (SUBFRAME_VERBATIM) | 0 (no wasted bits) = 0x02
+            frameMem.WriteByte(0x02);
 
-        int sampleOffset = 0;
-        int frameNumber = 0;
-        using var frameMem = new MemoryStream(maxBlockSize * bytesPerFrame + 64);
-
-        while (sampleOffset < totalSamples)
-        {
-            int blockSamples = Math.Min(maxBlockSize, totalSamples - sampleOffset);
-            frameMem.SetLength(0);
-
-            // Frame header:
-            // Sync (0xFFF8 = fixed blocksize strategy), blockSizeCode = 7 (16-bit blockSize-1 at end of header),
-            // sampleRateCode = 0 (get from STREAMINFO)
-            frameMem.WriteByte(0xFF);
-            frameMem.WriteByte(0xF8);
-            frameMem.WriteByte(0x70); // blockSizeCode=7 (0111), sampleRateCode=0 (0000)
-            byte chAndBps = (byte)(((channels - 1) << 4) | (sampleSizeCode << 1));
-            frameMem.WriteByte(chAndBps);
-
-            // UTF-8 coded frame number
-            WriteUtf8Number(frameMem, (ulong)frameNumber);
-
-            // 16-bit big-endian (blockSamples - 1)
-            frameMem.WriteByte((byte)(((blockSamples - 1) >> 8) & 0xFF));
-            frameMem.WriteByte((byte)((blockSamples - 1) & 0xFF));
-
-            // Header CRC-8
-            byte[] hdrBytes = frameMem.ToArray();
-            byte crc8 = ComputeCrc8(hdrBytes);
-            frameMem.WriteByte(crc8);
-
-            // Subframes: one per channel
-            for (int c = 0; c < channels; c++)
+            for (int i = 0; i < blockSamples; i++)
             {
-                // Subframe header: 0 (pad) | 000001 (SUBFRAME_VERBATIM) | 0 (no wasted bits) = 0x02
-                frameMem.WriteByte(0x02);
-
-                for (int i = 0; i < blockSamples; i++)
+                int srcIdx = (i * bytesPerFrame) + (c * bytesPerSample);
+                if (bitsPerSample == 8)
                 {
-                    int srcIdx = ((sampleOffset + i) * bytesPerFrame) + (c * bytesPerSample);
-                    if (bitsPerSample == 8)
-                    {
-                        // 8-bit WAV is unsigned (0..255, center 128); FLAC is signed (-128..127)
-                        sbyte s = (sbyte)(pcmData[srcIdx] - 128);
-                        frameMem.WriteByte((byte)s);
-                    }
-                    else if (bitsPerSample == 16)
-                    {
-                        short s = BinaryPrimitives.ReadInt16LittleEndian(pcmData.Slice(srcIdx, 2));
-                        frameMem.WriteByte((byte)((s >> 8) & 0xFF));
-                        frameMem.WriteByte((byte)(s & 0xFF));
-                    }
-                    else if (bitsPerSample == 24)
-                    {
-                        // Little-endian 24-bit in WAV -> Big-endian 24-bit in FLAC verbatim subframe
-                        frameMem.WriteByte(pcmData[srcIdx + 2]);
-                        frameMem.WriteByte(pcmData[srcIdx + 1]);
-                        frameMem.WriteByte(pcmData[srcIdx]);
-                    }
+                    // 8-bit WAV is unsigned (0..255, center 128); FLAC is signed (-128..127)
+                    sbyte s = (sbyte)(blockPcm[srcIdx] - 128);
+                    frameMem.WriteByte((byte)s);
+                }
+                else if (bitsPerSample == 16)
+                {
+                    short s = BinaryPrimitives.ReadInt16LittleEndian(blockPcm.Slice(srcIdx, 2));
+                    frameMem.WriteByte((byte)((s >> 8) & 0xFF));
+                    frameMem.WriteByte((byte)(s & 0xFF));
+                }
+                else if (bitsPerSample == 24)
+                {
+                    // Little-endian 24-bit in WAV -> Big-endian 24-bit in FLAC verbatim subframe
+                    frameMem.WriteByte(blockPcm[srcIdx + 2]);
+                    frameMem.WriteByte(blockPcm[srcIdx + 1]);
+                    frameMem.WriteByte(blockPcm[srcIdx]);
                 }
             }
-
-            // Frame footer: 16-bit big-endian CRC-16 (polynomial 0x8005)
-            byte[] frameBody = frameMem.ToArray();
-            ushort crc16 = ComputeCrc16(frameBody);
-            ms.Write(frameBody);
-            ms.WriteByte((byte)((crc16 >> 8) & 0xFF));
-            ms.WriteByte((byte)(crc16 & 0xFF));
-
-            sampleOffset += blockSamples;
-            frameNumber++;
         }
 
-        return ms.ToArray();
+        // Frame footer: 16-bit big-endian CRC-16 (polynomial 0x8005)
+        byte[] frameBody = frameMem.ToArray();
+        ushort crc16 = ComputeCrc16(frameBody);
+        output.Write(frameBody);
+        output.WriteByte((byte)((crc16 >> 8) & 0xFF));
+        output.WriteByte((byte)(crc16 & 0xFF));
     }
 
     /// <summary>

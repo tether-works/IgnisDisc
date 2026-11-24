@@ -19,6 +19,7 @@ public readonly record struct QSubChannelFrame(
     public bool PreEmphasis => (Control & 0x01) != 0;
     public bool CopyPermitted => (Control & 0x02) != 0;
     public bool IsDataTrack => (Control & 0x04) != 0;
+    public bool FourChannel => (Control & 0x08) != 0;
 }
 
 /// <summary>
