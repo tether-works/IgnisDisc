@@ -268,6 +268,8 @@ public static partial class CliCommandRunner
             "install-par2" => await HandleInstallPar2Async(cmd, stdout, stderr).ConfigureAwait(false),
             "check-update" => await HandleCheckUpdateAsync(cmd, stdout, stderr).ConfigureAwait(false),
             "image-info" or "imageinfo" => HandleImageInfo(cmd, stdout),
+            "browse-image" or "browseimage" => HandleBrowseImage(cmd, stdout),
+            "extract-image" or "extractimage" => await HandleExtractImageAsync(cmd, stdout, stderr).ConfigureAwait(false),
             "convert-image" or "convertimage" => await HandleConvertImageAsync(cmd, stdout, stderr).ConfigureAwait(false),
             "author-dvd" or "authordvd" => await HandleAuthorDvdAsync(cmd, stdout, stderr).ConfigureAwait(false),
             "jewel-cover" or "jewelcover" => HandleJewelCover(cmd, stdout, stderr),
@@ -3841,6 +3843,10 @@ public static partial class CliCommandRunner
         stdout.WriteLine("      Checks GitHub Releases for a newer IgnisDisc version.");
         stdout.WriteLine("  image-info --image <file> [--json]");
         stdout.WriteLine("      Inspects an .iso, .cue, .bin, .nrg, .mdf/.mds, .ccd/.img, or .cdi disc image.");
+        stdout.WriteLine("  browse-image <file> [--json]");
+        stdout.WriteLine("      Lists files and directories inside an .iso, .udf, .nrg, .mdf/.mds, .ccd/.img, .cdi, or .bin/.cue image.");
+        stdout.WriteLine("  extract-image <file> --out <dir> [--entry <path>...] [--overwrite] [--json]");
+        stdout.WriteLine("      Safely extracts all or selected files from a disc image into <dir>.");
         stdout.WriteLine("  convert-image --input <file> --output <file> [--cue <file.cue>] [--overwrite] [--json]");
         stdout.WriteLine("      Converts legacy images or BIN+CUE to .iso, or converts .iso/legacy images to .bin + .cue.");
         stdout.WriteLine("  author-dvd --input <folder|movies> --output <folder|file.iso> [--label <vol>] [--menu-title <title>] [--menu on|off | --no-menu] [--menu-autoplay <never|sec>] [--after-title next|menu] [--standard ntsc|pal] [--aspect 16:9|4:3] [--chapters <none|sec>] [--subtitles-default on|off] [--subtitle-size small|medium|large] [--video-bitrate <fit|kbps>] [--fit-to-disc] [--title-names <a;b;...>] [--dual-layer] [--generate-subtitles [--subtitle-language <code|auto>]] [--overwrite] [--json]");
@@ -3975,6 +3981,10 @@ public static partial class CliCommandRunner
 
         if (string.Equals(subcommand, "image-info", StringComparison.OrdinalIgnoreCase) ||
             string.Equals(subcommand, "imageinfo", StringComparison.OrdinalIgnoreCase) ||
+            string.Equals(subcommand, "browse-image", StringComparison.OrdinalIgnoreCase) ||
+            string.Equals(subcommand, "browseimage", StringComparison.OrdinalIgnoreCase) ||
+            string.Equals(subcommand, "extract-image", StringComparison.OrdinalIgnoreCase) ||
+            string.Equals(subcommand, "extractimage", StringComparison.OrdinalIgnoreCase) ||
             string.Equals(subcommand, "convert-image", StringComparison.OrdinalIgnoreCase) ||
             string.Equals(subcommand, "convertimage", StringComparison.OrdinalIgnoreCase))
         {
@@ -3982,6 +3992,10 @@ public static partial class CliCommandRunner
             stdout.WriteLine();
             stdout.WriteLine("  image-info --image <file> [--json]");
             stdout.WriteLine("      Inspects sector size, sector count, offsets, and tracks of an .iso, .cue, .bin, .nrg, .mdf/.mds, .ccd/.img, or .cdi image.");
+            stdout.WriteLine("  browse-image <file> [--json]");
+            stdout.WriteLine("      Lists directory tree entries (path, size, UTC timestamp, flags, LBA, filesystem source) in an .iso, .udf, .nrg, .mdf/.mds, .ccd/.img, .cdi, or .bin/.cue image.");
+            stdout.WriteLine("  extract-image <file> --out <dir> [--entry <path>...] [--overwrite] [--json]");
+            stdout.WriteLine("      Safely extracts all entries or repeated --entry <path> selections into <dir> with path-safety validation.");
             stdout.WriteLine("  convert-image --input <file> --output <file> [--cue <file.cue>] [--overwrite] [--json]");
             stdout.WriteLine("      Converts .nrg, .mdf/.mds, .ccd/.img, .cdi, .bin, or .cue to .iso, or converts .iso/legacy images to .bin + .cue.");
             return;
@@ -4181,6 +4195,7 @@ public static partial class CliCommandRunner
     {
         public string? Subcommand { get; set; }
         public Dictionary<string, string> Options { get; } = new(StringComparer.OrdinalIgnoreCase);
+        public Dictionary<string, List<string>> MultiOptions { get; } = new(StringComparer.OrdinalIgnoreCase);
         public HashSet<string> Flags { get; } = new(StringComparer.OrdinalIgnoreCase);
         public List<string> Positionals { get; } = new();
 
@@ -4192,6 +4207,20 @@ public static partial class CliCommandRunner
             Flags.Contains(name) || (Options.TryGetValue(name, out var val) && val.Length == 0);
 
         public string? GetOption(string name) => Options.TryGetValue(name, out var val) ? val : null;
+
+        public IReadOnlyList<string> GetOptions(string name) =>
+            MultiOptions.TryGetValue(name, out var list) ? list : Array.Empty<string>();
+
+        private void AddOptionValue(string key, string value)
+        {
+            Options[key] = value;
+            if (!MultiOptions.TryGetValue(key, out var list))
+            {
+                list = new List<string>();
+                MultiOptions[key] = list;
+            }
+            list.Add(value);
+        }
 
         public string GetRequiredOption(string name, string optionSyntax)
         {
@@ -4285,7 +4314,7 @@ public static partial class CliCommandRunner
 
                     if (inlineVal != null)
                     {
-                        parsed.Options[key] = inlineVal;
+                        parsed.AddOptionValue(key, inlineVal);
                     }
                     else if (isFlag)
                     {
@@ -4295,12 +4324,12 @@ public static partial class CliCommandRunner
                     {
                         if (i + 1 < args.Length && IsOptionValue(args[i + 1]))
                         {
-                            parsed.Options[key] = args[++i].Trim();
+                            parsed.AddOptionValue(key, args[++i].Trim());
                         }
                         else
                         {
                             // Value option without value: handler reports missing value cleanly.
-                            parsed.Options[key] = string.Empty;
+                            parsed.AddOptionValue(key, string.Empty);
                         }
                     }
                     else

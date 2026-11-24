@@ -53,6 +53,15 @@ public class ImageStudioViewModel : ObservableObject
     private bool _copyKeepStagedImage;
     private DiscCopyResult? _lastCopyResult;
 
+    private readonly DiscImageBrowserService _browserService = new();
+    private DiscImageBrowseResult? _lastBrowseResult;
+    private DiscImageExtractionResult? _lastExtractionResult;
+    private string _imageBrowseSearchText = string.Empty;
+    private ImageBrowserNodeViewModel? _selectedImageEntry;
+    private string _imageBrowseSummary = "Load an image (.iso, .udf, .nrg, .mds, .ccd, .cdi, .cue/.bin) to browse its files.";
+    private string? _extractOutputDirectory;
+    private bool _extractOverwriteExisting;
+
     private double _deviceBufferPercent = 100.0;
     private double _softwareBufferPercent = 100.0;
     private string _currentSpeedDisplay = "Idle";
@@ -537,6 +546,8 @@ public class ImageStudioViewModel : ObservableObject
                 ConvertLegacyImageToIsoCommand?.RaiseCanExecuteChanged();
                 CopyDiscCommand?.RaiseCanExecuteChanged();
                 RunBurnQueueCommand?.RaiseCanExecuteChanged();
+                ExtractSelectedCommand?.RaiseCanExecuteChanged();
+                ExtractAllCommand?.RaiseCanExecuteChanged();
                 CancelCommand?.RaiseCanExecuteChanged();
             }
         }
@@ -635,6 +646,101 @@ public class ImageStudioViewModel : ObservableObject
         set => SetProperty(ref _lastVerificationResult, value);
     }
 
+    /// <summary>
+    /// Root tree nodes displayed in the Browse &amp; Extract tab (filtered by <see cref="ImageBrowseSearchText"/>).
+    /// </summary>
+    public ObservableCollection<ImageBrowserNodeViewModel> ImageTreeRoots { get; } = new();
+
+    /// <summary>
+    /// Live search substring used to filter entries in the disc image content tree.
+    /// </summary>
+    public string ImageBrowseSearchText
+    {
+        get => _imageBrowseSearchText;
+        set
+        {
+            if (SetProperty(ref _imageBrowseSearchText, value ?? string.Empty))
+            {
+                ApplyImageBrowseFilter();
+            }
+        }
+    }
+
+    /// <summary>
+    /// Currently highlighted node in the disc image content tree.
+    /// </summary>
+    public ImageBrowserNodeViewModel? SelectedImageEntry
+    {
+        get => _selectedImageEntry;
+        set
+        {
+            if (SetProperty(ref _selectedImageEntry, value))
+            {
+                OnPropertyChanged(nameof(SelectedImageEntryDetails));
+                ExtractSelectedCommand?.RaiseCanExecuteChanged();
+            }
+        }
+    }
+
+    /// <summary>
+    /// Formatted metadata summary for the currently selected node in the disc image tree.
+    /// </summary>
+    public string SelectedImageEntryDetails => SelectedImageEntry == null
+        ? "Select a file or folder in the tree, or check items to extract."
+        : $"{SelectedImageEntry.VirtualPath}  |  {SelectedImageEntry.SizeDisplay}  |  {SelectedImageEntry.TimestampDisplay}  |  {SelectedImageEntry.FlagsSummary}  |  {SelectedImageEntry.StartLbaDisplay}  |  {SelectedImageEntry.FileSystemSource}";
+
+    /// <summary>
+    /// Summary banner describing the active filesystem and entry counts of the browsed image.
+    /// </summary>
+    public string ImageBrowseSummary
+    {
+        get => _imageBrowseSummary;
+        private set => SetProperty(ref _imageBrowseSummary, value);
+    }
+
+    /// <summary>
+    /// Result of the most recent content browse operation.
+    /// </summary>
+    public DiscImageBrowseResult? LastBrowseResult
+    {
+        get => _lastBrowseResult;
+        private set
+        {
+            if (SetProperty(ref _lastBrowseResult, value))
+            {
+                ExtractAllCommand?.RaiseCanExecuteChanged();
+                ExtractSelectedCommand?.RaiseCanExecuteChanged();
+            }
+        }
+    }
+
+    /// <summary>
+    /// Result of the most recent file extraction operation.
+    /// </summary>
+    public DiscImageExtractionResult? LastExtractionResult
+    {
+        get => _lastExtractionResult;
+        private set => SetProperty(ref _lastExtractionResult, value);
+    }
+
+    /// <summary>
+    /// Optional explicit output folder for extraction (used by automated callers or when bypassing the folder picker).
+    /// </summary>
+    public string? ExtractOutputDirectory
+    {
+        get => _extractOutputDirectory;
+        set => SetProperty(ref _extractOutputDirectory, value);
+    }
+
+    /// <summary>
+    /// Whether extraction should overwrite existing files in the destination folder.
+    /// </summary>
+    public bool ExtractOverwriteExisting
+    {
+        get => _extractOverwriteExisting;
+        set => SetProperty(ref _extractOverwriteExisting, value);
+    }
+
     #endregion
 
     #region Commands
@@ -712,6 +818,26 @@ public class ImageStudioViewModel : ObservableObject
     /// </summary>
     public RelayCommand ClearOperationLogCommand { get; }
 
+    /// <summary>
+    /// Reloads the directory tree from the current <see cref="SourceImagePath"/>.
+    /// </summary>
+    public RelayCommand LoadImageBrowserCommand { get; }
+
+    /// <summary>
+    /// Clears the directory tree search filter.
+    /// </summary>
+    public RelayCommand ClearImageSearchCommand { get; }
+
+    /// <summary>
+    /// Extracts checked or selected entries from the loaded disc image.
+    /// </summary>
+    public AsyncRelayCommand ExtractSelectedCommand { get; }
+
+    /// <summary>
+    /// Extracts all files and folders from the loaded disc image.
+    /// </summary>
+    public AsyncRelayCommand ExtractAllCommand { get; }
+
     #endregion
 
     /// <summary>
@@ -764,6 +890,14 @@ public class ImageStudioViewModel : ObservableObject
             _ => !IsBusy && BurnQueueItems.Count > 0);
         BurnQueueItems.CollectionChanged += (_, _) => RunBurnQueueCommand.RaiseCanExecuteChanged();
         ClearOperationLogCommand = new RelayCommand(() => OperationLogEntries.Clear());
+        LoadImageBrowserCommand = new RelayCommand(() => RefreshImageBrowserTree(logWarnings: true));
+        ClearImageSearchCommand = new RelayCommand(() => ImageBrowseSearchText = string.Empty);
+        ExtractSelectedCommand = new AsyncRelayCommand(
+            async p => await ExtractSelectedEntriesAsync(p as string),
+            _ => !IsBusy && LastBrowseResult != null && (SelectedImageEntry != null || HasAnyCheckedBrowserNode()));
+        ExtractAllCommand = new AsyncRelayCommand(
+            async p => await ExtractAllEntriesAsync(p as string),
+            _ => !IsBusy && LastBrowseResult != null && (LastBrowseResult.FileCount > 0 || LastBrowseResult.DirectoryCount > 0));
         CancelCommand = new RelayCommand(_ => CancelActiveOperation(), _ => IsBusy);
 
         foreach (var r in _deviceService.GetRecorders())
@@ -807,29 +941,33 @@ public class ImageStudioViewModel : ObservableObject
             ImageSizeBytes = 0;
             ImageSectorCount = 0;
             IsLegacyImageLoaded = false;
+            ClearImageBrowserTree();
             return;
         }
 
         string ext = Path.GetExtension(SourceImagePath).ToLowerInvariant();
         IsLegacyImageLoaded = LegacyDiscImageConverter.IsLegacyImageFile(SourceImagePath) || ext is ".iso" or ".cue";
-        if (ext == ".iso")
+        if (ext is ".iso" or ".udf")
         {
             var fi = new FileInfo(SourceImagePath);
             ImageSizeBytes = fi.Length;
             ImageSectorCount = OpticalConstants.BytesToSectors(ImageSizeBytes, OpticalConstants.DataSectorSize);
-            DetectedImageFormat = "ISO 9660 Image";
+            DetectedImageFormat = ext == ".udf" ? "UDF Disc Image" : "ISO 9660 Image";
 
-            try
+            if (ext == ".iso")
             {
-                using var reader = IsoImageReader.FromFile(SourceImagePath);
-                if (reader.HasJoliet)
+                try
                 {
-                    DetectedImageFormat = "ISO 9660 / Joliet Image";
+                    using var reader = IsoImageReader.FromFile(SourceImagePath);
+                    if (reader.HasJoliet)
+                    {
+                        DetectedImageFormat = "ISO 9660 / Joliet Image";
+                    }
                 }
-            }
-            catch
-            {
-                // Fallback to standard ISO 9660
+                catch
+                {
+                    // Fallback to standard ISO 9660 or pure UDF
+                }
             }
         }
         else if (ext == ".cue")
@@ -935,6 +1073,7 @@ public class ImageStudioViewModel : ObservableObject
         }
 
         OnPropertyChanged(nameof(ImageSizeFormatted));
+        RefreshImageBrowserTree(logWarnings: false);
     }
 
     /// <summary>
@@ -955,40 +1094,34 @@ public class ImageStudioViewModel : ObservableObject
             return;
         }
 
-        string ext = Path.GetExtension(path).ToLowerInvariant();
-        if (ext == ".iso")
+        if (LastBrowseResult != null)
         {
-            try
+            var result = LastBrowseResult;
+            AppendLog($"Browsing {result.FormatName} '{Path.GetFileName(path)}' (Label: '{result.VolumeLabel}', FS: {result.ActiveFileSystem}, ISO9660={result.HasIso9660}, Joliet={result.HasJoliet}, UDF={result.HasUdf}): {result.DirectoryCount} folder(s), {result.FileCount} file(s).");
+            const int maxLoggedEntries = 200;
+            int logged = 0;
+            foreach (var entry in result.Entries)
             {
-                using var reader = IsoImageReader.FromFile(path);
-                var files = reader.AllFiles;
-                var dirs = reader.AllDirectories;
-                AppendLog($"Browsing ISO image '{Path.GetFileName(path)}' (Label: '{reader.VolumeLabel}', ISO9660={reader.HasIso9660}, Joliet={reader.HasJoliet}, UDF={reader.HasUdf}): {dirs.Count} folder(s), {files.Count} file(s).");
-                const int maxLoggedEntries = 200;
-                int logged = 0;
-                foreach (var d in dirs)
+                if (logged++ >= maxLoggedEntries) break;
+                if (entry.IsDirectory)
                 {
-                    if (logged++ >= maxLoggedEntries) break;
-                    AppendLog($"  [DIR]  {d.VirtualPath}");
+                    AppendLog($"  [DIR]  {entry.VirtualPath}");
                 }
-                foreach (var f in files)
+                else
                 {
-                    if (logged++ >= maxLoggedEntries) break;
-                    AppendLog($"  [FILE] {f.VirtualPath} ({f.SizeBytes:N0} B)");
+                    AppendLog($"  [FILE] {entry.VirtualPath} ({entry.SizeBytes:N0} B)");
                 }
-                if (dirs.Count + files.Count > maxLoggedEntries)
-                {
-                    AppendLog($"  ... and {dirs.Count + files.Count - maxLoggedEntries} more entries.");
-                }
-                StatusMessage = $"Browsing '{Path.GetFileName(path)}': {files.Count} file(s), {dirs.Count} folder(s).";
-                return;
             }
-            catch (Exception ex)
+            if (result.Entries.Count > maxLoggedEntries)
             {
-                AppendLog($"Could not read ISO filesystem from '{Path.GetFileName(path)}': {ex.Message}");
+                AppendLog($"  ... and {result.Entries.Count - maxLoggedEntries} more entries.");
             }
+            StatusMessage = $"Browsing '{Path.GetFileName(path)}': {result.FileCount} file(s), {result.DirectoryCount} folder(s).";
+            return;
         }
-        else if (ext == ".cue")
+
+        string ext = Path.GetExtension(path).ToLowerInvariant();
+        if (ext == ".cue")
         {
             try
             {
@@ -1033,7 +1166,7 @@ public class ImageStudioViewModel : ObservableObject
         var dlg = new OpenFileDialog
         {
             Title = "Select Disc Image to Open",
-            Filter = "All Supported Disc Images (*.iso;*.cue;*.bin;*.nrg;*.cdi;*.mdf;*.mds;*.ccd;*.img)|*.iso;*.cue;*.bin;*.nrg;*.cdi;*.mdf;*.mds;*.ccd;*.img|ISO Images (*.iso)|*.iso|CUE Sheets (*.cue)|*.cue|Legacy Images (*.nrg;*.cdi;*.mdf;*.mds;*.ccd;*.img)|*.nrg;*.cdi;*.mdf;*.mds;*.ccd;*.img|Raw Binary Images (*.bin)|*.bin|All Files (*.*)|*.*"
+            Filter = "All Supported Disc Images (*.iso;*.udf;*.cue;*.bin;*.nrg;*.cdi;*.mdf;*.mds;*.ccd;*.img)|*.iso;*.udf;*.cue;*.bin;*.nrg;*.cdi;*.mdf;*.mds;*.ccd;*.img|ISO & UDF Images (*.iso;*.udf)|*.iso;*.udf|CUE Sheets (*.cue)|*.cue|Legacy Images (*.nrg;*.cdi;*.mdf;*.mds;*.ccd;*.img)|*.nrg;*.cdi;*.mdf;*.mds;*.ccd;*.img|Raw Binary Images (*.bin)|*.bin|All Files (*.*)|*.*"
         };
 
         if (dlg.ShowDialog() == true && !string.IsNullOrWhiteSpace(dlg.FileName))
@@ -2291,6 +2424,309 @@ public class ImageStudioViewModel : ObservableObject
         }
 
         return dispatcher.InvokeAsync(Show).Task;
+    }
+
+    #endregion
+
+    #region Image Content Browser & Extraction Operations
+
+    private readonly List<ImageBrowserNodeViewModel> _allBrowserRoots = new();
+
+    private void ClearImageBrowserTree()
+    {
+        _allBrowserRoots.Clear();
+        ImageTreeRoots.Clear();
+        SelectedImageEntry = null;
+        LastBrowseResult = null;
+        ImageBrowseSummary = "Load an image (.iso, .udf, .nrg, .mds, .ccd, .cdi, .cue/.bin) to browse its files.";
+    }
+
+    /// <summary>
+    /// Refreshes the read-only directory tree from <see cref="SourceImagePath"/>.
+    /// </summary>
+    public void RefreshImageBrowserTree(bool logWarnings = true)
+    {
+        if (string.IsNullOrWhiteSpace(SourceImagePath) || !File.Exists(SourceImagePath))
+        {
+            ClearImageBrowserTree();
+            return;
+        }
+
+        if (_browserService.TryBrowse(SourceImagePath, out var browse) && browse != null)
+        {
+            LastBrowseResult = browse;
+            _allBrowserRoots.Clear();
+            foreach (var child in browse.Root.Children)
+            {
+                _allBrowserRoots.Add(BuildNodeViewModel(child));
+            }
+            SelectedImageEntry = null;
+            ApplyImageBrowseFilter();
+
+            string vol = string.IsNullOrWhiteSpace(browse.VolumeLabel) ? "(untitled)" : browse.VolumeLabel;
+            ImageBrowseSummary = $"{browse.ActiveFileSystem}  ·  {browse.FileCount:N0} file(s), {browse.DirectoryCount:N0} folder(s)  ·  Volume: {vol}";
+            if (logWarnings)
+            {
+                foreach (string w in browse.Warnings)
+                {
+                    AppendLog($"Browse warning: {w}");
+                }
+            }
+        }
+        else
+        {
+            _allBrowserRoots.Clear();
+            ImageTreeRoots.Clear();
+            SelectedImageEntry = null;
+            LastBrowseResult = null;
+            ImageBrowseSummary = "No readable ISO 9660, Joliet, or UDF filesystem found in this image.";
+        }
+    }
+
+    private ImageBrowserNodeViewModel BuildNodeViewModel(DiscImageTreeNode node)
+    {
+        var vm = new ImageBrowserNodeViewModel(node.Entry, () => ExtractSelectedCommand?.RaiseCanExecuteChanged());
+        foreach (var child in node.Children)
+        {
+            vm.Children.Add(BuildNodeViewModel(child));
+        }
+        return vm;
+    }
+
+    private bool HasAnyCheckedBrowserNode()
+    {
+        static bool AnyChecked(IEnumerable<ImageBrowserNodeViewModel> nodes)
+        {
+            foreach (var n in nodes)
+            {
+                if (n.IsChecked || AnyChecked(n.Children))
+                {
+                    return true;
+                }
+            }
+            return false;
+        }
+
+        return AnyChecked(_allBrowserRoots);
+    }
+
+    private List<string> CollectCheckedOrSelectedEntryPaths()
+    {
+        var paths = new List<string>();
+        void WalkChecked(IEnumerable<ImageBrowserNodeViewModel> nodes)
+        {
+            foreach (var n in nodes)
+            {
+                if (n.IsChecked)
+                {
+                    paths.Add(n.RelativePath);
+                }
+                else
+                {
+                    WalkChecked(n.Children);
+                }
+            }
+        }
+
+        WalkChecked(_allBrowserRoots);
+        if (paths.Count == 0 && SelectedImageEntry != null && !string.IsNullOrWhiteSpace(SelectedImageEntry.RelativePath))
+        {
+            paths.Add(SelectedImageEntry.RelativePath);
+        }
+        return paths;
+    }
+
+    private void ApplyImageBrowseFilter()
+    {
+        string query = _imageBrowseSearchText.Trim();
+        ImageTreeRoots.Clear();
+
+        if (string.IsNullOrEmpty(query))
+        {
+            foreach (var root in _allBrowserRoots)
+            {
+                ImageTreeRoots.Add(root);
+            }
+            return;
+        }
+
+        foreach (var root in _allBrowserRoots)
+        {
+            var filtered = FilterNode(root, query);
+            if (filtered != null)
+            {
+                ImageTreeRoots.Add(filtered);
+            }
+        }
+    }
+
+    private ImageBrowserNodeViewModel? FilterNode(ImageBrowserNodeViewModel source, string query)
+    {
+        bool selfMatches = source.Name.Contains(query, StringComparison.OrdinalIgnoreCase) ||
+                           source.RelativePath.Contains(query, StringComparison.OrdinalIgnoreCase);
+
+        var matchingChildren = new List<ImageBrowserNodeViewModel>();
+        foreach (var child in source.Children)
+        {
+            var filteredChild = FilterNode(child, query);
+            if (filteredChild != null)
+            {
+                matchingChildren.Add(filteredChild);
+            }
+        }
+
+        if (!selfMatches && matchingChildren.Count == 0)
+        {
+            return null;
+        }
+
+        var copy = new ImageBrowserNodeViewModel(source.Entry, () => ExtractSelectedCommand?.RaiseCanExecuteChanged())
+        {
+            IsChecked = source.IsChecked,
+            IsSelected = source.IsSelected,
+            IsExpanded = matchingChildren.Count > 0
+        };
+        foreach (var child in matchingChildren)
+        {
+            copy.Children.Add(child);
+        }
+        return copy;
+    }
+
+    /// <summary>
+    /// Safely extracts the checked or currently selected entry/folder from <see cref="SourceImagePath"/>.
+    /// </summary>
+    public Task<DiscImageExtractionResult?> ExtractSelectedEntriesAsync(
+        string? outputDirectory = null,
+        CancellationToken ct = default)
+    {
+        List<string> selectedPaths = CollectCheckedOrSelectedEntryPaths();
+        if (selectedPaths.Count == 0)
+        {
+            StatusMessage = "Select or check at least one file or folder to extract.";
+            return Task.FromResult<DiscImageExtractionResult?>(null);
+        }
+
+        return ExtractEntriesInternalAsync(selectedPaths, outputDirectory, ct);
+    }
+
+    /// <summary>
+    /// Safely extracts all entries from <see cref="SourceImagePath"/> into a target directory.
+    /// </summary>
+    public Task<DiscImageExtractionResult?> ExtractAllEntriesAsync(
+        string? outputDirectory = null,
+        CancellationToken ct = default) =>
+        ExtractEntriesInternalAsync(entryPaths: null, outputDirectory, ct);
+
+    private async Task<DiscImageExtractionResult?> ExtractEntriesInternalAsync(
+        IReadOnlyList<string>? entryPaths,
+        string? outputDirectory,
+        CancellationToken ct)
+    {
+        if (string.IsNullOrWhiteSpace(SourceImagePath) || !File.Exists(SourceImagePath))
+        {
+            StatusMessage = Strings.StatusImageStudioSourceDiscImageFileDoesNot;
+            return null;
+        }
+
+        string? targetDir = outputDirectory ?? ExtractOutputDirectory;
+        if (string.IsNullOrWhiteSpace(targetDir))
+        {
+            if (CdBurner.App.Views.BurnTargetDialog.IsInteractiveSession)
+            {
+                var dlg = new OpenFolderDialog
+                {
+                    Title = entryPaths == null
+                        ? "Select Folder to Extract All Image Contents"
+                        : "Select Folder to Extract Selected Entries"
+                };
+                if (dlg.ShowDialog() != true || string.IsNullOrWhiteSpace(dlg.FolderName))
+                {
+                    return null;
+                }
+                targetDir = dlg.FolderName;
+            }
+            else
+            {
+                string stem = Path.GetFileNameWithoutExtension(SourceImagePath);
+                string parent = Path.GetDirectoryName(SourceImagePath) ?? Path.GetTempPath();
+                targetDir = Path.Combine(parent, stem + "_extracted");
+            }
+        }
+
+        _activeCts?.Dispose();
+        _activeCts = CancellationTokenSource.CreateLinkedTokenSource(ct);
+        CancellationToken effectiveCt = _activeCts.Token;
+
+        IsBusy = true;
+        BurnProgress = 0;
+        LastExtractionResult = null;
+        StatusMessage = entryPaths == null
+            ? $"Extracting all files from '{Path.GetFileName(SourceImagePath)}'..."
+            : $"Extracting {entryPaths.Count} selected item(s) from '{Path.GetFileName(SourceImagePath)}'...";
+        AppendLog(StatusMessage);
+
+        int epoch;
+        lock (_progressLock)
+        {
+            epoch = ++_progressEpoch;
+        }
+
+        IProgress<DiscImageExtractionProgress> progress = new Progress<DiscImageExtractionProgress>(p =>
+        {
+            lock (_progressLock)
+            {
+                if (!_isBusy || epoch != _progressEpoch)
+                {
+                    return;
+                }
+
+                double pct = p.TotalBytes > 0
+                    ? Math.Min(100.0, (double)p.BytesCopied / p.TotalBytes * 100.0)
+                    : (p.TotalFiles > 0 ? Math.Min(100.0, (double)p.FilesCompleted / p.TotalFiles * 100.0) : 100.0);
+                BurnProgress = pct;
+                StatusMessage = $"Extracting '{p.CurrentEntryPath}' ({p.FilesCompleted}/{p.TotalFiles})...";
+            }
+        });
+
+        try
+        {
+            var options = new DiscImageExtractionOptions(
+                OutputDirectory: targetDir,
+                EntryPaths: entryPaths,
+                OverwriteExisting: ExtractOverwriteExisting);
+
+            DiscImageExtractionResult result = await Task.Run(
+                () => _browserService.ExtractAsync(SourceImagePath, options, progress, effectiveCt),
+                effectiveCt);
+
+            EndOperationProgress();
+            BurnProgress = 100.0;
+            LastExtractionResult = result;
+            StatusMessage = $"Extracted {result.ExtractedFileCount:N0} file(s) ({result.ExtractedBytes:N0} bytes) to '{result.OutputDirectory}'.";
+            AppendLog(StatusMessage);
+            return result;
+        }
+        catch (OperationCanceledException)
+        {
+            EndOperationProgress();
+            StatusMessage = "Image extraction cancelled.";
+            AppendLog(StatusMessage);
+            return null;
+        }
+        catch (Exception ex)
+        {
+            EndOperationProgress();
+            StatusMessage = $"Extraction failed: {ex.Message}";
+            AppendLog(StatusMessage);
+            return null;
+        }
+        finally
+        {
+            _activeCts?.Dispose();
+            _activeCts = null;
+            IsBusy = false;
+        }
     }
 
     #endregion

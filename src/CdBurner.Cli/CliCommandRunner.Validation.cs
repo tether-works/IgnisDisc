@@ -21,7 +21,7 @@ public static partial class CliCommandRunner
         "artist", "aspect", "bitrate", "block-size", "boot-bios", "boot-uefi", "candidate",
         "cells", "chapters", "compare", "config", "copies", "cover", "cover-art", "crossfade",
         "csv", "cue", "data-folder", "data-label", "date", "dir", "disc", "disc-preset",
-        "disc-presets-file", "drive", "drive-model", "ffmpeg", "files", "fill-picture", "fit",
+        "disc-presets-file", "drive", "drive-model", "entry", "ffmpeg", "files", "fill-picture", "fit",
         "fixed-time", "format", "from", "image", "images", "inner-radius-mm", "input", "iso",
         "json-output", "key", "label", "language", "layer-break", "library", "log-dir",
         "loudness", "media", "media-id", "menu", "menu-autoplay", "menu-title", "mp3-bitrate",
@@ -168,7 +168,7 @@ public static partial class CliCommandRunner
         "rip", "rip-audio", "convert-audio", "copy-disc", "check-disc", "detect-offset",
         "archive-stage", "archive-burn", "archive-verify", "recover", "verify", "erase", "scan",
         "settings", "tools", "install-ffmpeg", "install-par2", "check-update", "image-info",
-        "convert-image", "author-dvd", "jewel-cover", "audio-plan", "burn-queue", "book-type",
+        "convert-image", "browse-image", "extract-image", "author-dvd", "jewel-cover", "audio-plan", "burn-queue", "book-type",
         "repair-par2", "rosetta", "disc-art"
     ];
 
@@ -214,7 +214,8 @@ public static partial class CliCommandRunner
         Add(CommandOptionSpec.Of([], ["settings-file", "config", "key", "value"]), "settings");
         Add(CommandOptionSpec.Of([], ["ffmpeg", "par2"]), "tools");
         Add(CommandOptionSpec.Of(["plan-only", "overwrite"], ["dir"]), "install-ffmpeg", "install-par2");
-        Add(CommandOptionSpec.Of([], ["image", "input"]), "image-info", "imageinfo");
+        Add(CommandOptionSpec.Of([], ["image", "input"]), "image-info", "imageinfo", "browse-image", "browseimage");
+        Add(CommandOptionSpec.Of(["overwrite"], ["image", "input", "out", "entry"]), "extract-image", "extractimage");
         Add(CommandOptionSpec.Of(["overwrite"], ["input", "output", "cue"]), "convert-image", "convertimage");
         Add(CommandOptionSpec.Of(["overwrite", .. DvdAuthoringFlags], ["input", "video-ts", "output", .. DvdAuthoringOptions]), "author-dvd", "authordvd");
         Add(CommandOptionSpec.Of(["overwrite", .. AudioCompilationFlags], ["output", .. AudioCompilationOptions]), "jewel-cover", "jewelcover");

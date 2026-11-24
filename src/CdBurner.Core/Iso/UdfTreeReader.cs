@@ -54,6 +54,29 @@ public sealed class UdfTreeReader
         }
     }
 
+    internal static string? TryReadVolumeLabel(Stream image, int sessionStartLba = 0)
+    {
+        ArgumentNullException.ThrowIfNull(image);
+        ArgumentOutOfRangeException.ThrowIfNegative(sessionStartLba);
+        var reader = new UdfTreeReader(image);
+        try
+        {
+            return reader.ReadVolumeLabel(sessionStartLba);
+        }
+        catch (Exception ex) when (ex is InvalidDataException or IOException or ArgumentOutOfRangeException or OverflowException)
+        {
+            return null;
+        }
+    }
+
+    private string? _volumeLabel;
+
+    private string? ReadVolumeLabel(int sessionStartLba)
+    {
+        _ = Read(sessionStartLba);
+        return _volumeLabel;
+    }
+
     private IsoDirectoryEntry? Read(int sessionStartLba)
     {
         long sessionAnchor = (long)sessionStartLba + 256;
@@ -102,6 +125,7 @@ public sealed class UdfTreeReader
     {
         int partitionStart = -1;
         byte[]? lvd = null;
+        string? pvdLabel = null;
         for (uint i = 0; i < 64; i++)
         {
             if (!TryTag(ReadSector(vds + i), vds + i, null, out var d))
@@ -110,6 +134,7 @@ public sealed class UdfTreeReader
             }
             ushort id = BinaryPrimitives.ReadUInt16LittleEndian(d);
             if (id == 8) break;                                                                   // terminator
+            if (id == 1) pvdLabel ??= DecodeDString(d.AsSpan(24, 32));
             if (id == 5) partitionStart = (int)BinaryPrimitives.ReadUInt32LittleEndian(d.AsSpan(188));
             if (id == 6) lvd = d;
         }
@@ -117,6 +142,7 @@ public sealed class UdfTreeReader
         {
             return null;
         }
+        _volumeLabel = DecodeDString(lvd.AsSpan(84, 128)) ?? pvdLabel;
 
         _partitionStart = partitionStart;
         _metadataExtents = null;
@@ -174,6 +200,11 @@ public sealed class UdfTreeReader
             return false;
         }
 
+        if (entry.ModificationTimeUtc != DateTime.MinValue)
+        {
+            into.RecordingTimeUtc = entry.ModificationTimeUtc;
+        }
+
         byte[] stream = ReadExtents(entry.Extents, entry.Length);
         int offset = 0;
         while (offset + 38 <= stream.Length)
@@ -201,10 +232,21 @@ public sealed class UdfTreeReader
                 continue; // parent entry, deleted entry, or a name we cannot decode
             }
 
+            bool isHidden = (characteristics & 0x01) != 0;
             string childPath = path + "/" + name;
             if ((characteristics & 0x02) != 0)
             {
-                var directory = new IsoDirectoryEntry { Name = name, VirtualPath = childPath, IsDirectory = true };
+                int dirStartLba = TryEntry(child, out var dirEntryMeta) && dirEntryMeta.Extents.Count > 0
+                    ? (int)(dirEntryMeta.Extents[0].Start / B)
+                    : 0;
+                var directory = new IsoDirectoryEntry
+                {
+                    Name = name,
+                    VirtualPath = childPath,
+                    StartLba = dirStartLba,
+                    IsDirectory = true,
+                    IsHidden = isHidden
+                };
                 if (ReadDirectory(child, directory, childPath, depth + 1))
                 {
                     into.Children.Add(directory);
@@ -212,7 +254,19 @@ public sealed class UdfTreeReader
                 continue;
             }
 
-            if (!TryEntry(child, out var file) || file.FileType != 5)
+            if (!TryEntry(child, out var file))
+            {
+                Skipped.Add($"{childPath}: file entry unreadable");
+                continue;
+            }
+
+            if (file.FileType == 12)
+            {
+                Skipped.Add($"{childPath}: symbolic link skipped");
+                continue;
+            }
+
+            if (file.FileType != 5)
             {
                 Skipped.Add($"{childPath}: file entry unreadable");
                 continue;
@@ -237,13 +291,15 @@ public sealed class UdfTreeReader
                 VirtualPath = childPath,
                 StartLba = (int)(start / B),
                 SizeBytes = file.Length,
-                IsDirectory = false
+                RecordingTimeUtc = file.ModificationTimeUtc,
+                IsDirectory = false,
+                IsHidden = isHidden
             });
         }
         return true;
     }
 
-    private readonly record struct Entry(byte FileType, long Length, List<(long Start, long Length)> Extents);
+    private readonly record struct Entry(byte FileType, long Length, List<(long Start, long Length)> Extents, DateTime ModificationTimeUtc);
 
     /// <summary>File Entry (261) or Extended File Entry (266): type, length and data extents as absolute bytes.</summary>
     private bool TryEntry(Address at, out Entry entry)
@@ -262,6 +318,7 @@ public sealed class UdfTreeReader
         bool extended = id == 266;
         int adType = BinaryPrimitives.ReadUInt16LittleEndian(d.AsSpan(34)) & 7;
         long length = (long)BinaryPrimitives.ReadUInt64LittleEndian(d.AsSpan(56));
+        DateTime mtimeUtc = TryParseUdfTimestamp(d.AsSpan(extended ? 92 : 84, 12));
         uint eaLength = BinaryPrimitives.ReadUInt32LittleEndian(d.AsSpan(extended ? 208 : 168));
         uint adLength = BinaryPrimitives.ReadUInt32LittleEndian(d.AsSpan(extended ? 212 : 172));
         int pos = (extended ? 216 : 176) + (int)eaLength;
@@ -286,8 +343,74 @@ public sealed class UdfTreeReader
             extents.Add((start, extentLength));
         }
 
-        entry = new Entry(d[27], length, extents);
+        entry = new Entry(d[27], length, extents, mtimeUtc);
         return true;
+    }
+
+    private static DateTime TryParseUdfTimestamp(ReadOnlySpan<byte> ts)
+    {
+        if (ts.Length < 12)
+        {
+            return DateTime.MinValue;
+        }
+
+        ushort typeAndTz = BinaryPrimitives.ReadUInt16LittleEndian(ts);
+        int type = (typeAndTz >> 12) & 0x0F;
+        int rawOffset = typeAndTz & 0x0FFF;
+        if ((rawOffset & 0x0800) != 0)
+        {
+            rawOffset |= unchecked((int)0xFFFFF000);
+        }
+
+        int year = BinaryPrimitives.ReadInt16LittleEndian(ts.Slice(2, 2));
+        int month = ts[4];
+        int day = ts[5];
+        int hour = ts[6];
+        int minute = ts[7];
+        int second = ts[8];
+        int centiseconds = ts[9];
+        if (year is < 1 or > 9999 || month is < 1 or > 12 || day is < 1 or > 31 ||
+            hour > 23 || minute > 59 || second > 59)
+        {
+            return DateTime.MinValue;
+        }
+
+        try
+        {
+            int ms = centiseconds <= 99 ? centiseconds * 10 : 0;
+            var dt = new DateTime(year, month, day, hour, minute, second, ms, DateTimeKind.Utc);
+            if (type == 1 && rawOffset is >= -1440 and <= 1440)
+            {
+                dt = dt.AddMinutes(-rawOffset);
+            }
+            return dt;
+        }
+        catch (ArgumentOutOfRangeException)
+        {
+            return DateTime.MinValue;
+        }
+    }
+
+    private static string? DecodeDString(ReadOnlySpan<byte> field)
+    {
+        if (field.Length < 3)
+        {
+            return null;
+        }
+
+        int len = field[^1];
+        if (len < 2 || len > field.Length - 1)
+        {
+            return null;
+        }
+
+        string? raw = field[0] switch
+        {
+            8 => Encoding.Latin1.GetString(field.Slice(1, len - 1)),
+            16 => Encoding.BigEndianUnicode.GetString(field.Slice(1, len - 1)),
+            _ => null
+        };
+        return string.IsNullOrWhiteSpace(raw) ? null : raw.TrimEnd('\0', ' ');
     }
 
     private List<(long Start, long Length)>? TryExtents(Address at) =>

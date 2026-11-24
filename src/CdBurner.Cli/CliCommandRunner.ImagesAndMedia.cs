@@ -251,6 +251,147 @@ public static partial class CliCommandRunner
         return 0;
     }
 
+    private static int HandleBrowseImage(CommandLineArgs cmd, TextWriter stdout)
+    {
+        string fullPath = ResolveImageFileInput(cmd, "browse-image <file>");
+        var browser = new DiscImageBrowserService();
+        var result = browser.Browse(fullPath);
+
+        if (cmd.IsJson)
+        {
+            WriteJsonResult(stdout, new
+            {
+                success = true,
+                imagePath = result.ImagePath,
+                formatName = result.FormatName,
+                volumeLabel = result.VolumeLabel,
+                activeFileSystem = result.ActiveFileSystem,
+                hasIso9660 = result.HasIso9660,
+                hasJoliet = result.HasJoliet,
+                hasUdf = result.HasUdf,
+                imageSizeBytes = result.ImageSizeBytes,
+                sectorCount = result.SectorCount,
+                directoryCount = result.DirectoryCount,
+                fileCount = result.FileCount,
+                warnings = result.Warnings,
+                entries = result.Entries.Select(e => new
+                {
+                    name = e.Name,
+                    relativePath = e.RelativePath,
+                    virtualPath = e.VirtualPath,
+                    isDirectory = e.IsDirectory,
+                    sizeBytes = e.SizeBytes,
+                    timestampUtc = e.TimestampUtc,
+                    attributes = e.Attributes.ToString(),
+                    flags = e.FlagsSummary,
+                    startLba = e.StartLba,
+                    fileSystemSource = e.FileSystemSource
+                })
+            });
+            return 0;
+        }
+
+        stdout.WriteLine($"Image File:      {result.ImagePath}");
+        stdout.WriteLine($"Format:          {result.FormatName}");
+        stdout.WriteLine($"Volume Label:    {(string.IsNullOrWhiteSpace(result.VolumeLabel) ? "(none)" : result.VolumeLabel)}");
+        stdout.WriteLine($"Filesystem:      {result.ActiveFileSystem}");
+        stdout.WriteLine($"Entries:         {result.DirectoryCount:N0} dir(s), {result.FileCount:N0} file(s)");
+        foreach (var entry in result.Entries)
+        {
+            string kind = entry.IsDirectory ? "DIR " : "FILE";
+            string ts = entry.TimestampUtc > DateTime.MinValue
+                ? entry.TimestampUtc.ToString("yyyy-MM-dd HH:mm:ss 'UTC'", CultureInfo.InvariantCulture)
+                : "-";
+            stdout.WriteLine($"  [{kind}] {entry.RelativePath,-48} {entry.SizeBytes,12:N0} B  LBA {entry.StartLba,8:N0}  {ts}  [{entry.FlagsSummary}] ({entry.FileSystemSource})");
+        }
+        foreach (string warning in result.Warnings)
+        {
+            stdout.WriteLine($"Warning: {warning}");
+        }
+        return 0;
+    }
+
+    private static async Task<int> HandleExtractImageAsync(CommandLineArgs cmd, TextWriter stdout, TextWriter stderr)
+    {
+        string fullPath = ResolveImageFileInput(cmd, "extract-image <file> --out <dir>");
+        string outputDir = Path.GetFullPath(cmd.GetRequiredOption("out", "--out <dir>"));
+        IReadOnlyList<string> entries = cmd.GetOptions("entry");
+        bool overwrite = cmd.HasFlag("overwrite");
+
+        var progress = cmd.IsJson ? null : new SubtitleStepProgress(stderr);
+        IProgress<DiscImageExtractionProgress>? extractProgress = progress == null
+            ? null
+            : new Progress<DiscImageExtractionProgress>(p =>
+            {
+                double pct = p.TotalBytes > 0
+                    ? Math.Min(100.0, (double)p.BytesCopied / p.TotalBytes * 100.0)
+                    : (p.TotalFiles > 0 ? Math.Min(100.0, (double)p.FilesCompleted / p.TotalFiles * 100.0) : 100.0);
+                progress.Report((pct, $"Extracting {p.CurrentEntryPath}... ({p.FilesCompleted}/{p.TotalFiles})"));
+            });
+
+        var browser = new DiscImageBrowserService();
+        var result = await browser.ExtractAsync(
+            fullPath,
+            new DiscImageExtractionOptions(
+                OutputDirectory: outputDir,
+                EntryPaths: entries.Count > 0 ? entries : null,
+                OverwriteExisting: overwrite),
+            extractProgress).ConfigureAwait(false);
+
+        if (cmd.IsJson)
+        {
+            WriteJsonResult(stdout, new
+            {
+                success = true,
+                imagePath = result.ImagePath,
+                outputDirectory = result.OutputDirectory,
+                fileSystemUsed = result.FileSystemUsed,
+                extractedFileCount = result.ExtractedFileCount,
+                createdDirectoryCount = result.CreatedDirectoryCount,
+                extractedBytes = result.ExtractedBytes,
+                extractedFiles = result.ExtractedFiles,
+                warnings = result.Warnings
+            });
+            return 0;
+        }
+
+        stdout.WriteLine("Disc image extraction completed:");
+        stdout.WriteLine($"  Source:     {result.ImagePath}");
+        stdout.WriteLine($"  Output Dir: {result.OutputDirectory}");
+        stdout.WriteLine($"  Filesystem: {result.FileSystemUsed}");
+        stdout.WriteLine($"  Extracted:  {result.ExtractedFileCount:N0} file(s), {result.CreatedDirectoryCount:N0} folder(s), {FormatBytes(result.ExtractedBytes)} ({result.ExtractedBytes:N0} bytes)");
+        return 0;
+    }
+
+    private static string ResolveImageFileInput(CommandLineArgs cmd, string usageHint)
+    {
+        string? explicitOption = cmd.GetOption("image") ?? cmd.GetOption("input");
+        if (!string.IsNullOrWhiteSpace(explicitOption) && cmd.Positionals.Count > 0)
+        {
+            throw new CommandLineException($"Unexpected positional argument '{cmd.Positionals[0]}' when image option is already specified.");
+        }
+        if (cmd.Positionals.Count > 1)
+        {
+            throw new CommandLineException($"Unexpected extra argument '{cmd.Positionals[1]}'. Usage: {usageHint}");
+        }
+
+        string? rawPath = !string.IsNullOrWhiteSpace(explicitOption)
+            ? explicitOption
+            : (cmd.Positionals.Count > 0 ? cmd.Positionals[0] : null);
+        if (string.IsNullOrWhiteSpace(rawPath))
+        {
+            throw new CommandLineException($"Missing disc image file. Usage: {usageHint}");
+        }
+
+        string fullPath = Path.GetFullPath(rawPath);
+        if (!File.Exists(fullPath))
+        {
+            throw new FileNotFoundException($"Disc image file not found: '{fullPath}'.", fullPath);
+        }
+
+        return fullPath;
+    }
+
     internal static DvdAuthoringOptions BuildDvdAuthoringOptions(CommandLineArgs cmd, string volumeLabel)
     {
         string? standardStr = cmd.GetOption("standard");
