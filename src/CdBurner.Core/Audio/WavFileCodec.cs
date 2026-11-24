@@ -1,3 +1,4 @@
+using System.Buffers;
 using System.Buffers.Binary;
 using System.Text;
 using CdBurner.Core.Primitives;
@@ -10,6 +11,7 @@ namespace CdBurner.Core.Audio;
 /// </summary>
 public static class WavFileCodec
 {
+    private const long MaxRiffDataBytes = (long)uint.MaxValue - 36;
     private static readonly byte[] RiffHeader = "RIFF"u8.ToArray();
     private static readonly byte[] WaveHeader = "WAVE"u8.ToArray();
     private static readonly byte[] FmtHeader = "fmt "u8.ToArray();
@@ -29,10 +31,21 @@ public static class WavFileCodec
         int pcmByteLength,
         int sampleRate = OpticalConstants.CdAudioSampleRate,
         short channels = OpticalConstants.CdAudioChannels,
-        short bitsPerSample = OpticalConstants.CdAudioBitsPerSample)
+        short bitsPerSample = OpticalConstants.CdAudioBitsPerSample) =>
+        CreateWavHeader((long)pcmByteLength, sampleRate, channels, bitsPerSample, isFloat: false);
+
+    /// <summary>
+    /// Creates a standard 44-byte RIFF WAVE header for PCM or IEEE float streams up to the 4 GiB RIFF limit.
+    /// </summary>
+    public static byte[] CreateWavHeader(
+        long pcmByteLength,
+        int sampleRate = OpticalConstants.CdAudioSampleRate,
+        short channels = OpticalConstants.CdAudioChannels,
+        short bitsPerSample = OpticalConstants.CdAudioBitsPerSample,
+        bool isFloat = false)
     {
         byte[] header = new byte[44];
-        WriteWavHeader(header.AsSpan(), pcmByteLength, sampleRate, channels, bitsPerSample);
+        WriteWavHeader(header.AsSpan(), pcmByteLength, sampleRate, channels, bitsPerSample, isFloat);
         return header;
     }
 
@@ -44,17 +57,54 @@ public static class WavFileCodec
         int pcmByteLength,
         int sampleRate = OpticalConstants.CdAudioSampleRate,
         short channels = OpticalConstants.CdAudioChannels,
-        short bitsPerSample = OpticalConstants.CdAudioBitsPerSample)
+        short bitsPerSample = OpticalConstants.CdAudioBitsPerSample) =>
+        WriteWavHeader(destination, (long)pcmByteLength, sampleRate, channels, bitsPerSample, isFloat: false);
+
+    /// <summary>
+    /// Writes a standard 44-byte RIFF WAVE header to a span for PCM or IEEE float payloads up to the 4 GiB RIFF limit.
+    /// </summary>
+    public static void WriteWavHeader(
+        Span<byte> destination,
+        long pcmByteLength,
+        int sampleRate = OpticalConstants.CdAudioSampleRate,
+        short channels = OpticalConstants.CdAudioChannels,
+        short bitsPerSample = OpticalConstants.CdAudioBitsPerSample,
+        bool isFloat = false)
     {
         if (destination.Length < 44)
         {
             throw new ArgumentException("Destination span must be at least 44 bytes.", nameof(destination));
         }
 
+        if (pcmByteLength < 0 || pcmByteLength > MaxRiffDataBytes)
+        {
+            throw new ArgumentOutOfRangeException(
+                nameof(pcmByteLength),
+                pcmByteLength,
+                $"PCM byte length must be between 0 and {MaxRiffDataBytes} bytes for a RIFF WAVE header.");
+        }
+
+        if (sampleRate <= 0)
+        {
+            throw new ArgumentOutOfRangeException(nameof(sampleRate), sampleRate, "Sample rate must be positive.");
+        }
+
+        if (channels <= 0)
+        {
+            throw new ArgumentOutOfRangeException(nameof(channels), channels, "Channel count must be positive.");
+        }
+
+        if (bitsPerSample <= 0 || (bitsPerSample % 8) != 0)
+        {
+            throw new ArgumentOutOfRangeException(nameof(bitsPerSample), bitsPerSample, "Bits per sample must be a positive multiple of 8.");
+        }
+
         short bytesPerSample = (short)(bitsPerSample / 8);
-        short blockAlign = (short)(channels * bytesPerSample);
-        int byteRate = sampleRate * blockAlign;
+        short blockAlign = checked((short)(channels * bytesPerSample));
+        uint byteRate = checked((uint)((long)sampleRate * blockAlign));
         uint totalChunkSize = (uint)(pcmByteLength + 36);
+        uint dataSize = (uint)pcmByteLength;
+        ushort audioFormat = isFloat ? WaveFormatIeeeFloat : WaveFormatPcm;
 
         // "RIFF"
         RiffHeader.CopyTo(destination[..4]);
@@ -64,16 +114,16 @@ public static class WavFileCodec
         WaveHeader.CopyTo(destination.Slice(8, 4));
         // "fmt "
         FmtHeader.CopyTo(destination.Slice(12, 4));
-        // Subchunk1Size = 16 for PCM
+        // Subchunk1Size = 16 for standard PCM / IEEE float
         BinaryPrimitives.WriteUInt32LittleEndian(destination.Slice(16, 4), 16);
-        // AudioFormat = 1 (PCM)
-        BinaryPrimitives.WriteUInt16LittleEndian(destination.Slice(20, 2), WaveFormatPcm);
+        // AudioFormat (1 = PCM, 3 = IEEE float)
+        BinaryPrimitives.WriteUInt16LittleEndian(destination.Slice(20, 2), audioFormat);
         // NumChannels
         BinaryPrimitives.WriteUInt16LittleEndian(destination.Slice(22, 2), (ushort)channels);
         // SampleRate
         BinaryPrimitives.WriteUInt32LittleEndian(destination.Slice(24, 4), (uint)sampleRate);
         // ByteRate
-        BinaryPrimitives.WriteUInt32LittleEndian(destination.Slice(28, 4), (uint)byteRate);
+        BinaryPrimitives.WriteUInt32LittleEndian(destination.Slice(28, 4), byteRate);
         // BlockAlign
         BinaryPrimitives.WriteUInt16LittleEndian(destination.Slice(32, 2), (ushort)blockAlign);
         // BitsPerSample
@@ -81,7 +131,7 @@ public static class WavFileCodec
         // "data"
         DataHeader.CopyTo(destination.Slice(36, 4));
         // Subchunk2Size = pcmByteLength
-        BinaryPrimitives.WriteUInt32LittleEndian(destination.Slice(40, 4), (uint)pcmByteLength);
+        BinaryPrimitives.WriteUInt32LittleEndian(destination.Slice(40, 4), dataSize);
     }
 
     /// <summary>
@@ -92,9 +142,21 @@ public static class WavFileCodec
         int pcmByteLength,
         int sampleRate = OpticalConstants.CdAudioSampleRate,
         short channels = OpticalConstants.CdAudioChannels,
-        short bitsPerSample = OpticalConstants.CdAudioBitsPerSample)
+        short bitsPerSample = OpticalConstants.CdAudioBitsPerSample) =>
+        WriteWavHeader(stream, (long)pcmByteLength, sampleRate, channels, bitsPerSample, isFloat: false);
+
+    /// <summary>
+    /// Writes a standard 44-byte RIFF WAVE header directly to a stream.
+    /// </summary>
+    public static void WriteWavHeader(
+        Stream stream,
+        long pcmByteLength,
+        int sampleRate = OpticalConstants.CdAudioSampleRate,
+        short channels = OpticalConstants.CdAudioChannels,
+        short bitsPerSample = OpticalConstants.CdAudioBitsPerSample,
+        bool isFloat = false)
     {
-        byte[] header = CreateWavHeader(pcmByteLength, sampleRate, channels, bitsPerSample);
+        byte[] header = CreateWavHeader(pcmByteLength, sampleRate, channels, bitsPerSample, isFloat);
         stream.Write(header, 0, header.Length);
     }
 
@@ -258,16 +320,25 @@ public static class WavFileCodec
             return ConvertViaRedBookConverter(stream, parsed);
         }
 
-        byte[] rawAudioBytes = reader.ReadBytes((int)Math.Min(parsed.DataSize, int.MaxValue));
-
         int bytesPerSample = parsed.BitsPerSample / 8;
         int bytesPerInputFrame = parsed.Channels * bytesPerSample;
-        int inputFrames = bytesPerInputFrame > 0 ? rawAudioBytes.Length / bytesPerInputFrame : 0;
+        long inputFramesLong = bytesPerInputFrame > 0 ? parsed.DataSize / bytesPerInputFrame : 0;
 
-        if (inputFrames <= 0)
+        if (inputFramesLong <= 0)
         {
             return Array.Empty<byte>();
         }
+
+        long outputBytesLong = inputFramesLong * OpticalConstants.CdAudioBytesPerSample;
+        if (inputFramesLong > RedBookPcmConverter.MaxOutputFrames || outputBytesLong > Array.MaxLength)
+        {
+            throw new InvalidDataException("WAV audio is longer than any Red Book Audio CD can hold.");
+        }
+
+        int inputFrames = (int)inputFramesLong;
+        int exactInputBytes = checked(inputFrames * bytesPerInputFrame);
+        byte[] rawAudioBytes = new byte[exactInputBytes];
+        ReadExactOrThrowInvalidData(stream, rawAudioBytes, "Invalid WAVE file: unexpected end of stream in 'data' chunk.");
 
         // Fast-path 1: Already Red Book PCM (44.1 kHz, 16-bit signed LE, 2 channels, non-float)
         if (parsed.SampleRate == OpticalConstants.CdAudioSampleRate &&
@@ -275,14 +346,7 @@ public static class WavFileCodec
             parsed.BitsPerSample == OpticalConstants.CdAudioBitsPerSample &&
             !parsed.IsFloat)
         {
-            int exactLength = inputFrames * OpticalConstants.CdAudioBytesPerSample;
-            if (rawAudioBytes.Length == exactLength)
-            {
-                return rawAudioBytes;
-            }
-            byte[] fastCopy = new byte[exactLength];
-            Array.Copy(rawAudioBytes, fastCopy, exactLength);
-            return fastCopy;
+            return rawAudioBytes;
         }
 
         // Fast-path 2: 44.1 kHz, 16-bit signed LE, 1 channel (Mono) -> direct stereo duplication without float conversion
@@ -291,7 +355,7 @@ public static class WavFileCodec
             parsed.BitsPerSample == 16 &&
             !parsed.IsFloat)
         {
-            byte[] stereoBytes = new byte[inputFrames * 4];
+            byte[] stereoBytes = new byte[checked(inputFrames * 4)];
             ReadOnlySpan<byte> inSpan = rawAudioBytes;
             Span<byte> outSpan = stereoBytes;
             for (int i = 0; i < inputFrames; i++)
@@ -360,7 +424,10 @@ public static class WavFileCodec
             }
 
             int got = gotBytes / frameBytes;
-            if (got == 0) break;
+            if (got < want)
+            {
+                throw new InvalidDataException("Invalid WAVE file: unexpected end of stream in 'data' chunk.");
+            }
 
             ReadOnlySpan<byte> span = buffer;
             for (int i = 0; i < got; i++)
@@ -383,7 +450,6 @@ public static class WavFileCodec
 
             converter.WriteBlock(samples, channels, sourceBits, got);
             remaining -= got;
-            if (got < want) break;
         }
 
         return converter.Finish();
@@ -413,33 +479,65 @@ public static class WavFileCodec
 
     private static ParsedWavInfo ParseWavHeader(BinaryReader reader, Stream stream)
     {
-        byte[] riff = reader.ReadBytes(4);
-        if (riff.Length < 4 || !riff.AsSpan().SequenceEqual(RiffHeader))
+        Span<byte> riffHeader = stackalloc byte[12];
+        ReadExactOrThrowInvalidData(stream, riffHeader, "Invalid WAVE file: truncated RIFF header.");
+
+        if (!riffHeader[..4].SequenceEqual(RiffHeader))
         {
             throw new InvalidDataException("Invalid WAVE file: missing 'RIFF' header signature.");
         }
 
-        uint fileSizeMinus8 = reader.ReadUInt32();
-        byte[] wave = reader.ReadBytes(4);
-        if (wave.Length < 4 || !wave.AsSpan().SequenceEqual(WaveHeader))
+        uint fileSizeMinus8 = BinaryPrimitives.ReadUInt32LittleEndian(riffHeader.Slice(4, 4));
+        if (!riffHeader.Slice(8, 4).SequenceEqual(WaveHeader))
         {
             throw new InvalidDataException("Invalid WAVE file: missing 'WAVE' format signature.");
+        }
+
+        if (fileSizeMinus8 < 4)
+        {
+            throw new InvalidDataException("Invalid WAVE file: RIFF size is smaller than the WAVE header.");
+        }
+
+        if (stream.CanSeek && fileSizeMinus8 != uint.MaxValue && (8L + fileSizeMinus8) > stream.Length)
+        {
+            throw new InvalidDataException(
+                $"Invalid WAVE file: truncated RIFF payload (header declares {8L + fileSizeMinus8} bytes, stream has {stream.Length} bytes).");
         }
 
         var info = new ParsedWavInfo();
         bool fmtFound = false;
         bool dataFound = false;
+        Span<byte> chunkHeader = stackalloc byte[8];
+        Span<byte> fmtBytes = stackalloc byte[16];
+        Span<byte> extBytes = stackalloc byte[24];
+        Span<byte> listType = stackalloc byte[4];
+        Span<byte> tagHeader = stackalloc byte[8];
 
         while (!stream.CanSeek || stream.Position < stream.Length)
         {
-            byte[] chunkIdBytes = reader.ReadBytes(4);
-            if (chunkIdBytes.Length < 4) break;
+            int headerRead = ReadAtMost(stream, chunkHeader);
+            if (headerRead == 0)
+            {
+                break;
+            }
+            if (headerRead < 8)
+            {
+                throw new InvalidDataException("Invalid WAVE file: truncated RIFF chunk header.");
+            }
 
-            uint chunkSize = reader.ReadUInt32();
+            ReadOnlySpan<byte> chunkIdBytes = chunkHeader[..4];
+            uint chunkSize = BinaryPrimitives.ReadUInt32LittleEndian(chunkHeader.Slice(4, 4));
             long chunkStart = stream.CanSeek ? stream.Position : 0;
-            int bytesConsumedInChunk = 0;
+            long bytesConsumedInChunk = 0;
 
-            if (chunkIdBytes.AsSpan().SequenceEqual(FmtHeader))
+            if (stream.CanSeek && (chunkStart + chunkSize) > stream.Length)
+            {
+                string chunkName = Encoding.ASCII.GetString(chunkIdBytes);
+                throw new InvalidDataException(
+                    $"Invalid WAVE file: truncated '{chunkName}' chunk (expected {chunkSize} bytes, found {Math.Max(0, stream.Length - chunkStart)} bytes).");
+            }
+
+            if (chunkIdBytes.SequenceEqual(FmtHeader))
             {
                 if (chunkSize < 16)
                 {
@@ -447,12 +545,11 @@ public static class WavFileCodec
                 }
 
                 fmtFound = true;
-                info.AudioFormat = reader.ReadUInt16();
-                info.Channels = reader.ReadUInt16();
-                info.SampleRate = (int)reader.ReadUInt32();
-                uint byteRate = reader.ReadUInt32();
-                ushort blockAlign = reader.ReadUInt16();
-                info.BitsPerSample = reader.ReadUInt16();
+                ReadExactOrThrowInvalidData(stream, fmtBytes, "Invalid WAVE file: truncated 'fmt ' chunk.");
+                info.AudioFormat = BinaryPrimitives.ReadUInt16LittleEndian(fmtBytes.Slice(0, 2));
+                info.Channels = BinaryPrimitives.ReadUInt16LittleEndian(fmtBytes.Slice(2, 2));
+                info.SampleRate = (int)BinaryPrimitives.ReadUInt32LittleEndian(fmtBytes.Slice(4, 4));
+                info.BitsPerSample = BinaryPrimitives.ReadUInt16LittleEndian(fmtBytes.Slice(14, 2));
                 bytesConsumedInChunk = 16;
 
                 if (info.AudioFormat != WaveFormatPcm &&
@@ -478,88 +575,75 @@ public static class WavFileCodec
                 }
                 else if (info.AudioFormat == WaveFormatExtensible && chunkSize >= 40)
                 {
-                    ushort cbSize = reader.ReadUInt16();
-                    ushort validBits = reader.ReadUInt16();
-                    uint channelMask = reader.ReadUInt32();
-                    byte[] guidBytes = reader.ReadBytes(16);
-                    bytesConsumedInChunk += 8 + guidBytes.Length;
-                    if (guidBytes.Length == 16)
+                    ReadExactOrThrowInvalidData(stream, extBytes, "Invalid WAVE file: truncated extensible 'fmt ' chunk.");
+                    bytesConsumedInChunk += 24;
+                    var subFormat = new Guid(extBytes.Slice(8, 16));
+                    if (subFormat == SubFormatIeeeFloat)
                     {
-                        var subFormat = new Guid(guidBytes);
-                        if (subFormat == SubFormatIeeeFloat)
-                        {
-                            info.IsFloat = true;
-                        }
-                        else if (subFormat != SubFormatPcm)
-                        {
-                            throw new NotSupportedException($"Unsupported WAVE extensible sub-format: {subFormat}.");
-                        }
+                        info.IsFloat = true;
+                    }
+                    else if (subFormat != SubFormatPcm)
+                    {
+                        throw new NotSupportedException($"Unsupported WAVE extensible sub-format: {subFormat}.");
                     }
                 }
             }
-            else if (chunkIdBytes.AsSpan().SequenceEqual(DataHeader))
+            else if (chunkIdBytes.SequenceEqual(DataHeader))
             {
                 dataFound = true;
                 info.DataOffset = chunkStart;
                 info.DataSize = chunkSize;
 
-                // Adjust data size if stream is shorter than declared chunkSize
-                if (stream.CanSeek && (chunkStart + chunkSize) > stream.Length)
-                {
-                    info.DataSize = Math.Max(0, stream.Length - chunkStart);
-                }
-
                 // If fmt was already found, we can proceed or keep scanning for LIST metadata
                 if (stream.CanSeek)
                 {
-                    stream.Position = Math.Min(stream.Length, chunkStart + chunkSize);
-                    if ((chunkSize % 2) != 0 && stream.Position < stream.Length)
+                    long nextPos = chunkStart + chunkSize;
+                    if ((chunkSize % 2) != 0 && nextPos < stream.Length)
                     {
-                        stream.Position++; // Pad byte
+                        nextPos++; // Pad byte
                     }
+                    stream.Seek(nextPos, SeekOrigin.Begin);
                     continue;
                 }
                 break;
             }
-            else if (chunkIdBytes.AsSpan().SequenceEqual("LIST"u8) && chunkSize > 4)
+            else if (chunkIdBytes.SequenceEqual("LIST"u8) && chunkSize > 4)
             {
-                byte[] listType = reader.ReadBytes(4);
-                bytesConsumedInChunk += listType.Length;
+                ReadExactOrThrowInvalidData(stream, listType, "Invalid WAVE file: truncated 'LIST' chunk.");
+                bytesConsumedInChunk += 4;
                 long infoRead = 0;
                 long maxInfoBytes = (long)chunkSize - 4;
-                if (listType.AsSpan().SequenceEqual("INFO"u8))
+                if (listType.SequenceEqual("INFO"u8))
                 {
-                    long listEnd = chunkStart + chunkSize;
-                    if (stream.CanSeek)
-                    {
-                        listEnd = Math.Min(listEnd, stream.Length);
-                    }
                     while (infoRead + 8 <= maxInfoBytes)
                     {
-                        byte[] tagBytes = reader.ReadBytes(4);
-                        if (tagBytes.Length < 4) break;
-                        uint tagSize = reader.ReadUInt32();
-                        bytesConsumedInChunk += 4 + tagBytes.Length;
+                        if (ReadAtMost(stream, tagHeader) < 8) break;
+                        bytesConsumedInChunk += 8;
                         infoRead += 8;
+                        ReadOnlySpan<byte> tagBytes = tagHeader[..4];
+                        uint tagSize = BinaryPrimitives.ReadUInt32LittleEndian(tagHeader.Slice(4, 4));
                         if (tagSize > 0 && tagSize <= 65536 && infoRead + tagSize <= maxInfoBytes)
                         {
-                            byte[] valBytes = reader.ReadBytes((int)tagSize);
+                            byte[] valBytes = new byte[tagSize];
+                            ReadExactOrThrowInvalidData(stream, valBytes, "Invalid WAVE file: truncated 'LIST' metadata entry.");
                             bytesConsumedInChunk += valBytes.Length;
                             infoRead += valBytes.Length;
                             string text = Encoding.ASCII.GetString(valBytes).TrimEnd('\0', ' ');
-                            if (tagBytes.AsSpan().SequenceEqual("INAM"u8))
+                            if (tagBytes.SequenceEqual("INAM"u8))
                             {
                                 info.Title = text;
                             }
-                            else if (tagBytes.AsSpan().SequenceEqual("IART"u8))
+                            else if (tagBytes.SequenceEqual("IART"u8))
                             {
                                 info.Artist = text;
                             }
                             if ((tagSize % 2) != 0 && infoRead < maxInfoBytes)
                             {
-                                _ = reader.ReadBytes(1);
-                                bytesConsumedInChunk++;
-                                infoRead++;
+                                if (stream.ReadByte() >= 0)
+                                {
+                                    bytesConsumedInChunk++;
+                                    infoRead++;
+                                }
                             }
                         }
                         else
@@ -570,23 +654,24 @@ public static class WavFileCodec
                 }
             }
 
-            // Seek past current chunk
+            // Seek past current chunk (or stream-skip on non-seekable streams without large allocations)
             if (stream.CanSeek)
             {
-                stream.Position = Math.Min(stream.Length, chunkStart + chunkSize);
-                if ((chunkSize % 2) != 0 && stream.Position < stream.Length)
+                long nextPos = chunkStart + chunkSize;
+                if ((chunkSize % 2) != 0 && nextPos < stream.Length)
                 {
-                    stream.Position++; // RIFF word alignment
+                    nextPos++; // RIFF word alignment
                 }
+                stream.Seek(nextPos, SeekOrigin.Begin);
             }
             else
             {
-                long toSkip = Math.Max(0L, (long)chunkSize - bytesConsumedInChunk) + ((chunkSize % 2) != 0 ? 1L : 0L);
-                if (toSkip > 64 * 1024 * 1024)
+                long payloadToSkip = Math.Max(0L, (long)chunkSize - bytesConsumedInChunk);
+                SkipStreamBytes(stream, payloadToSkip, "Invalid WAVE file: unexpected end of stream inside RIFF chunk.");
+                if ((chunkSize % 2) != 0)
                 {
-                    throw new InvalidDataException($"WAVE chunk size ({chunkSize}) is too large to skip on a non-seekable stream.");
+                    _ = stream.ReadByte();
                 }
-                reader.ReadBytes((int)toSkip);
             }
         }
 
@@ -600,5 +685,57 @@ public static class WavFileCodec
         }
 
         return info;
+    }
+
+    private static int ReadAtMost(Stream stream, Span<byte> buffer)
+    {
+        int total = 0;
+        while (total < buffer.Length)
+        {
+            int n = stream.Read(buffer.Slice(total));
+            if (n <= 0)
+            {
+                break;
+            }
+            total += n;
+        }
+        return total;
+    }
+
+    private static void ReadExactOrThrowInvalidData(Stream stream, Span<byte> buffer, string errorMessage)
+    {
+        if (ReadAtMost(stream, buffer) < buffer.Length)
+        {
+            throw new InvalidDataException(errorMessage);
+        }
+    }
+
+    private static void SkipStreamBytes(Stream stream, long byteCount, string errorMessage)
+    {
+        if (byteCount <= 0)
+        {
+            return;
+        }
+
+        const int scratchSize = 8192;
+        byte[] scratch = ArrayPool<byte>.Shared.Rent(scratchSize);
+        try
+        {
+            long remaining = byteCount;
+            while (remaining > 0)
+            {
+                int want = (int)Math.Min(scratchSize, remaining);
+                int read = stream.Read(scratch, 0, want);
+                if (read <= 0)
+                {
+                    throw new InvalidDataException(errorMessage);
+                }
+                remaining -= read;
+            }
+        }
+        finally
+        {
+            ArrayPool<byte>.Shared.Return(scratch);
+        }
     }
 }

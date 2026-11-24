@@ -290,25 +290,98 @@ public static class RawCdAudioFile
 
         public override int Read(Span<byte> buffer)
         {
+            if (buffer.IsEmpty) return 0;
             long left = _length - _position;
             if (left <= 0) return 0;
             if (buffer.Length > left) buffer = buffer.Slice(0, (int)left);
-            if (_swap && (_position & 1) != 0)
+
+            if (!_swap)
             {
-                throw new InvalidOperationException("Big-endian audio is read in whole samples.");
+                _file.Position = _start + _position;
+                int n = _file.Read(buffer);
+                _position += n;
+                return n;
             }
-            _file.Position = _start + _position;
-            int n = _file.Read(buffer);
-            if (_swap)
+
+            int total = 0;
+
+            // If starting on an odd offset, deliver the high byte of the enclosing big-endian 16-bit sample first.
+            if ((_position & 1) != 0)
             {
-                n &= ~1;
+                _file.Position = _start + _position - 1;
+                int b = _file.ReadByte();
+                if (b < 0) return 0;
+                buffer[0] = (byte)b;
+                _position++;
+                total++;
+                buffer = buffer.Slice(1);
+                if (buffer.IsEmpty) return total;
+            }
+
+            // _position is now even: swap aligned 2-byte pairs in place.
+            int evenLen = buffer.Length & ~1;
+            if (evenLen > 0)
+            {
+                _file.Position = _start + _position;
+                int n = _file.Read(buffer.Slice(0, evenLen));
+                if (n == 0) return total;
+
+                if ((n & 1) != 0)
+                {
+                    int extra = _file.ReadByte();
+                    if (extra >= 0)
+                    {
+                        buffer[n] = (byte)extra;
+                        n++;
+                    }
+                    else
+                    {
+                        n &= ~1;
+                    }
+                }
+
                 for (int i = 0; i + 1 < n; i += 2)
                 {
                     (buffer[i], buffer[i + 1]) = (buffer[i + 1], buffer[i]);
                 }
+
+                _position += n;
+                total += n;
+                if (n < evenLen || buffer.Length == evenLen) return total;
             }
-            _position += n;
-            return n;
+
+            // One trailing byte requested at an even _position: read its 16-bit pair and emit the low byte.
+            if (_position + 1 < _length)
+            {
+                Span<byte> pair = stackalloc byte[2];
+                _file.Position = _start + _position;
+                int pairRead = _file.Read(pair);
+                if (pairRead == 2)
+                {
+                    buffer[^1] = pair[1];
+                    _position++;
+                    total++;
+                }
+                else if (pairRead == 1)
+                {
+                    buffer[^1] = pair[0];
+                    _position++;
+                    total++;
+                }
+            }
+            else
+            {
+                _file.Position = _start + _position;
+                int b = _file.ReadByte();
+                if (b >= 0)
+                {
+                    buffer[^1] = (byte)b;
+                    _position++;
+                    total++;
+                }
+            }
+
+            return total;
         }
 
         public override bool CanRead => true;

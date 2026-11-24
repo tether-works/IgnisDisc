@@ -460,4 +460,84 @@ public sealed class AudioGapRipAndRoundTripTests : IDisposable
 
         Assert.Null(detected.Tracks[2].Index00Lba);
     }
+
+    [Fact]
+    public async Task RipAudioCdAsync_DeletesPartialWavOnCancellation_AndPreservesIndex00WhenPrecedingTrackSkipped()
+    {
+        byte[] t1Pcm = RandomPcm(701, 600);
+        byte[] t2GapPcm = RandomPcm(702, 150);
+        byte[] t2Pcm = RandomPcm(703, 300);
+
+        var sources = new List<AudioTrackSource>
+        {
+            new()
+            {
+                TrackNumber = 1,
+                Title = "First",
+                Performer = "Artist",
+                PreGapFrames = 150,
+                TotalPcmBytes = t1Pcm.Length,
+                PcmStreamFactory = () => new MemoryStream(t1Pcm)
+            },
+            new()
+            {
+                TrackNumber = 2,
+                Title = "Second",
+                Performer = "Artist",
+                PreGapFrames = 0,
+                PreGapAudioFrames = 150,
+                PreGapPcmStreamFactory = () => new MemoryStream(t2GapPcm),
+                TotalPcmBytes = t2Pcm.Length,
+                PcmStreamFactory = () => new MemoryStream(t2Pcm)
+            }
+        };
+
+        using var recorder = CreateRecorder(VirtualDiscMedium.CreateBlankCdR700());
+        var (burnEngine, _) = CreateEngine();
+        var burnResult = await burnEngine.BurnAudioTracksAsync(
+            recorder,
+            sources,
+            new AudioBurnOptions { UseDiscAtOnce = true },
+            null,
+            CancellationToken.None);
+        Assert.True(burnResult.Success, burnResult.ErrorMessage);
+
+        // 1. Rip only track 2 (skipping track 1): CUE sheet preserves Track 2's 2-second pre-gap as PREGAP
+        string partialRipDir = Path.Combine(_dir, "rip-track2-only");
+        var ripper = new AudioCdRipperService();
+        var track2Only = await ripper.RipAudioCdAsync(
+            recorder,
+            new VirtualBurnEngine(recorder),
+            partialRipDir,
+            new AudioRipOptions
+            {
+                TrackNumbersToRip = [2],
+                GenerateCueSheet = true,
+                SecureMode = false,
+                CalculateReplayGain = false
+            });
+        Assert.True(track2Only.Success, track2Only.ErrorMessage);
+        CueSheet parsed = CueSheetParser.ParseFile(track2Only.CueSheetPath!);
+        Assert.Single(parsed.Files);
+        Assert.Equal(new MsfAddress(0, 2, 0), parsed.Files[0].Tracks[0].PreGap);
+
+        // 2. Cancel mid-rip: partial .wav file must be deleted cleanly in finally/catch
+        string cancelDir = Path.Combine(_dir, "rip-cancel");
+        using var cts = new CancellationTokenSource();
+        var progress = new Progress<BurnProgressSnapshot>(_ => cts.Cancel());
+        await Assert.ThrowsAnyAsync<OperationCanceledException>(() =>
+            ripper.RipAudioCdAsync(
+                recorder,
+                new VirtualBurnEngine(recorder),
+                cancelDir,
+                new AudioRipOptions
+                {
+                    GenerateCueSheet = false,
+                    SecureMode = false,
+                    CalculateReplayGain = false
+                },
+                progress,
+                cts.Token));
+        Assert.Empty(Directory.GetFiles(cancelDir, "*.wav"));
+    }
 }

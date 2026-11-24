@@ -320,9 +320,40 @@ public static class AudioFileConverter
         return new AudioConvertResult(results, warnings);
     }
 
+    /// <summary>
+    /// Checks an input file before invoking ffmpeg so truncated RIFF/WAV files fail explicitly instead of
+    /// letting ffmpeg emit a partial output file with exit code 0.
+    /// </summary>
+    internal static string? ValidateInputFile(string inputFull)
+    {
+        if (string.Equals(Path.GetExtension(inputFull), ".wav", StringComparison.OrdinalIgnoreCase))
+        {
+            try
+            {
+                WavFileCodec.ProbeAudioFile(inputFull);
+            }
+            catch (Exception ex) when (ex is InvalidDataException or IOException)
+            {
+                return ex.Message;
+            }
+            catch (NotSupportedException)
+            {
+                // Valid RIFF/WAVE structure with a non-PCM codec tag (e.g. ADPCM) that ffmpeg can still decode.
+            }
+        }
+
+        return null;
+    }
+
     private static async Task<AudioConvertFileResult> ConvertOneAsync(
         string inputFull, string output, AudioExportTarget target, string ffmpegPath, CancellationToken cancellationToken)
     {
+        string? validationError = ValidateInputFile(inputFull);
+        if (validationError != null)
+        {
+            return new AudioConvertFileResult(inputFull, target.Format, null, validationError, false);
+        }
+
         string directory = Path.GetDirectoryName(output)!;
         string temp = Path.Combine(directory, "~ignis-" + Guid.NewGuid().ToString("N") + AudioRipFormats.Extension(target.Format));
         try

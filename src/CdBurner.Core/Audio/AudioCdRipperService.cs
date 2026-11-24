@@ -524,7 +524,7 @@ public class AudioCdRipperService
                 : t;
 
         allTracks = allTracks.Select(ApplySubcode).ToList();
-        tracksToRip = tracksToRip.Select(ApplySubcode).ToList();
+        tracksToRip = tracksToRip.Select(ApplySubcode).OrderBy(t => t.StartLba).ToList();
         audioOrder = allTracks.OrderBy(t => t.StartLba).ToList();
 
         // CTDB sample windows are computed over the full disc audio area (excluding HTOA before Track 1 INDEX 01).
@@ -563,27 +563,36 @@ public class AudioCdRipperService
             string htoaWavPath = Path.Combine(outputDirectory, $"00 - {safeHtoaPerformer} - Hidden Track One Audio.wav");
 
             bool hasNonSilentAudio = false;
-            var htoaExtract = await ExtractSectorRangeToWavAsync(
-                recorder,
-                engine,
-                secureReader,
-                htoaWavPath,
-                startLba: 0,
-                sectorCount: htoaSectors,
-                audioEndLba,
-                options,
-                continueOnUnreadable,
-                silence,
-                badSectorLbas,
-                progress: null,
-                onChunk: slice =>
-                {
-                    if (!hasNonSilentAudio && slice.IndexOfAnyExcept((byte)0) >= 0)
+            RangeExtractOutcome htoaExtract;
+            try
+            {
+                htoaExtract = await ExtractSectorRangeToWavAsync(
+                    recorder,
+                    engine,
+                    secureReader,
+                    htoaWavPath,
+                    startLba: 0,
+                    sectorCount: htoaSectors,
+                    audioEndLba,
+                    options,
+                    continueOnUnreadable,
+                    silence,
+                    badSectorLbas,
+                    progress: null,
+                    onChunk: slice =>
                     {
-                        hasNonSilentAudio = true;
-                    }
-                },
-                cancellationToken).ConfigureAwait(false);
+                        if (!hasNonSilentAudio && slice.IndexOfAnyExcept((byte)0) >= 0)
+                        {
+                            hasNonSilentAudio = true;
+                        }
+                    },
+                    cancellationToken).ConfigureAwait(false);
+            }
+            catch
+            {
+                TryDeleteFile(htoaWavPath);
+                throw;
+            }
 
             if (!htoaExtract.Completed)
             {
@@ -629,48 +638,57 @@ public class AudioCdRipperService
             var crc32 = new Crc32Algorithm();
 
             long sectorsBeforeTrack = totalSectorsRead - (hiddenTrackOneAudioPath != null ? audioOrder[0].StartLba : 0);
-            var trackExtract = await ExtractSectorRangeToWavAsync(
-                recorder,
-                engine,
-                secureReader,
-                targetWavPath,
-                track.StartLba,
-                track.SectorCount,
-                audioEndLba,
-                options,
-                continueOnUnreadable,
-                silence,
-                badSectorLbas,
-                done => progress?.Report(new BurnProgressSnapshot
-                {
-                    ElapsedTime = sw.Elapsed,
-                    CurrentLba = (int)Math.Min(int.MaxValue, sectorsBeforeTrack + done),
-                    TotalLba = (int)Math.Min(int.MaxValue, totalSectorsToRip),
-                    BufferLevelPercent = 100.0,
-                    CurrentActionDescription = $"RippingTrack{track.TrackNumber:D2}"
-                }),
-                onChunk: slice =>
-                {
-                    arChecksum.Append(slice);
-                    ctdbChecksum.Append(slice);
-                    crc32.Append(slice);
-                },
-                cancellationToken).ConfigureAwait(false);
+            RangeExtractOutcome trackExtract;
+            bool deEmphasisApplied = false;
+            try
+            {
+                trackExtract = await ExtractSectorRangeToWavAsync(
+                    recorder,
+                    engine,
+                    secureReader,
+                    targetWavPath,
+                    track.StartLba,
+                    track.SectorCount,
+                    audioEndLba,
+                    options,
+                    continueOnUnreadable,
+                    silence,
+                    badSectorLbas,
+                    done => progress?.Report(new BurnProgressSnapshot
+                    {
+                        ElapsedTime = sw.Elapsed,
+                        CurrentLba = (int)Math.Min(int.MaxValue, sectorsBeforeTrack + done),
+                        TotalLba = (int)Math.Min(int.MaxValue, totalSectorsToRip),
+                        BufferLevelPercent = 100.0,
+                        CurrentActionDescription = $"RippingTrack{track.TrackNumber:D2}"
+                    }),
+                    onChunk: slice =>
+                    {
+                        arChecksum.Append(slice);
+                        ctdbChecksum.Append(slice);
+                        crc32.Append(slice);
+                    },
+                    cancellationToken).ConfigureAwait(false);
 
-            if (!trackExtract.Completed)
+                if (!trackExtract.Completed)
+                {
+                    TryDeleteFile(targetWavPath);
+
+                    return AudioCdRipResult.Failed(
+                        $"Failed to rip track {track.TrackNumber} ('{track.Title}'): unrecovered read error at LBA {trackExtract.StoppedAtLba} after {options.MaxRetriesPerSector} retries.",
+                        new IOException($"Unrecovered read error at LBA {trackExtract.StoppedAtLba}."));
+                }
+
+                if (options.ApplyDeEmphasis && track.PreEmphasis && !hasRecoverySession && File.Exists(targetWavPath))
+                {
+                    ApplyDeEmphasisInPlace(targetWavPath);
+                    deEmphasisApplied = true;
+                }
+            }
+            catch
             {
                 TryDeleteFile(targetWavPath);
-
-                return AudioCdRipResult.Failed(
-                    $"Failed to rip track {track.TrackNumber} ('{track.Title}'): unrecovered read error at LBA {trackExtract.StoppedAtLba} after {options.MaxRetriesPerSector} retries.",
-                    new IOException($"Unrecovered read error at LBA {trackExtract.StoppedAtLba}."));
-            }
-
-            bool deEmphasisApplied = false;
-            if (options.ApplyDeEmphasis && track.PreEmphasis && !hasRecoverySession && File.Exists(targetWavPath))
-            {
-                ApplyDeEmphasisInPlace(targetWavPath);
-                deEmphasisApplied = true;
+                throw;
             }
 
             rippedFilePaths.Add(targetWavPath);
@@ -815,14 +833,21 @@ public class AudioCdRipperService
                 {
                     preGap = MsfAddress.FromFrameCount(track1SilentPreGapFrames);
                 }
-                else if (i > 0 &&
-                         tracksToRip[i - 1].TrackNumber == trk.TrackNumber - 1 &&
-                         subcodeMap.Tracks.TryGetValue(trk.TrackNumber, out var det) &&
+                else if (subcodeMap.Tracks.TryGetValue(trk.TrackNumber, out var det) &&
                          det.Index00Lba is int idx00 &&
-                         idx00 > tracksToRip[i - 1].StartLba &&
                          idx00 < trk.StartLba)
                 {
-                    splitIndex00 = new CueSplitIndex00(MsfAddress.FromFrameCount(idx00 - tracksToRip[i - 1].StartLba));
+                    if (i > 0 &&
+                        tracksToRip[i - 1].TrackNumber == trk.TrackNumber - 1 &&
+                        idx00 > tracksToRip[i - 1].StartLba)
+                    {
+                        splitIndex00 = new CueSplitIndex00(MsfAddress.FromFrameCount(idx00 - tracksToRip[i - 1].StartLba));
+                    }
+                    else
+                    {
+                        // Previous track was skipped by TrackNumbersToRip, so preserve its pre-gap duration as PREGAP.
+                        preGap = MsfAddress.FromFrameCount(trk.StartLba - idx00);
+                    }
                 }
 
                 var cueTrack = new CueTrack(
@@ -908,103 +933,115 @@ public class AudioCdRipperService
         bool completed = true;
         int? stoppedAtLba = null;
 
-        await using var fileStream = new FileStream(targetWavPath, FileMode.Create, FileAccess.Write, FileShare.None, 65536, useAsync: true);
-        await fileStream.WriteAsync(wavHeader, cancellationToken).ConfigureAwait(false);
-
-        async ValueTask EmitAsync(ReadOnlyMemory<byte> sector)
+        bool keepFile = false;
+        try
         {
-            if (bytesToSkip > 0)
-            {
-                int skip = Math.Min(bytesToSkip, sector.Length);
-                sector = sector[skip..];
-                bytesToSkip -= skip;
-            }
-            if (bytesRemaining <= 0 || sector.IsEmpty)
-            {
-                return;
-            }
-            if (sector.Length > bytesRemaining)
-            {
-                sector = sector[..(int)bytesRemaining];
-            }
+            await using var fileStream = new FileStream(targetWavPath, FileMode.Create, FileAccess.Write, FileShare.None, 65536, useAsync: true);
+            await fileStream.WriteAsync(wavHeader, cancellationToken).ConfigureAwait(false);
 
-            await fileStream.WriteAsync(sector, cancellationToken).ConfigureAwait(false);
-            onChunk(sector.Span);
-            bytesRemaining -= sector.Length;
-        }
-
-        async Task EmitOverreadRangeAsync(int overStart, int overEnd)
-        {
-            for (int s = overStart; s < overEnd; s++)
+            async ValueTask EmitAsync(ReadOnlyMemory<byte> sector)
             {
-                cancellationToken.ThrowIfCancellationRequested();
-                byte[]? overreadSector = options.ReadOffsetSamples != 0
-                    ? await TryReadOverreadSectorAsync(recorder, engine, secureReader, s, audioEndLba, options.MaxRetriesPerSector, cancellationToken).ConfigureAwait(false)
-                    : null;
-                await EmitAsync(overreadSector ?? silence).ConfigureAwait(false);
-            }
-        }
-
-        if (firstSector < readStart)
-        {
-            await EmitOverreadRangeAsync(firstSector, Math.Min(readStart, endSector)).ConfigureAwait(false);
-        }
-
-        if (readEnd > readStart)
-        {
-            async ValueTask<bool> OnUnreadableAsync(int lba)
-            {
-                badSectorLbas.Add(lba);
-                badSectors++;
-                if (!continueOnUnreadable)
+                if (bytesToSkip > 0)
                 {
-                    return false;
+                    int skip = Math.Min(bytesToSkip, sector.Length);
+                    sector = sector[skip..];
+                    bytesToSkip -= skip;
                 }
-                await EmitAsync(silence).ConfigureAwait(false);
-                return true;
+                if (bytesRemaining <= 0 || sector.IsEmpty)
+                {
+                    return;
+                }
+                if (sector.Length > bytesRemaining)
+                {
+                    sector = sector[..(int)bytesRemaining];
+                }
+
+                await fileStream.WriteAsync(sector, cancellationToken).ConfigureAwait(false);
+                onChunk(sector.Span);
+                bytesRemaining -= sector.Length;
             }
 
-            if (secureReader != null)
+            async Task EmitOverreadRangeAsync(int overStart, int overEnd)
             {
-                var secure = await SecureAudioReader.ReadRangeAsync(
-                    secureReader,
-                    recorder,
-                    readStart,
-                    readEnd - readStart,
-                    audioEndLba,
-                    options.MaxRetriesPerSector,
-                    onSector: (_, data) => EmitAsync(data),
-                    onUnreadable: OnUnreadableAsync,
-                    onProgress: progress,
-                    cancellationToken: cancellationToken).ConfigureAwait(false);
-                (completed, stoppedAtLba) = (secure.Completed, secure.StoppedAtLba);
-                recoveredSectors = secure.RecoveredSectors;
-                suspectSectors = secure.SuspectSectors;
+                for (int s = overStart; s < overEnd; s++)
+                {
+                    cancellationToken.ThrowIfCancellationRequested();
+                    byte[]? overreadSector = options.ReadOffsetSamples != 0
+                        ? await TryReadOverreadSectorAsync(recorder, engine, secureReader, s, audioEndLba, options.MaxRetriesPerSector, cancellationToken).ConfigureAwait(false)
+                        : null;
+                    await EmitAsync(overreadSector ?? silence).ConfigureAwait(false);
+                }
             }
-            else
+
+            if (firstSector < readStart)
             {
-                var batched = await BatchedSectorReader.ReadRangeAsync(
-                    engine,
-                    recorder,
-                    readStart,
-                    readEnd - readStart,
-                    raw2352Mode: true,
-                    options.MaxRetriesPerSector,
-                    onSector: (_, data) => EmitAsync(data),
-                    onUnreadable: OnUnreadableAsync,
-                    onProgress: progress,
-                    cancellationToken: cancellationToken).ConfigureAwait(false);
-                (completed, stoppedAtLba) = (batched.Completed, batched.StoppedAtLba);
+                await EmitOverreadRangeAsync(firstSector, Math.Min(readStart, endSector)).ConfigureAwait(false);
             }
+
+            if (readEnd > readStart)
+            {
+                async ValueTask<bool> OnUnreadableAsync(int lba)
+                {
+                    badSectorLbas.Add(lba);
+                    badSectors++;
+                    if (!continueOnUnreadable)
+                    {
+                        return false;
+                    }
+                    await EmitAsync(silence).ConfigureAwait(false);
+                    return true;
+                }
+
+                if (secureReader != null)
+                {
+                    var secure = await SecureAudioReader.ReadRangeAsync(
+                        secureReader,
+                        recorder,
+                        readStart,
+                        readEnd - readStart,
+                        audioEndLba,
+                        options.MaxRetriesPerSector,
+                        onSector: (_, data) => EmitAsync(data),
+                        onUnreadable: OnUnreadableAsync,
+                        onProgress: progress,
+                        cancellationToken: cancellationToken).ConfigureAwait(false);
+                    (completed, stoppedAtLba) = (secure.Completed, secure.StoppedAtLba);
+                    recoveredSectors = secure.RecoveredSectors;
+                    suspectSectors = secure.SuspectSectors;
+                }
+                else
+                {
+                    var batched = await BatchedSectorReader.ReadRangeAsync(
+                        engine,
+                        recorder,
+                        readStart,
+                        readEnd - readStart,
+                        raw2352Mode: true,
+                        options.MaxRetriesPerSector,
+                        onSector: (_, data) => EmitAsync(data),
+                        onUnreadable: OnUnreadableAsync,
+                        onProgress: progress,
+                        cancellationToken: cancellationToken).ConfigureAwait(false);
+                    (completed, stoppedAtLba) = (batched.Completed, batched.StoppedAtLba);
+                }
+            }
+
+            int tailOverStart = Math.Max(readEnd, readStart);
+            if (tailOverStart < endSector)
+            {
+                await EmitOverreadRangeAsync(tailOverStart, endSector).ConfigureAwait(false);
+            }
+
+            keepFile = completed;
+            return new RangeExtractOutcome(completed, stoppedAtLba, badSectors, recoveredSectors, suspectSectors);
         }
-
-        int tailOverStart = Math.Max(readEnd, readStart);
-        if (tailOverStart < endSector)
+        finally
         {
-            await EmitOverreadRangeAsync(tailOverStart, endSector).ConfigureAwait(false);
+            if (!keepFile)
+            {
+                TryDeleteFile(targetWavPath);
+            }
         }
-
-        return new RangeExtractOutcome(completed, stoppedAtLba, badSectors, recoveredSectors, suspectSectors);
     }
 
     private static async Task<byte[]?> TryReadOverreadSectorAsync(

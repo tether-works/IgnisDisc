@@ -1,5 +1,7 @@
 using System.Diagnostics.CodeAnalysis;
+using System.Globalization;
 using System.Text;
+using CdBurner.Core.Audio;
 using CdBurner.Core.Primitives;
 
 namespace CdBurner.Core.Images;
@@ -25,8 +27,8 @@ public static class CueSheetParser
     public static CueSheet ParseFile(string filePath)
     {
         ArgumentException.ThrowIfNullOrWhiteSpace(filePath);
-        using var reader = new StreamReader(filePath, Encoding.UTF8);
-        return Parse(reader);
+        string text = AudioPlaylistParser.DecodePlaylistText(File.ReadAllBytes(filePath));
+        return Parse(text);
     }
 
     /// <summary>
@@ -35,8 +37,8 @@ public static class CueSheetParser
     public static async Task<CueSheet> ParseFileAsync(string filePath, CancellationToken cancellationToken = default)
     {
         ArgumentException.ThrowIfNullOrWhiteSpace(filePath);
-        using var reader = new StreamReader(filePath, Encoding.UTF8);
-        return await ParseAsync(reader, cancellationToken);
+        byte[] bytes = await File.ReadAllBytesAsync(filePath, cancellationToken).ConfigureAwait(false);
+        return Parse(AudioPlaylistParser.DecodePlaylistText(bytes));
     }
 
     /// <summary>
@@ -71,180 +73,13 @@ public static class CueSheetParser
     public static CueSheet Parse(TextReader reader)
     {
         ArgumentNullException.ThrowIfNull(reader);
-
-        string? catalog = null;
-        string? discTitle = null;
-        string? discPerformer = null;
-        string? discSongwriter = null;
-        var remarks = new Dictionary<string, string>(StringComparer.OrdinalIgnoreCase);
-        var files = new List<CueFileEntry>();
-
-        CueFileEntryBuilder? currentFile = null;
-        CueTrackBuilder? currentTrack = null;
-
-        void FinishCurrentTrack()
-        {
-            if (currentTrack != null)
-            {
-                currentFile ??= new CueFileEntryBuilder(string.Empty, "BINARY");
-                currentFile.Tracks.Add(currentTrack.Build());
-                currentTrack = null;
-            }
-        }
-
-        void FinishCurrentFile()
-        {
-            FinishCurrentTrack();
-            if (currentFile != null)
-            {
-                files.Add(currentFile.Build());
-                currentFile = null;
-            }
-        }
-
+        var state = new CueParseState();
         string? line;
         while ((line = reader.ReadLine()) != null)
         {
-            string trimmed = line.Trim().TrimStart('\uFEFF');
-            if (trimmed.Length == 0)
-            {
-                continue;
-            }
-
-            var tokens = TokenizeLine(trimmed);
-            if (tokens.Count == 0)
-            {
-                continue;
-            }
-
-            string cmd = tokens[0].TrimStart('\uFEFF').ToUpperInvariant();
-            switch (cmd)
-            {
-                case "REM":
-                    if (tokens.Count >= 2)
-                    {
-                        string key = tokens[1];
-                        string val = tokens.Count >= 3 ? string.Join(" ", tokens.Skip(2)) : string.Empty;
-                        remarks[key] = val;
-                    }
-                    break;
-
-                case "CATALOG":
-                    if (tokens.Count >= 2)
-                    {
-                        catalog = tokens[1];
-                    }
-                    break;
-
-                case "TITLE":
-                    if (tokens.Count >= 2)
-                    {
-                        string title = tokens.Count == 2 ? tokens[1] : string.Join(" ", tokens.Skip(1));
-                        if (currentTrack != null)
-                        {
-                            currentTrack.Title = title;
-                        }
-                        else
-                        {
-                            discTitle = title;
-                        }
-                    }
-                    break;
-
-                case "PERFORMER":
-                    if (tokens.Count >= 2)
-                    {
-                        string performer = tokens.Count == 2 ? tokens[1] : string.Join(" ", tokens.Skip(1));
-                        if (currentTrack != null)
-                        {
-                            currentTrack.Performer = performer;
-                        }
-                        else
-                        {
-                            discPerformer = performer;
-                        }
-                    }
-                    break;
-
-                case "SONGWRITER":
-                    if (tokens.Count >= 2)
-                    {
-                        string songwriter = tokens.Count == 2 ? tokens[1] : string.Join(" ", tokens.Skip(1));
-                        if (currentTrack != null)
-                        {
-                            currentTrack.Songwriter = songwriter;
-                        }
-                        else
-                        {
-                            discSongwriter = songwriter;
-                        }
-                    }
-                    break;
-
-                case "FILE":
-                    {
-                        // EAC "gaps appended to previous track" layout: TRACK n+1 opens (with only INDEX 00) inside
-                        // FILE n (or a dedicated pre-gap FILE) and its INDEX 01 follows the next FILE line. Carry that
-                        // still-open track into the new FILE and preserve the cross-FILE INDEX 00 via SplitIndex00.
-                        var carried = TakeTrackAwaitingIndex01(ref currentTrack, ref currentFile);
-                        FinishCurrentFile();
-                        var (fileName, fileType) = ParseFileTokens(tokens);
-                        currentFile = new CueFileEntryBuilder(fileName, fileType);
-                        currentTrack = carried;
-                    }
-                    break;
-
-                case "TRACK":
-                    FinishCurrentTrack();
-                    int trackNum = tokens.Count >= 2 ? int.Parse(tokens[1]) : 1;
-                    CueTrackDataType dataType = tokens.Count >= 3 ? ParseTrackDataType(tokens[2]) : CueTrackDataType.Audio;
-                    currentTrack = new CueTrackBuilder(trackNum, dataType);
-                    break;
-
-                case "ISRC":
-                    if (tokens.Count >= 2 && currentTrack != null)
-                    {
-                        currentTrack.Isrc = tokens[1];
-                    }
-                    break;
-
-                case "FLAGS":
-                    if (currentTrack != null)
-                    {
-                        for (int i = 1; i < tokens.Count; i++)
-                        {
-                            currentTrack.Flags.Add(tokens[i].ToUpperInvariant());
-                        }
-                    }
-                    break;
-
-                case "PREGAP":
-                    if (tokens.Count >= 2 && currentTrack != null)
-                    {
-                        currentTrack.PreGap = MsfAddress.Parse(tokens[1]);
-                    }
-                    break;
-
-                case "POSTGAP":
-                    if (tokens.Count >= 2 && currentTrack != null)
-                    {
-                        currentTrack.PostGap = MsfAddress.Parse(tokens[1]);
-                    }
-                    break;
-
-                case "INDEX":
-                    if (tokens.Count >= 3 && currentTrack != null)
-                    {
-                        int idxNum = int.Parse(tokens[1]);
-                        MsfAddress pos = MsfAddress.Parse(tokens[2]);
-                        currentTrack.Indices.Add(new CueIndex(idxNum, pos));
-                    }
-                    break;
-            }
+            state.ProcessLine(line);
         }
-
-        FinishCurrentFile();
-        return new CueSheet(catalog, discTitle, discPerformer, discSongwriter, files, remarks);
+        return state.Build();
     }
 
     /// <summary>
@@ -253,50 +88,58 @@ public static class CueSheetParser
     public static async Task<CueSheet> ParseAsync(TextReader reader, CancellationToken cancellationToken = default)
     {
         ArgumentNullException.ThrowIfNull(reader);
-
-        string? catalog = null;
-        string? discTitle = null;
-        string? discPerformer = null;
-        string? discSongwriter = null;
-        var remarks = new Dictionary<string, string>(StringComparer.OrdinalIgnoreCase);
-        var files = new List<CueFileEntry>();
-
-        CueFileEntryBuilder? currentFile = null;
-        CueTrackBuilder? currentTrack = null;
-
-        void FinishCurrentTrack()
+        var state = new CueParseState();
+        string? line;
+        while ((line = await reader.ReadLineAsync(cancellationToken).ConfigureAwait(false)) != null)
         {
-            if (currentTrack != null)
+            state.ProcessLine(line);
+        }
+        return state.Build();
+    }
+
+    private sealed class CueParseState
+    {
+        private string? _catalog;
+        private string? _discTitle;
+        private string? _discPerformer;
+        private string? _discSongwriter;
+        private readonly Dictionary<string, string> _remarks = new(StringComparer.OrdinalIgnoreCase);
+        private readonly List<CueFileEntry> _files = new();
+        private CueFileEntryBuilder? _currentFile;
+        private CueTrackBuilder? _currentTrack;
+
+        private void FinishCurrentTrack()
+        {
+            if (_currentTrack != null)
             {
-                currentFile ??= new CueFileEntryBuilder(string.Empty, "BINARY");
-                currentFile.Tracks.Add(currentTrack.Build());
-                currentTrack = null;
+                _currentFile ??= new CueFileEntryBuilder(string.Empty, "BINARY");
+                _currentFile.Tracks.Add(_currentTrack.Build());
+                _currentTrack = null;
             }
         }
 
-        void FinishCurrentFile()
+        private void FinishCurrentFile()
         {
             FinishCurrentTrack();
-            if (currentFile != null)
+            if (_currentFile != null)
             {
-                files.Add(currentFile.Build());
-                currentFile = null;
+                _files.Add(_currentFile.Build());
+                _currentFile = null;
             }
         }
 
-        string? line;
-        while ((line = await reader.ReadLineAsync(cancellationToken)) != null)
+        public void ProcessLine(string line)
         {
             string trimmed = line.Trim().TrimStart('\uFEFF');
             if (trimmed.Length == 0)
             {
-                continue;
+                return;
             }
 
             var tokens = TokenizeLine(trimmed);
             if (tokens.Count == 0)
             {
-                continue;
+                return;
             }
 
             string cmd = tokens[0].TrimStart('\uFEFF').ToUpperInvariant();
@@ -307,14 +150,14 @@ public static class CueSheetParser
                     {
                         string key = tokens[1];
                         string val = tokens.Count >= 3 ? string.Join(" ", tokens.Skip(2)) : string.Empty;
-                        remarks[key] = val;
+                        _remarks[key] = val;
                     }
                     break;
 
                 case "CATALOG":
                     if (tokens.Count >= 2)
                     {
-                        catalog = tokens[1];
+                        _catalog = tokens[1];
                     }
                     break;
 
@@ -322,13 +165,13 @@ public static class CueSheetParser
                     if (tokens.Count >= 2)
                     {
                         string title = tokens.Count == 2 ? tokens[1] : string.Join(" ", tokens.Skip(1));
-                        if (currentTrack != null)
+                        if (_currentTrack != null)
                         {
-                            currentTrack.Title = title;
+                            _currentTrack.Title = title;
                         }
                         else
                         {
-                            discTitle = title;
+                            _discTitle = title;
                         }
                     }
                     break;
@@ -337,13 +180,13 @@ public static class CueSheetParser
                     if (tokens.Count >= 2)
                     {
                         string performer = tokens.Count == 2 ? tokens[1] : string.Join(" ", tokens.Skip(1));
-                        if (currentTrack != null)
+                        if (_currentTrack != null)
                         {
-                            currentTrack.Performer = performer;
+                            _currentTrack.Performer = performer;
                         }
                         else
                         {
-                            discPerformer = performer;
+                            _discPerformer = performer;
                         }
                     }
                     break;
@@ -352,13 +195,13 @@ public static class CueSheetParser
                     if (tokens.Count >= 2)
                     {
                         string songwriter = tokens.Count == 2 ? tokens[1] : string.Join(" ", tokens.Skip(1));
-                        if (currentTrack != null)
+                        if (_currentTrack != null)
                         {
-                            currentTrack.Songwriter = songwriter;
+                            _currentTrack.Songwriter = songwriter;
                         }
                         else
                         {
-                            discSongwriter = songwriter;
+                            _discSongwriter = songwriter;
                         }
                     }
                     break;
@@ -368,65 +211,76 @@ public static class CueSheetParser
                         // EAC "gaps appended to previous track" layout: TRACK n+1 opens (with only INDEX 00) inside
                         // FILE n (or a dedicated pre-gap FILE) and its INDEX 01 follows the next FILE line. Carry that
                         // still-open track into the new FILE and preserve the cross-FILE INDEX 00 via SplitIndex00.
-                        var carried = TakeTrackAwaitingIndex01(ref currentTrack, ref currentFile);
+                        var carried = TakeTrackAwaitingIndex01(ref _currentTrack, ref _currentFile);
                         FinishCurrentFile();
                         var (fileName, fileType) = ParseFileTokens(tokens);
-                        currentFile = new CueFileEntryBuilder(fileName, fileType);
-                        currentTrack = carried;
+                        _currentFile = new CueFileEntryBuilder(fileName, fileType);
+                        _currentTrack = carried;
                     }
                     break;
 
                 case "TRACK":
                     FinishCurrentTrack();
-                    int trackNum = tokens.Count >= 2 ? int.Parse(tokens[1]) : 1;
+                    int trackNum = 1;
+                    if (tokens.Count >= 2 &&
+                        (!int.TryParse(tokens[1], NumberStyles.None, CultureInfo.InvariantCulture, out trackNum) || trackNum < 1))
+                    {
+                        throw new FormatException($"Invalid CUE track number: '{tokens[1]}'.");
+                    }
                     CueTrackDataType dataType = tokens.Count >= 3 ? ParseTrackDataType(tokens[2]) : CueTrackDataType.Audio;
-                    currentTrack = new CueTrackBuilder(trackNum, dataType);
+                    _currentTrack = new CueTrackBuilder(trackNum, dataType);
                     break;
 
                 case "ISRC":
-                    if (tokens.Count >= 2 && currentTrack != null)
+                    if (tokens.Count >= 2 && _currentTrack != null)
                     {
-                        currentTrack.Isrc = tokens[1];
+                        _currentTrack.Isrc = tokens[1];
                     }
                     break;
 
                 case "FLAGS":
-                    if (currentTrack != null)
+                    if (_currentTrack != null)
                     {
                         for (int i = 1; i < tokens.Count; i++)
                         {
-                            currentTrack.Flags.Add(tokens[i].ToUpperInvariant());
+                            _currentTrack.Flags.Add(tokens[i].ToUpperInvariant());
                         }
                     }
                     break;
 
                 case "PREGAP":
-                    if (tokens.Count >= 2 && currentTrack != null)
+                    if (tokens.Count >= 2 && _currentTrack != null)
                     {
-                        currentTrack.PreGap = MsfAddress.Parse(tokens[1]);
+                        _currentTrack.PreGap = MsfAddress.Parse(tokens[1]);
                     }
                     break;
 
                 case "POSTGAP":
-                    if (tokens.Count >= 2 && currentTrack != null)
+                    if (tokens.Count >= 2 && _currentTrack != null)
                     {
-                        currentTrack.PostGap = MsfAddress.Parse(tokens[1]);
+                        _currentTrack.PostGap = MsfAddress.Parse(tokens[1]);
                     }
                     break;
 
                 case "INDEX":
-                    if (tokens.Count >= 3 && currentTrack != null)
+                    if (tokens.Count >= 3 && _currentTrack != null)
                     {
-                        int idxNum = int.Parse(tokens[1]);
+                        if (!int.TryParse(tokens[1], NumberStyles.None, CultureInfo.InvariantCulture, out int idxNum) || idxNum > 99)
+                        {
+                            throw new FormatException($"Invalid CUE index number: '{tokens[1]}'.");
+                        }
                         MsfAddress pos = MsfAddress.Parse(tokens[2]);
-                        currentTrack.Indices.Add(new CueIndex(idxNum, pos));
+                        _currentTrack.Indices.Add(new CueIndex(idxNum, pos));
                     }
                     break;
             }
         }
 
-        FinishCurrentFile();
-        return new CueSheet(catalog, discTitle, discPerformer, discSongwriter, files, remarks);
+        public CueSheet Build()
+        {
+            FinishCurrentFile();
+            return new CueSheet(_catalog, _discTitle, _discPerformer, _discSongwriter, _files, _remarks);
+        }
     }
 
     /// <summary>
@@ -449,7 +303,7 @@ public static class CueSheetParser
 
     private static readonly HashSet<string> KnownFileTypes = new(StringComparer.OrdinalIgnoreCase)
     {
-        "BINARY", "MOTOROLA", "AIFF", "WAVE", "MP3", "FLAC", "OGG", "AAC", "WAV"
+        "BINARY", "MOTOROLA", "AIFF", "WAVE", "MP3", "FLAC", "OGG", "AAC", "WAV", "APE", "WV", "TTA"
     };
 
     private static (string FileName, string FileType) ParseFileTokens(List<string> tokens)

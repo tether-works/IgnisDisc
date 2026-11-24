@@ -358,6 +358,31 @@ public sealed class ConvertAudioCliTests : IDisposable
         }
     }
 
+    [Fact]
+    public async Task Cli_TruncatedWav_FailsExplicitlyWithoutWritingOutput()
+    {
+        string? ffmpeg = await FfmpegAsync();
+        if (ffmpeg == null) return;
+
+        string validWav = WriteWav(@"broken\valid.wav");
+        string truncatedWav = Path.Combine(_tempDir, "broken", "truncated256.wav");
+        File.WriteAllBytes(truncatedWav, File.ReadAllBytes(validWav)[..256]);
+        File.Delete(validWav);
+
+        string outDir = Path.Combine(_tempDir, "broken-out");
+        var (exit, json) = await RunAsync("convert-audio", "--input", truncatedWav, "--output", outDir, "--format", "flac");
+        using (json)
+        {
+            Assert.Equal(2, exit);
+            Assert.False(json.RootElement.GetProperty("success").GetBoolean());
+            Assert.Equal(0, json.RootElement.GetProperty("converted").GetInt32());
+            Assert.Equal(1, json.RootElement.GetProperty("failed").GetInt32());
+            string? err = json.RootElement.GetProperty("files")[0].GetProperty("error").GetString();
+            Assert.False(string.IsNullOrWhiteSpace(err));
+            Assert.False(File.Exists(Path.Combine(outDir, "truncated256.flac")));
+        }
+    }
+
     private sealed class NoDrivesService : IDiscDeviceService
     {
         public event EventHandler<DeviceChangeEventArgs>? DeviceChanged { add { } remove { } }

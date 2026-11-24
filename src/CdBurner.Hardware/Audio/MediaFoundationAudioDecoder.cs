@@ -276,12 +276,27 @@ public class MediaFoundationAudioDecoder : IAudioDecoder, IDisposable
             throw new COMException($"Failed to open audio file '{Path.GetFileName(filePath)}' for decoding via Windows Media Foundation (HRESULT 0x{hr:X8}). The file may be corrupt, DRM-protected, or in an unsupported format.", hr);
         }
 
+        try
+        {
+            return DecodeFromSourceReader(reader, filePath);
+        }
+        finally
+        {
+            ReleaseIfComObject(reader);
+        }
+    }
+
+    internal static Stream DecodeFromSourceReader(IMFSourceReader reader, string filePath)
+    {
+        ArgumentNullException.ThrowIfNull(reader);
+
         IMFMediaType? partialType = null;
         var outputStream = new MemoryStream();
         bool returnOutputStreamDirectly = false;
         int actualChannels = OpticalConstants.CdAudioChannels;
         int actualSampleRate = OpticalConstants.CdAudioSampleRate;
         int actualBitsPerSample = OpticalConstants.CdAudioBitsPerSample;
+        bool actualIsFloat = false;
 
         void RefreshCurrentMediaType()
         {
@@ -293,14 +308,15 @@ public class MediaFoundationAudioDecoder : IAudioDecoder, IDisposable
                     if (actualType.GetUINT32(MediaFoundationGuids.MF_MT_AUDIO_NUM_CHANNELS, out uint ch) == 0 && ch > 0) actualChannels = (int)ch;
                     if (actualType.GetUINT32(MediaFoundationGuids.MF_MT_AUDIO_SAMPLES_PER_SECOND, out uint sr) == 0 && sr > 0) actualSampleRate = (int)sr;
                     if (actualType.GetUINT32(MediaFoundationGuids.MF_MT_AUDIO_BITS_PER_SAMPLE, out uint bps) == 0 && bps >= 8) actualBitsPerSample = (int)bps;
+                    if (actualType.GetGUID(MediaFoundationGuids.MF_MT_SUBTYPE, out Guid subtype) == 0)
+                    {
+                        actualIsFloat = subtype == MediaFoundationGuids.MFAudioFormat_Float;
+                    }
                 }
             }
             finally
             {
-                if (actualType != null)
-                {
-                    Marshal.ReleaseComObject(actualType);
-                }
+                ReleaseIfComObject(actualType);
             }
         }
 
@@ -311,7 +327,7 @@ public class MediaFoundationAudioDecoder : IAudioDecoder, IDisposable
             reader.SetStreamSelection(MediaFoundationConstants.MF_SOURCE_READER_FIRST_AUDIO_STREAM, true);
 
             // Configure target audio type: Uncompressed PCM, 44,100 Hz, 16-bit, Stereo (2 channels)
-            hr = MediaFoundationNative.MFCreateMediaType(out partialType);
+            int hr = MediaFoundationNative.MFCreateMediaType(out partialType);
             if (hr != 0)
             {
                 throw new COMException($"MFCreateMediaType failed with HRESULT 0x{hr:X8}.", hr);
@@ -330,13 +346,25 @@ public class MediaFoundationAudioDecoder : IAudioDecoder, IDisposable
                 partialType.DeleteItem(MediaFoundationGuids.MF_MT_AUDIO_NUM_CHANNELS);
                 partialType.DeleteItem(MediaFoundationGuids.MF_MT_AUDIO_SAMPLES_PER_SECOND);
                 partialType.DeleteItem(MediaFoundationGuids.MF_MT_AUDIO_BITS_PER_SAMPLE);
-                reader.SetCurrentMediaType(MediaFoundationConstants.MF_SOURCE_READER_FIRST_AUDIO_STREAM, IntPtr.Zero, partialType);
+                int fallbackHr = reader.SetCurrentMediaType(MediaFoundationConstants.MF_SOURCE_READER_FIRST_AUDIO_STREAM, IntPtr.Zero, partialType);
+                if (fallbackHr != 0)
+                {
+                    // Some decoders only emit IEEE float when unconstrained integer PCM is rejected
+                    partialType.SetGUID(MediaFoundationGuids.MF_MT_SUBTYPE, MediaFoundationGuids.MFAudioFormat_Float);
+                    int floatHr = reader.SetCurrentMediaType(MediaFoundationConstants.MF_SOURCE_READER_FIRST_AUDIO_STREAM, IntPtr.Zero, partialType);
+                    if (floatHr != 0)
+                    {
+                        throw new COMException(
+                            $"IMFSourceReader.SetCurrentMediaType failed for '{Path.GetFileName(filePath)}' (PCM HRESULT 0x{fallbackHr:X8}, Float HRESULT 0x{floatHr:X8}).",
+                            floatHr);
+                    }
+                }
             }
 
-            // Read the actual uncompressed PCM format negotiated by the decoder
+            // Read the actual uncompressed format negotiated by the decoder
             RefreshCurrentMediaType();
 
-            // Read decoded PCM samples until end of stream
+            // Read decoded PCM/float samples until end of stream
             int consecutiveNullSamples = 0;
             while (true)
             {
@@ -350,10 +378,7 @@ public class MediaFoundationAudioDecoder : IAudioDecoder, IDisposable
 
                 if (readHr != 0 || (streamFlags & MediaFoundationConstants.MF_SOURCE_READERF_ERROR) != 0)
                 {
-                    if (sample != null)
-                    {
-                        Marshal.ReleaseComObject(sample);
-                    }
+                    ReleaseIfComObject(sample);
                     throw new InvalidDataException(
                         $"Media Foundation audio decoding failed while reading stream samples (HRESULT 0x{readHr:X8}, Flags 0x{streamFlags:X8}).",
                         readHr != 0 ? new COMException("IMFSourceReader.ReadSample failed.", readHr) : null);
@@ -410,14 +435,14 @@ public class MediaFoundationAudioDecoder : IAudioDecoder, IDisposable
                                 }
                                 finally
                                 {
-                                    Marshal.ReleaseComObject(buffer);
+                                    ReleaseIfComObject(buffer);
                                 }
                             }
                         }
                     }
                     finally
                     {
-                        Marshal.ReleaseComObject(sample);
+                        ReleaseIfComObject(sample);
                     }
                 }
                 else if (!isEof)
@@ -434,7 +459,8 @@ public class MediaFoundationAudioDecoder : IAudioDecoder, IDisposable
                 }
             }
 
-            if (actualSampleRate == OpticalConstants.CdAudioSampleRate &&
+            if (!actualIsFloat &&
+                actualSampleRate == OpticalConstants.CdAudioSampleRate &&
                 actualChannels == OpticalConstants.CdAudioChannels &&
                 actualBitsPerSample == OpticalConstants.CdAudioBitsPerSample)
             {
@@ -443,9 +469,14 @@ public class MediaFoundationAudioDecoder : IAudioDecoder, IDisposable
                 return outputStream;
             }
 
-            // Resample, upmix or convert bit-depth to canonical Red Book PCM if needed
+            // Resample, upmix or convert bit-depth/float to canonical Red Book PCM if needed
             byte[] rawBytes = outputStream.ToArray();
-            byte[] header = WavFileCodec.CreateWavHeader(rawBytes.Length, actualSampleRate, (short)actualChannels, (short)actualBitsPerSample);
+            byte[] header = WavFileCodec.CreateWavHeader(
+                rawBytes.Length,
+                actualSampleRate,
+                (short)actualChannels,
+                (short)actualBitsPerSample,
+                actualIsFloat);
             using var combinedStream = new MemoryStream(header.Length + rawBytes.Length);
             combinedStream.Write(header);
             combinedStream.Write(rawBytes);
@@ -460,11 +491,15 @@ public class MediaFoundationAudioDecoder : IAudioDecoder, IDisposable
             {
                 outputStream.Dispose();
             }
-            if (partialType != null)
-            {
-                Marshal.ReleaseComObject(partialType);
-            }
-            Marshal.ReleaseComObject(reader);
+            ReleaseIfComObject(partialType);
+        }
+    }
+
+    private static void ReleaseIfComObject(object? obj)
+    {
+        if (obj != null && Marshal.IsComObject(obj))
+        {
+            Marshal.ReleaseComObject(obj);
         }
     }
 
@@ -542,6 +577,7 @@ public class MediaFoundationAudioDecoder : IAudioDecoder, IDisposable
                         else if (sub == MediaFoundationGuids.MFAudioFormat_AAC) formatName = "AAC";
                         else if (sub == MediaFoundationGuids.MFAudioFormat_FLAC) formatName = "FLAC";
                         else if (sub == MediaFoundationGuids.MFAudioFormat_PCM) formatName = "PCM";
+                        else if (sub == MediaFoundationGuids.MFAudioFormat_Float) formatName = "IEEE Float";
                     }
                 }
             }
