@@ -280,11 +280,30 @@ public static class DvdStillMenu
             {
                 psi.ArgumentList.Add(a);
             }
+            cancellationToken.ThrowIfCancellationRequested();
             using var proc = Process.Start(psi) ?? throw new InvalidOperationException("FFmpeg did not start.");
             var err = proc.StandardError.ReadToEndAsync(cancellationToken);
             var outp = proc.StandardOutput.ReadToEndAsync(cancellationToken);
-            await proc.WaitForExitAsync(cancellationToken).ConfigureAwait(false);
-            await Task.WhenAll(err, outp).ConfigureAwait(false);
+            try
+            {
+                await proc.WaitForExitAsync(cancellationToken).ConfigureAwait(false);
+                await Task.WhenAll(err, outp).ConfigureAwait(false);
+            }
+            catch
+            {
+                try
+                {
+                    if (!proc.HasExited)
+                    {
+                        proc.Kill(entireProcessTree: true);
+                        proc.WaitForExit(5000);
+                    }
+                }
+                catch (InvalidOperationException) { }
+                catch (System.ComponentModel.Win32Exception) { }
+                try { await Task.WhenAll(err, outp).ConfigureAwait(false); } catch { }
+                throw;
+            }
             if (proc.ExitCode != 0 || !File.Exists(vob) || new FileInfo(vob).Length < 16 * OpticalConstants.DataSectorSize)
             {
                 return null;

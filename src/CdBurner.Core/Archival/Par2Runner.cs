@@ -7,6 +7,12 @@ namespace CdBurner.Core.Archival;
 /// </summary>
 public static class Par2Runner
 {
+    /// <summary>Default maximum duration allowed for a single par2 process invocation.</summary>
+    internal static TimeSpan ProcessTimeout { get; set; } = TimeSpan.FromMinutes(15);
+
+    /// <summary>Per-async-flow timeout override for tests so parallel runs stay isolated.</summary>
+    internal static readonly AsyncLocal<TimeSpan?> ProcessTimeoutOverride = new();
+
     /// <summary>
     /// Searches for par2cmdline on the host machine.
     /// </summary>
@@ -219,65 +225,55 @@ public static class Par2Runner
             psi.ArgumentList.Add(arg);
         }
 
-        using var proc = new Process { StartInfo = psi };
-
-        if (!proc.Start())
-        {
-            throw new InvalidOperationException($"Failed to start par2 process at '{par2Path}'.");
-        }
-
-        var outTask = proc.StandardOutput.ReadToEndAsync(cancellationToken);
-        var errTask = proc.StandardError.ReadToEndAsync(cancellationToken);
-
+        TimeSpan timeout = ProcessTimeoutOverride.Value ?? ProcessTimeout;
         try
         {
-            await Task.WhenAll(outTask, errTask, proc.WaitForExitAsync(cancellationToken)).ConfigureAwait(false);
-        }
-        catch (OperationCanceledException) when (cancellationToken.IsCancellationRequested)
-        {
-            try
+            var (exitCode, _, stderr) = await RunProcessWithTimeoutAsync(psi, timeout, "create", cancellationToken).ConfigureAwait(false);
+
+            if (exitCode != 0)
             {
-                if (!proc.HasExited)
-                {
-                    proc.Kill(entireProcessTree: true);
-                }
+                string lastStderr = stderr.Length > 500 ? stderr[^500..] : stderr;
+                throw new InvalidOperationException(
+                    $"par2 creation failed with exit code {exitCode}: {lastStderr}");
             }
-            catch
+
+            string recoveryFolder = Path.Combine(discRoot, ArchiveManifest.RecoveryFolderName);
+            Directory.CreateDirectory(recoveryFolder);
+
+            foreach (var file in Directory.EnumerateFiles(scratchDirectory, "*.par2"))
             {
+                string dest = Path.Combine(recoveryFolder, Path.GetFileName(file));
+                File.Move(file, dest, overwrite: true);
             }
-            throw;
         }
         catch
         {
-            try
-            {
-                if (!proc.HasExited)
-                {
-                    proc.Kill(entireProcessTree: true);
-                }
-            }
-            catch
-            {
-            }
+            CleanupScratchPar2(scratchDirectory);
             throw;
         }
+    }
 
-        if (proc.ExitCode != 0)
+    private static void CleanupScratchPar2(string scratchDirectory)
+    {
+        try
         {
-            string stderr = errTask.IsCompletedSuccessfully ? errTask.Result : string.Empty;
-            string lastStderr = stderr.Length > 500 ? stderr[^500..] : stderr;
-            throw new InvalidOperationException(
-                $"par2 creation failed with exit code {proc.ExitCode}: {lastStderr}");
-        }
+            if (!Directory.Exists(scratchDirectory))
+            {
+                return;
+            }
 
-        string recoveryFolder = Path.Combine(discRoot, ArchiveManifest.RecoveryFolderName);
-        Directory.CreateDirectory(recoveryFolder);
-
-        foreach (var file in Directory.EnumerateFiles(scratchDirectory, "*.par2"))
-        {
-            string dest = Path.Combine(recoveryFolder, Path.GetFileName(file));
-            File.Move(file, dest, overwrite: true);
+            foreach (var file in Directory.EnumerateFiles(scratchDirectory, "*.par2"))
+            {
+                try
+                {
+                    File.Delete(file);
+                }
+                catch (IOException) { }
+                catch (UnauthorizedAccessException) { }
+            }
         }
+        catch (IOException) { }
+        catch (UnauthorizedAccessException) { }
     }
 
     /// <summary>
@@ -336,7 +332,7 @@ public static class Par2Runner
         {
             (exitCode, errorOutput) = await RunRepairOnceAsync(par2Path, runRoot, cancellationToken).ConfigureAwait(false);
         }
-        catch (OperationCanceledException)
+        catch
         {
             RestoreDisplacedOriginals(folderRoot, filesBefore);
             throw;
@@ -359,18 +355,29 @@ public static class Par2Runner
                     string held = volume + HeldVolumeSuffix;
                     File.Move(volume, held);
                     int retryExitCode;
+                    bool attemptThrew = true;
                     try
                     {
                         (retryExitCode, _) = await RunRepairOnceAsync(par2Path, runRoot, cancellationToken).ConfigureAwait(false);
+                        attemptThrew = false;
                     }
-                    catch (OperationCanceledException)
+                    catch
                     {
                         RestoreDisplacedOriginals(folderRoot, filesBefore);
                         throw;
                     }
                     finally
                     {
-                        File.Move(held, volume);
+                        try
+                        {
+                            if (File.Exists(held) && !File.Exists(volume))
+                            {
+                                File.Move(held, volume);
+                            }
+                        }
+                        catch (Exception ex) when (attemptThrew && ex is IOException or UnauthorizedAccessException)
+                        {
+                        }
                     }
 
                     attempts++;
@@ -443,10 +450,8 @@ public static class Par2Runner
     {
         foreach (var (backup, original) in FindNewBackups(folderRoot, filesBefore))
         {
-            if (!File.Exists(original))
-            {
-                File.Move(backup, original);
-            }
+            // Overwrite any partial/0-byte file par2 may have started writing before failing or timing out.
+            File.Move(backup, original, overwrite: true);
         }
     }
 
@@ -495,50 +500,70 @@ public static class Par2Runner
         psi.ArgumentList.Add("-B.");
         psi.ArgumentList.Add(Path.Combine(ArchiveManifest.RecoveryFolderName, "recovery.par2"));
 
+        TimeSpan timeout = ProcessTimeoutOverride.Value ?? ProcessTimeout;
+        var (exitCode, _, err) = await RunProcessWithTimeoutAsync(psi, timeout, "repair", cancellationToken).ConfigureAwait(false);
+        return (exitCode, err);
+    }
+
+    private static async Task<(int ExitCode, string StandardOutput, string StandardError)> RunProcessWithTimeoutAsync(
+        ProcessStartInfo psi,
+        TimeSpan timeout,
+        string operationName,
+        CancellationToken cancellationToken)
+    {
+        cancellationToken.ThrowIfCancellationRequested();
         using var proc = new Process { StartInfo = psi };
 
         if (!proc.Start())
         {
-            throw new InvalidOperationException($"Failed to start par2 process at '{par2Path}'.");
+            throw new InvalidOperationException($"Failed to start par2 process at '{psi.FileName}'.");
         }
 
-        var outTask = proc.StandardOutput.ReadToEndAsync(cancellationToken);
-        var errTask = proc.StandardError.ReadToEndAsync(cancellationToken);
+        using var timeoutCts = CancellationTokenSource.CreateLinkedTokenSource(cancellationToken);
+        timeoutCts.CancelAfter(timeout);
+
+        var outTask = proc.StandardOutput.ReadToEndAsync(timeoutCts.Token);
+        var errTask = proc.StandardError.ReadToEndAsync(timeoutCts.Token);
 
         try
         {
-            await Task.WhenAll(outTask, errTask, proc.WaitForExitAsync(cancellationToken)).ConfigureAwait(false);
+            await Task.WhenAll(outTask, errTask, proc.WaitForExitAsync(timeoutCts.Token)).ConfigureAwait(false);
         }
-        catch (OperationCanceledException) when (cancellationToken.IsCancellationRequested)
+        catch (OperationCanceledException) when (!cancellationToken.IsCancellationRequested && timeoutCts.IsCancellationRequested)
         {
-            try
-            {
-                if (!proc.HasExited)
-                {
-                    proc.Kill(entireProcessTree: true);
-                }
-            }
-            catch
-            {
-            }
-            throw;
+            KillProcessTreeSafe(proc);
+            try { await Task.WhenAll(outTask, errTask).ConfigureAwait(false); } catch { }
+            throw new TimeoutException($"par2 {operationName} timed out after {timeout.TotalSeconds:F0}s.");
         }
         catch
         {
-            try
-            {
-                if (!proc.HasExited)
-                {
-                    proc.Kill(entireProcessTree: true);
-                }
-            }
-            catch
-            {
-            }
+            KillProcessTreeSafe(proc);
+            try { await Task.WhenAll(outTask, errTask).ConfigureAwait(false); } catch { }
             throw;
         }
 
-        return (proc.ExitCode, errTask.IsCompletedSuccessfully ? errTask.Result : string.Empty);
+        return (
+            proc.ExitCode,
+            outTask.IsCompletedSuccessfully ? outTask.Result : string.Empty,
+            errTask.IsCompletedSuccessfully ? errTask.Result : string.Empty);
+    }
+
+    private static void KillProcessTreeSafe(Process proc)
+    {
+        try
+        {
+            if (!proc.HasExited)
+            {
+                proc.Kill(entireProcessTree: true);
+                proc.WaitForExit(5000);
+            }
+        }
+        catch (InvalidOperationException)
+        {
+        }
+        catch (System.ComponentModel.Win32Exception)
+        {
+        }
     }
 }
 
@@ -553,7 +578,7 @@ public static class Par2Runner
 public sealed record Par2RepairResult(int ExitCode, string ErrorOutput, IReadOnlyList<string> BackupFiles, int Attempts);
 
 /// <summary>
-/// A short directory junction (under %TEMP%, or the drive root when that path is long too) pointing at a folder, so a
+/// A short directory junction (under %TEMP% or a user-writable profile directory) pointing at a folder, so a
 /// tool limited to 260-character paths can reach files with long names. Disposing removes the junction only; the
 /// folder it points at and its files are untouched.
 /// </summary>
@@ -561,6 +586,10 @@ internal sealed class ShortPathAlias : IDisposable
 {
     /// <summary>par2cmdline's limit (MAX_PATH); paths at or past it are refused.</summary>
     internal const int PathLimit = 259;
+
+    internal static readonly AsyncLocal<string?> TempPathOverride = new();
+    internal static readonly AsyncLocal<int?> JunctionTimeoutMsOverride = new();
+    internal static readonly AsyncLocal<Func<string, string, ProcessStartInfo>?> JunctionProcessStartInfoOverride = new();
 
     private ShortPathAlias(string path) => Path = path;
 
@@ -581,48 +610,120 @@ internal sealed class ShortPathAlias : IDisposable
             return null;
         }
 
-        string temp = System.IO.Path.GetTempPath();
-        string parent = temp.Length <= 40 ? temp : System.IO.Path.GetPathRoot(full)!;
+        string? parent = ChooseShortParent(longestRelative);
+        if (parent == null)
+        {
+            return null;
+        }
+
         string link = System.IO.Path.Combine(parent, "ip2-" + Guid.NewGuid().ToString("N")[..6]);
         try
         {
-            var psi = new ProcessStartInfo("cmd.exe")
-            {
-                UseShellExecute = false,
-                CreateNoWindow = true,
-                RedirectStandardOutput = true,
-                RedirectStandardError = true
-            };
-            psi.ArgumentList.Add("/c");
-            psi.ArgumentList.Add("mklink");
-            psi.ArgumentList.Add("/J");
-            psi.ArgumentList.Add(link);
-            psi.ArgumentList.Add(full);
+            ProcessStartInfo psi = JunctionProcessStartInfoOverride.Value?.Invoke(link, full)
+                ?? CreateJunctionStartInfo(link, full);
             using var proc = Process.Start(psi);
-            proc?.WaitForExit(10_000);
-            return proc is { ExitCode: 0 } && Directory.Exists(link) ? new ShortPathAlias(link) : null;
+            if (proc == null)
+            {
+                return null;
+            }
+
+            int timeoutMs = JunctionTimeoutMsOverride.Value ?? 10_000;
+            if (!proc.WaitForExit(timeoutMs))
+            {
+                try
+                {
+                    if (!proc.HasExited)
+                    {
+                        proc.Kill(entireProcessTree: true);
+                        proc.WaitForExit(5_000);
+                    }
+                }
+                catch (InvalidOperationException) { }
+                catch (System.ComponentModel.Win32Exception) { }
+                TryDeleteJunction(link);
+                return null;
+            }
+
+            if (proc.ExitCode == 0 && Directory.Exists(link))
+            {
+                return new ShortPathAlias(link);
+            }
+
+            TryDeleteJunction(link);
+            return null;
         }
         catch (Exception ex) when (ex is IOException or System.ComponentModel.Win32Exception or InvalidOperationException)
         {
+            TryDeleteJunction(link);
             return null;
         }
     }
 
-    public void Dispose()
+    private static string? ChooseShortParent(int longestRelative)
+    {
+        const int linkNameLength = 10; // "ip2-" + 6 hex chars
+        string? customTemp = TempPathOverride.Value;
+        string?[] candidates = customTemp != null
+            ? [customTemp]
+            :
+            [
+                System.IO.Path.GetTempPath(),
+                Environment.GetFolderPath(Environment.SpecialFolder.LocalApplicationData),
+                Environment.GetFolderPath(Environment.SpecialFolder.UserProfile)
+            ];
+
+        foreach (string? raw in candidates)
+        {
+            if (string.IsNullOrWhiteSpace(raw))
+            {
+                continue;
+            }
+
+            string candidate = raw.TrimEnd(System.IO.Path.DirectorySeparatorChar, System.IO.Path.AltDirectorySeparatorChar);
+            // Never place junctions directly in a drive root (e.g. "C:\").
+            if (candidate.Length <= 3 && candidate.EndsWith(':'))
+            {
+                continue;
+            }
+
+            if (candidate.Length + 1 + linkNameLength + longestRelative <= PathLimit && Directory.Exists(candidate))
+            {
+                return candidate;
+            }
+        }
+
+        return null;
+    }
+
+    private static ProcessStartInfo CreateJunctionStartInfo(string link, string target)
+    {
+        var psi = new ProcessStartInfo("cmd.exe")
+        {
+            UseShellExecute = false,
+            CreateNoWindow = true,
+            RedirectStandardOutput = true,
+            RedirectStandardError = true
+        };
+        psi.ArgumentList.Add("/c");
+        psi.ArgumentList.Add("mklink");
+        psi.ArgumentList.Add("/J");
+        psi.ArgumentList.Add(link);
+        psi.ArgumentList.Add(target);
+        return psi;
+    }
+
+    private static void TryDeleteJunction(string link)
     {
         try
         {
-            // Non-recursive: removes the junction itself, never what it points at.
-            if (new DirectoryInfo(Path).Attributes.HasFlag(FileAttributes.ReparsePoint))
+            if (Directory.Exists(link) && new DirectoryInfo(link).Attributes.HasFlag(FileAttributes.ReparsePoint))
             {
-                Directory.Delete(Path, recursive: false);
+                Directory.Delete(link, recursive: false);
             }
         }
-        catch (IOException)
-        {
-        }
-        catch (UnauthorizedAccessException)
-        {
-        }
+        catch (IOException) { }
+        catch (UnauthorizedAccessException) { }
     }
+
+    public void Dispose() => TryDeleteJunction(Path);
 }

@@ -310,8 +310,15 @@ public sealed class SubtitleGenerationService
 
             // Written beside, then renamed: a half-written file is never taken as a finished one.
             string tempSrt = srtPath + ".tmp";
-            await File.WriteAllTextAsync(tempSrt, SrtCueList.Format(cues), new UTF8Encoding(false), cancellationToken).ConfigureAwait(false);
-            File.Move(tempSrt, srtPath, overwrite: true);
+            try
+            {
+                await File.WriteAllTextAsync(tempSrt, SrtCueList.Format(cues), new UTF8Encoding(false), cancellationToken).ConfigureAwait(false);
+                File.Move(tempSrt, srtPath, overwrite: true);
+            }
+            finally
+            {
+                TryDeleteFile(tempSrt);
+            }
 
             string? warning = backend != "processor" ? null : whisper.Build switch
             {
@@ -439,6 +446,20 @@ public sealed class SubtitleGenerationService
         int.Parse(m.Groups["h"].Value, CultureInfo.InvariantCulture) * 3600 +
         int.Parse(m.Groups["m"].Value, CultureInfo.InvariantCulture) * 60 +
         double.Parse(m.Groups["s"].Value, CultureInfo.InvariantCulture));
+
+    private static void TryDeleteFile(string path)
+    {
+        try
+        {
+            if (File.Exists(path))
+            {
+                File.Delete(path);
+            }
+        }
+        catch (Exception ex) when (ex is IOException or UnauthorizedAccessException)
+        {
+        }
+    }
 
     private static void TryDeleteDirectory(string dir)
     {

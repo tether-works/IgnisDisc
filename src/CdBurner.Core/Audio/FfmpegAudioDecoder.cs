@@ -22,6 +22,15 @@ public sealed class FfmpegNotInstalledException : InvalidOperationException
 /// </summary>
 public static class FfmpegAudioDecoder
 {
+    /// <summary>Default maximum duration allowed for a single ffmpeg audio decode process.</summary>
+    internal static TimeSpan ProcessTimeout { get; set; } = TimeSpan.FromMinutes(10);
+
+    /// <summary>Per-async-flow timeout override for tests so parallel runs stay isolated.</summary>
+    internal static readonly AsyncLocal<TimeSpan?> ProcessTimeoutOverride = new();
+
+    /// <summary>Per-async-flow stdout copy override for tests simulating stream/OOM failures.</summary>
+    internal static readonly AsyncLocal<Action<Stream, MemoryStream>?> CopyStdoutOverride = new();
+
     /// <summary>True for extensions this decoder handles when ffmpeg is present.</summary>
     public static bool HandlesExtension(string path)
     {
@@ -47,13 +56,21 @@ public static class FfmpegAudioDecoder
     /// Decodes <paramref name="path"/> to 44,100 Hz 16-bit stereo PCM with trimmed encoder delay and padding.
     /// <paramref name="ffmpeg"/> is the path to ffmpeg.exe (see <see cref="FfmpegLocator"/>).
     /// </summary>
-    public static byte[] DecodeToRedBookPcm(string path, string ffmpeg)
+    public static byte[] DecodeToRedBookPcm(string path, string ffmpeg) =>
+        DecodeToRedBookPcm(path, ffmpeg, CancellationToken.None);
+
+    /// <summary>
+    /// Decodes <paramref name="path"/> to 44,100 Hz 16-bit stereo PCM with trimmed encoder delay and padding.
+    /// <paramref name="ffmpeg"/> is the path to ffmpeg.exe (see <see cref="FfmpegLocator"/>).
+    /// </summary>
+    public static byte[] DecodeToRedBookPcm(string path, string ffmpeg, CancellationToken cancellationToken)
     {
         ArgumentException.ThrowIfNullOrWhiteSpace(ffmpeg);
+        cancellationToken.ThrowIfCancellationRequested();
         var info = GaplessStreamInfo.TryRead(path);
         int nativeRate = info?.SampleRate > 0 ? info.SampleRate : OpticalConstants.CdAudioSampleRate;
 
-        byte[] raw = RunFfmpeg(ffmpeg, BuildArguments(path, nativeRate), path);
+        byte[] raw = RunFfmpeg(ffmpeg, BuildArguments(path, nativeRate), path, cancellationToken);
         long decoded = raw.Length / 4;
         byte[] pcm = raw;
         if (info is not null)
@@ -82,8 +99,9 @@ public static class FfmpegAudioDecoder
         return WavFileCodec.DecodeToRedBookPcm(wav);
     }
 
-    private static byte[] RunFfmpeg(string ffmpeg, IReadOnlyList<string> args, string inputPath)
+    private static byte[] RunFfmpeg(string ffmpeg, IReadOnlyList<string> args, string inputPath, CancellationToken cancellationToken)
     {
+        cancellationToken.ThrowIfCancellationRequested();
         var psi = new ProcessStartInfo
         {
             FileName = ffmpeg,
@@ -103,18 +121,72 @@ public static class FfmpegAudioDecoder
             throw new InvalidOperationException($"Failed to start ffmpeg at '{ffmpeg}'.");
         }
 
-        // stderr is read on its own task so a full pipe cannot stall ffmpeg while stdout is being read.
-        var errTask = proc.StandardError.ReadToEndAsync();
-        using var ms = new MemoryStream();
-        proc.StandardOutput.BaseStream.CopyTo(ms);
-        proc.WaitForExit();
-        string err = errTask.GetAwaiter().GetResult();
+        TimeSpan timeout = ProcessTimeoutOverride.Value ?? ProcessTimeout;
+        using var timeoutCts = CancellationTokenSource.CreateLinkedTokenSource(cancellationToken);
+        timeoutCts.CancelAfter(timeout);
 
-        if (proc.ExitCode != 0)
+        using var killReg = timeoutCts.Token.Register(() => KillProcessTreeSafe(proc));
+
+        // stderr is read on its own task so a full pipe cannot stall ffmpeg while stdout is being read.
+        var errTask = proc.StandardError.ReadToEndAsync(timeoutCts.Token);
+        using var ms = new MemoryStream();
+        try
         {
-            string tail = err.Length > 500 ? err[^500..] : err;
-            throw new InvalidDataException($"ffmpeg could not decode '{Path.GetFileName(inputPath)}' (exit code {proc.ExitCode}): {tail.Trim()}");
+            Action<Stream, MemoryStream>? copyOverride = CopyStdoutOverride.Value;
+            if (copyOverride != null)
+            {
+                copyOverride(proc.StandardOutput.BaseStream, ms);
+            }
+            else
+            {
+                proc.StandardOutput.BaseStream.CopyTo(ms);
+            }
+
+            proc.WaitForExit();
+            string err = errTask.GetAwaiter().GetResult();
+
+            if (timeoutCts.IsCancellationRequested)
+            {
+                cancellationToken.ThrowIfCancellationRequested();
+                throw new TimeoutException($"ffmpeg timed out while decoding '{Path.GetFileName(inputPath)}' after {timeout.TotalSeconds:F0}s.");
+            }
+
+            if (proc.ExitCode != 0)
+            {
+                string tail = err.Length > 500 ? err[^500..] : err;
+                throw new InvalidDataException($"ffmpeg could not decode '{Path.GetFileName(inputPath)}' (exit code {proc.ExitCode}): {tail.Trim()}");
+            }
+            return ms.ToArray();
         }
-        return ms.ToArray();
+        catch (OperationCanceledException) when (!cancellationToken.IsCancellationRequested && timeoutCts.IsCancellationRequested)
+        {
+            KillProcessTreeSafe(proc);
+            throw new TimeoutException($"ffmpeg timed out while decoding '{Path.GetFileName(inputPath)}' after {timeout.TotalSeconds:F0}s.");
+        }
+        catch
+        {
+            KillProcessTreeSafe(proc);
+            timeoutCts.Cancel();
+            try { errTask.GetAwaiter().GetResult(); } catch { }
+            throw;
+        }
+    }
+
+    private static void KillProcessTreeSafe(Process proc)
+    {
+        try
+        {
+            if (!proc.HasExited)
+            {
+                proc.Kill(entireProcessTree: true);
+                proc.WaitForExit(5000);
+            }
+        }
+        catch (InvalidOperationException)
+        {
+        }
+        catch (System.ComponentModel.Win32Exception)
+        {
+        }
     }
 }

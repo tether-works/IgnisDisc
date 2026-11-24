@@ -133,6 +133,9 @@ public static class WhisperToolInstaller
     private const string LockFileName = "install.lock";
     private const string NoticeFileName = "NOTICE-IgnisDisc.txt";
 
+    /// <summary>Per-async-flow directory move override for tests verifying failed staging replacement.</summary>
+    internal static readonly AsyncLocal<Action<string, string>?> MoveDirectoryOverride = new();
+
     /// <summary>
     /// Downloads and installs the program and model in <paramref name="plan"/>. Parts already installed and intact
     /// (same build and version; model file with the pinned hash) are not downloaded again.
@@ -321,11 +324,15 @@ public static class WhisperToolInstaller
             await File.WriteAllTextAsync(Path.Combine(stagingDir, WhisperLocator.BuildMarkerFileName),
                 WhisperLocator.FormatBuildMarker(plan.Build), cancellationToken).ConfigureAwait(false);
 
+            Action<string, string> moveDir = MoveDirectoryOverride.Value ?? Directory.Move;
+            string? backupDir = null;
             if (Directory.Exists(binDir))
             {
+                string candidateBackup = binDir + ".old." + Guid.NewGuid().ToString("N")[..8];
                 try
                 {
-                    Directory.Delete(binDir, recursive: true);
+                    moveDir(binDir, candidateBackup);
+                    backupDir = candidateBackup;
                 }
                 catch (Exception ex) when (ex is IOException or UnauthorizedAccessException)
                 {
@@ -333,7 +340,39 @@ public static class WhisperToolInstaller
                 }
             }
 
-            Directory.Move(stagingDir, binDir);
+            try
+            {
+                moveDir(stagingDir, binDir);
+            }
+            catch (Exception ex) when (ex is IOException or UnauthorizedAccessException)
+            {
+                if (backupDir != null && Directory.Exists(backupDir) && !Directory.Exists(binDir))
+                {
+                    try
+                    {
+                        Directory.Move(backupDir, binDir);
+                        backupDir = null;
+                    }
+                    catch (Exception restoreEx) when (restoreEx is IOException or UnauthorizedAccessException)
+                    {
+                    }
+                }
+                return $"Cannot replace the installed whisper.cpp: {ex.Message}";
+            }
+
+            if (backupDir != null)
+            {
+                try
+                {
+                    if (Directory.Exists(backupDir))
+                    {
+                        Directory.Delete(backupDir, recursive: true);
+                    }
+                }
+                catch (Exception ex) when (ex is IOException or UnauthorizedAccessException)
+                {
+                }
+            }
             return null;
         }
         finally

@@ -9,4 +9,8 @@
     <FrameworkReference Include="Microsoft.WindowsDesktop.App" />
   </ItemGroup>
 
+  <ItemGroup>
+    <InternalsVisibleTo Include="CdBurner.Core.Tests" />
+  </ItemGroup>
+
 </Project>

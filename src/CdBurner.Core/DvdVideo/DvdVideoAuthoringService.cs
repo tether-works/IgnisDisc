@@ -320,6 +320,7 @@ public sealed class DvdVideoAuthoringService
         }
         try
         {
+            cancellationToken.ThrowIfCancellationRequested();
             using var proc = System.Diagnostics.Process.Start(psi);
             if (proc == null)
             {
@@ -327,12 +328,36 @@ public sealed class DvdVideoAuthoringService
             }
             var err = proc.StandardError.ReadToEndAsync(cancellationToken);
             var outp = proc.StandardOutput.ReadToEndAsync(cancellationToken);
-            await proc.WaitForExitAsync(cancellationToken).ConfigureAwait(false);
-            await Task.WhenAll(err, outp).ConfigureAwait(false);
-            return proc.ExitCode == 0 && File.Exists(pngPath);
+            try
+            {
+                await Task.WhenAll(err, outp, proc.WaitForExitAsync(cancellationToken)).ConfigureAwait(false);
+            }
+            catch
+            {
+                try
+                {
+                    if (!proc.HasExited)
+                    {
+                        proc.Kill(entireProcessTree: true);
+                        proc.WaitForExit(5000);
+                    }
+                }
+                catch (InvalidOperationException) { }
+                catch (System.ComponentModel.Win32Exception) { }
+                try { await Task.WhenAll(err, outp).ConfigureAwait(false); } catch { }
+                try { if (File.Exists(pngPath)) File.Delete(pngPath); } catch (IOException) { } catch (UnauthorizedAccessException) { }
+                throw;
+            }
+            bool ok = proc.ExitCode == 0 && File.Exists(pngPath) && new FileInfo(pngPath).Length > 0;
+            if (!ok)
+            {
+                try { if (File.Exists(pngPath)) File.Delete(pngPath); } catch (IOException) { } catch (UnauthorizedAccessException) { }
+            }
+            return ok;
         }
         catch (Exception ex) when (ex is System.ComponentModel.Win32Exception or IOException)
         {
+            try { if (File.Exists(pngPath)) File.Delete(pngPath); } catch (IOException) { } catch (UnauthorizedAccessException) { }
             return false;
         }
     }
@@ -839,133 +864,138 @@ public sealed class DvdVideoAuthoringService
                 // Place tempVob inside videoTsDir so it is on the same filesystem volume for fast 0ms File.Move
                 string tempVob = Path.Combine(videoTsDir, $"_temp_transcode_{setNum}_{Guid.NewGuid():N}.vob");
                 string? subtitleIndex = ffmpegReady ? PrepareSubtitles(moviePath, options, setNum, logNotes) : null;
-                bool transcodeSuccess = false;
-                double detectedDurationSeconds = probedDurations[i];
-
-                async Task<(bool, double)> TranscodeAsync(string? subtitles)
-                {
-                    var transcodeBuilder = (options.Standard == DvdVideoStandard.Pal
-                        ? FfmpegDvdTranscodeBuilder.ForPal(moviePath, tempVob, options.AspectRatio)
-                        : FfmpegDvdTranscodeBuilder.ForNtsc(moviePath, tempVob, options.AspectRatio))
-                        .WithScaleAndPadFilter(true)
-                        .WithVideoBitrate(targetVideoBitrateKbps, targetMaxVideoBitrateKbps)
-                        .WithAudio("ac3", options.AudioBitrateKbps)
-                        .WithSubtitles(subtitles);
-                    return await RunFfmpegTranscodeWithProgressAsync(ffmpegExe!, transcodeBuilder.BuildArgumentList(), tempVob, setNum,
-                        titleCount, movieName, detectedDurationSeconds, titleStartPct, titleSpanPct, progress, logNotes, cancellationToken).ConfigureAwait(false);
-                }
-
                 try
                 {
-                    if (ffmpegReady)
+                    bool transcodeSuccess = false;
+                    double detectedDurationSeconds = probedDurations[i];
+
+                    async Task<(bool, double)> TranscodeAsync(string? subtitles)
                     {
-                        (transcodeSuccess, detectedDurationSeconds) = await TranscodeAsync(subtitleIndex).ConfigureAwait(false);
-                        if (!transcodeSuccess && subtitleIndex != null)
+                        var transcodeBuilder = (options.Standard == DvdVideoStandard.Pal
+                            ? FfmpegDvdTranscodeBuilder.ForPal(moviePath, tempVob, options.AspectRatio)
+                            : FfmpegDvdTranscodeBuilder.ForNtsc(moviePath, tempVob, options.AspectRatio))
+                            .WithScaleAndPadFilter(true)
+                            .WithVideoBitrate(targetVideoBitrateKbps, targetMaxVideoBitrateKbps)
+                            .WithAudio("ac3", options.AudioBitrateKbps)
+                            .WithSubtitles(subtitles);
+                        return await RunFfmpegTranscodeWithProgressAsync(ffmpegExe!, transcodeBuilder.BuildArgumentList(), tempVob, setNum,
+                            titleCount, movieName, detectedDurationSeconds, titleStartPct, titleSpanPct, progress, logNotes, cancellationToken).ConfigureAwait(false);
+                    }
+
+                    try
+                    {
+                        if (ffmpegReady)
                         {
-                            // Some FFmpeg builds fail to mux large subtitle pictures; the film matters more than its subtitles.
-                            logNotes.Add($"FFmpeg could not write title {setNum} with its subtitles; writing it again without them.");
-                            DeleteSubtitleFiles(subtitleIndex);
-                            subtitleIndex = null;
-                            try { if (File.Exists(tempVob)) File.Delete(tempVob); } catch (IOException) { } catch (UnauthorizedAccessException) { }
-                            (transcodeSuccess, detectedDurationSeconds) = await TranscodeAsync(null).ConfigureAwait(false);
+                            (transcodeSuccess, detectedDurationSeconds) = await TranscodeAsync(subtitleIndex).ConfigureAwait(false);
+                            if (!transcodeSuccess && subtitleIndex != null)
+                            {
+                                // Some FFmpeg builds fail to mux large subtitle pictures; the film matters more than its subtitles.
+                                logNotes.Add($"FFmpeg could not write title {setNum} with its subtitles; writing it again without them.");
+                                DeleteSubtitleFiles(subtitleIndex);
+                                subtitleIndex = null;
+                                try { if (File.Exists(tempVob)) File.Delete(tempVob); } catch (IOException) { } catch (UnauthorizedAccessException) { }
+                                (transcodeSuccess, detectedDurationSeconds) = await TranscodeAsync(null).ConfigureAwait(false);
+                            }
                         }
                     }
-                }
-                catch (OperationCanceledException)
-                {
-                    try { if (File.Exists(tempVob)) File.Delete(tempVob); } catch { }
-                    throw;
-                }
-                catch (Exception ex) when (ex is IOException or System.ComponentModel.Win32Exception or InvalidOperationException)
-                {
-                    logNotes.Add($"Transcode attempt failed for '{Path.GetFileName(moviePath)}': {ex.Message}.");
-                }
+                    catch (OperationCanceledException)
+                    {
+                        try { if (File.Exists(tempVob)) File.Delete(tempVob); } catch { }
+                        throw;
+                    }
+                    catch (Exception ex) when (ex is IOException or System.ComponentModel.Win32Exception or InvalidOperationException)
+                    {
+                        logNotes.Add($"Transcode attempt failed for '{Path.GetFileName(moviePath)}': {ex.Message}.");
+                    }
 
-                if (!transcodeSuccess && ffmpegReady)
+                    if (!transcodeSuccess && ffmpegReady)
+                    {
+                        // A disc of placeholder video in place of the film is never what was asked for.
+                        return new DvdAuthoringResult
+                        {
+                            Success = false,
+                            ErrorMessage = $"FFmpeg could not convert '{movieName}' to DVD video (see the log notes). Nothing was authored; check the file plays, or update FFmpeg.",
+                            InputKind = analyzed.Kind,
+                            LogNotes = logNotes
+                        };
+                    }
+
+                    if (!transcodeSuccess)
+                    {
+                        long inputLen = 0;
+                        try { inputLen = new FileInfo(moviePath).Length; } catch { }
+                        // Cap synthetic fallback to 4096 sectors max if FFmpeg failed on a large dummy/corrupt file
+                        int secCount = (int)Math.Clamp(inputLen / OpticalConstants.DataSectorSize, 32L, 4096L);
+                        byte[] synthBytes = CreateSyntheticMovieVob(secCount, setNum);
+                        await File.WriteAllBytesAsync(tempVob, synthBytes, cancellationToken).ConfigureAwait(false);
+                        logNotes.Add($"Generated synthetic movie VOB for Title {setNum} ({secCount} sectors).");
+                    }
+
+                    // Patch NAV packets on the contiguous VOB stream before splitting into 1 GB extents
+                    double navPct = titleStartPct + titleSpanPct * 0.92;
+                    progress?.Report((navPct, $"Patching DVD NAV packets & VOBU address maps for Title {setNum}/{titleCount}..."));
+                    var vobus = DvdIfoGenerator.PatchVobNavPacketsInFile(tempVob, vobId: 1, cellId: 1, isMenu: false,
+                        chapterSeconds: Math.Max(0, options.ChapterIntervalSeconds)).ToList();
+
+                    // Split oversized VOB (> 1 GB)
+                    double splitPct = titleStartPct + titleSpanPct * 0.96;
+                    progress?.Report((splitPct, $"Formatting 1 GB DVD VOB extents for Title {setNum}/{titleCount}: '{movieName}'..."));
+                    var vobParts = DvdIfoGenerator.SplitVobFileIfOversized(tempVob, videoTsDir, setNum);
+
+                    // Clean up temp transcode file
+                    try
+                    {
+                        if (File.Exists(tempVob) && !vobParts.Contains(tempVob, StringComparer.OrdinalIgnoreCase))
+                        {
+                            File.Delete(tempVob);
+                        }
+                    }
+                    catch { }
+
+                    int totalVobSecs = 0;
+                    for (int p = 0; p < vobParts.Count; p++)
+                    {
+                        cancellationToken.ThrowIfCancellationRequested();
+                        string part = vobParts[p];
+                        totalVobSecs += (int)(new FileInfo(part).Length / OpticalConstants.DataSectorSize);
+                    }
+
+                    vobus.RemoveAll(v => v.Sector >= totalVobSecs);
+                    if (vobus.Count == 0)
+                    {
+                        vobus.Add(new DvdVobu(0, -1, -1));
+                    }
+                    titleTotalSectors[setNum] = totalVobSecs;
+
+                    // Build VTS_xx_0.IFO and VTS_xx_0.BUP
+                    bool hasMenu = menuVobSectors > 0;
+                    bool chainToNext = options.AfterTitleAction == DvdAfterTitleAction.PlayNextTitle;
+                    int nextTitle = chainToNext && setNum < titleCount ? setNum + 1 : 0;
+                    int effectiveDurationSec = detectedDurationSeconds > 1.0 ? (int)Math.Round(detectedDurationSeconds) : 60;
+                    byte[] vtsIfoBytes = DvdIfoGenerator.BuildVtsIfo(
+                        titleSetNumber: setNum,
+                        standard: options.Standard,
+                        aspect: options.AspectRatio,
+                        titleVobTotalSectors: totalVobSecs,
+                        durationSeconds: effectiveDurationSec,
+                        menuVobSectors: 0,
+                        nextTitleNumber: nextTitle,
+                        vobus: vobus,
+                        callMenuAtEnd: hasMenu,
+                        subtitleStream: subtitleIndex != null && transcodeSuccess);
+
+                    string vtsIfoPath = Path.Combine(videoTsDir, $"VTS_{setNum:D2}_0.IFO");
+                    string vtsBupPath = Path.Combine(videoTsDir, $"VTS_{setNum:D2}_0.BUP");
+
+                    await File.WriteAllBytesAsync(vtsIfoPath, vtsIfoBytes, cancellationToken).ConfigureAwait(false);
+                    await File.WriteAllBytesAsync(vtsBupPath, vtsIfoBytes, cancellationToken).ConfigureAwait(false);
+                    titleSetIfoInputs.Add((setNum, totalVobSecs, effectiveDurationSec, vobus, nextTitle, subtitleIndex != null && transcodeSuccess));
+                }
+                finally
                 {
-                    // A disc of placeholder video in place of the film is never what was asked for.
                     DeleteSubtitleFiles(subtitleIndex);
                     try { if (File.Exists(tempVob)) File.Delete(tempVob); } catch (IOException) { } catch (UnauthorizedAccessException) { }
-                    return new DvdAuthoringResult
-                    {
-                        Success = false,
-                        ErrorMessage = $"FFmpeg could not convert '{movieName}' to DVD video (see the log notes). Nothing was authored; check the file plays, or update FFmpeg.",
-                        InputKind = analyzed.Kind,
-                        LogNotes = logNotes
-                    };
                 }
-
-                if (!transcodeSuccess)
-                {
-                    long inputLen = 0;
-                    try { inputLen = new FileInfo(moviePath).Length; } catch { }
-                    // Cap synthetic fallback to 4096 sectors max if FFmpeg failed on a large dummy/corrupt file
-                    int secCount = (int)Math.Clamp(inputLen / OpticalConstants.DataSectorSize, 32L, 4096L);
-                    byte[] synthBytes = CreateSyntheticMovieVob(secCount, setNum);
-                    await File.WriteAllBytesAsync(tempVob, synthBytes, cancellationToken).ConfigureAwait(false);
-                    logNotes.Add($"Generated synthetic movie VOB for Title {setNum} ({secCount} sectors).");
-                }
-
-                // Patch NAV packets on the contiguous VOB stream before splitting into 1 GB extents
-                double navPct = titleStartPct + titleSpanPct * 0.92;
-                progress?.Report((navPct, $"Patching DVD NAV packets & VOBU address maps for Title {setNum}/{titleCount}..."));
-                var vobus = DvdIfoGenerator.PatchVobNavPacketsInFile(tempVob, vobId: 1, cellId: 1, isMenu: false,
-                    chapterSeconds: Math.Max(0, options.ChapterIntervalSeconds)).ToList();
-
-                // Split oversized VOB (> 1 GB)
-                double splitPct = titleStartPct + titleSpanPct * 0.96;
-                progress?.Report((splitPct, $"Formatting 1 GB DVD VOB extents for Title {setNum}/{titleCount}: '{movieName}'..."));
-                var vobParts = DvdIfoGenerator.SplitVobFileIfOversized(tempVob, videoTsDir, setNum);
-
-                // Clean up temp transcode file
-                try
-                {
-                    if (File.Exists(tempVob) && !vobParts.Contains(tempVob, StringComparer.OrdinalIgnoreCase))
-                    {
-                        File.Delete(tempVob);
-                    }
-                }
-                catch { }
-
-                int totalVobSecs = 0;
-                for (int p = 0; p < vobParts.Count; p++)
-                {
-                    cancellationToken.ThrowIfCancellationRequested();
-                    string part = vobParts[p];
-                    totalVobSecs += (int)(new FileInfo(part).Length / OpticalConstants.DataSectorSize);
-                }
-
-                vobus.RemoveAll(v => v.Sector >= totalVobSecs);
-                if (vobus.Count == 0)
-                {
-                    vobus.Add(new DvdVobu(0, -1, -1));
-                }
-                titleTotalSectors[setNum] = totalVobSecs;
-
-                // Build VTS_xx_0.IFO and VTS_xx_0.BUP
-                bool hasMenu = menuVobSectors > 0;
-                bool chainToNext = options.AfterTitleAction == DvdAfterTitleAction.PlayNextTitle;
-                int nextTitle = chainToNext && setNum < titleCount ? setNum + 1 : 0;
-                int effectiveDurationSec = detectedDurationSeconds > 1.0 ? (int)Math.Round(detectedDurationSeconds) : 60;
-                byte[] vtsIfoBytes = DvdIfoGenerator.BuildVtsIfo(
-                    titleSetNumber: setNum,
-                    standard: options.Standard,
-                    aspect: options.AspectRatio,
-                    titleVobTotalSectors: totalVobSecs,
-                    durationSeconds: effectiveDurationSec,
-                    menuVobSectors: 0,
-                    nextTitleNumber: nextTitle,
-                    vobus: vobus,
-                    callMenuAtEnd: hasMenu,
-                    subtitleStream: subtitleIndex != null && transcodeSuccess);
-
-                string vtsIfoPath = Path.Combine(videoTsDir, $"VTS_{setNum:D2}_0.IFO");
-                string vtsBupPath = Path.Combine(videoTsDir, $"VTS_{setNum:D2}_0.BUP");
-
-                await File.WriteAllBytesAsync(vtsIfoPath, vtsIfoBytes, cancellationToken).ConfigureAwait(false);
-                await File.WriteAllBytesAsync(vtsBupPath, vtsIfoBytes, cancellationToken).ConfigureAwait(false);
-                titleSetIfoInputs.Add((setNum, totalVobSecs, effectiveDurationSec, vobus, nextTitle, subtitleIndex != null && transcodeSuccess));
-                DeleteSubtitleFiles(subtitleIndex);
             }
 
             // 3. Plan preliminary layout to determine exact VTS start sector offsets
@@ -1360,17 +1390,19 @@ public sealed class DvdVideoAuthoringService
 
         // Watchdog: FFmpeg prints progress about twice a second. One that stays silent this long has hung (an old build
         // was seen to crash while muxing subtitles and never exit); it is stopped so authoring can go on or fail.
+        TimeSpan noOutputTimeout = FfmpegNoOutputTimeoutOverride.Value ?? FfmpegNoOutputTimeout;
+        TimeSpan pollInterval = TimeSpan.FromMilliseconds(Math.Clamp(noOutputTimeout.TotalMilliseconds / 2, 25, 5000));
         using var watchdogStop = CancellationTokenSource.CreateLinkedTokenSource(cancellationToken);
         var watchdog = Task.Run(async () =>
         {
             try
             {
-                while (!proc.HasExited)
+                while (!watchdogStop.IsCancellationRequested && !HasExitedSafe(proc))
                 {
-                    await Task.Delay(TimeSpan.FromSeconds(5), watchdogStop.Token).ConfigureAwait(false);
-                    if (Stopwatch.GetElapsedTime(Interlocked.Read(ref lastOutput)) > FfmpegNoOutputTimeout && !proc.HasExited)
+                    await Task.Delay(pollInterval, watchdogStop.Token).ConfigureAwait(false);
+                    if (Stopwatch.GetElapsedTime(Interlocked.Read(ref lastOutput)) > noOutputTimeout && !HasExitedSafe(proc))
                     {
-                        stalled = true;
+                        Volatile.Write(ref stalled, true);
                         try { proc.Kill(entireProcessTree: true); } catch (InvalidOperationException) { } catch (System.ComponentModel.Win32Exception) { }
                         return;
                     }
@@ -1381,12 +1413,41 @@ public sealed class DvdVideoAuthoringService
             }
         }, CancellationToken.None);
 
-        await Task.WhenAll(stdOutTask, stdErrTask, proc.WaitForExitAsync(cancellationToken)).ConfigureAwait(false);
-        watchdogStop.Cancel();
-        await watchdog.ConfigureAwait(false);
-        if (stalled)
+        try
         {
-            logNotes.Add($"FFmpeg printed nothing for {FfmpegNoOutputTimeout.TotalMinutes:F0} minutes while converting '{movieName}' and was stopped.");
+            await proc.WaitForExitAsync(cancellationToken).ConfigureAwait(false);
+            await Task.WhenAll(stdOutTask, stdErrTask).ConfigureAwait(false);
+        }
+        catch
+        {
+            try
+            {
+                if (!HasExitedSafe(proc))
+                {
+                    proc.Kill(entireProcessTree: true);
+                    proc.WaitForExit(5000);
+                }
+            }
+            catch (InvalidOperationException) { }
+            catch (System.ComponentModel.Win32Exception) { }
+            try { await Task.WhenAll(stdOutTask, stdErrTask).ConfigureAwait(false); } catch { }
+            throw;
+        }
+        finally
+        {
+            watchdogStop.Cancel();
+            try
+            {
+                await watchdog.ConfigureAwait(false);
+            }
+            catch (OperationCanceledException)
+            {
+            }
+        }
+
+        if (Volatile.Read(ref stalled))
+        {
+            logNotes.Add($"FFmpeg printed nothing for {noOutputTimeout.TotalMinutes:F0} minutes while converting '{movieName}' and was stopped.");
             return (false, durationSec);
         }
 
@@ -1400,8 +1461,23 @@ public sealed class DvdVideoAuthoringService
         return (false, durationSec);
     }
 
+    private static bool HasExitedSafe(Process proc)
+    {
+        try
+        {
+            return proc.HasExited;
+        }
+        catch (InvalidOperationException)
+        {
+            return true;
+        }
+    }
+
     /// <summary>How long FFmpeg may print nothing before a transcode counts as hung.</summary>
     internal static TimeSpan FfmpegNoOutputTimeout { get; set; } = TimeSpan.FromMinutes(3);
+
+    /// <summary>Per-async-flow override for <see cref="FfmpegNoOutputTimeout"/> in tests.</summary>
+    internal static readonly AsyncLocal<TimeSpan?> FfmpegNoOutputTimeoutOverride = new();
 
     private static double ParseHms(Match match)
     {

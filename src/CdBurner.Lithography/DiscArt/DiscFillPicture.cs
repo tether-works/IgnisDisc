@@ -354,6 +354,9 @@ public static class DiscFillPicture
         return durationSeconds >= 180 ? Math.Round(durationSeconds / 3, 1) : Math.Round(durationSeconds / 2, 1);
     }
 
+    /// <summary>Per-async-flow timeout override for <see cref="GrabMovieFrameAsync"/> in tests.</summary>
+    internal static readonly AsyncLocal<TimeSpan?> FrameGrabTimeoutOverride = new();
+
     /// <summary>
     /// The automatic picture for a DVD-Video: one frame of <paramref name="moviePath"/> grabbed by FFmpeg into
     /// <paramref name="outputPng"/>. Returns the PNG path, or null with <paramref name="skipReason"/> when there is no
@@ -401,11 +404,13 @@ public static class DiscFillPicture
         }
 
         string errors;
+        bool succeeded = false;
         try
         {
+            cancellationToken.ThrowIfCancellationRequested();
             using Process process = Process.Start(psi) ?? throw new InvalidOperationException("FFmpeg did not start.");
             using var timeout = CancellationTokenSource.CreateLinkedTokenSource(cancellationToken);
-            timeout.CancelAfter(TimeSpan.FromSeconds(60));
+            timeout.CancelAfter(FrameGrabTimeoutOverride.Value ?? TimeSpan.FromSeconds(60));
             Task<string> stderr = process.StandardError.ReadToEndAsync(timeout.Token);
             Task<string> stdout = process.StandardOutput.ReadToEndAsync(timeout.Token);
             try
@@ -414,7 +419,17 @@ public static class DiscFillPicture
             }
             catch (OperationCanceledException)
             {
-                try { if (!process.HasExited) process.Kill(entireProcessTree: true); } catch (InvalidOperationException) { }
+                try
+                {
+                    if (!process.HasExited)
+                    {
+                        process.Kill(entireProcessTree: true);
+                        process.WaitForExit(5000);
+                    }
+                }
+                catch (InvalidOperationException) { }
+                catch (System.ComponentModel.Win32Exception) { }
+                try { await Task.WhenAll(stderr, stdout).ConfigureAwait(false); } catch { }
                 cancellationToken.ThrowIfCancellationRequested();
                 return (null, "No picture fill: FFmpeg took longer than a minute to take a frame. The disc is burned without the picture.");
             }
@@ -425,12 +440,20 @@ public static class DiscFillPicture
                 string detail = errors.Length > 300 ? errors[..300] : errors;
                 return (null, $"No picture fill: FFmpeg could not take a frame of {Path.GetFileName(moviePath)} ({detail}). The disc is burned without the picture.");
             }
+
+            succeeded = true;
+            return (outputPng, null);
         }
         catch (Exception ex) when (ex is System.ComponentModel.Win32Exception or InvalidOperationException or IOException)
         {
             return (null, $"No picture fill: FFmpeg could not be run ({ex.Message}). The disc is burned without the picture.");
         }
-
-        return (outputPng, null);
+        finally
+        {
+            if (!succeeded)
+            {
+                try { if (File.Exists(outputPng)) File.Delete(outputPng); } catch (IOException) { } catch (UnauthorizedAccessException) { }
+            }
+        }
     }
 }
