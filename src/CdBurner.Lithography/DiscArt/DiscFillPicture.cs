@@ -257,6 +257,8 @@ public static class DiscFillPicture
                 Simulate = burnOptions.Simulate,
                 OverwriteExistingData = burnOptions.OverwriteExistingData,
                 DisableBufferUnderrunFree = burnOptions.DisableBufferUnderrunFree,
+                RequestedBookType = burnOptions.RequestedBookType,
+                RequireBookType = burnOptions.RequireBookType
             };
             DataBurnResult result = await burnService.BurnIsoFileAsync(recorder, image, closed, burnProgress, cancellationToken).ConfigureAwait(false);
             return (result, built.Plan);

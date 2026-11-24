@@ -37,6 +37,7 @@ public class DriveUtilitiesViewModel : ObservableObject
     private int _qualityScanSamplesRevision;
     private bool _forceLegacyQualityScan;
     private string _qualityScanAllowListSummary = "Select a drive to check quality-scan support.";
+    private string _bookTypeStatusText = "Select a drive to read or configure DVD Book Type.";
     private DriveCapabilitiesDto? _capabilities;
     private MediaStatusDto? _mediaDetails;
     private bool _isBusy;
@@ -122,6 +123,7 @@ public class DriveUtilitiesViewModel : ObservableObject
             {
                 RefreshCapabilities();
                 EraseDiscCommand.RaiseCanExecuteChanged();
+                ReadBookTypeCommand?.RaiseCanExecuteChanged();
                 ApplyBookTypeCommand.RaiseCanExecuteChanged();
                 StartSurfaceScanCommand.RaiseCanExecuteChanged();
                 CheckDiscCommand?.RaiseCanExecuteChanged();
@@ -202,6 +204,7 @@ public class DriveUtilitiesViewModel : ObservableObject
             if (SetProperty(ref _isBusy, value))
             {
                 EraseDiscCommand.RaiseCanExecuteChanged();
+                ReadBookTypeCommand?.RaiseCanExecuteChanged();
                 ApplyBookTypeCommand.RaiseCanExecuteChanged();
                 StartSurfaceScanCommand.RaiseCanExecuteChanged();
                 CheckDiscCommand?.RaiseCanExecuteChanged();
@@ -247,9 +250,23 @@ public class DriveUtilitiesViewModel : ObservableObject
     #region Commands
 
     /// <summary>
+    /// Current DVD Book Type and allow-list status summary for the selected drive and disc.
+    /// </summary>
+    public string BookTypeStatusText
+    {
+        get => _bookTypeStatusText;
+        private set => SetProperty(ref _bookTypeStatusText, value);
+    }
+
+    /// <summary>
     /// Command to erase rewritable optical media (Quick or Full mode).
     /// </summary>
     public AsyncRelayCommand EraseDiscCommand { get; }
+
+    /// <summary>
+    /// Command to read the current DVD Book Type via READ DISC STRUCTURE (0xAD) format 0x00.
+    /// </summary>
+    public AsyncRelayCommand ReadBookTypeCommand { get; }
 
     /// <summary>
     /// Command to apply DVD Book Type bitsetting on the inserted media.
@@ -426,7 +443,7 @@ public class DriveUtilitiesViewModel : ObservableObject
         _burnEngine = burnEngine ?? new VirtualBurnEngine();
         _eraseService = eraseService ?? new DiscEraseService(_burnEngine);
         _scanService = scanService ?? new SurfaceScanService(_burnEngine);
-        _bookTypeService = bookTypeService ?? new BookTypeService();
+        _bookTypeService = bookTypeService ?? new BookTypeService(new VendorBookTypeController());
 
         OpenQualityScanDriver = recorder =>
         {
@@ -448,6 +465,10 @@ public class DriveUtilitiesViewModel : ObservableObject
 
         EraseDiscCommand = new AsyncRelayCommand(
             execute: async param => await EraseDiscAsync(param),
+            canExecute: _ => SelectedRecorder != null && !IsBusy);
+
+        ReadBookTypeCommand = new AsyncRelayCommand(
+            execute: async param => await ReadBookTypeAsync(param),
             canExecute: _ => SelectedRecorder != null && !IsBusy);
 
         ApplyBookTypeCommand = new AsyncRelayCommand(
@@ -528,6 +549,7 @@ public class DriveUtilitiesViewModel : ObservableObject
             Capabilities = SelectedRecorder.GetCapabilities();
             MediaDetails = SelectedRecorder.WithManufacturerId(SelectedRecorder.QueryMediaStatus());
             QualityScanAllowListSummary = BuildAllowListSummary(SelectedRecorder);
+            BookTypeStatusText = BuildBookTypeAllowListSummary(SelectedRecorder, MediaDetails);
             QualityScanIsExperimental = !SelectedRecorder.IsVirtual;
         }
         else
@@ -535,8 +557,28 @@ public class DriveUtilitiesViewModel : ObservableObject
             Capabilities = null;
             MediaDetails = null;
             QualityScanAllowListSummary = "Select a drive to check quality-scan support.";
+            BookTypeStatusText = "Select a drive to read or configure DVD Book Type.";
             QualityScanIsExperimental = true;
         }
+    }
+
+    private static string BuildBookTypeAllowListSummary(IDiscRecorderBackend recorder, MediaStatusDto? media)
+    {
+        string mediaText = media is { MediaPresent: true }
+            ? $"Media: {media.MediaType.GetDisplayName()} (Book Type: {media.BookType?.ToString() ?? BookTypeService.GetDefaultBookType(media.MediaType).ToString()})."
+            : "No disc inserted.";
+
+        if (recorder.IsVirtual)
+        {
+            return $"{mediaText} Virtual simulator: MMC 0xAD / 0xBF bitsetting active.";
+        }
+
+        if (BookTypeDriveAllowList.Evaluate(recorder.VendorId, recorder.ProductId) is { } match)
+        {
+            return $"{mediaText} Allow-listed ({match.Family}: {match.VendorId} {match.ProductId}). Click Read Book Type to query the disc.";
+        }
+
+        return $"{mediaText} Unlisted drive ({recorder.VendorId} {recorder.ProductId}): standard MMC only (vendor CDBs blocked).";
     }
 
     private static string BuildAllowListSummary(IDiscRecorderBackend recorder)
@@ -612,6 +654,64 @@ public class DriveUtilitiesViewModel : ObservableObject
     }
 
     /// <summary>
+    /// Asynchronously reads the current DVD Book Type from READ DISC STRUCTURE (0xAD) format 0x00 and drive state.
+    /// </summary>
+    public async Task<BookTypeQueryResult?> ReadBookTypeAsync(object? parameter = null, CancellationToken cancellationToken = default)
+    {
+        var targetRecorder = ResolveTargetRecorder(parameter);
+        if (targetRecorder == null)
+        {
+            StatusMessage = Strings.StatusDriveUtilitiesNoOpticalRecorderSelectedForBitsetting;
+            return null;
+        }
+
+        IsBusy = true;
+        StatusMessage = $"Reading Book Type from {targetRecorder.UniqueId}...";
+
+        try
+        {
+            var query = await _bookTypeService.QueryBookTypeAsync(targetRecorder, cancellationToken);
+            BookTypeStatusText = query.DiagnosticMessage ?? BuildBookTypeAllowListSummary(targetRecorder, MediaDetails);
+            StatusMessage = query.DiagnosticMessage ?? (query.MediaBookType is { } bt
+                ? $"Book Type: {bt} (0x{(byte)bt:X2})."
+                : "Could not read Book Type.");
+            var refreshed = targetRecorder.WithManufacturerId(targetRecorder.QueryMediaStatus());
+            MediaDetails = query.MediaBookType is { } readBt ? WithBookType(refreshed, readBt) : refreshed;
+            return query;
+        }
+        catch (Exception ex)
+        {
+            StatusMessage = $"Book Type read error: {ex.Message}";
+            return null;
+        }
+        finally
+        {
+            IsBusy = false;
+        }
+    }
+
+    private static MediaStatusDto WithBookType(MediaStatusDto status, DvdBookType bookType) => new()
+    {
+        MediaType = status.MediaType,
+        MediaPresent = status.MediaPresent,
+        IsBlank = status.IsBlank,
+        IsRewritable = status.IsRewritable,
+        IsAppendable = status.IsAppendable,
+        IsOverwriteOnly = status.IsOverwriteOnly,
+        IsLoading = status.IsLoading,
+        TotalSectors = status.TotalSectors,
+        FreeSectors = status.FreeSectors,
+        UsedSectors = status.UsedSectors,
+        TotalCapacityBytes = status.TotalCapacityBytes,
+        FreeCapacityBytes = status.FreeCapacityBytes,
+        SessionCount = status.SessionCount,
+        MediaManufacturerId = status.MediaManufacturerId,
+        LastRecordedLba = status.LastRecordedLba,
+        NextWritableLba = status.NextWritableLba,
+        BookType = bookType
+    };
+
+    /// <summary>
     /// Asynchronously sets the DVD Book Type (bitsetting) on the inserted media.
     /// </summary>
     public async Task<BurnOperationResult> ApplyBookTypeAsync(object? parameter = null, CancellationToken cancellationToken = default)
@@ -632,7 +732,10 @@ public class DriveUtilitiesViewModel : ObservableObject
             StatusMessage = result.Success
                 ? $"Book Type successfully set to {SelectedBookType}."
                 : $"Failed to set Book Type: {result.ErrorMessage}";
-            MediaDetails = targetRecorder.WithManufacturerId(targetRecorder.QueryMediaStatus());
+            var query = await _bookTypeService.QueryBookTypeAsync(targetRecorder, cancellationToken);
+            var refreshed = targetRecorder.WithManufacturerId(targetRecorder.QueryMediaStatus());
+            MediaDetails = query.MediaBookType is { } readBt ? WithBookType(refreshed, readBt) : refreshed;
+            BookTypeStatusText = query.DiagnosticMessage ?? BuildBookTypeAllowListSummary(targetRecorder, MediaDetails);
             return result;
         }
         catch (Exception ex)

@@ -58,7 +58,8 @@ public static partial class CliCommandRunner
         "no-burnfree", "append", "delete-backups", "confirm-shutdown", "windows-writer", "no-interleave",
         "no-cover-lookup", "no-folder-image", "recursive", "no-rim", "rim-header",
         "sha256sums", "blake3sums", "native", "test-write", "test-first", "recovery-session", "blue-book", "streaming",
-        "allow-suspect", "repair", "repair-from-recovery", "no-replaygain", "health-certificate", "files-outer", "read-compat", "force-old"
+        "allow-suspect", "repair", "repair-from-recovery", "no-replaygain", "health-certificate", "files-outer", "read-compat", "force-old",
+        "get", "require-book-type"
     };
 
     private static void WriteJsonResult(TextWriter stdout, object payload)
@@ -777,6 +778,8 @@ public static partial class CliCommandRunner
         bool closeDisc = !cmd.HasFlag("no-close");
         bool overwrite = cmd.HasFlag("overwrite");
         bool disableBufe = cmd.HasFlag("no-burnfree");
+        DvdBookType? requestedBookType = ParseOptionalBookType(cmd);
+        bool requireBookType = cmd.HasFlag("require-book-type");
         var postAction = ParsePostBurnAction(cmd);
 
         if (!File.Exists(isoPath))
@@ -802,11 +805,13 @@ public static partial class CliCommandRunner
             OverwriteExistingData = overwrite,
             LayerBreakSectors = ParseLayerBreak(cmd, nativeEngine, mediaStatus),
             DisableBufferUnderrunFree = disableBufe,
-            StreamingWrite = streamingWrite
+            StreamingWrite = streamingWrite,
+            RequestedBookType = requestedBookType,
+            RequireBookType = requireBookType
         };
 
         string? telemetryOut = ParseTelemetryOutPath(cmd);
-        var burnService = new DataBurnService(nativeEngine ?? burnEngine);
+        var burnService = CreateDataBurnService(nativeEngine ?? burnEngine);
         var telemetry = CreateTelemetrySeries(telemetryOut, innerProgress: null, $"burn-iso ({Path.GetFileName(isoPath)})", recorder, mediaStatus.MediaType);
         DataBurnResult result;
         if (LegacyDiscImageConverter.IsLegacyImageFile(isoPath))
@@ -841,6 +846,8 @@ public static partial class CliCommandRunner
                 pictureAreaCompared = result.HasPictureZone ? result.PictureAreaCompared : (bool?)null,
                 verified = result.Verified,
                 verificationNote = result.VerificationNote,
+                bookTypeNote = result.BookTypeNote,
+                warning = result.Warning,
                 directWrite = NativeDataJson(nativeEngine),
                 telemetryOut = FormatTelemetryJsonValue(telemetryPaths),
                 telemetryPoints = telemetry?.Count,
@@ -860,6 +867,7 @@ public static partial class CliCommandRunner
             stdout.WriteLine($"  Average Speed:  {result.AverageSpeedMultiplier:F1}x");
             stdout.WriteLine($"  Verified:       {(result.Verified ? "Passed" : "No")}");
             if (result.VerificationNote != null) stdout.WriteLine($"  Verify Note:    {result.VerificationNote}");
+            if (result.BookTypeNote != null) stdout.WriteLine($"  Book Type:      {result.BookTypeNote}");
             WriteNativeDataSummary(stdout, nativeEngine);
             WriteTelemetryOutSummary(stdout, telemetryPaths);
             return 0;
@@ -893,6 +901,8 @@ public static partial class CliCommandRunner
         bool overwrite = cmd.HasFlag("overwrite");
         bool explicitAppend = cmd.HasFlag("append");
         bool disableBufe = cmd.HasFlag("no-burnfree");
+        DvdBookType? requestedBookType = ParseOptionalBookType(cmd);
+        bool requireBookType = cmd.HasFlag("require-book-type");
         var postAction = ParsePostBurnAction(cmd);
         string? fillPicture = ParseFillPicture(cmd, autoAllowed: false); // off unless --fill-picture is given
 
@@ -976,7 +986,9 @@ public static partial class CliCommandRunner
             OverwriteExistingData = overwrite,
             LayerBreakSectors = ParseLayerBreak(cmd, nativeEngine, mediaStatus),
             DisableBufferUnderrunFree = disableBufe,
-            StreamingWrite = streamingWrite
+            StreamingWrite = streamingWrite,
+            RequestedBookType = requestedBookType,
+            RequireBookType = requireBookType
         };
 
         var buildOptions = new IsoBuildOptions(
@@ -994,7 +1006,7 @@ public static partial class CliCommandRunner
         string? telemetryOut = ParseTelemetryOutPath(cmd);
         var telemetry = CreateTelemetrySeries(telemetryOut, phases, $"burn-data ({effectiveLabel})", recorder, mediaStatus.MediaType);
         IProgress<BurnProgressSnapshot> progress = (IProgress<BurnProgressSnapshot>?)telemetry ?? phases;
-        var burnService = new DataBurnService(nativeEngine ?? burnEngine);
+        var burnService = CreateDataBurnService(nativeEngine ?? burnEngine);
         DataBurnResult result;
         FillOutcome? fillOutcome = null;
         if (fill is { } f)
@@ -1029,6 +1041,7 @@ public static partial class CliCommandRunner
                 pictureAreaCompared = result.HasPictureZone ? result.PictureAreaCompared : (bool?)null,
                 verified = result.Verified,
                 verificationNote = result.VerificationNote,
+                bookTypeNote = result.BookTypeNote,
                 warning = result.Warning,
                 fillPicture = FillJson(fillOutcome, null),
                 phases = phases.Phases.Select(p => new { phase = p.Name, seconds = Math.Round(p.Duration.TotalSeconds, 1) }),
@@ -1051,6 +1064,7 @@ public static partial class CliCommandRunner
             stdout.WriteLine($"  Duration:       {result.TotalTime}");
             stdout.WriteLine($"  Verified:       {(result.Verified ? "Passed" : "No")}");
             if (result.VerificationNote != null) stdout.WriteLine($"  Verify Note:    {result.VerificationNote}");
+            if (result.BookTypeNote != null) stdout.WriteLine($"  Book Type:      {result.BookTypeNote}");
             if (result.Warning != null) stdout.WriteLine($"  Warning:        {result.Warning}");
             WriteFillSummary(stdout, fillOutcome, null);
             WriteNativeDataSummary(stdout, nativeEngine);
@@ -1072,6 +1086,28 @@ public static partial class CliCommandRunner
     /// </summary>
     /// <param name="hasDirectDefault">True for commands where <see cref="ApplyDirectWritingDefault"/> may pick the direct
     /// writer without <c>--native</c> (burn-data, burn-iso); there <c>--log-dir</c> is accepted on its own.</param>
+    private static DataBurnService CreateDataBurnService(IBurnEngineBackend engine) =>
+        new(engine, new BookTypeService(new CdBurner.Hardware.Scsi.VendorBookTypeController()));
+
+    private static DvdBookType? ParseOptionalBookType(CommandLineArgs cmd)
+    {
+        if (!cmd.Options.TryGetValue("book-type", out string? raw))
+        {
+            if (cmd.HasFlag("require-book-type"))
+            {
+                throw new CommandLineException("--require-book-type needs --book-type <dvd-rom|dvd+r|dvd+rw|dvd+r-dl>.");
+            }
+            return null;
+        }
+
+        if (string.IsNullOrWhiteSpace(raw))
+        {
+            throw new CommandLineException("--book-type requires a value (e.g. --book-type dvd-rom).");
+        }
+
+        return ParseDvdBookType(raw);
+    }
+
     private static (NativeDataBurnEngine? Engine, bool TestWrite) ResolveNativeDataEngine(CommandLineArgs cmd, IBurnEngineBackend fallback,
         bool hasDirectDefault = false)
     {
@@ -1893,7 +1929,7 @@ public static partial class CliCommandRunner
                 IncludeJoliet: false,
                 UdfRevision: 0x0102);
 
-            var burnService = new DataBurnService(nativeEngine ?? burnEngine);
+            var burnService = CreateDataBurnService(nativeEngine ?? burnEngine);
             var dvdOptions = new DataBurnOptions
             {
                 VolumeLabel = effectiveLabel,
@@ -1903,7 +1939,9 @@ public static partial class CliCommandRunner
                 Simulate = testWrite,
                 // Read back by default; a test write records nothing; a direct burn is always read back.
                 VerifyAfterBurn = !testWrite && (!cmd.HasFlag("no-verify") || nativeEngine != null),
-                DisableBufferUnderrunFree = dvdDisableBufe
+                DisableBufferUnderrunFree = dvdDisableBufe,
+                RequestedBookType = ParseOptionalBookType(cmd),
+                RequireBookType = cmd.HasFlag("require-book-type")
             };
             var dvdMedia = recorder.QueryMediaStatus().MediaType;
             telemetry = CreateTelemetrySeries(telemetryOut, innerProgress: null, $"burn-dvd ({effectiveLabel})", recorder, dvdMedia);
@@ -1958,6 +1996,8 @@ public static partial class CliCommandRunner
                 pictureAreaCompared = result.HasPictureZone ? result.PictureAreaCompared : (bool?)null,
                 verified = result.Verified,
                 verificationNote = result.VerificationNote,
+                bookTypeNote = result.BookTypeNote,
+                warning = result.Warning,
                 layerBreak = layerBreak == null ? null : new
                 {
                     lba = layerBreak.Lba,
@@ -1986,6 +2026,7 @@ public static partial class CliCommandRunner
             if (layerBreak != null) stdout.WriteLine($"  Layer break:    {layerBreak}");
             WriteFillSummary(stdout, fillOutcome, fillSkipped);
             stdout.WriteLine($"  Verified:       {(result.Verified ? "yes" : "no")}{(string.IsNullOrEmpty(result.VerificationNote) ? "" : " - " + result.VerificationNote)}");
+            if (result.BookTypeNote != null) stdout.WriteLine($"  Book Type:      {result.BookTypeNote}");
             if (nativeEngine?.LastLogPath != null)
             {
                 stdout.WriteLine($"  Command log:    {nativeEngine.LastLogPath}");
@@ -2041,7 +2082,9 @@ public static partial class CliCommandRunner
             Simulate = options.Simulate,
             OverwriteExistingData = options.OverwriteExistingData,
             LayerBreakSectors = chosen?.Lba,
-            DisableBufferUnderrunFree = options.DisableBufferUnderrunFree
+            DisableBufferUnderrunFree = options.DisableBufferUnderrunFree,
+            RequestedBookType = options.RequestedBookType,
+            RequireBookType = options.RequireBookType
         };
         return (await burnService.BurnStreamAsync(recorder, image, withBreak, burnProgress).ConfigureAwait(false), chosen);
     }
@@ -3099,6 +3142,8 @@ public static partial class CliCommandRunner
 
         var archivePostAction = ParsePostBurnAction(cmd);
         bool archiveDisableBufe = cmd.HasFlag("no-burnfree");
+        DvdBookType? archiveBookType = ParseOptionalBookType(cmd);
+        bool archiveRequireBookType = cmd.HasFlag("require-book-type");
 
         var burnOptions = new DataBurnOptions
         {
@@ -3110,7 +3155,9 @@ public static partial class CliCommandRunner
             CloseDisc = true,
             OverwriteExistingData = overwrite,
             DisableBufferUnderrunFree = archiveDisableBufe,
-            StreamingWrite = streamingWrite
+            StreamingWrite = streamingWrite,
+            RequestedBookType = archiveBookType,
+            RequireBookType = archiveRequireBookType
         };
         var buildOptions = new IsoBuildOptions(
             VolumeLabel: label,
@@ -3128,7 +3175,7 @@ public static partial class CliCommandRunner
 
         var phases = new PhaseTimingProgress(cmd.IsJson ? null : stdout);
         var curve = new TransferCurveRecorder(phases);
-        var burnService = new DataBurnService(nativeEngine ?? burnEngine);
+        var burnService = CreateDataBurnService(nativeEngine ?? burnEngine);
         var result = await burnService.BurnCompilationAsync(recorder, root, burnOptions, buildOptions, curve).ConfigureAwait(false);
         phases.Complete();
         ExecutePostBurnActionIfSucceeded(archivePostAction, result.Success, recorder);
@@ -3177,6 +3224,7 @@ public static partial class CliCommandRunner
                 totalTimeSeconds = result.TotalTime.TotalSeconds,
                 verified = result.Verified,
                 verificationNote = result.VerificationNote,
+                bookTypeNote = result.BookTypeNote,
                 warning = result.Warning,
                 directWrite = NativeDataJson(nativeEngine),
                 error = result.ErrorMessage
@@ -3192,6 +3240,7 @@ public static partial class CliCommandRunner
             stdout.WriteLine($"  Sectors Burned: {result.SectorsWritten:N0}");
             stdout.WriteLine($"  Verified:       {(result.Verified ? "Passed" : "No")}");
             if (result.VerificationNote != null) stdout.WriteLine($"  Verify Note:    {result.VerificationNote}");
+            if (result.BookTypeNote != null) stdout.WriteLine($"  Book Type:      {result.BookTypeNote}");
             if (result.Warning != null) stdout.WriteLine($"  Warning:        {result.Warning}");
             WriteNativeDataSummary(stdout, nativeEngine);
             phases.WriteSummary(stdout);
@@ -4078,9 +4127,9 @@ public static partial class CliCommandRunner
         stdout.WriteLine("      Reports virtual drive state, media geometry, and MMC profile without touching physical hardware.");
         stdout.WriteLine("  build-iso --input <folder> --output <file.iso> [--label <vol>] [--udf] [--udf-rev <1.02|1.50|2.00|2.01|2.50|2.60>] [--joliet] [--boot-bios <img>] [--boot-uefi <img>] [--fixed-time <unix|iso8601>] [--sha256sums] [--blake3sums] [--json]");
         stdout.WriteLine("      Compiles a folder into an ISO 9660 / Joliet / UDF filesystem image.");
-        stdout.WriteLine("  burn-iso --drive <id> --iso <file.iso|.nrg|.cdi|.mdf|.mds|.ccd|.img> [--speed <X|max>] [--no-verify | --strict-verify] [--no-close] [--no-burnfree] [--overwrite] [--post-action none|eject|sound|eject-sound|shutdown] [--telemetry-out <path>] [--windows-writer | --native [--test-write | --test-first] [--streaming] [--layer-break <sectors>] [--log-dir <folder>]] [--json]");
+        stdout.WriteLine("  burn-iso --drive <id> --iso <file.iso|.nrg|.cdi|.mdf|.mds|.ccd|.img> [--speed <X|max>] [--no-verify | --strict-verify] [--no-close] [--no-burnfree] [--overwrite] [--book-type dvd-rom|...] [--post-action none|eject|sound|eject-sound|shutdown] [--telemetry-out <path>] [--windows-writer | --native [--test-write | --test-first] [--streaming] [--layer-break <sectors>] [--log-dir <folder>]] [--json]");
         stdout.WriteLine("      Burns an ISO image directly to the target optical drive. --streaming uses WRITE(12) Streaming (0x80) on BD-RE/DVD-RAM. --layer-break: sectors on the first layer of a DVD+R DL (multiple of 16). --telemetry-out writes burn telemetry as .svg or .json (or both if no extension). A DVD-RW is written with direct drive commands unless --windows-writer.");
-        stdout.WriteLine("  burn-data --drive <id> --input <folder> [--label <vol>] [--speed <X|max>] [--udf] [--udf-rev <1.02|1.50|2.00|2.01|2.50|2.60>] [--joliet] [--boot-bios <img>] [--boot-uefi <img>] [--no-verify | --strict-verify] [--no-close] [--append] [--no-burnfree] [--overwrite] [--post-action none|eject|sound|eject-sound|shutdown] [--fixed-time <unix|iso8601>] [--sha256sums] [--blake3sums] [--fill-picture <file.png> [--disc-preset <id>]] [--telemetry-out <path>] [--windows-writer | --native [--test-write | --test-first] [--streaming] [--layer-break <sectors>] [--log-dir <folder>]] [--json]");
+        stdout.WriteLine("  burn-data --drive <id> --input <folder> [--label <vol>] [--speed <X|max>] [--udf] [--udf-rev <1.02|1.50|2.00|2.01|2.50|2.60>] [--joliet] [--boot-bios <img>] [--boot-uefi <img>] [--no-verify | --strict-verify] [--no-close] [--append] [--no-burnfree] [--overwrite] [--book-type dvd-rom|...] [--post-action none|eject|sound|eject-sound|shutdown] [--fixed-time <unix|iso8601>] [--sha256sums] [--blake3sums] [--fill-picture <file.png> [--disc-preset <id>]] [--telemetry-out <path>] [--windows-writer | --native [--test-write | --test-first] [--streaming] [--layer-break <sectors>] [--log-dir <folder>]] [--json]");
         stdout.WriteLine("      Compiles a folder and burns it to optical media (--append merges and adds a session on an appendable disc). A DVD-RW is written with direct drive commands unless --windows-writer.");
         stdout.WriteLine("  burn-audio (--drive <id> | --plan-only) (--tracks <files|.cue|.m3u|.pls> | --tracks-file <file.json>) [--title <album>] [--artist <name>] [--songwriter <name>] [--upc <13digits>] [--speed <X|max>] [--dao] [--pregap <frames>] [--normalize] [--rms-level] [--loudness track|album|off] [--crossfade <sec>] [--no-cd-text] [--no-burnfree] [--post-action none|eject|sound|eject-sound|shutdown] [--allow-damaged] [--telemetry-out <path>] [--native [--test-write | --test-first] [--recovery-session | --data-folder <dir> [--data-label <label>] [--blue-book] | --fill-picture <picture>|auto [--lookup]] [--write-offset <samples|auto>] [--log-dir <folder>]] [--json]");
         stdout.WriteLine("      Burns Red Book Audio CD from WAV, FLAC, MP3, AAC/M4A, WMA, .cue, .m3u/.pls, or a JSON --tracks-file (--recovery-session adds session-2 PAR2 recovery; --data-folder burns an Enhanced CD data session; --blue-book writes it as CD-ROM XA Mode 2 with CDPLUS/INFO.CDP and PICTURES/; --plan-only previews without burning).");
@@ -4152,7 +4201,7 @@ public static partial class CliCommandRunner
         stdout.WriteLine("      Previews Audio CD track layout, durations, 74/80-minute fit, and CD-Text without burning.");
         stdout.WriteLine("  burn-queue --drive <id> --images <img1,img2,...> [--speed <X|max>] [--no-verify | --strict-verify] [--no-close] [--no-burnfree] [--overwrite] [--continue-on-error] [--post-action none|eject|sound|eject-sound|shutdown] [--wait-minutes <n>] [--json]");
         stdout.WriteLine("      Burns a sequential queue of .iso or legacy/BIN images to discs, prompting for disc swaps.");
-        stdout.WriteLine("  book-type --drive <id> [--set dvd-rom|dvd+r|dvd+rw|dvd+r-dl|dvd-r|dvd-rw|dvd-ram] [--json]");
+        stdout.WriteLine("  book-type --drive <id> [--get | --set dvd-rom|dvd+r|dvd+rw|dvd+r-dl|dvd-r|dvd-rw|dvd-ram] [--json]");
         stdout.WriteLine("      Reads or updates DVD+R / DVD+RW / DVD+R DL book-type bitsetting.");
         stdout.WriteLine("  repair-par2 --path <folder> [--par2 <path>] [--delete-backups] [--json]");
         stdout.WriteLine("      Verifies and repairs a folder in place from its PAR2 recovery set (keeps backup files unless --delete-backups).");
@@ -4360,7 +4409,7 @@ public static partial class CliCommandRunner
         {
             stdout.WriteLine(LegalBanner.VersionNotice);
             stdout.WriteLine();
-            stdout.WriteLine("  book-type --drive <id> [--set dvd-rom|dvd+r|dvd+rw|dvd+r-dl|dvd-r|dvd-rw|dvd-ram] [--json]");
+            stdout.WriteLine("  book-type --drive <id> [--get | --set dvd-rom|dvd+r|dvd+rw|dvd+r-dl|dvd-r|dvd-rw|dvd-ram] [--json]");
             stdout.WriteLine("      Reads or updates DVD+R / DVD+RW / DVD+R DL book-type bitsetting.");
             stdout.WriteLine("  repair-par2 --path <folder> [--par2 <path>] [--delete-backups] [--json]");
             stdout.WriteLine("      Verifies and repairs a folder from its PAR2 recovery set (retains backup files unless --delete-backups).");

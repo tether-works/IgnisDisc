@@ -221,7 +221,16 @@ public static partial class CliCommandRunner
     private static int HandleBookTypeCommand(CommandLineArgs cmd, TextWriter stdout, TextWriter stderr, IDiscDeviceService deviceService)
     {
         string driveId = ResolveTargetDriveId(cmd);
-        string? targetRaw = cmd.GetOption("set");
+        bool getFlag = cmd.HasFlag("get");
+        bool hasSetOption = cmd.Options.TryGetValue("set", out string? targetRaw);
+        if (hasSetOption && string.IsNullOrWhiteSpace(targetRaw))
+        {
+            throw new CommandLineException("--set requires a book type value (e.g. --set dvd-rom).");
+        }
+        if (getFlag && !string.IsNullOrWhiteSpace(targetRaw))
+        {
+            throw new CommandLineException("Cannot combine --get and --set on book-type.");
+        }
 
         var recorder = FindRecorder(deviceService, driveId);
         var status = recorder.QueryMediaStatus();
@@ -230,11 +239,12 @@ public static partial class CliCommandRunner
             throw new CommandLineException($"No optical disc is inserted in drive '{driveId}'.");
         }
 
-        var service = new BookTypeService();
-        DvdBookType previous = service.GetBookType(recorder);
+        var service = new BookTypeService(new CdBurner.Hardware.Scsi.VendorBookTypeController());
+        BookTypeQueryResult query = service.QueryBookType(recorder);
+        DvdBookType previous = query.MediaBookType ?? service.GetBookType(recorder);
         bool bitsettingSupported = BookTypeService.IsBitsettingSupported(status.MediaType);
 
-        if (string.IsNullOrWhiteSpace(targetRaw))
+        if (getFlag || string.IsNullOrWhiteSpace(targetRaw))
         {
             if (cmd.IsJson)
             {
@@ -245,7 +255,12 @@ public static partial class CliCommandRunner
                     mediaType = status.MediaType.ToString(),
                     bitsettingSupported,
                     bookType = previous.ToString(),
-                    bookTypeCode = $"0x{(byte)previous:X2}"
+                    bookTypeCode = $"0x{(byte)previous:X2}",
+                    partVersion = query.PartVersion,
+                    driveSettingBookType = query.DriveSettingBookType?.ToString(),
+                    driveFamily = query.DriveFamily.ToString(),
+                    allowListed = query.IsAllowListed,
+                    diagnostic = query.DiagnosticMessage
                 });
                 return 0;
             }
@@ -254,12 +269,22 @@ public static partial class CliCommandRunner
             stdout.WriteLine($"Media Type:           {status.MediaType.GetDisplayName()}");
             stdout.WriteLine($"Book Type:            {previous} (0x{(byte)previous:X2})");
             stdout.WriteLine($"Bitsetting Supported: {(bitsettingSupported ? "Yes" : "No")}");
+            if (query.DriveSettingBookType is { } driveSetting)
+            {
+                stdout.WriteLine($"Drive Setting:        {driveSetting}");
+            }
+            stdout.WriteLine($"Controller:           {query.DriveFamily} (allow-listed: {(query.IsAllowListed ? "Yes" : "No")})");
+            if (!string.IsNullOrWhiteSpace(query.DiagnosticMessage))
+            {
+                stdout.WriteLine($"Details:              {query.DiagnosticMessage}");
+            }
             return 0;
         }
 
         DvdBookType requested = ParseDvdBookType(targetRaw);
         var setResult = service.SetBookType(recorder, requested);
-        DvdBookType current = service.GetBookType(recorder);
+        BookTypeQueryResult afterQuery = service.QueryBookType(recorder);
+        DvdBookType current = afterQuery.MediaBookType ?? service.GetBookType(recorder);
 
         if (cmd.IsJson)
         {
@@ -273,6 +298,9 @@ public static partial class CliCommandRunner
                 requestedBookType = requested.ToString(),
                 bookType = current.ToString(),
                 bookTypeCode = $"0x{(byte)current:X2}",
+                driveSettingBookType = afterQuery.DriveSettingBookType?.ToString(),
+                driveFamily = afterQuery.DriveFamily.ToString(),
+                allowListed = afterQuery.IsAllowListed,
                 error = setResult.ErrorMessage
             });
             return setResult.Success ? 0 : 1;

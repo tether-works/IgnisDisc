@@ -8,7 +8,9 @@ using CdBurner.Core.Burning;
 using CdBurner.Core.Compilation;
 using CdBurner.Core.Iso;
 using CdBurner.Core.Primitives;
+using CdBurner.Core.Utilities;
 using CdBurner.Hardware.Devices;
+using CdBurner.Hardware.Scsi;
 using CdBurner.Hardware.Simulation;
 using CdBurner.Lithography.DiscArt;
 
@@ -158,7 +160,18 @@ public class DataBurnViewModel : ObservableObject
     private bool _useDirectDriveCommands;
     private bool _streamingWrite;
     private bool _isOverwritableBdMedia;
+    private bool _setDvdRomBookTypeWhenSupported;
     private readonly CdBurner.App.Mvvm.AutomaticChoice _directDefault = new();
+
+    /// <summary>
+    /// Opt-in: before burning DVD+R or DVD+R DL media, attempt to set its Book Type to DVD-ROM when supported.
+    /// Unsupported drives report cleanly without failing the burn.
+    /// </summary>
+    public bool SetDvdRomBookTypeWhenSupported
+    {
+        get => _setDvdRomBookTypeWhenSupported;
+        set => SetProperty(ref _setDvdRomBookTypeWhenSupported, value);
+    }
 
     /// <summary>
     /// Overwritable BD-RE / DVD-RAM with direct drive commands: send WRITE (12) with the Streaming bit (0x80) to skip
@@ -931,14 +944,16 @@ public class DataBurnViewModel : ObservableObject
                 EjectAfterBurn = EjectAfterBurn,
                 Speed = SelectedWriteSpeed,
                 OverwriteExistingData = replaceAllowed,
-                StreamingWrite = StreamingWrite && UseDirectDriveCommands
+                StreamingWrite = StreamingWrite && UseDirectDriveCommands,
+                RequestedBookType = SetDvdRomBookTypeWhenSupported ? DvdBookType.DvdRom : null,
+                RequireBookType = false
             };
 
             var directEngine = UseDirectDriveCommands
                 ? new CdBurner.Hardware.NativeWriting.NativeDataBurnEngine(_burnEngine, DirectBurnLogDirectory)
                 : null;
             LastDirectBurnEngine = directEngine;
-            var burnService = new DataBurnService(directEngine ?? _burnEngine);
+            var burnService = new DataBurnService(directEngine ?? _burnEngine, new BookTypeService(new VendorBookTypeController()));
             var progressHandler = new ClosableProgress<BurnProgressSnapshot>(snap =>
             {
                 if (!_isBusy) return;
@@ -995,6 +1010,10 @@ public class DataBurnViewModel : ObservableObject
                 BurnProgress = 100.0;
                 StatusMessage = $"Data burn completed successfully ({result.SectorsWritten:N0} sectors written to {targetRecorder.VolumePath})."
                     + (directEngine?.LastSummary is { } how ? " " + how : "");
+                if (!string.IsNullOrWhiteSpace(result.BookTypeNote))
+                {
+                    StatusMessage += " " + result.BookTypeNote;
+                }
                 if (result.Warning != null)
                 {
                     StatusMessage += " " + result.Warning;

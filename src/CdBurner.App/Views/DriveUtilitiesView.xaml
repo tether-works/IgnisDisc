@@ -315,7 +315,7 @@
                                    TextWrapping="Wrap"
                                    Margin="0,0,0,10" />
 
-                        <WrapPanel Orientation="Horizontal" Margin="0,0,0,12" VerticalAlignment="Center">
+                        <WrapPanel Orientation="Horizontal" Margin="0,0,0,8" VerticalAlignment="Center">
                             <TextBlock Text="Target Book Type:"
                                        VerticalAlignment="Center"
                                        Foreground="{DynamicResource TextSecondaryBrush}"
@@ -325,6 +325,12 @@
                                       ItemsSource="{Binding AvailableBookTypes}"
                                       SelectedItem="{Binding SelectedBookType}"
                                       Margin="0,2,10,2" />
+                            <Button Content="Read Book Type"
+                                    AutomationProperties.Name="Read Book Type"
+                                    Command="{Binding ReadBookTypeCommand}"
+                                    IsEnabled="{Binding IsBusy, Converter={StaticResource InverseBooleanConverter}}"
+                                    Margin="0,2,8,2"
+                                    Padding="12,5" />
                             <Button Content="Apply Bitsetting"
                                     AutomationProperties.Name="Apply Bitsetting"
                                     Command="{Binding ApplyBookTypeCommand}"
@@ -332,6 +338,13 @@
                                     Margin="0,2,0,2"
                                     Padding="14,5" />
                         </WrapPanel>
+
+                        <TextBlock Text="{Binding BookTypeStatusText, Mode=OneWay}"
+                                   AutomationProperties.Name="Book Type Status"
+                                   FontSize="11.5"
+                                   Foreground="{DynamicResource TextMutedBrush}"
+                                   TextWrapping="Wrap"
+                                   Margin="0,0,0,4" />
                     </StackPanel>
                 </Border>
             </Grid>

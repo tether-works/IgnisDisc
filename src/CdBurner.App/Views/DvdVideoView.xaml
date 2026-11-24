@@ -718,6 +718,12 @@
                               ToolTip="Burn with IgnisDisc's own drive commands instead of the Windows writer, then read the disc back to check it. On a dual-layer DVD+R the layer break goes on the chosen cell boundary, which the Windows writer cannot do. Covers the same discs as on the Data Disc screen."
                               VerticalAlignment="Center"
                               Margin="0,0,12,0" />
+                    <CheckBox Content="Set DVD+R/+R DL Book Type to DVD-ROM when supported"
+                              AutomationProperties.Name="Set DVD+R/+R DL Book Type to DVD-ROM when supported"
+                              IsChecked="{Binding SetDvdRomBookTypeWhenSupported}"
+                              ToolTip="Before burning DVD+R or DVD+R DL media, attempt to set its Book Type to DVD-ROM for better compatibility with legacy DVD players. Unsupported drives report cleanly without failing the burn."
+                              VerticalAlignment="Center"
+                              Margin="0,0,12,0" />
                     <Button Content="💾 Build DVD ISO..."
                             AutomationProperties.Name="Build DVD ISO"
                             Command="{Binding BuildDvdIsoCommand}"

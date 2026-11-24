@@ -490,6 +490,19 @@ public class DataBurnOptions
     /// skip hardware defect-management read-after-write verification for higher write speed. Off by default.
     /// </summary>
     public bool StreamingWrite { get; init; }
+
+    /// <summary>
+    /// Opt-in pre-burn DVD Book Type target (e.g. <see cref="DvdBookType.DvdRom"/> for DVD+R / DVD+R DL).
+    /// Null (default) leaves the drive and disc book type unchanged.
+    /// </summary>
+    public DvdBookType? RequestedBookType { get; init; }
+
+    /// <summary>
+    /// When true and <see cref="RequestedBookType"/> is set, fail the burn before writing if the drive or media does
+    /// not support setting the requested Book Type. When false (default), unsupported drives/media report cleanly
+    /// without failing the burn.
+    /// </summary>
+    public bool RequireBookType { get; init; }
 }
 
 /// <summary>

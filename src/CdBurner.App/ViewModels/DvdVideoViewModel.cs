@@ -13,6 +13,7 @@ using CdBurner.Core.Primitives;
 using CdBurner.Core.Subtitles;
 using CdBurner.Core.Utilities;
 using CdBurner.Hardware.Devices;
+using CdBurner.Hardware.Scsi;
 using CdBurner.Hardware.Simulation;
 using CdBurner.Lithography.Calibration;
 using CdBurner.Lithography.DiscArt;
@@ -750,6 +751,17 @@ public class DvdVideoViewModel : ObservableObject
     private bool _directChosenByUser;
     private bool _directTurnedOnForDualLayer;
     private bool _discPrefersDirect;
+    private bool _setDvdRomBookTypeWhenSupported;
+
+    /// <summary>
+    /// Opt-in: before burning DVD+R or DVD+R DL media, attempt to set its Book Type to DVD-ROM when supported.
+    /// Unsupported drives report cleanly without failing the burn.
+    /// </summary>
+    public bool SetDvdRomBookTypeWhenSupported
+    {
+        get => _setDvdRomBookTypeWhenSupported;
+        set => SetProperty(ref _setDvdRomBookTypeWhenSupported, value);
+    }
 
     /// <summary>
     /// Default for direct drive commands until the user sets it: on for a dual-layer disc (only the direct writer puts
@@ -2155,7 +2167,9 @@ public class DvdVideoViewModel : ObservableObject
                 VerifyAfterBurn = VerifyAfterBurn || UseDirectDriveCommands, // a direct burn is always read back
                 EjectAfterBurn = EjectAfterBurn,
                 Speed = SelectedWriteSpeed,
-                OverwriteExistingData = replaceAllowed
+                OverwriteExistingData = replaceAllowed,
+                RequestedBookType = SetDvdRomBookTypeWhenSupported ? DvdBookType.DvdRom : null,
+                RequireBookType = false
             };
 
             var directEngine = UseDirectDriveCommands
@@ -2163,7 +2177,7 @@ public class DvdVideoViewModel : ObservableObject
                 : null;
             LastDirectBurnEngine = directEngine;
             LastLayerBreak = null;
-            var burnService = new DataBurnService(directEngine ?? _burnEngine);
+            var burnService = new DataBurnService(directEngine ?? _burnEngine, new BookTypeService(new VendorBookTypeController()));
             var progressHandler = new ClosableProgress<BurnProgressSnapshot>(snap =>
             {
                 Telemetry.RecordSnapshot(snap);
@@ -2217,6 +2231,7 @@ public class DvdVideoViewModel : ObservableObject
                 StatusMessage = $"DVD-Video burn completed successfully ({result.SectorsWritten:N0} sectors written to {targetRecorder.VolumePath})."
                     + (LastLayerBreak is { } brk ? $" Layer break: {brk}." : "")
                     + (directEngine?.LastSummary is { } how ? " " + how : "")
+                    + (string.IsNullOrWhiteSpace(result.BookTypeNote) ? "" : " " + result.BookTypeNote)
                     + (string.IsNullOrWhiteSpace(result.VerificationNote) ? "" : " " + result.VerificationNote)
                     + (fill is not null ? " The rest of the disc carries the picture; the disc is closed." : "")
                     + (fillSkipped is not null ? " " + fillSkipped : "");
@@ -2415,7 +2430,9 @@ public class DvdVideoViewModel : ObservableObject
             EjectAfterBurn = burnOptions.EjectAfterBurn,
             Speed = burnOptions.Speed,
             OverwriteExistingData = burnOptions.OverwriteExistingData,
-            LayerBreakSectors = chosen.Lba
+            LayerBreakSectors = chosen.Lba,
+            RequestedBookType = burnOptions.RequestedBookType,
+            RequireBookType = burnOptions.RequireBookType
         };
         return await burnService.BurnStreamAsync(recorder, image, options, progress, cancellationToken);
     }

@@ -11,6 +11,7 @@ using CdBurner.Core.Iso;
 using CdBurner.Core.Primitives;
 using CdBurner.Core.Utilities;
 using CdBurner.Hardware.Devices;
+using CdBurner.Hardware.Scsi;
 using CdBurner.Hardware.Simulation;
 using Microsoft.Win32;
 
@@ -301,6 +302,17 @@ public class ArchiveViewModel : ObservableObject
     }
 
     private readonly AutomaticChoice _directDefault = new();
+    private bool _setDvdRomBookTypeWhenSupported;
+
+    /// <summary>
+    /// Opt-in: before burning DVD+R or DVD+R DL media, attempt to set its Book Type to DVD-ROM when supported.
+    /// Unsupported drives report cleanly without failing the burn.
+    /// </summary>
+    public bool SetDvdRomBookTypeWhenSupported
+    {
+        get => _setDvdRomBookTypeWhenSupported;
+        set => SetProperty(ref _setDvdRomBookTypeWhenSupported, value);
+    }
 
     /// <summary>On by itself for a DVD-RW while the setting allows it, until the user sets the box (as on the Data Disc screen).</summary>
     public void ApplyDirectDefaultForDisc(MediaStatusDto? status, bool enabled)
@@ -865,7 +877,9 @@ public class ArchiveViewModel : ObservableObject
                 CloseDisc = true,
                 VerifyAfterBurn = VerifyAfterBurn || UseDirectDriveCommands, // a direct burn is always read back
                 EjectAfterBurn = false,
-                OverwriteExistingData = replaceAllowed
+                OverwriteExistingData = replaceAllowed,
+                RequestedBookType = SetDvdRomBookTypeWhenSupported ? DvdBookType.DvdRom : null,
+                RequireBookType = false
             };
 
             // Same rule as the Data Disc screen: the direct writer takes the discs it covers and hands any other to
@@ -874,7 +888,7 @@ public class ArchiveViewModel : ObservableObject
                 ? new CdBurner.Hardware.NativeWriting.NativeDataBurnEngine(_burnEngine, DirectBurnLogDirectory)
                 : null;
             LastDirectBurnEngine = directEngine;
-            var burnService = new DataBurnService(directEngine ?? _burnEngine);
+            var burnService = new DataBurnService(directEngine ?? _burnEngine, new BookTypeService(new VendorBookTypeController()));
             var progressHandler = new ClosableProgress<BurnProgressSnapshot>(snap =>
             {
                 if (!_isBusy) return;
@@ -901,7 +915,8 @@ public class ArchiveViewModel : ObservableObject
                 Progress = 100.0;
                 row.Status = "Burned";
                 string writer = directEngine?.LastSummary is { } how ? " " + how : "";
-                StatusMessage = $"Disc {row.DiscNumber} burned successfully.{writer}";
+                string btText = string.IsNullOrWhiteSpace(result.BookTypeNote) ? "" : " " + result.BookTypeNote;
+                StatusMessage = $"Disc {row.DiscNumber} burned successfully.{writer}{btText}";
 
                 if (VerifyAfterBurn && !SelectedRecorder.IsVirtual && !string.IsNullOrWhiteSpace(SelectedRecorder.VolumePath))
                 {

@@ -10,8 +10,10 @@ using CdBurner.Core.Burning;
 using CdBurner.Core.Images;
 using CdBurner.Core.Iso;
 using CdBurner.Core.Primitives;
+using CdBurner.Core.Utilities;
 using CdBurner.Hardware.Audio;
 using CdBurner.Hardware.Devices;
+using CdBurner.Hardware.Scsi;
 using CdBurner.Hardware.Simulation;
 using Microsoft.Win32;
 
@@ -265,7 +267,19 @@ public class ImageStudioViewModel : ObservableObject, IDisposable
     private bool _useDirectDriveCommands;
     private bool _streamingWrite;
     private bool _isOverwritableBdMedia;
+    private bool _setDvdRomBookTypeWhenSupported;
     private readonly AutomaticChoice _directDefault = new();
+    private readonly BookTypeService _bookTypeService = new(new VendorBookTypeController());
+
+    /// <summary>
+    /// Opt-in: before burning DVD+R or DVD+R DL media, attempt to set its Book Type to DVD-ROM when supported.
+    /// Unsupported drives report cleanly without failing the burn.
+    /// </summary>
+    public bool SetDvdRomBookTypeWhenSupported
+    {
+        get => _setDvdRomBookTypeWhenSupported;
+        set => SetProperty(ref _setDvdRomBookTypeWhenSupported, value);
+    }
 
     /// <summary>
     /// Overwritable BD-RE / DVD-RAM with direct drive commands: send WRITE (12) with the Streaming bit (0x80) to skip
@@ -896,7 +910,7 @@ public class ImageStudioViewModel : ObservableObject, IDisposable
         _deviceService = deviceService ?? new DiscDeviceManager(enablePhysicalEnumeration: false);
         _burnEngine = burnEngine ?? new VirtualBurnEngine();
         _shutdownInitiator = shutdownInitiator;
-        _dataBurnService = new DataBurnService(_burnEngine);
+        _dataBurnService = new DataBurnService(_burnEngine, _bookTypeService);
         _audioBurnService = new AudioCdBurnService(_burnEngine, new MediaFoundationAudioDecoder());
         _ripperService = new DiscRipperService();
         _verificationService = new DiscVerificationService();
@@ -1699,10 +1713,11 @@ public class ImageStudioViewModel : ObservableObject, IDisposable
 
             bool hasPictureZone = false;
             DataBurnResult? dataPictureResult = null;
+            string? bookTypeNote = null;
             if (ext == ".iso")
             {
                 hasPictureZone = DiscArtSidecarInfo.TryReadPictureZone(SourceImagePath, out SectorRange pictureZone, out _);
-                var dataService = directEngine != null ? new DataBurnService(directEngine) : _dataBurnService;
+                var dataService = directEngine != null ? new DataBurnService(directEngine, _bookTypeService) : _dataBurnService;
                 var dataResult = await dataService.BurnIsoFileAsync(
                     recorder,
                     SourceImagePath,
@@ -1714,11 +1729,14 @@ public class ImageStudioViewModel : ObservableObject, IDisposable
                         OverwriteExistingData = replaceAllowed,
                         VerifyAfterBurn = hasPictureZone && (VerifyAfterBurn || directEngine != null),
                         PictureZone = hasPictureZone ? pictureZone : null,
-                        StreamingWrite = StreamingWrite && directEngine != null
+                        StreamingWrite = StreamingWrite && directEngine != null,
+                        RequestedBookType = SetDvdRomBookTypeWhenSupported ? DvdBookType.DvdRom : null,
+                        RequireBookType = false
                     },
                     progress,
                     linkedToken);
                 dataPictureResult = hasPictureZone ? dataResult : null;
+                bookTypeNote = dataResult.BookTypeNote;
 
                 burnResult = dataResult.Success
                     ? BurnOperationResult.Succeeded(dataResult.SectorsWritten, dataResult.TotalTime, dataResult.AverageSpeedMultiplier)
@@ -1732,6 +1750,11 @@ public class ImageStudioViewModel : ObservableObject, IDisposable
             {
                 var legacyInfo = LegacyDiscImageConverter.Inspect(SourceImagePath);
                 AppendLog($"Burning legacy {legacyInfo.FormatName} ({legacyInfo.SectorCount:N0} sectors) to {recorder.UniqueId}...");
+                if (SetDvdRomBookTypeWhenSupported)
+                {
+                    bookTypeNote = _bookTypeService.ApplyPreBurnBookType(
+                        recorder, recorder.QueryMediaStatus().MediaType, DvdBookType.DvdRom, requireBookType: false, isSimulate: false).Note;
+                }
 
                 // Stream the 2048-byte user data straight from the image (no in-memory copy: DVD images exceed 2 GB).
                 await using var isoMem = LegacyDiscImageConverter.OpenIsoUserDataStream(legacyInfo);
@@ -1745,7 +1768,9 @@ public class ImageStudioViewModel : ObservableObject, IDisposable
                         CloseDisc = true,
                         Speed = SelectedWriteSpeed,
                         OverwriteExistingData = replaceAllowed,
-                        StreamingWrite = StreamingWrite && directEngine != null
+                        StreamingWrite = StreamingWrite && directEngine != null,
+                        RequestedBookType = SetDvdRomBookTypeWhenSupported ? DvdBookType.DvdRom : null,
+                        RequireBookType = false
                     },
                     progress,
                     linkedToken);
@@ -1760,6 +1785,12 @@ public class ImageStudioViewModel : ObservableObject, IDisposable
                 }
                 else
                 {
+                    if (SetDvdRomBookTypeWhenSupported)
+                    {
+                        bookTypeNote = _bookTypeService.ApplyPreBurnBookType(
+                            recorder, recorder.QueryMediaStatus().MediaType, DvdBookType.DvdRom, requireBookType: false, isSimulate: false).Note;
+                    }
+
                     burnResult = await dataEngine.BurnDataStreamAsync(
                         recorder,
                         fs,
@@ -1769,7 +1800,9 @@ public class ImageStudioViewModel : ObservableObject, IDisposable
                             CloseDisc = true,
                             Speed = SelectedWriteSpeed,
                             OverwriteExistingData = replaceAllowed,
-                            StreamingWrite = StreamingWrite && directEngine != null
+                            StreamingWrite = StreamingWrite && directEngine != null,
+                            RequestedBookType = SetDvdRomBookTypeWhenSupported ? DvdBookType.DvdRom : null,
+                            RequireBookType = false
                         },
                         progress,
                         linkedToken);
@@ -1782,7 +1815,8 @@ public class ImageStudioViewModel : ObservableObject, IDisposable
             if (burnResult.Success)
             {
                 string how = directEngine?.LastSummary is { } summary ? " " + summary : "";
-                StatusMessage = $"Image burned successfully ({burnResult.SectorsWritten:N0} sectors, {burnResult.TotalTime}).{how}";
+                string btText = string.IsNullOrWhiteSpace(bookTypeNote) ? "" : " " + bookTypeNote;
+                StatusMessage = $"Image burned successfully ({burnResult.SectorsWritten:N0} sectors, {burnResult.TotalTime}).{how}{btText}";
                 BurnProgress = 100.0;
 
                 // Automatic verification; a direct burn is always read back.

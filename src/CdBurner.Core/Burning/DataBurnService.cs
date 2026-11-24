@@ -5,6 +5,7 @@ using CdBurner.Core.Compilation;
 using CdBurner.Core.Images;
 using CdBurner.Core.Iso;
 using CdBurner.Core.Primitives;
+using CdBurner.Core.Utilities;
 
 namespace CdBurner.Core.Burning;
 
@@ -15,6 +16,7 @@ namespace CdBurner.Core.Burning;
 public class DataBurnService
 {
     private readonly IBurnEngineBackend _burnEngine;
+    private readonly BookTypeService _bookTypeService;
 
     /// <summary>
     /// Shown when a burn would replace the files on a used rewritable disc and the caller did not allow it.
@@ -37,12 +39,19 @@ public class DataBurnService
     public IBurnEngineBackend BurnEngine => _burnEngine;
 
     /// <summary>
+    /// Gets the DVD Book Type service used for optional pre-burn bitsetting.
+    /// </summary>
+    public BookTypeService BookTypeService => _bookTypeService;
+
+    /// <summary>
     /// Initializes a new instance of <see cref="DataBurnService"/> with the specified burning engine backend.
     /// </summary>
     /// <param name="burnEngine">The backend engine executing data streams against recorders.</param>
-    public DataBurnService(IBurnEngineBackend burnEngine)
+    /// <param name="bookTypeService">Optional Book Type service for pre-burn bitsetting.</param>
+    public DataBurnService(IBurnEngineBackend burnEngine, BookTypeService? bookTypeService = null)
     {
         _burnEngine = burnEngine ?? throw new ArgumentNullException(nameof(burnEngine));
+        _bookTypeService = bookTypeService ?? new BookTypeService();
     }
 
     /// <summary>
@@ -287,6 +296,8 @@ public class DataBurnService
                 DisableBufferUnderrunFree = options.DisableBufferUnderrunFree,
                 CdRomXaMode2Form1 = options.CdRomXaMode2Form1,
                 StreamingWrite = options.StreamingWrite,
+                RequestedBookType = options.RequestedBookType,
+                RequireBookType = options.RequireBookType,
                 PictureZone = pictureZone
             };
 
@@ -368,6 +379,17 @@ public class DataBurnService
             ? preBurnStatus.NextWritableLba
             : 0;
 
+        var bookTypeOutcome = _bookTypeService.ApplyPreBurnBookType(
+            recorder,
+            preBurnStatus.MediaType,
+            burnOptions.RequestedBookType,
+            burnOptions.RequireBookType,
+            burnOptions.Simulate);
+        if (!bookTypeOutcome.ShouldProceed)
+        {
+            return DataBurnResult.Failed(bookTypeOutcome.ErrorMessage ?? "Book type setting failed.");
+        }
+
         // When verification is requested, defer media ejection until verification finishes
         var engineOptions = new DataBurnOptions
         {
@@ -382,7 +404,9 @@ public class DataBurnService
             LayerBreakSectors = burnOptions.LayerBreakSectors,
             DisableBufferUnderrunFree = burnOptions.DisableBufferUnderrunFree,
             CdRomXaMode2Form1 = burnOptions.CdRomXaMode2Form1,
-            StreamingWrite = burnOptions.StreamingWrite
+            StreamingWrite = burnOptions.StreamingWrite,
+            RequestedBookType = burnOptions.RequestedBookType,
+            RequireBookType = burnOptions.RequireBookType
         };
 
         BurnOperationResult burnResult;
@@ -512,10 +536,11 @@ public class DataBurnService
             TocChecked = burnResult.TocChecked,
             Verified = verified,
             VerificationNote = verificationNote,
+            BookTypeNote = bookTypeOutcome.Note,
             HasPictureZone = hasPictureZone,
             FilesCompared = filesCompared,
             PictureAreaCompared = pictureAreaCompared,
-            Warning = leftOpenNote
+            Warning = JoinWarnings(leftOpenNote, bookTypeOutcome.IsWarning ? bookTypeOutcome.Note : null)
         };
         return succeeded;
     }
@@ -877,6 +902,11 @@ public class DataBurnResult : BurnOperationResult
     /// names shortened on the disc. Null when there is nothing to say.
     /// </summary>
     public string? Warning { get; set; }
+
+    /// <summary>
+    /// Outcome of an optional pre-burn Book Type step (applied, skipped on unsupported media/drive, or null when not requested).
+    /// </summary>
+    public string? BookTypeNote { get; init; }
 
     /// <summary>
     /// Optional path to the temporary or source ISO image file burned.

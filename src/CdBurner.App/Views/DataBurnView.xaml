@@ -123,6 +123,12 @@
                               ToolTip="Send WRITE(12) with the MMC-5 Streaming bit (0x80) on BD-RE to skip hardware defect-management read-after-write slowdown. Requires direct drive commands. Off by default."
                               VerticalAlignment="Center"
                               Margin="0,0,16,0" />
+                    <CheckBox Content="Set DVD+R/+R DL Book Type to DVD-ROM when supported"
+                              AutomationProperties.Name="Set DVD+R/+R DL Book Type to DVD-ROM when supported"
+                              IsChecked="{Binding SetDvdRomBookTypeWhenSupported}"
+                              ToolTip="Before burning DVD+R or DVD+R DL media, attempt to set its Book Type to DVD-ROM for better compatibility with legacy DVD players. Unsupported drives report cleanly without failing the burn."
+                              VerticalAlignment="Center"
+                              Margin="0,0,16,0" />
                     <CheckBox Content="Add SHA256SUMS"
                               AutomationProperties.Name="Add SHA256SUMS"
                               ToolTip="Adds a SHA256SUMS file to the disc root. Years from now, 'sha256sum -c SHA256SUMS' (Linux/macOS) or PowerShell can check every file without IgnisDisc."

@@ -1,5 +1,6 @@
 using System.Buffers.Binary;
 using CdBurner.Core.Abstractions;
+using CdBurner.Core.Utilities;
 using CdBurner.Hardware.NativeWriting;
 using CdBurner.Hardware.Scsi;
 
@@ -117,6 +118,32 @@ public sealed class VirtualMmcDrive : IScsiTransport
 
     /// <summary>SEND DISC STRUCTURE 20h fails with 5/26/00.</summary>
     public bool RejectsLayerBreak { get; set; }
+
+    // ---- DVD Book Type bitsetting ----
+
+    private DvdBookType? _dvdBookType;
+
+    /// <summary>Current DVD Book Type reported by READ DISC STRUCTURE (0xAD) format 0x00 and vendor queries.</summary>
+    public DvdBookType DvdBookType
+    {
+        get => _dvdBookType ?? DefaultBookTypeForProfile(Profile);
+        set => _dvdBookType = value;
+    }
+
+    /// <summary>Physical Format Information Part Version nibble (lower 4 bits of byte 4 in format 0x00).</summary>
+    public byte DvdPartVersion { get; set; } = 0x01;
+
+    /// <summary>When true, standard MMC SEND DISC STRUCTURE (0xBF) format 0x00 fails with 5/24/00 (as on most real drives).</summary>
+    public bool RejectsMmcBookType { get; set; }
+
+    /// <summary>When true, vendor bitsetting opcodes (0xDF 0x0F, 0xFA, 0xFC) fail with 5/20/00.</summary>
+    public bool RejectsVendorBookType { get; set; }
+
+    /// <summary>Overrides whether Lite-On/MediaTek 0xDF 0x0F bitsetting is handled; null infers from INQUIRY identity.</summary>
+    public bool? SupportsLiteOnBookType { get; set; }
+
+    /// <summary>Overrides whether LG/HL-DT-ST 0xFA/0xFC bitsetting is handled; null infers from INQUIRY identity.</summary>
+    public bool? SupportsLgBookType { get; set; }
 
     /// <summary>With <see cref="RejectsLayerBreak"/>: the drive sets the break anyway, as reported on the cdwrite list.</summary>
     public bool SetsLayerBreakDespiteError { get; set; }
@@ -989,7 +1016,11 @@ public sealed class VirtualMmcDrive : IScsiTransport
             NativeWriteCommands.OpCodeSendDiscStructure => SendDiscStructure(cdb, dataBuffer),
             NativeWriteCommands.OpCodeSetStreaming => SetStreaming(cdb, dataBuffer),
             0xF3 => HandleQualityScanF3(cdb, dataBuffer),
+            0xDF when cdb.Length >= 5 && cdb[2] == VendorBookTypeController.SubCommandLiteOnBookType
+                => HandleLiteOnBookTypeDf(cdb, dataBuffer),
             0xDF => HandleQualityScanDf(cdb, dataBuffer),
+            VendorBookTypeController.OpCodeLgBookTypeQuery => HandleLgBookTypeQueryFa(cdb, dataBuffer),
+            VendorBookTypeController.OpCodeLgBookTypeSet => HandleLgBookTypeSetFc(cdb, dataBuffer),
             _ => Sense(0x05, 0x20, 0x00) // invalid command operation code
         };
     }
@@ -1233,6 +1264,84 @@ public sealed class VirtualMmcDrive : IScsiTransport
         }
 
         return Sense(0x05, 0x24, 0x00);
+    }
+
+    private bool IsLiteOnBookTypeEnabled() =>
+        !RejectsVendorBookType &&
+        (SupportsLiteOnBookType ?? BookTypeDriveAllowList.Evaluate(InquiryVendorId, InquiryProductId)?.Family == BookTypeDriveFamily.LiteOnMediaTek);
+
+    private bool IsLgBookTypeEnabled() =>
+        !RejectsVendorBookType &&
+        (SupportsLgBookType ?? BookTypeDriveAllowList.Evaluate(InquiryVendorId, InquiryProductId)?.Family == BookTypeDriveFamily.LgHlDtSt);
+
+    private static DvdBookType DefaultBookTypeForProfile(ushort profile) => profile switch
+    {
+        0x0010 => DvdBookType.DvdRom,
+        0x0012 => DvdBookType.DvdRam,
+        0x0011 or 0x0015 or 0x0016 => DvdBookType.DvdMinusR,
+        0x0013 or 0x0014 => DvdBookType.DvdMinusRw,
+        0x001A or 0x002A => DvdBookType.DvdPlusRw,
+        0x001B => DvdBookType.DvdPlusR,
+        0x002B => DvdBookType.DvdPlusRDualLayer,
+        _ => DvdBookType.DvdRom
+    };
+
+    private ScsiExecutionResult HandleLiteOnBookTypeDf(ReadOnlySpan<byte> cdb, Span<byte> data)
+    {
+        if (!IsLiteOnBookTypeEnabled() || cdb.Length < 5)
+        {
+            return Sense(0x05, 0x20, 0x00);
+        }
+
+        if (cdb[3] == 0x01)
+        {
+            DvdBookType = cdb[4] == 0x01 ? DvdBookType.DvdRom : DefaultBookTypeForProfile(Profile);
+            return Good(0);
+        }
+
+        if (cdb[3] == 0x00)
+        {
+            byte[] reply = new byte[VendorBookTypeController.LiteOnQueryLength];
+            reply[0] = (byte)(DvdBookType == DvdBookType.DvdRom ? 0x01 : 0x00);
+            return CopyOut(reply, data);
+        }
+
+        return Sense(0x05, 0x24, 0x00);
+    }
+
+    private ScsiExecutionResult HandleLgBookTypeQueryFa(ReadOnlySpan<byte> cdb, Span<byte> data)
+    {
+        if (!IsLgBookTypeEnabled() || cdb.Length < 10)
+        {
+            return Sense(0x05, 0x20, 0x00);
+        }
+
+        byte[] reply = new byte[VendorBookTypeController.LgVectorLength];
+        if (DvdBookType != DvdBookType.DvdRom)
+        {
+            reply[0] = 0xA0;
+            reply[1] = 0xE0;
+        }
+        return CopyOut(reply, data);
+    }
+
+    private ScsiExecutionResult HandleLgBookTypeSetFc(ReadOnlySpan<byte> cdb, ReadOnlySpan<byte> list)
+    {
+        if (!IsLgBookTypeEnabled() || cdb.Length < 10)
+        {
+            return Sense(0x05, 0x20, 0x00);
+        }
+
+        if (cdb[2] != (byte)'+' || cdb[3] != (byte)'R' || cdb[4] != (byte)'T' || cdb[5] != (byte)'B' || list.Length < 4)
+        {
+            return Sense(0x05, 0x24, 0x00);
+        }
+
+        bool dvdRom = Profile == NativeTaoDataWriter.ProfileDvdPlusRDualLayer
+            ? (list[1] & 0xF0) == 0
+            : (list[0] & 0xF0) == 0;
+        DvdBookType = dvdRom ? DvdBookType.DvdRom : DefaultBookTypeForProfile(Profile);
+        return Good(0);
     }
 
     private int CountQualityIssues(int startLba, int endLba)
@@ -3414,6 +3523,13 @@ public sealed class VirtualMmcDrive : IScsiTransport
             BinaryPrimitives.WriteUInt32BigEndian(jump.AsSpan(8), _layerJumpAddress is int set ? (uint)set : uint.MaxValue);
             return CopyOut(jump, data);
         }
+        if (IsDvd && (cdb[1] & 0x0F) == 0 && cdb[7] == BookTypeService.FormatCodePhysicalFormatInformation)
+        {
+            byte[] pfi = new byte[20];
+            BinaryPrimitives.WriteUInt16BigEndian(pfi, 18);
+            pfi[4] = (byte)(((byte)DvdBookType << 4) | (DvdPartVersion & 0x0F));
+            return CopyOut(pfi, data);
+        }
         if (cdb[7] != NativeWriteCommands.FormatLayerBoundary || !(IsDvdPlusRDualLayer || IsDvdMinusRDualLayer))
         {
             return Sense(0x05, 0x24, 0x00);
@@ -3435,6 +3551,23 @@ public sealed class VirtualMmcDrive : IScsiTransport
         if (cdb[7] == NativeWriteCommands.FormatManualLayerJump)
         {
             return SendManualLayerJump(length, list);
+        }
+        if (cdb[7] == BookTypeService.FormatCodePhysicalFormatInformation)
+        {
+            if (RejectsMmcBookType || (!IsDvdPlusR && Profile != NativeTaoDataWriter.ProfileDvdPlusRw) ||
+                length < 5 || list.Length < 5)
+            {
+                return Sense(0x05, 0x24, 0x00);
+            }
+
+            byte nibble = (byte)((list[4] >> 4) & 0x0F);
+            if (!Enum.IsDefined(typeof(DvdBookType), nibble))
+            {
+                return Sense(0x05, 0x26, 0x00);
+            }
+
+            DvdBookType = (DvdBookType)nibble;
+            return Good(0);
         }
         // Format 20h is for DVD+R DL only; the Pioneer R11 reference: "The Format Code 20h does not work for DVD-R DL disc."
         if (cdb[7] != NativeWriteCommands.FormatLayerBoundary || !IsDvdPlusRDualLayer || length != NativeWriteCommands.LayerBoundaryLength ||

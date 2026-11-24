@@ -18,7 +18,7 @@ public static partial class CliCommandRunner
     private static readonly HashSet<string> KnownValueOptions = new(StringComparer.OrdinalIgnoreCase)
     {
         "aac-bitrate", "after-title", "append-to", "art-inner-radius-mm", "art-outer-radius-mm",
-        "artist", "aspect", "attach-health", "bitrate", "blank", "block-size", "boot-bios", "boot-uefi", "candidate",
+        "artist", "aspect", "attach-health", "bitrate", "blank", "block-size", "book-type", "boot-bios", "boot-uefi", "candidate",
         "cells", "chapters", "compare", "config", "copies", "cover", "cover-art", "crossfade",
         "csv", "cue", "data-folder", "data-label", "date", "dir", "disc", "disc-preset",
         "disc-presets-file", "drive", "drive-model", "entry", "ffmpeg", "files", "fill-picture", "fit",
@@ -97,20 +97,20 @@ public static partial class CliCommandRunner
     ];
 
     private static readonly CommandOptionSpec BurnIsoSpec = CommandOptionSpec.Of(
-        ["native", "test-write", "test-first", "streaming", "windows-writer", "strict-verify", "verify", "no-verify", "close", "no-close", "overwrite", "no-burnfree", "confirm-shutdown"],
-        ["drive", "iso", "speed", "log-dir", "layer-break", "post-action", "telemetry-out", "virtual-media", "virtual-state"]);
+        ["native", "test-write", "test-first", "streaming", "windows-writer", "strict-verify", "verify", "no-verify", "close", "no-close", "overwrite", "no-burnfree", "confirm-shutdown", "require-book-type"],
+        ["drive", "iso", "speed", "log-dir", "layer-break", "book-type", "post-action", "telemetry-out", "virtual-media", "virtual-state"]);
 
     private static readonly CommandOptionSpec BurnDataSpec = CommandOptionSpec.Of(
-        ["native", "test-write", "test-first", "streaming", "windows-writer", "strict-verify", "verify", "no-verify", "close", "no-close", "overwrite", "append", "no-burnfree", "udf", "joliet", "sha256sums", "blake3sums", "confirm-shutdown"],
-        ["drive", "input", "label", "speed", "boot-bios", "boot-uefi", "udf-rev", "fixed-time", "log-dir", "layer-break", "post-action", "fill-picture", "telemetry-out", "virtual-media", "virtual-state", .. CalibrationParamOptions]);
+        ["native", "test-write", "test-first", "streaming", "windows-writer", "strict-verify", "verify", "no-verify", "close", "no-close", "overwrite", "append", "no-burnfree", "udf", "joliet", "sha256sums", "blake3sums", "confirm-shutdown", "require-book-type"],
+        ["drive", "input", "label", "speed", "boot-bios", "boot-uefi", "udf-rev", "fixed-time", "log-dir", "layer-break", "book-type", "post-action", "fill-picture", "telemetry-out", "virtual-media", "virtual-state", .. CalibrationParamOptions]);
 
     private static readonly CommandOptionSpec BurnAudioSpec = CommandOptionSpec.Of(
         ["plan-only", "native", "test-write", "test-first", "recovery-session", "blue-book", "no-burnfree", "allow-damaged", "lookup", "confirm-shutdown", .. AudioCompilationFlags],
         ["drive", "speed", "data-folder", "data-label", "log-dir", "write-offset", "post-action", "fill-picture", "drive-model", "media-id", "store", "telemetry-out", "virtual-media", "virtual-state", .. AudioCompilationOptions]);
 
     private static readonly CommandOptionSpec BurnDvdSpec = CommandOptionSpec.Of(
-        ["native", "test-write", "test-first", "windows-writer", "no-burnfree", "no-verify", "verify", "overwrite", "confirm-shutdown", .. DvdAuthoringFlags],
-        ["drive", "video-ts", "input", "speed", "log-dir", "post-action", "fill-picture", "layer-break", "telemetry-out", "virtual-media", "virtual-state", .. DvdAuthoringOptions, .. CalibrationParamOptions]);
+        ["native", "test-write", "test-first", "windows-writer", "no-burnfree", "no-verify", "verify", "overwrite", "confirm-shutdown", "require-book-type", .. DvdAuthoringFlags],
+        ["drive", "video-ts", "input", "speed", "log-dir", "post-action", "fill-picture", "layer-break", "book-type", "telemetry-out", "virtual-media", "virtual-state", .. DvdAuthoringOptions, .. CalibrationParamOptions]);
 
     private static readonly CommandOptionSpec RosettaLadderSpec = CommandOptionSpec.Of(
         ["no-interleave", "plan-only"],
@@ -205,8 +205,8 @@ public static partial class CliCommandRunner
         Add(CommandOptionSpec.Of(["native", "raw", "allow-suspect"], ["source", "target", "copies", "wait-minutes", "log-dir", "keep-image", "speed", "virtual-state"]), "copy-disc", "copydisc", "copy");
         Add(CommandOptionSpec.Of(["plan-only", "keep-folders", "no-fill"], ["input", "staging", "media", "redundancy", "order"]), "archive-stage", "archivestage");
         Add(CommandOptionSpec.Of(
-            ["native", "test-write", "test-first", "streaming", "windows-writer", "strict-verify", "verify", "no-verify", "overwrite", "no-burnfree", "health-certificate", "confirm-shutdown"],
-            ["drive", "disc", "speed", "log-dir", "post-action", "virtual-media", "virtual-state"]),
+            ["native", "test-write", "test-first", "streaming", "windows-writer", "strict-verify", "verify", "no-verify", "overwrite", "no-burnfree", "health-certificate", "confirm-shutdown", "require-book-type"],
+            ["drive", "disc", "speed", "log-dir", "book-type", "post-action", "virtual-media", "virtual-state"]),
             "archive-burn", "archiveburn");
         Add(CommandOptionSpec.Of([], ["path"]), "archive-verify", "archiveverify");
         Add(CommandOptionSpec.Of(["keep-image"], ["out", "image", "drive", "retries", "virtual-media", "virtual-state"]), "recover", "archive-recover");
@@ -230,7 +230,7 @@ public static partial class CliCommandRunner
             ["strict-verify", "verify", "no-verify", "close", "no-close", "no-burnfree", "overwrite", "continue-on-error", "confirm-shutdown"],
             ["drive", "images", "speed", "wait-minutes", "post-action", "virtual-media", "virtual-state"]),
             "burn-queue", "burnqueue");
-        Add(CommandOptionSpec.Of([], ["drive", "set", "virtual-media", "virtual-state"]), "book-type", "booktype");
+        Add(CommandOptionSpec.Of(["get"], ["drive", "set", "virtual-media", "virtual-state"]), "book-type", "booktype");
         Add(CommandOptionSpec.Of(["delete-backups"], ["path", "par2"]), "repair-par2", "repairpar2");
         Add(RosettaLadderSpec, "rosetta-ladder", "rosettaladder");
 
