@@ -527,6 +527,7 @@
                                 <RowDefinition Height="Auto" />
                                 <RowDefinition Height="Auto" />
                                 <RowDefinition Height="Auto" />
+                                <RowDefinition Height="Auto" />
                             </Grid.RowDefinitions>
 
                             <WrapPanel Grid.Row="0" Orientation="Horizontal" HorizontalAlignment="Right" VerticalAlignment="Center">
@@ -592,6 +593,78 @@
                                                                 DataContext="{Binding Telemetry}"
                                                                 Visibility="{Binding IsVisible, Converter={StaticResource BoolToVis}}"
                                                                 Margin="0,10,0,0" />
+
+                            <Expander Grid.Row="3"
+                                      Header="Simultaneous Multi-Drive Targets (check 2+ drives to burn in parallel)"
+                                      AutomationProperties.Name="Multi-Drive Targets"
+                                      IsExpanded="{Binding IsMultiDriveExpanded, Mode=TwoWay}"
+                                      Foreground="{DynamicResource TextSecondaryBrush}"
+                                      Margin="0,8,0,0">
+                                <StackPanel Margin="0,6,0,0">
+                                    <ItemsControl ItemsSource="{Binding MultiDriveTargets}"
+                                                  AutomationProperties.Name="Multi-Drive Target Checkboxes">
+                                        <ItemsControl.ItemsPanel>
+                                            <ItemsPanelTemplate>
+                                                <WrapPanel Orientation="Horizontal" />
+                                            </ItemsPanelTemplate>
+                                        </ItemsControl.ItemsPanel>
+                                        <ItemsControl.ItemTemplate>
+                                            <DataTemplate>
+                                                <CheckBox Content="{Binding DisplayLabel}"
+                                                          AutomationProperties.Name="{Binding TargetCheckBoxAutomationName}"
+                                                          IsChecked="{Binding IsSelected, Mode=TwoWay}"
+                                                          Foreground="{DynamicResource TextPrimaryBrush}"
+                                                          Margin="0,2,16,2" />
+                                            </DataTemplate>
+                                        </ItemsControl.ItemTemplate>
+                                    </ItemsControl>
+
+                                    <ItemsControl ItemsSource="{Binding MultiDriveTargets}"
+                                                  AutomationProperties.Name="Per-Drive Burn Progress"
+                                                  Margin="0,6,0,0">
+                                        <ItemsControl.ItemTemplate>
+                                            <DataTemplate>
+                                                <Grid Margin="0,2" Visibility="{Binding IsSelected, Converter={StaticResource BoolToVis}}">
+                                                    <Grid.ColumnDefinitions>
+                                                        <ColumnDefinition Width="210" />
+                                                        <ColumnDefinition Width="*" />
+                                                        <ColumnDefinition Width="180" />
+                                                        <ColumnDefinition Width="Auto" />
+                                                    </Grid.ColumnDefinitions>
+                                                    <TextBlock Grid.Column="0"
+                                                               Text="{Binding DisplayLabel}"
+                                                               VerticalAlignment="Center"
+                                                               TextTrimming="CharacterEllipsis"
+                                                               Foreground="{DynamicResource TextPrimaryBrush}"
+                                                               Margin="0,0,8,0" />
+                                                    <ProgressBar Grid.Column="1"
+                                                                 Height="8"
+                                                                 Minimum="0"
+                                                                 Maximum="100"
+                                                                 Value="{Binding ProgressPercent, Mode=OneWay}"
+                                                                 AutomationProperties.Name="{Binding ProgressRowAutomationName}"
+                                                                 VerticalAlignment="Center"
+                                                                 Margin="0,0,8,0" />
+                                                    <TextBlock Grid.Column="2"
+                                                               Text="{Binding StatusText}"
+                                                               VerticalAlignment="Center"
+                                                               TextTrimming="CharacterEllipsis"
+                                                               Foreground="{DynamicResource TextSecondaryBrush}"
+                                                               Margin="0,0,8,0" />
+                                                    <Button Grid.Column="3"
+                                                            Content="Cancel"
+                                                            AutomationProperties.Name="{Binding CancelButtonAutomationName}"
+                                                            Command="{Binding CancelCommand}"
+                                                            Style="{StaticResource DangerButtonStyle}"
+                                                            Visibility="{Binding IsCancellable, Converter={StaticResource BoolToVis}}"
+                                                            Padding="8,2"
+                                                            FontSize="11" />
+                                                </Grid>
+                                            </DataTemplate>
+                                        </ItemsControl.ItemTemplate>
+                                    </ItemsControl>
+                                </StackPanel>
+                            </Expander>
                         </Grid>
                     </Border>
                     </Grid>

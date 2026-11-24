@@ -264,6 +264,7 @@ public static partial class CliCommandRunner
             "detect-offset" or "detectoffset" => await HandleDetectOffsetAsync(cmd, stdout, stderr, deviceService, burnEngine).ConfigureAwait(false),
             "check-disc" or "checkdisc" => HandleCheckDisc(cmd, stdout, deviceService),
             "copy-disc" or "copydisc" or "copy" => await HandleCopyDiscAsync(cmd, stdout, stderr, deviceService, burnEngine).ConfigureAwait(false),
+            "duplicate" => await HandleDuplicateAsync(cmd, stdout, stderr, deviceService, burnEngine).ConfigureAwait(false),
             "archive-stage" or "archivestage" => await HandleArchiveStageAsync(cmd, stdout).ConfigureAwait(false),
             "archive-burn" or "archiveburn" => await HandleArchiveBurnAsync(cmd, stdout, stderr, deviceService, burnEngine).ConfigureAwait(false),
             "archive-verify" or "archiveverify" => await HandleArchiveVerifyAsync(cmd, stdout).ConfigureAwait(false),
@@ -767,6 +768,11 @@ public static partial class CliCommandRunner
         IDiscDeviceService deviceService,
         IBurnEngineBackend burnEngine)
     {
+        if (HasMultiDriveOption(cmd))
+        {
+            return await HandleBurnIsoMultiDriveAsync(cmd, stdout, stderr, deviceService, burnEngine).ConfigureAwait(false);
+        }
+
         string driveId = ResolveTargetDriveId(cmd);
         string isoPath = cmd.GetRequiredOption("iso", "--iso <file.iso>");
         string? speedStr = cmd.GetOption("speed");
@@ -4129,8 +4135,8 @@ public static partial class CliCommandRunner
         stdout.WriteLine("      Reports virtual drive state, media geometry, and MMC profile without touching physical hardware.");
         stdout.WriteLine("  build-iso --input <folder> --output <file.iso> [--label <vol>] [--udf] [--udf-rev <1.02|1.50|2.00|2.01|2.50|2.60>] [--joliet] [--boot-bios <img>] [--boot-uefi <img>] [--fixed-time <unix|iso8601>] [--sha256sums] [--blake3sums] [--json]");
         stdout.WriteLine("      Compiles a folder into an ISO 9660 / Joliet / UDF filesystem image.");
-        stdout.WriteLine("  burn-iso --drive <id> --iso <file.iso|.nrg|.cdi|.mdf|.mds|.ccd|.img> [--speed <X|max>] [--no-verify | --strict-verify] [--no-close] [--no-burnfree] [--overwrite] [--book-type dvd-rom|...] [--post-action none|eject|sound|eject-sound|shutdown] [--telemetry-out <path>] [--windows-writer | --native [--test-write | --test-first] [--streaming] [--layer-break <sectors>] [--log-dir <folder>]] [--json]");
-        stdout.WriteLine("      Burns an ISO image directly to the target optical drive. --streaming uses WRITE(12) Streaming (0x80) on BD-RE/DVD-RAM. --layer-break: sectors on the first layer of a DVD+R DL (multiple of 16). --telemetry-out writes burn telemetry as .svg or .json (or both if no extension). A DVD-RW is written with direct drive commands unless --windows-writer.");
+        stdout.WriteLine("  burn-iso (--drive <id> | --drives <id1,id2,...>) --iso <file.iso|.nrg|.cdi|.mdf|.mds|.ccd|.img> [--speed <X|max>] [--no-verify | --strict-verify] [--no-close] [--no-burnfree] [--overwrite] [--book-type dvd-rom|...] [--post-action none|eject|sound|eject-sound|shutdown] [--telemetry-out <path>] [--windows-writer | --native [--test-write | --test-first] [--streaming] [--layer-break <sectors>] [--log-dir <folder>]] [--json]");
+        stdout.WriteLine("      Burns an ISO image directly to one or more optical drives simultaneously (--drives D:,E:). --streaming uses WRITE(12) Streaming (0x80) on BD-RE/DVD-RAM. --layer-break: sectors on the first layer of a DVD+R DL (multiple of 16). --telemetry-out writes burn telemetry as .svg or .json (or both if no extension). A DVD-RW is written with direct drive commands unless --windows-writer.");
         stdout.WriteLine("  burn-data --drive <id> --input <folder> [--label <vol>] [--speed <X|max>] [--udf] [--udf-rev <1.02|1.50|2.00|2.01|2.50|2.60>] [--joliet] [--boot-bios <img>] [--boot-uefi <img>] [--no-verify | --strict-verify] [--no-close] [--append] [--no-burnfree] [--overwrite] [--book-type dvd-rom|...] [--post-action none|eject|sound|eject-sound|shutdown] [--fixed-time <unix|iso8601>] [--sha256sums] [--blake3sums] [--fill-picture <file.png> [--disc-preset <id>]] [--telemetry-out <path>] [--windows-writer | --native [--test-write | --test-first] [--streaming] [--layer-break <sectors>] [--log-dir <folder>]] [--json]");
         stdout.WriteLine("      Compiles a folder and burns it to optical media (--append merges and adds a session on an appendable disc). A DVD-RW is written with direct drive commands unless --windows-writer.");
         stdout.WriteLine("  burn-audio (--drive <id> | --plan-only) (--tracks <files|.cue|.m3u|.pls> | --tracks-file <file.json>) [--title <album>] [--artist <name>] [--songwriter <name>] [--upc <13digits>] [--speed <X|max>] [--dao] [--pregap <frames>] [--normalize] [--rms-level] [--loudness track|album|off] [--crossfade <sec>] [--no-cd-text] [--no-burnfree] [--post-action none|eject|sound|eject-sound|shutdown] [--allow-damaged] [--telemetry-out <path>] [--native [--test-write | --test-first] [--recovery-session | --data-folder <dir> [--data-label <label>] [--blue-book] | --fill-picture <picture>|auto [--lookup]] [--write-offset <samples|auto>] [--allow-overburn [--max-overburn-minutes <n>]] [--log-dir <folder>]] [--json]");
@@ -4152,6 +4158,8 @@ public static partial class CliCommandRunner
         stdout.WriteLine("  copy-disc --source <id> [--target <id>] [--copies <n>] [--speed <X|max>] [--raw] [--native [--log-dir <folder>]] [--allow-suspect] [--keep-image <folder>] [--wait-minutes <n>] [--json]");
         stdout.WriteLine("      Copies a disc, with one drive or two. With one drive (or for each further copy) the tray opens and the copy waits for a blank disc.");
         stdout.WriteLine("      Audio is read with error checks; a copy stops before writing if sectors still read wrong, unless --allow-suspect. --native copies mixed-mode and Enhanced CDs (audio + data sessions) whole.");
+        stdout.WriteLine("  duplicate --drives <id1,id2,...> (--source <id> | --iso <file> | --tracks <files|.cue> | --disc <staged-folder>) [--speed <X|max>] [--no-verify | --strict-verify] [--overwrite] [--no-burnfree] [--allow-suspect] [--native [--log-dir <folder>]] [--telemetry-out <path>] [--json]");
+        stdout.WriteLine("      Burns the same source disc, ISO image, Audio CD, or staged Archive disc to multiple optical drives simultaneously.");
         stdout.WriteLine("  check-disc --drive <id> [--compare <discNN.HEALTH.json>] [--json]");
         stdout.WriteLine("      Reads a CD once with C2 error pointers and says where it is weak (where a player may skip). Read-only.");
         stdout.WriteLine("      --compare sets the result against a health certificate and lists the minutes that changed.");

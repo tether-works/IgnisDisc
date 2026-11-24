@@ -402,6 +402,30 @@ public class ImageStudioViewModel : ObservableObject, IDisposable
     public ObservableCollection<IDiscRecorderBackend> AvailableRecorders { get; } = new();
 
     /// <summary>
+    /// Target drive checkboxes and per-drive progress rows for simultaneous multi-drive burning.
+    /// </summary>
+    public ObservableCollection<MultiDriveTargetItem> MultiDriveTargets { get; } = new();
+
+    private bool _isMultiDriveExpanded;
+    private MultiDriveBurnResult? _lastMultiDriveResult;
+
+    public bool IsMultiDriveExpanded
+    {
+        get => _isMultiDriveExpanded;
+        set => SetProperty(ref _isMultiDriveExpanded, value);
+    }
+
+    public int SelectedMultiDriveCount => MultiDriveTargets.Count(t => t.IsSelected);
+
+    public bool HasMultiDriveSelection => SelectedMultiDriveCount >= 2;
+
+    public MultiDriveBurnResult? LastMultiDriveResult
+    {
+        get => _lastMultiDriveResult;
+        private set => SetProperty(ref _lastMultiDriveResult, value);
+    }
+
+    /// <summary>
     /// Currently selected optical recorder drive.
     /// </summary>
     public IDiscRecorderBackend? SelectedRecorder
@@ -963,6 +987,11 @@ public class ImageStudioViewModel : ObservableObject, IDisposable
         {
             AvailableRecorders.Add(r);
         }
+        MultiDriveTargetCollectionSync.Attach(AvailableRecorders, MultiDriveTargets, () =>
+        {
+            OnPropertyChanged(nameof(SelectedMultiDriveCount));
+            OnPropertyChanged(nameof(HasMultiDriveSelection));
+        });
 
         // Pre-select physical optical recorder if available
         SelectedRecorder = AvailableRecorders.FirstOrDefault(r => !r.IsVirtual)
@@ -1646,6 +1675,26 @@ public class ImageStudioViewModel : ObservableObject, IDisposable
             return fail;
         }
 
+        if (string.IsNullOrWhiteSpace(driveId))
+        {
+            var selectedTargets = MultiDriveTargets.Where(t => t.IsSelected).ToList();
+            if (selectedTargets.Count >= 2)
+            {
+                var multiResult = await BurnImageToMultipleDrivesAsync(selectedTargets, ct);
+                return multiResult.AllSucceeded
+                    ? BurnOperationResult.Succeeded(
+                        multiResult.Results.Sum(r => r.BurnResult?.SectorsWritten ?? 0),
+                        multiResult.TotalWallTime)
+                    : multiResult.CancelledCount == multiResult.TotalDrives
+                        ? BurnOperationResult.CancelledResult(multiResult.SummaryMessage)
+                        : BurnOperationResult.Failed(multiResult.SummaryMessage);
+            }
+            if (selectedTargets.Count == 1)
+            {
+                driveId = selectedTargets[0].DriveId;
+            }
+        }
+
         bool replaceAllowed = false; // true only after the user saw the "will replace files" warning and clicked Burn
         if (string.IsNullOrWhiteSpace(driveId) && CdBurner.App.Views.BurnTargetDialog.IsInteractiveSession)
         {
@@ -1879,6 +1928,214 @@ public class ImageStudioViewModel : ObservableObject, IDisposable
         finally
         {
             Telemetry.EndSession();
+            _activeCts?.Dispose();
+            _activeCts = null;
+            IsBusy = false;
+            UpdateCopySourceSummary();
+        }
+    }
+
+    /// <summary>
+    /// Burns the current source image simultaneously to multiple selected target drives.
+    /// </summary>
+    public async Task<MultiDriveBurnResult> BurnImageToMultipleDrivesAsync(
+        IReadOnlyList<MultiDriveTargetItem>? targets = null,
+        CancellationToken ct = default)
+    {
+        var chosenTargets = targets ?? MultiDriveTargets.Where(t => t.IsSelected).ToList();
+        if (chosenTargets.Count == 0)
+        {
+            var emptyResult = new MultiDriveBurnResult
+            {
+                Results = Array.Empty<MultiDriveTargetResult>(),
+                SummaryMessage = "Select at least one target drive."
+            };
+            LastMultiDriveResult = emptyResult;
+            StatusMessage = emptyResult.SummaryMessage;
+            return emptyResult;
+        }
+
+        if (string.IsNullOrWhiteSpace(SourceImagePath) || !File.Exists(SourceImagePath))
+        {
+            StatusMessage = Strings.StatusImageStudioSourceDiscImageFileDoesNot;
+            var fail = BurnOperationResult.Failed(StatusMessage);
+            LastBurnResult = fail;
+            var missingRes = new MultiDriveBurnResult
+            {
+                Results = chosenTargets.Select(t => new MultiDriveTargetResult
+                {
+                    DriveId = t.DriveId,
+                    Recorder = t.Recorder,
+                    Status = MultiDriveBurnStatus.Failed,
+                    Success = false,
+                    BurnResult = fail,
+                    ErrorMessage = StatusMessage
+                }).ToList(),
+                SummaryMessage = StatusMessage
+            };
+            LastMultiDriveResult = missingRes;
+            return missingRes;
+        }
+
+        var recorders = chosenTargets.Select(t => t.Recorder).ToList();
+        foreach (var vRec in recorders.OfType<VirtualDiscRecorder>())
+        {
+            var mediaStatus = vRec.QueryMediaStatus();
+            if (!mediaStatus.MediaPresent || (!mediaStatus.IsBlank && !mediaStatus.IsAppendable && !mediaStatus.IsRewritable))
+            {
+                vRec.InsertMedia(CreateBlankVirtualMediumFor(new MediaStatusDto { UsedSectors = ImageSectorCount }));
+            }
+        }
+
+        _activeCts?.Dispose();
+        _activeCts = CancellationTokenSource.CreateLinkedTokenSource(ct);
+        var masterToken = _activeCts.Token;
+
+        IsBusy = true;
+        IsMultiDriveExpanded = true;
+        BurnProgress = 0;
+        StatusMessage = $"Burning '{Path.GetFileName(SourceImagePath)}' simultaneously to {recorders.Count} drive(s)...";
+        AppendLog(StatusMessage);
+
+        var targetById = chosenTargets.ToDictionary(t => t.DriveId, StringComparer.OrdinalIgnoreCase);
+        var perDriveTokens = new Dictionary<string, CancellationToken>(StringComparer.OrdinalIgnoreCase);
+        foreach (var item in chosenTargets)
+        {
+            perDriveTokens[item.DriveId] = item.BeginRun(masterToken);
+        }
+
+        var progressLock = new object();
+        var progressByDrive = new Dictionary<string, double>(StringComparer.OrdinalIgnoreCase);
+        var multiProgress = new Progress<MultiDriveProgressUpdate>(update =>
+        {
+            void Apply()
+            {
+                if (targetById.TryGetValue(update.DriveId, out var row))
+                {
+                    row.UpdateFrom(update);
+                }
+                lock (progressLock)
+                {
+                    progressByDrive[update.DriveId] = update.ProgressPercent;
+                    if (progressByDrive.Count > 0)
+                    {
+                        BurnProgress = progressByDrive.Values.Average();
+                    }
+                }
+            }
+            UiDispatch.InvokeOrMarshal(Apply);
+        });
+
+        try
+        {
+            string ext = Path.GetExtension(SourceImagePath).ToLowerInvariant();
+            bool directData = UseDirectDriveCommands && ext != ".cue";
+            var coordinator = CdBurner.Hardware.Burning.MultiDriveBurnEngineFactory.CreateCoordinator(
+                _burnEngine,
+                useDirectDriveCommands: directData,
+                logDirectory: DirectBurnLogDirectory);
+
+            MultiDriveBurnResult multiResult;
+            if (ext == ".cue")
+            {
+                var cueSheet = CueSheetParser.ParseFile(SourceImagePath);
+                string cueDir = Path.GetDirectoryName(SourceImagePath) ?? "";
+                bool hasAudio = cueSheet.Files.Any(f => f.Tracks.Any(t => t.DataType == CueTrackDataType.Audio));
+                if (hasAudio)
+                {
+                    var compilation = new AudioCdCompilation
+                    {
+                        AlbumTitle = cueSheet.Title ?? Path.GetFileNameWithoutExtension(SourceImagePath),
+                        AlbumPerformer = cueSheet.Performer ?? "Various Artists",
+                        Songwriter = cueSheet.Songwriter,
+                        RecordingMode = AudioRecordingMode.DiscAtOnceGapless,
+                        IncludeCdText = !string.IsNullOrEmpty(cueSheet.Title) || !string.IsNullOrEmpty(cueSheet.Performer)
+                    };
+                    compilation.ImportCueSheet(cueSheet, cueDir, _audioBurnService.AudioDecoder);
+                    multiResult = await coordinator.BurnAudioAsync(
+                        recorders,
+                        compilation,
+                        new AudioBurnOptions { UseDiscAtOnce = true, WriteCdText = compilation.IncludeCdText, Speed = SelectedWriteSpeed },
+                        multiProgress,
+                        perDriveTokens,
+                        masterToken);
+                }
+                else
+                {
+                    multiResult = await coordinator.BurnDataStreamFactoryAsync(
+                        recorders,
+                        _ => LegacyDiscImageConverter.OpenCueIsoUserDataStream(SourceImagePath),
+                        new DataBurnOptions
+                        {
+                            VolumeLabel = Path.GetFileNameWithoutExtension(SourceImagePath),
+                            CloseDisc = true,
+                            Speed = SelectedWriteSpeed,
+                            VerifyAfterBurn = VerifyAfterBurn
+                        },
+                        $"burn-cue ({Path.GetFileName(SourceImagePath)})",
+                        multiProgress,
+                        perDriveTokens,
+                        masterToken);
+                }
+            }
+            else
+            {
+                SectorRange pictureZone = default;
+                bool hasPictureZone = ext == ".iso" && DiscArtSidecarInfo.TryReadPictureZone(SourceImagePath, out pictureZone, out _);
+                multiResult = await coordinator.BurnImageAsync(
+                    recorders,
+                    SourceImagePath,
+                    new DataBurnOptions
+                    {
+                        VolumeLabel = Path.GetFileNameWithoutExtension(SourceImagePath),
+                        CloseDisc = true,
+                        Speed = SelectedWriteSpeed,
+                        VerifyAfterBurn = VerifyAfterBurn || directData,
+                        PictureZone = hasPictureZone ? pictureZone : null,
+                        StreamingWrite = StreamingWrite && directData,
+                        RequestedBookType = SetDvdRomBookTypeWhenSupported ? DvdBookType.DvdRom : null,
+                        RequireBookType = false
+                    },
+                    multiProgress,
+                    perDriveTokens,
+                    masterToken);
+            }
+
+            foreach (var r in multiResult.Results)
+            {
+                if (targetById.TryGetValue(r.DriveId, out var row))
+                {
+                    UiDispatch.InvokeOrMarshal(() => row.ApplyResult(r));
+                }
+                if (SelectedPostBurnAction != PostBurnAction.ShutDown)
+                {
+                    PostBurnActionExecutor.Execute(SelectedPostBurnAction, r.Recorder, shutdownInitiator: _shutdownInitiator);
+                }
+            }
+            if (SelectedPostBurnAction == PostBurnAction.ShutDown && multiResult.AllSucceeded && multiResult.Results.Count > 0)
+            {
+                PostBurnActionExecutor.Execute(SelectedPostBurnAction, multiResult.Results[0].Recorder, shutdownInitiator: _shutdownInitiator);
+            }
+
+            LastMultiDriveResult = multiResult;
+            LastBurnResult = multiResult.AllSucceeded
+                ? BurnOperationResult.Succeeded(multiResult.Results.Sum(r => r.BurnResult?.SectorsWritten ?? 0), multiResult.TotalWallTime)
+                : BurnOperationResult.Failed(multiResult.SummaryMessage);
+            BurnProgress = multiResult.AllSucceeded ? 100.0 : BurnProgress;
+            StatusMessage = multiResult.SummaryMessage;
+            AppendLog(StatusMessage);
+            CompletionNotice.Show(
+                multiResult.AllSucceeded ? "Multi-drive burn finished" : "Multi-drive burn completed with issues",
+                StatusMessage,
+                multiResult.AllSucceeded);
+            return multiResult;
+        }
+        finally
+        {
+            foreach (var item in chosenTargets)
+            {
+                item.DisposeCancellation();
+            }
             _activeCts?.Dispose();
             _activeCts = null;
             IsBusy = false;

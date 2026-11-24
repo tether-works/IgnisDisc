@@ -245,72 +245,150 @@
                             Padding="16,10"
                             Margin="0,12,0,0">
                         <Grid>
-                            <Grid.ColumnDefinitions>
-                                <ColumnDefinition Width="*" />
-                                <ColumnDefinition Width="Auto" />
-                                <ColumnDefinition Width="Auto" />
-                            </Grid.ColumnDefinitions>
+                            <Grid.RowDefinitions>
+                                <RowDefinition Height="Auto" />
+                                <RowDefinition Height="Auto" />
+                            </Grid.RowDefinitions>
+                            <Grid Grid.Row="0">
+                                <Grid.ColumnDefinitions>
+                                    <ColumnDefinition Width="*" />
+                                    <ColumnDefinition Width="Auto" />
+                                    <ColumnDefinition Width="Auto" />
+                                </Grid.ColumnDefinitions>
 
-                            <StackPanel Grid.Column="0" VerticalAlignment="Center">
-                                <TextBlock Text="{Binding StatusMessage}"
-                                           FontWeight="SemiBold"
-                                           Foreground="{DynamicResource TextPrimaryBrush}" />
-                                <ProgressBar Height="6"
-                                             AutomationProperties.Name="Burn Progress"
-                                             Minimum="0"
-                                             Maximum="100"
-                                             Value="{Binding BurnProgress}"
-                                             Margin="0,6,16,0"
-                                             Visibility="{Binding IsBusy, Converter={StaticResource BoolToVis}}" />
-                            </StackPanel>
+                                <StackPanel Grid.Column="0" VerticalAlignment="Center">
+                                    <TextBlock Text="{Binding StatusMessage}"
+                                               FontWeight="SemiBold"
+                                               Foreground="{DynamicResource TextPrimaryBrush}" />
+                                    <ProgressBar Height="6"
+                                                 AutomationProperties.Name="Burn Progress"
+                                                 Minimum="0"
+                                                 Maximum="100"
+                                                 Value="{Binding BurnProgress}"
+                                                 Margin="0,6,16,0"
+                                                 Visibility="{Binding IsBusy, Converter={StaticResource BoolToVis}}" />
+                                </StackPanel>
 
-                            <StackPanel Grid.Column="1" Orientation="Horizontal" VerticalAlignment="Center" Margin="0,0,14,0">
-                                <TextBlock Text="Burn To:"
-                                           FontWeight="SemiBold"
-                                           VerticalAlignment="Center"
-                                           Foreground="{DynamicResource TextSecondaryBrush}"
-                                           Margin="0,0,8,0" />
-                                <ComboBox Width="260"
-                                          AutomationProperties.Name="Burn To Optical Drive"
-                                          ItemsSource="{Binding AvailableRecorders}"
-                                          SelectedItem="{Binding SelectedRecorder}"
-                                          ToolTip="Select the optical drive to burn this image to">
-                                    <ComboBox.ItemTemplate>
-                                        <DataTemplate>
-                                            <StackPanel Orientation="Horizontal">
-                                                <TextBlock Text="{Binding VolumePath}" FontWeight="Bold" Foreground="{DynamicResource AccentBrush}" Margin="0,0,6,0" />
-                                                <TextBlock Text="{Binding VendorId}" Foreground="{DynamicResource TextPrimaryBrush}" Margin="0,0,4,0" />
-                                                <TextBlock Text="{Binding ProductId}" Foreground="{DynamicResource TextPrimaryBrush}" />
-                                            </StackPanel>
-                                        </DataTemplate>
-                                    </ComboBox.ItemTemplate>
-                                </ComboBox>
-                            </StackPanel>
+                                <StackPanel Grid.Column="1" Orientation="Horizontal" VerticalAlignment="Center" Margin="0,0,14,0">
+                                    <TextBlock Text="Burn To:"
+                                               FontWeight="SemiBold"
+                                               VerticalAlignment="Center"
+                                               Foreground="{DynamicResource TextSecondaryBrush}"
+                                               Margin="0,0,8,0" />
+                                    <ComboBox Width="260"
+                                              AutomationProperties.Name="Burn To Optical Drive"
+                                              ItemsSource="{Binding AvailableRecorders}"
+                                              SelectedItem="{Binding SelectedRecorder}"
+                                              ToolTip="Select the optical drive to burn this image to">
+                                        <ComboBox.ItemTemplate>
+                                            <DataTemplate>
+                                                <StackPanel Orientation="Horizontal">
+                                                    <TextBlock Text="{Binding VolumePath}" FontWeight="Bold" Foreground="{DynamicResource AccentBrush}" Margin="0,0,6,0" />
+                                                    <TextBlock Text="{Binding VendorId}" Foreground="{DynamicResource TextPrimaryBrush}" Margin="0,0,4,0" />
+                                                    <TextBlock Text="{Binding ProductId}" Foreground="{DynamicResource TextPrimaryBrush}" />
+                                                </StackPanel>
+                                            </DataTemplate>
+                                        </ComboBox.ItemTemplate>
+                                    </ComboBox>
+                                </StackPanel>
 
-                            <StackPanel Grid.Column="2" Orientation="Horizontal" VerticalAlignment="Center">
-                                <Button Content="🛑 Cancel"
-                                        AutomationProperties.Name="Cancel Burn"
-                                        Command="{Binding CancelCommand}"
-                                        Style="{StaticResource DangerButtonStyle}"
-                                        Visibility="{Binding IsBusy, Converter={StaticResource BoolToVis}}"
-                                        Padding="18,10"
-                                        FontSize="14"
-                                        Margin="0,0,8,0" />
-                                <Button Content="➕ Add to Queue"
-                                        AutomationProperties.Name="Add Image to Burn Queue"
-                                        Command="{Binding AddToBurnQueueCommand}"
-                                        Padding="16,10"
-                                        FontSize="14"
-                                        Margin="0,0,8,0" />
-                                <Button Content="🔥 Burn Image to Disc"
-                                        AutomationProperties.Name="Burn Image to Disc"
-                                        Command="{Binding BurnImageToDiscCommand}"
-                                        Style="{StaticResource AccentButtonStyle}"
-                                        Padding="24,10"
-                                        FontSize="14"
-                                        FontWeight="SemiBold"
-                                        VerticalAlignment="Center" />
-                            </StackPanel>
+                                <StackPanel Grid.Column="2" Orientation="Horizontal" VerticalAlignment="Center">
+                                    <Button Content="🛑 Cancel"
+                                            AutomationProperties.Name="Cancel Burn"
+                                            Command="{Binding CancelCommand}"
+                                            Style="{StaticResource DangerButtonStyle}"
+                                            Visibility="{Binding IsBusy, Converter={StaticResource BoolToVis}}"
+                                            Padding="18,10"
+                                            FontSize="14"
+                                            Margin="0,0,8,0" />
+                                    <Button Content="➕ Add to Queue"
+                                            AutomationProperties.Name="Add Image to Burn Queue"
+                                            Command="{Binding AddToBurnQueueCommand}"
+                                            Padding="16,10"
+                                            FontSize="14"
+                                            Margin="0,0,8,0" />
+                                    <Button Content="🔥 Burn Image to Disc"
+                                            AutomationProperties.Name="Burn Image to Disc"
+                                            Command="{Binding BurnImageToDiscCommand}"
+                                            Style="{StaticResource AccentButtonStyle}"
+                                            Padding="24,10"
+                                            FontSize="14"
+                                            FontWeight="SemiBold"
+                                            VerticalAlignment="Center" />
+                                </StackPanel>
+                            </Grid>
+
+                            <Expander Grid.Row="1"
+                                      Header="Simultaneous Multi-Drive Targets (check 2+ drives to burn in parallel)"
+                                      AutomationProperties.Name="Multi-Drive Targets"
+                                      IsExpanded="{Binding IsMultiDriveExpanded, Mode=TwoWay}"
+                                      Foreground="{DynamicResource TextSecondaryBrush}"
+                                      Margin="0,8,0,0">
+                                <StackPanel Margin="0,6,0,0">
+                                    <ItemsControl ItemsSource="{Binding MultiDriveTargets}"
+                                                  AutomationProperties.Name="Multi-Drive Target Checkboxes">
+                                        <ItemsControl.ItemsPanel>
+                                            <ItemsPanelTemplate>
+                                                <WrapPanel Orientation="Horizontal" />
+                                            </ItemsPanelTemplate>
+                                        </ItemsControl.ItemsPanel>
+                                        <ItemsControl.ItemTemplate>
+                                            <DataTemplate>
+                                                <CheckBox Content="{Binding DisplayLabel}"
+                                                          AutomationProperties.Name="{Binding TargetCheckBoxAutomationName}"
+                                                          IsChecked="{Binding IsSelected, Mode=TwoWay}"
+                                                          Foreground="{DynamicResource TextPrimaryBrush}"
+                                                          Margin="0,2,16,2" />
+                                            </DataTemplate>
+                                        </ItemsControl.ItemTemplate>
+                                    </ItemsControl>
+
+                                    <ItemsControl ItemsSource="{Binding MultiDriveTargets}"
+                                                  AutomationProperties.Name="Per-Drive Burn Progress"
+                                                  Margin="0,6,0,0">
+                                        <ItemsControl.ItemTemplate>
+                                            <DataTemplate>
+                                                <Grid Margin="0,2" Visibility="{Binding IsSelected, Converter={StaticResource BoolToVis}}">
+                                                    <Grid.ColumnDefinitions>
+                                                        <ColumnDefinition Width="210" />
+                                                        <ColumnDefinition Width="*" />
+                                                        <ColumnDefinition Width="180" />
+                                                        <ColumnDefinition Width="Auto" />
+                                                    </Grid.ColumnDefinitions>
+                                                    <TextBlock Grid.Column="0"
+                                                               Text="{Binding DisplayLabel}"
+                                                               VerticalAlignment="Center"
+                                                               TextTrimming="CharacterEllipsis"
+                                                               Foreground="{DynamicResource TextPrimaryBrush}"
+                                                               Margin="0,0,8,0" />
+                                                    <ProgressBar Grid.Column="1"
+                                                                 Height="8"
+                                                                 Minimum="0"
+                                                                 Maximum="100"
+                                                                 Value="{Binding ProgressPercent, Mode=OneWay}"
+                                                                 AutomationProperties.Name="{Binding ProgressRowAutomationName}"
+                                                                 VerticalAlignment="Center"
+                                                                 Margin="0,0,8,0" />
+                                                    <TextBlock Grid.Column="2"
+                                                               Text="{Binding StatusText}"
+                                                               VerticalAlignment="Center"
+                                                               TextTrimming="CharacterEllipsis"
+                                                               Foreground="{DynamicResource TextSecondaryBrush}"
+                                                               Margin="0,0,8,0" />
+                                                    <Button Grid.Column="3"
+                                                            Content="Cancel"
+                                                            AutomationProperties.Name="{Binding CancelButtonAutomationName}"
+                                                            Command="{Binding CancelCommand}"
+                                                            Style="{StaticResource DangerButtonStyle}"
+                                                            Visibility="{Binding IsCancellable, Converter={StaticResource BoolToVis}}"
+                                                            Padding="8,2"
+                                                            FontSize="11" />
+                                                </Grid>
+                                            </DataTemplate>
+                                        </ItemsControl.ItemTemplate>
+                                    </ItemsControl>
+                                </StackPanel>
+                            </Expander>
                         </Grid>
                     </Border>
                 </Grid>

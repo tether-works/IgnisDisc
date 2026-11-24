@@ -44,8 +44,20 @@ public static partial class CliCommandRunner
         }
 
         return IsExplicitVirtualDriveId(cmd.GetOption("drive")) ||
+               AreAllExplicitVirtualDriveIds(cmd.GetOption("drives")) ||
                IsExplicitVirtualDriveId(cmd.GetOption("source")) ||
                IsExplicitVirtualDriveId(cmd.GetOption("target"));
+    }
+
+    private static bool AreAllExplicitVirtualDriveIds(string? drivesOption)
+    {
+        if (string.IsNullOrWhiteSpace(drivesOption))
+        {
+            return false;
+        }
+
+        var parts = drivesOption.Split(',', StringSplitOptions.TrimEntries);
+        return parts.Length > 0 && parts.All(IsExplicitVirtualDriveId);
     }
 
     private static bool IsExplicitVirtualDriveId(string? driveId)
@@ -144,7 +156,7 @@ public static partial class CliCommandRunner
             or "burn-audio" or "burnaudio" or "burn-dvd" or "burndvd"
             or "archive-burn" or "archiveburn" or "burn-queue" or "burnqueue"
             or "erase" or "erase-disc" or "eject" or "load"
-            or "book-type" or "booktype" or "copy-disc" or "copydisc" or "copy"
+            or "book-type" or "booktype" or "copy-disc" or "copydisc" or "copy" or "duplicate"
             or "rosetta" or "disc-art" or "discart";
 
         if (context.ExplicitState || IsVirtualDriveSubcommand(subcommand) ||
