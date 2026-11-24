@@ -244,7 +244,10 @@
         <div class="cell" id="dvd-r-book-type-bitsetting">
           <h3 class="spec-module-title">DVD+R book type (bitsetting)</h3>
           <p class="feature-detail-status">PHYSICAL <span class="badge-na">[ N/A ]</span> · VIRTUAL <span class="badge-pass">[ PASS ]</span></p>
-          <p class="feature-detail-notes">Needs drive-vendor-specific commands; reports "not supported" instead of pretending</p>
+          <ul class="spec-module-list feature-detail-notes">
+            <li>An opt-in setting (<code>book-type --get/--set</code>, <code>--book-type</code>, and a checkbox on the burn screens) that sends vendor commands only to drives on a built-in allow-list and otherwise reports "not supported".</li>
+            <li>Run only in the drive simulator so far; never tried on a real DVD+R</li>
+          </ul>
         </div>
         <div class="cell" id="test-write-simulation">
           <h3 class="spec-module-title">Test write (simulation)</h3>

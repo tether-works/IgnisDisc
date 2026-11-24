@@ -202,8 +202,9 @@
     "featureHtml": "DVD+R book type (bitsetting)",
     "physical": "❌",
     "virtual": "✅",
-    "notesMarkdown": "Needs drive-vendor-specific commands; reports \"not supported\" instead of pretending",
-    "notesHtml": "Needs drive-vendor-specific commands; reports \"not supported\" instead of pretending"
+    "notesMarkdown": "An opt-in setting (`book-type --get/--set`, `--book-type`, and a checkbox on the burn screens) that sends vendor commands only to drives on a built-in allow-list and otherwise reports \"not supported\". Run only in the drive simulator so far; never tried on a real DVD+R",
+    "notesHtml": "An opt-in setting (<code>book-type --get/--set</code>, <code>--book-type</code>, and a checkbox on the burn screens) that sends vendor commands only to drives on a built-in allow-list and otherwise reports \"not supported\". Run only in the drive simulator so far; never tried on a real DVD+R",
+    "summaryHtml": "Opt-in, allow-listed drives only. Run in the drive simulator only; never tried on a real DVD+R."
   },
   {
     "featureMarkdown": "Test-write / simulation",
