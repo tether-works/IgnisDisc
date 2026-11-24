@@ -247,7 +247,8 @@ public static class DvdMenuGenerator
         }
 
         // Apply NAV pack patching to ensure valid PCI highlights and JumpTT 1 command
-        DvdIfoGenerator.PatchVobNavPackets(vob, vobId: 1, cellId: 1, isMenu: true, buttonCount: buttonCount);
+        DvdIfoGenerator.PatchVobNavPackets(vob, vobId: 1, cellId: 1, isMenu: true, buttonCount: buttonCount,
+            wideButtons: options.AspectRatio == DvdAspectRatio.Widescreen16x9);
 
         return vob;
     }
@@ -371,7 +372,8 @@ public static class DvdMenuGenerator
             vobId: 1,
             cellId: 1,
             isMenu: true,
-            buttonCount: Math.Max(1, options.TitleNames.Count));
+            buttonCount: Math.Max(1, options.TitleNames.Count),
+            wideButtons: options.AspectRatio == DvdAspectRatio.Widescreen16x9);
 
         return vobBytes;
     }

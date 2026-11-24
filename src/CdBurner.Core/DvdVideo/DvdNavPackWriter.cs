@@ -122,11 +122,11 @@ public static class DvdNavPackWriter
             elapsed.CopyTo(pci[24..]);
             if (buttons is { Count: > 0 })
             {
-                WriteButtons(pci[HliOffset..], vobu, buttons, wideButtons, initialButton);
+                WriteButtons(pci[HliOffset..], vobu, buttons, wideButtons, height, initialButton);
             }
             else if (buttonCommand != null)
             {
-                WriteButton(pci[HliOffset..], vobu, height, buttonCommand);
+                WriteButton(pci[HliOffset..], vobu, height, buttonCommand, wideButtons);
             }
 
             // DSI_GI
@@ -140,6 +140,10 @@ public static class DvdNavPackWriter
             BinaryPrimitives.WriteUInt16BigEndian(dsi[24..], (ushort)vobId);
             dsi[27] = (byte)vobu.CellId;
             elapsed.CopyTo(dsi[28..]);
+
+            // SML_PBI (starts at DSI + 32): VOB first/last video PTS (0x2C..0x33 in DSI; 0x433/0x437 in pack).
+            BinaryPrimitives.WriteUInt32BigEndian(dsi[0x2C..], (uint)Math.Max(0, vobus[0].StartPts));
+            BinaryPrimitives.WriteUInt32BigEndian(dsi[0x30..], (uint)Math.Max(0, vobus[^1].EndPts));
 
             // VOBU_SRI: every VOBU holds video, so next/previous video equal next/previous VOBU.
             var sri = dsi[SriOffset..];
@@ -411,59 +415,73 @@ public static class DvdNavPackWriter
     }
 
     /// <summary>
-    /// One button group with one button over the whole picture, selected from the start (HL_GI, BTN_COLIT, BTNI as
-    /// libdvdread's read_hli parses them; a button is 18 bytes on disc).
+    /// One button over the whole picture, selected from the start (HL_GI, BTN_COLIT, BTNI as libdvdread's read_hli
+    /// parses them; a button is 18 bytes on disc). Emits widescreen and 4:3 letterbox groups when
+    /// <paramref name="wide"/> is set.
     /// </summary>
-    private static void WriteButton(Span<byte> hli, DvdVobu vobu, int height, byte[] command)
+    private static void WriteButton(Span<byte> hli, DvdVobu vobu, int height, byte[] command, bool wide = false)
+    {
+        int frameHeight = Math.Clamp(height, 2, 576);
+        var single = new[] { new DvdMenuButton(0, 0, 719, frameHeight - 1, 1, 1, 1, 1, command) };
+        WriteHliHeader(hli, vobu, count: 1, wide: wide, initialButton: 1, withHighlightColors: false);
+        WriteButtonGroup(hli, firstSlot: 0, single, count: 1, frameHeight, letterbox: false);
+        if (wide)
+        {
+            WriteButtonGroup(hli, firstSlot: 18, single, count: 1, frameHeight, letterbox: true);
+        }
+    }
+
+    /// <summary>
+    /// Highlight information for menu buttons: up to 36 buttons for 4:3 (one group, type 0) or up to 18 per group
+    /// for 16:9 letterbox-enabled menus (group 1 = type 1 widescreen, group 2 = type 2 4:3 letterbox with vertically
+    /// scaled coordinates); selected button 1 at the start; colour scheme 1 shows the button's subpicture pixels of
+    /// value 1 in palette entry 4 (amber) when selected and 5 (white) when activated, fully opaque.
+    /// </summary>
+    private static void WriteButtons(Span<byte> hli, DvdVobu vobu, IReadOnlyList<DvdMenuButton> buttons, bool wide, int height, int initialButton = 1)
+    {
+        int maxButtons = wide ? 18 : 36;
+        int count = Math.Min(maxButtons, buttons.Count);
+        int frameHeight = Math.Clamp(height, 2, 576);
+        WriteHliHeader(hli, vobu, count, wide, initialButton, withHighlightColors: true);
+        WriteButtonGroup(hli, firstSlot: 0, buttons, count, frameHeight, letterbox: false);
+        if (wide)
+        {
+            WriteButtonGroup(hli, firstSlot: 18, buttons, count, frameHeight, letterbox: true);
+        }
+    }
+
+    private static void WriteHliHeader(Span<byte> hli, DvdVobu vobu, int count, bool wide, int initialButton, bool withHighlightColors)
     {
         BinaryPrimitives.WriteUInt16BigEndian(hli, 1); // highlight information, different from the previous VOBU's
         BinaryPrimitives.WriteUInt32BigEndian(hli[2..], (uint)Math.Max(0, vobu.StartPts));
         BinaryPrimitives.WriteUInt32BigEndian(hli[6..], 0xFFFFFFFF); // until the end of the cell
         BinaryPrimitives.WriteUInt32BigEndian(hli[10..], 0xFFFFFFFF);
-        hli[14] = 0x10; // one button group, display type 0
-        hli[16] = 0;    // button offset
-        hli[17] = 1;    // buttons
-        hli[18] = 1;    // selectable by number
-        hli[20] = 1;    // forcibly selected button
-        var button = hli[(22 + 24)..];
-        int xEnd = 719, yEnd = Math.Clamp(height, 2, 576) - 1;
-        button[0] = (byte)((1 << 6) | (0 >> 4));                  // color 1, x start 0
-        button[1] = (byte)(((0 & 0x0F) << 4) | (xEnd >> 8));
-        button[2] = (byte)xEnd;
-        button[3] = 0;                                              // no auto action, y start 0
-        button[4] = (byte)(yEnd >> 8);
-        button[5] = (byte)yEnd;
-        button[6] = button[7] = button[8] = button[9] = 1;          // up, down, left, right: itself
-        command.AsSpan(0, 8).CopyTo(button[10..]);
+        hli[14] = (byte)(wide ? 0x21 : 0x10); // 2 groups (group 1 = type 1 wide) or 1 group (type 0 normal)
+        hli[15] = (byte)(wide ? 0x20 : 0x00); // group 2 = type 2 letterbox
+        hli[16] = 0;                          // button offset
+        hli[17] = (byte)count;                // buttons
+        hli[18] = (byte)count;                // selectable by number
+        hli[20] = (byte)Math.Clamp(initialButton, 1, count); // forcibly selected button
+        if (withHighlightColors)
+        {
+            var colors = hli[22..];
+            BinaryPrimitives.WriteUInt32BigEndian(colors, 0x004000F0);      // scheme 1, selected: pattern = amber, opaque
+            BinaryPrimitives.WriteUInt32BigEndian(colors[4..], 0x005000F0); // scheme 1, activated: pattern = white, opaque
+        }
     }
 
-    /// <summary>
-    /// Highlight information for menu buttons (one group of up to 36): selected button 1 at the start; colour scheme 1
-    /// shows the button's subpicture pixels of value 1 in palette entry 4 (amber) when selected and 5 (white) when
-    /// activated, fully opaque (BTN_COLIT: four colour nibbles e2 e1 p b, then four contrast nibbles). Each button: colour
-    /// scheme 1, its rectangle (10-bit coordinates), no auto action, neighbours, command (18 bytes, as read_hli parses).
-    /// </summary>
-    private static void WriteButtons(Span<byte> hli, DvdVobu vobu, IReadOnlyList<DvdMenuButton> buttons, bool wide, int initialButton = 1)
+    private static void WriteButtonGroup(Span<byte> hli, int firstSlot, IReadOnlyList<DvdMenuButton> buttons, int count,
+        int frameHeight, bool letterbox)
     {
-        int count = Math.Min(36, buttons.Count);
-        BinaryPrimitives.WriteUInt16BigEndian(hli, 1);
-        BinaryPrimitives.WriteUInt32BigEndian(hli[2..], (uint)Math.Max(0, vobu.StartPts));
-        BinaryPrimitives.WriteUInt32BigEndian(hli[6..], 0xFFFFFFFF);
-        BinaryPrimitives.WriteUInt32BigEndian(hli[10..], 0xFFFFFFFF);
-        hli[14] = (byte)(0x10 | (wide ? 0x01 : 0x00)); // one button group; display type 1 = wide (16:9)
-        hli[16] = 0;
-        hli[17] = (byte)count;
-        hli[18] = (byte)count;
-        hli[20] = (byte)Math.Clamp(initialButton, 1, count);
-        var colors = hli[22..];
-        BinaryPrimitives.WriteUInt32BigEndian(colors, 0x004000F0);      // scheme 1, selected: pattern = amber, opaque
-        BinaryPrimitives.WriteUInt32BigEndian(colors[4..], 0x005000F0); // scheme 1, activated: pattern = white, opaque
+        int letterboxOffset = frameHeight / 8;
         for (int i = 0; i < count; i++)
         {
             var b = buttons[i];
-            var e = hli[(22 + 24 + 18 * i)..];
+            var e = hli[(22 + 24 + 18 * (firstSlot + i))..];
             int x1 = Math.Clamp(b.X1, 0, 1023), x2 = Math.Clamp(b.X2, x1, 1023);
-            int y1 = Math.Clamp(b.Y1, 0, 1023), y2 = Math.Clamp(b.Y2, y1, 1023);
+            int rawY1 = letterbox ? letterboxOffset + (int)Math.Round(b.Y1 * 0.75, MidpointRounding.AwayFromZero) : b.Y1;
+            int rawY2 = letterbox ? letterboxOffset + (int)Math.Round(b.Y2 * 0.75, MidpointRounding.AwayFromZero) : b.Y2;
+            int y1 = Math.Clamp(rawY1, 0, 1023), y2 = Math.Clamp(rawY2, y1, 1023);
             e[0] = (byte)((1 << 6) | (x1 >> 4));
             e[1] = (byte)(((x1 & 0x0F) << 4) | (x2 >> 8));
             e[2] = (byte)x2;

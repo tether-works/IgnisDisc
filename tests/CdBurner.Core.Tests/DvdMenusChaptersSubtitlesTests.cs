@@ -123,7 +123,7 @@ public sealed class DvdMenusChaptersSubtitlesTests
         int map = pgc + U16(ifo, pgc + 0xE6);
         Assert.Equal(new byte[] { 1, 2, 3 }, ifo.AsSpan(map, 3).ToArray());
         int cells = pgc + U16(ifo, pgc + 0xE8);
-        Assert.Equal(new[] { 0, 0x08, 0x08 }, Enumerable.Range(0, 3).Select(i => (int)ifo[cells + 24 * i]));    // seamless after the first
+        Assert.Equal(new[] { 0x02, 0x08, 0x08 }, Enumerable.Range(0, 3).Select(i => (int)ifo[cells + 24 * i])); // Cell 1 STC_discontinuity, then seamless
         Assert.Equal(new uint[] { 0, 20, 40 }, Enumerable.Range(0, 3).Select(i => U32(ifo, cells + 24 * i + 8)));  // first sectors
         Assert.Equal(new uint[] { 19, 39, 49 }, Enumerable.Range(0, 3).Select(i => U32(ifo, cells + 24 * i + 20))); // last sectors
         int cAdt = (int)U32(ifo, 0xE0) * 2048;
@@ -290,7 +290,8 @@ public sealed class DvdMenusChaptersSubtitlesTests
 
         int hli = 0x2D + 96;
         Assert.Equal(1, U16(vob, hli));                 // highlight information present
-        Assert.Equal(0x11, vob[hli + 14]);              // one group, wide
+        Assert.Equal(0x21, vob[hli + 14]);              // two groups, group 1 wide (16:9)
+        Assert.Equal(0x20, vob[hli + 15]);              // group 2 4:3 letterbox
         Assert.Equal(3, vob[hli + 17]);                 // buttons
         Assert.Equal(1, vob[hli + 20]);                 // button 1 selected first
         Assert.Equal(0x004000F0u, U32(vob, hli + 22));  // selected: amber, opaque
@@ -300,6 +301,14 @@ public sealed class DvdMenusChaptersSubtitlesTests
         int b3 = hli + 22 + 24 + 36;
         Assert.Equal(400 >> 4, vob[b3] & 0x3F);
         Assert.Equal(new byte[] { 3, 3, 1, 1 }, vob.AsSpan(b3 + 6, 4).ToArray());
+
+        int lb1 = hli + 22 + 24 + 18 * 18;              // group 2 (letterbox) button 1
+        Assert.Equal(100 >> 4, vob[lb1] & 0x3F);        // X unchanged in 4:3 letterbox
+        int lbY1 = (vob[lb1 + 3] << 4) | (vob[lb1 + 4] >> 4);
+        int lbY2 = ((vob[lb1 + 4] & 0x0F) << 8) | vob[lb1 + 5];
+        Assert.Equal(60 + 225, lbY1);                   // 480/8 + 300 * 3/4
+        Assert.Equal(60 + 255, lbY2);                   // 480/8 + 340 * 3/4
+        Assert.Equal(DvdIfoGenerator.LinkPgc(10), vob.AsSpan(lb1 + 10, 8).ToArray());
     }
 
     [Fact]
@@ -582,5 +591,122 @@ public sealed class DvdMenusChaptersSubtitlesTests
         {
             try { Directory.Delete(dir, recursive: true); } catch { }
         }
+    }
+
+    [Theory]
+    [InlineData(DvdVideoStandard.Ntsc, 480, DvdAspectRatio.Widescreen16x9)]
+    [InlineData(DvdVideoStandard.Pal, 576, DvdAspectRatio.Widescreen16x9)]
+    [InlineData(DvdVideoStandard.Ntsc, 480, DvdAspectRatio.Standard4x3)]
+    public async Task MenuNavPacks_EmitTwoScaledGroupsFor16x9Letterbox_AndOneGroupFor4x3(
+        DvdVideoStandard standard, int height, DvdAspectRatio aspect)
+    {
+        byte[] vob = new byte[2 * 2048];
+        DvdNavPackWriter.FormatNavPack(vob.AsSpan(0, 2048));
+        var seqSector = vob.AsSpan(2048, 2048);
+        byte[] packHeader = [0x00, 0x00, 0x01, 0xBA, 0x44, 0x00, 0x04, 0x00, 0x04, 0x01, 0x01, 0x89, 0xC3, 0xF8];
+        packHeader.CopyTo(seqSector);
+        seqSector[16] = 1;
+        seqSector[17] = 0xE0;
+        BinaryPrimitives.WriteUInt16BigEndian(seqSector[18..], 2048 - 20);
+        seqSector[20] = 0x80;
+        seqSector[25] = 1;
+        seqSector[26] = 0xB3;
+        seqSector[27] = 0x2D;
+        seqSector[28] = (byte)(height >> 8);
+        seqSector[29] = (byte)(height & 0xFF);
+        seqSector[30] = (byte)(standard == DvdVideoStandard.Pal ? 3 : 4);
+
+        var plans = new[]
+        {
+            new DvdMenuButtonPlan(1, false, System.Drawing.Rectangle.FromLTRB(80, 160, 280, 200)),
+            new DvdMenuButtonPlan(2, false, System.Drawing.Rectangle.FromLTRB(360, 240, 560, 280))
+        };
+        var buttons = DvdStillMenu.Navigation(plans, b => DvdIfoGenerator.LinkPgc(b.Title + 1));
+        bool wide = aspect == DvdAspectRatio.Widescreen16x9;
+
+        using (var ms = new MemoryStream(vob, writable: true))
+        {
+            DvdNavPackWriter.Patch(ms, buttons: buttons, wideButtons: wide);
+        }
+
+        int hli = 0x2D + 96;
+        Assert.Equal(2, vob[hli + 17]);
+        Assert.Equal(2, vob[hli + 18]);
+        if (wide)
+        {
+            Assert.Equal(0x21, vob[hli + 14]); // 2 groups, group 1 wide (type 1)
+            Assert.Equal(0x20, vob[hli + 15]); // group 2 letterbox (type 2)
+            for (int i = 0; i < buttons.Count; i++)
+            {
+                int wOff = hli + 22 + 24 + 18 * i;
+                int lOff = hli + 22 + 24 + 18 * (18 + i);
+                int wX1 = ((vob[wOff] & 0x3F) << 4) | (vob[wOff + 1] >> 4);
+                int lX1 = ((vob[lOff] & 0x3F) << 4) | (vob[lOff + 1] >> 4);
+                int wX2 = ((vob[wOff + 1] & 0x0F) << 8) | vob[wOff + 2];
+                int lX2 = ((vob[lOff + 1] & 0x0F) << 8) | vob[lOff + 2];
+                Assert.Equal(wX1, lX1);
+                Assert.Equal(wX2, lX2);
+
+                int lY1 = (vob[lOff + 3] << 4) | (vob[lOff + 4] >> 4);
+                int lY2 = ((vob[lOff + 4] & 0x0F) << 8) | vob[lOff + 5];
+                Assert.Equal(height / 8 + (int)Math.Round(buttons[i].Y1 * 0.75, MidpointRounding.AwayFromZero), lY1);
+                Assert.Equal(height / 8 + (int)Math.Round(buttons[i].Y2 * 0.75, MidpointRounding.AwayFromZero), lY2);
+                Assert.True(lY1 >= height / 8 && lY2 < height - height / 8 && lY1 <= lY2);
+                Assert.True(vob.AsSpan(wOff + 6, 12).SequenceEqual(vob.AsSpan(lOff + 6, 12)));
+            }
+        }
+        else
+        {
+            Assert.Equal(0x10, vob[hli + 14]);
+            Assert.Equal(0x00, vob[hli + 15]);
+        }
+
+        // Also check the VMGM VIDEO_TS.VOB authored for a 16:9 disc.
+        if (wide && standard == DvdVideoStandard.Ntsc)
+        {
+            string dir = Path.Combine(Path.GetTempPath(), "DvdVmgmMenuHli_" + Guid.NewGuid().ToString("N"));
+            Directory.CreateDirectory(dir);
+            try
+            {
+                string movie = Path.Combine(dir, "Feature.mp4");
+                File.WriteAllBytes(movie, new byte[64 * 2048]);
+                var result = await new DvdVideoAuthoringService().AuthorAsync(new[] { movie }, Path.Combine(dir, "Disc"),
+                    new DvdAuthoringOptions { UseFfmpegWhenAvailable = false, AutoCreatePlayMenu = true, AspectRatio = aspect, Standard = standard });
+                Assert.True(result.Success, result.ErrorMessage);
+                byte[] vmgmVob = File.ReadAllBytes(Path.Combine(result.VideoTsDirectory, "VIDEO_TS.VOB"));
+                Assert.Equal(0x21, vmgmVob[hli + 14]);
+                Assert.Equal(0x20, vmgmVob[hli + 15]);
+                Assert.Equal(1, vmgmVob[hli + 17]);
+            }
+            finally
+            {
+                try { Directory.Delete(dir, recursive: true); } catch { }
+            }
+        }
+    }
+
+    [Fact]
+    public void BuildVtsIfo_SetsCell1StcDiscontinuity_AndNonSeamlessAtLayerBreakCell()
+    {
+        var vobus = new[]
+        {
+            new DvdVobu(0, 0, 90_000, 1),
+            new DvdVobu(10, 90_000, 180_000, 2),
+            new DvdVobu(20, 180_000, 270_000, 3),
+            new DvdVobu(30, 270_000, 360_000, 4)
+        };
+
+        byte[] ifo = DvdIfoGenerator.BuildVtsIfo(
+            1,
+            DvdVideoStandard.Ntsc,
+            DvdAspectRatio.Widescreen16x9,
+            titleVobTotalSectors: 40,
+            vobus: vobus,
+            layerBreakCellId: 3);
+
+        int pgcit = (int)U32(ifo, 0xCC) * 2048;
+        int pgc = pgcit + (int)U32(ifo, pgcit + 12);
+        int cells = pgc + U16(ifo, pgc + 0xE8);
+        Assert.Equal(new[] { 0x02, 0x08, 0x00, 0x08 }, Enumerable.Range(0, 4).Select(i => (int)ifo[cells + 24 * i]));
     }
 }

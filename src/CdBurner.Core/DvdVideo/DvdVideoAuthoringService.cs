@@ -801,7 +801,8 @@ public sealed class DvdVideoAuthoringService
                         cancellationToken).ConfigureAwait(false);
                     await File.WriteAllBytesAsync(menuVobPath, menuBytes, cancellationToken).ConfigureAwait(false);
                     menuVobSectors = menuBytes.Length / OpticalConstants.DataSectorSize;
-                    menuVobus = DvdIfoGenerator.PatchVobNavPacketsInFile(menuVobPath, isMenu: true);
+                    menuVobus = DvdIfoGenerator.PatchVobNavPacketsInFile(menuVobPath, isMenu: true,
+                        wideButtons: options.AspectRatio == DvdAspectRatio.Widescreen16x9);
                     logNotes.Add($"Generated menu 'VIDEO_TS.VOB' ({menuVobSectors} sectors).");
                 }
             }
@@ -1019,6 +1020,40 @@ public sealed class DvdVideoAuthoringService
             }
 
             var prelimLayout = layoutPlanner.Plan(PreliminaryFiles(), startLba: 0);
+
+            if (options.DualLayer && prelimLayout.TotalSectors > DvdLayerBreakCalculator.Dvd5SectorLimit)
+            {
+                var placedFiles = prelimLayout.FilePlacements
+                    .GroupBy(p => p.FileName.ToUpperInvariant())
+                    .ToDictionary(g => g.Key, g => (g.First().StartLba.Value, g.First().SectorCount));
+                var cells = DvdCellLayerBreak.PlaceCells(placedFiles,
+                    name => File.Exists(Path.Combine(videoTsDir, name)) ? File.ReadAllBytes(Path.Combine(videoTsDir, name)) : null);
+                var chosen = DvdCellLayerBreak.Choose(cells, prelimLayout.TotalSectors);
+                if (chosen != null && chosen.Cell.CellId > 1)
+                {
+                    var match = titleSetIfoInputs.FirstOrDefault(t => t.SetNum == chosen.Cell.TitleSet);
+                    if (match.SetNum == chosen.Cell.TitleSet)
+                    {
+                        string ifoPath = Path.Combine(videoTsDir, $"VTS_{match.SetNum:D2}_0.IFO");
+                        int currentSectors = (int)(new FileInfo(ifoPath).Length / OpticalConstants.DataSectorSize);
+                        byte[] updatedIfo = DvdIfoGenerator.BuildVtsIfo(
+                            titleSetNumber: match.SetNum,
+                            standard: options.Standard,
+                            aspect: options.AspectRatio,
+                            titleVobTotalSectors: match.VobSectors,
+                            durationSeconds: match.DurationSeconds,
+                            menuVobSectors: 0,
+                            nextTitleNumber: match.NextTitle,
+                            ifoSectors: currentSectors,
+                            vobus: match.Vobus,
+                            callMenuAtEnd: menuVobSectors > 0,
+                            subtitleStream: match.Subtitles,
+                            layerBreakCellId: chosen.Cell.CellId);
+                        await File.WriteAllBytesAsync(ifoPath, updatedIfo, cancellationToken).ConfigureAwait(false);
+                        await File.WriteAllBytesAsync(Path.Combine(videoTsDir, $"VTS_{match.SetNum:D2}_0.BUP"), updatedIfo, cancellationToken).ConfigureAwait(false);
+                    }
+                }
+            }
 
             var vtsStartOffsets = new List<int>();
             for (int i = 1; i <= titleCount; i++)

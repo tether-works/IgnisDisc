@@ -98,7 +98,8 @@ public static class DvdIfoGenerator
     /// Fills the NAV packs of an in-memory VOB and returns its VOBUs (see <see cref="DvdNavPackWriter"/>). A menu VOB
     /// gets one button that plays title 1.
     /// </summary>
-    public static IReadOnlyList<DvdVobu> PatchVobNavPackets(byte[] vobBytes, int vobId = 1, int cellId = 1, bool isMenu = false, int buttonCount = 1)
+    public static IReadOnlyList<DvdVobu> PatchVobNavPackets(byte[] vobBytes, int vobId = 1, int cellId = 1, bool isMenu = false,
+        int buttonCount = 1, bool wideButtons = false)
     {
         ArgumentNullException.ThrowIfNull(vobBytes);
         if (vobBytes.Length < SectorSize)
@@ -106,7 +107,7 @@ public static class DvdIfoGenerator
             return Array.Empty<DvdVobu>();
         }
         using var stream = new MemoryStream(vobBytes, 0, vobBytes.Length / SectorSize * SectorSize, writable: true);
-        return DvdNavPackWriter.Patch(stream, vobId, cellId, isMenu ? JumpTitle1 : null);
+        return DvdNavPackWriter.Patch(stream, vobId, cellId, isMenu ? JumpTitle1 : null, wideButtons: wideButtons);
     }
 
     /// <summary>
@@ -114,14 +115,14 @@ public static class DvdIfoGenerator
     /// VOB is split into chapter cells of that length.
     /// </summary>
     public static IReadOnlyList<DvdVobu> PatchVobNavPacketsInFile(string vobFilePath, int vobId = 1, int cellId = 1, bool isMenu = false,
-        int buttonCount = 1, int chapterSeconds = 0)
+        int buttonCount = 1, int chapterSeconds = 0, bool wideButtons = false)
     {
         ArgumentException.ThrowIfNullOrWhiteSpace(vobFilePath);
         if (!File.Exists(vobFilePath) || new FileInfo(vobFilePath).Length < SectorSize)
         {
             return Array.Empty<DvdVobu>();
         }
-        return DvdNavPackWriter.PatchFile(vobFilePath, vobId, cellId, isMenu ? JumpTitle1 : null, chapterSeconds);
+        return DvdNavPackWriter.PatchFile(vobFilePath, vobId, cellId, isMenu ? JumpTitle1 : null, chapterSeconds, wideButtons: wideButtons);
     }
 
     /// <summary>
@@ -395,7 +396,8 @@ public static class DvdIfoGenerator
         int ifoSectors = 0,
         IReadOnlyList<DvdVobu>? vobus = null,
         bool callMenuAtEnd = true,
-        bool subtitleStream = false)
+        bool subtitleStream = false,
+        int? layerBreakCellId = null)
     {
         titleSetNumber = Math.Clamp(titleSetNumber, 1, 99);
         titleVobTotalSectors = Math.Max(16, titleVobTotalSectors);
@@ -411,7 +413,8 @@ public static class DvdIfoGenerator
             : (callMenuAtEnd ? CallTitleMenu : Exit);
         var cells = CellsOf(units, titleVobTotalSectors, durationPts);
         byte[] pgc = BuildPgc(cells, thirtyFps, hasAudio: true, pre: null, post: post,
-            subpictureControl: subtitleStream ? SubtitleStreamControl : 0, palette: subtitleStream ? SubtitlePalette : null);
+            subpictureControl: subtitleStream ? SubtitleStreamControl : 0, palette: subtitleStream ? SubtitlePalette : null,
+            layerBreakCellId: layerBreakCellId);
         byte[] timeMap = BuildTimeMap(units, timed);
 
         const int pttSector = 1, pgcitSector = 2;
@@ -496,7 +499,7 @@ public static class DvdIfoGenerator
     /// after the first are marked seamless: they follow on in the same VOB without a pause.
     /// </summary>
     private static byte[] BuildPgc(IReadOnlyList<CellInfo> cells, bool thirtyFps, bool hasAudio, byte[]? pre, byte[]? post,
-        uint subpictureControl = 0, IReadOnlyList<uint>? palette = null, byte[]? pre2 = null)
+        uint subpictureControl = 0, IReadOnlyList<uint>? palette = null, byte[]? pre2 = null, int? layerBreakCellId = null)
     {
         int preCount = (pre != null ? 1 : 0) + (pre2 != null ? 1 : 0);
         int commands = preCount + (post != null ? 1 : 0);
@@ -548,7 +551,10 @@ public static class DvdIfoGenerator
             for (int i = 0; i < cells.Count; i++)
             {
                 var playback = p[(at + 24 * i)..];
-                playback[0] = (byte)(i > 0 ? 0x08 : 0x00); // seamless play from the cell before
+                bool nonSeamless = (layerBreakCellId.HasValue && layerBreakCellId.Value == i + 1)
+                    || (i > 0 && cells[i - 1].StillSeconds > 0);
+                // Cell 1 always carries STC_discontinuity (0x02); later cells are seamless (0x08) except across a layer break or still.
+                playback[0] = (byte)(i == 0 ? 0x02 : (nonSeamless ? 0x00 : 0x08));
                 playback[2] = (byte)cells[i].StillSeconds;
                 DvdNavPackWriter.Bcd(cells[i].DurationPts, thirtyFps).CopyTo(playback[4..]);
                 W32(playback, 8, cells[i].FirstSector);
@@ -596,7 +602,7 @@ public static class DvdIfoGenerator
     /// </summary>
     private static byte[] BuildTimeMap(IReadOnlyList<DvdVobu> units, bool timed)
     {
-        var entries = new List<int>();
+        var entries = new List<uint>();
         int unit = 1;
         if (timed)
         {
@@ -604,6 +610,7 @@ public static class DvdIfoGenerator
             long seconds = (units[^1].EndPts - start) / 90_000;
             unit = (int)Math.Clamp((seconds + 2047) / 2048, 1, 255);
             int v = 0;
+            var picked = new List<DvdVobu>();
             for (long t = unit; t < seconds; t += unit)
             {
                 long target = start + t * 90_000;
@@ -611,7 +618,16 @@ public static class DvdIfoGenerator
                 {
                     v++;
                 }
-                entries.Add(units[v].Sector);
+                picked.Add(units[v]);
+            }
+            for (int i = 0; i < picked.Count; i++)
+            {
+                uint entry = (uint)picked[i].Sector;
+                if (i + 1 >= picked.Count || picked[i].CellId != picked[i + 1].CellId)
+                {
+                    entry |= 0x80000000u; // bit 31: next time entry crosses into a different cell or past PGC end
+                }
+                entries.Add(entry);
             }
         }
         byte[] map = new byte[8 + 4 + 4 + 4 * entries.Count];

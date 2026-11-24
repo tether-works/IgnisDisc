@@ -88,6 +88,9 @@ public sealed class DvdNavigationTablesTests
             Assert.Equal(5u, U32(vob, dsi + 16));                   // 2nd reference (P) runs to the VOBU's end
             Assert.Equal(1, U16(vob, dsi + 24));                    // VOB id
             Assert.Equal(1, vob[dsi + 27]);                         // cell id
+            Assert.Equal((uint)vobus[0].StartPts, U32(vob, dsi + 0x2C)); // SML_PBI vob_v_s_ptm (pack 0x433)
+            Assert.Equal((uint)vobus[^1].EndPts, U32(vob, dsi + 0x30));  // SML_PBI vob_v_e_ptm (pack 0x437)
+            Assert.True(U32(vob, dsi + 0x2C) > 0 && U32(vob, dsi + 0x30) > U32(vob, dsi + 0x2C));
             Assert.Equal(i < 3 ? 0x80000006u : DvdNavPackWriter.EndOfCell, U32(vob, sri + 80)); // next VOBU
             Assert.Equal(i > 0 ? 0x80000006u : DvdNavPackWriter.EndOfCell, U32(vob, sri + 84)); // previous VOBU
             Assert.Equal(5, U16(vob, dsi + 402));                   // first AC-3 pack, 5 sectors after the NAV pack
@@ -193,5 +196,33 @@ public sealed class DvdNavigationTablesTests
         Assert.Equal(19u, U32(vmg, cAdt + 4));
         int admap = (int)U32(vmg, 0xDC) * 2048;
         Assert.Equal(7u, U32(vmg, admap));
+    }
+
+    [Fact]
+    public void TimeMap_SetsBit31OnEntriesCrossingCellBoundaries()
+    {
+        // 12 VOBUs, 1 s each, across 3 cells (4 s per cell): 0..3 (cell 1), 4..7 (cell 2), 8..11 (cell 3).
+        var vobus = Enumerable.Range(0, 12)
+            .Select(i => new DvdVobu(i * 10, i * 90_000L, (i + 1) * 90_000L, CellId: i / 4 + 1))
+            .ToList();
+
+        byte[] ifo = DvdIfoGenerator.BuildVtsIfo(1, DvdVideoStandard.Ntsc, DvdAspectRatio.Widescreen16x9,
+            titleVobTotalSectors: 120, vobus: vobus);
+
+        int tmapt = (int)U32(ifo, 0xD4) * 2048;
+        int tmap = tmapt + (int)U32(ifo, tmapt + 8);
+        Assert.Equal(1, ifo[tmap]);          // 1-second unit
+        int count = U16(ifo, tmap + 2);
+        Assert.Equal(11, count);             // entries for t = 1..11 s
+
+        // Entries at t = 3 (cell 1 -> cell 2), t = 7 (cell 2 -> cell 3), and t = 11 (last entry) have bit 31 set.
+        for (int i = 0; i < count; i++)
+        {
+            uint entry = U32(ifo, tmap + 4 + 4 * i);
+            int t = i + 1;
+            Assert.Equal((uint)(t * 10), entry & 0x7FFFFFFFu);
+            bool expectDiscontinuity = t is 3 or 7 or 11;
+            Assert.Equal(expectDiscontinuity, (entry & 0x80000000u) != 0);
+        }
     }
 }
