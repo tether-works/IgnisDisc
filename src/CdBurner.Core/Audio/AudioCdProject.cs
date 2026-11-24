@@ -91,6 +91,11 @@ public record AudioCdTrackItem(
     public SingleFileAlbumSource? AlbumSource { get; init; }
 
     /// <summary>
+    /// Optional back-reference to the single-file source caching decoded PCM for <see cref="HiddenAudioPcmStreamFactory"/>.
+    /// </summary>
+    public SingleFileAlbumSource? HiddenAudioAlbumSource { get; init; }
+
+    /// <summary>
     /// How many frames at the end of the previous track's audio are this track's INDEX 00 (its pre-gap) in the CUE
     /// sheet. The audio stays where it is; the direct drive-command writer only moves the track mark, so a player
     /// counts down through it. Zero when the CUE sheet has no INDEX 00 for the track.
@@ -158,28 +163,43 @@ public record AudioCdTrackItem(
 
             // 2. Sliced track running to the end of the file (SourceStartFrame set, SourceFrameCount null):
             // probe the file's header metadata instead of decoding the entire audio file synchronously.
-            if (SourceStartFrame.HasValue && !string.IsNullOrWhiteSpace(SourceFilePath) && File.Exists(SourceFilePath))
+            if (SourceStartFrame.HasValue)
             {
-                try
+                if (AlbumSource != null && AlbumSource.ProbeTotalFrames() is int albumFrames && albumFrames > 0)
                 {
-                    AudioFormatMetadata? meta = FlacFileCodec.IsFlacFile(SourceFilePath)
-                        ? FlacFileCodec.ProbeAudioFile(SourceFilePath)
-                        : WavFileCodec.ProbeAudioFile(SourceFilePath);
-
-                    if (meta != null && meta.TotalFrames > 0)
-                    {
-                        _durationFrames = Math.Max(0, meta.TotalFrames - SourceStartFrame.Value);
-                        return _durationFrames;
-                    }
+                    _durationFrames = Math.Max(0, albumFrames - SourceStartFrame.Value);
+                    return _durationFrames;
                 }
-                catch
+
+                if (!string.IsNullOrWhiteSpace(SourceFilePath) && File.Exists(SourceFilePath))
                 {
-                    // Fall back to stream factory below if header probing fails
+                    try
+                    {
+                        AudioFormatMetadata? meta = null;
+                        if (FlacFileCodec.IsFlacFile(SourceFilePath))
+                        {
+                            meta = FlacFileCodec.ProbeAudioFile(SourceFilePath);
+                        }
+                        else if (string.Equals(Path.GetExtension(SourceFilePath), ".wav", StringComparison.OrdinalIgnoreCase))
+                        {
+                            meta = WavFileCodec.ProbeAudioFile(SourceFilePath);
+                        }
+
+                        if (meta != null && meta.TotalFrames > 0)
+                        {
+                            _durationFrames = Math.Max(0, meta.TotalFrames - SourceStartFrame.Value);
+                            return _durationFrames;
+                        }
+                    }
+                    catch
+                    {
+                        // Fall back below if header probing fails
+                    }
                 }
             }
 
-            // 3. Fallback: custom stream factory
-            if (CustomPcmStreamFactory != null)
+            // 3. Fallback: lightweight custom stream factory (never trigger a synchronous full-album decode)
+            if (CustomPcmStreamFactory != null && (AlbumSource == null || AlbumSource.IsDecoded))
             {
                 try
                 {
@@ -259,6 +279,52 @@ public sealed class SingleFileAlbumSource
         {
             _pcm = null;
         }
+    }
+
+    /// <summary>
+    /// Probes total Red Book frames from metadata (or the cached buffer if already decoded) without decoding.
+    /// </summary>
+    internal int? ProbeTotalFrames()
+    {
+        lock (_sync)
+        {
+            if (_pcm != null)
+            {
+                return _pcm.Length / OpticalConstants.RawSectorSize;
+            }
+        }
+
+        if (string.IsNullOrWhiteSpace(FilePath) || !File.Exists(FilePath))
+        {
+            return null;
+        }
+
+        try
+        {
+            AudioFormatMetadata? meta = null;
+            if (_audioDecoder != null)
+            {
+                meta = _audioDecoder.ProbeAudioFile(FilePath);
+            }
+            else if (FlacFileCodec.IsFlacFile(FilePath))
+            {
+                meta = FlacFileCodec.ProbeAudioFile(FilePath);
+            }
+            else if (string.Equals(Path.GetExtension(FilePath), ".wav", StringComparison.OrdinalIgnoreCase))
+            {
+                meta = WavFileCodec.ProbeAudioFile(FilePath);
+            }
+
+            if (meta != null && meta.TotalFrames > 0)
+            {
+                return meta.TotalFrames;
+            }
+        }
+        catch
+        {
+        }
+
+        return null;
     }
 
     private byte[] GetOrDecodePcm()
@@ -529,17 +595,32 @@ public class AudioCdCompilation
 
     /// <summary>
     /// Removes a track by its 1-based track number and renumbers remaining tracks sequentially.
+    /// Releases any <see cref="SingleFileAlbumSource"/> buffer no longer referenced by remaining tracks.
     /// </summary>
     public bool RemoveTrack(int trackNumber)
     {
         int index = _tracks.FindIndex(t => t.TrackNumber == trackNumber);
         if (index >= 0)
         {
+            var removed = _tracks[index];
             _tracks.RemoveAt(index);
+            ReleaseOrphanedSource(removed.AlbumSource);
+            ReleaseOrphanedSource(removed.HiddenAudioAlbumSource);
             RenumberTracks();
             return true;
         }
         return false;
+    }
+
+    private void ReleaseOrphanedSource(SingleFileAlbumSource? source)
+    {
+        if (source == null) return;
+        bool stillUsed = _tracks.Any(t =>
+            ReferenceEquals(t.AlbumSource, source) || ReferenceEquals(t.HiddenAudioAlbumSource, source));
+        if (!stillUsed)
+        {
+            source.ReleaseDecodedBuffer();
+        }
     }
 
     /// <summary>
@@ -560,6 +641,7 @@ public class AudioCdCompilation
         foreach (var track in _tracks)
         {
             track.AlbumSource?.ReleaseDecodedBuffer();
+            track.HiddenAudioAlbumSource?.ReleaseDecodedBuffer();
         }
     }
 
@@ -806,10 +888,11 @@ public class AudioCdCompilation
                 int index00Lead = 0;
                 int hiddenFrames = 0;
                 Func<Stream>? hiddenFactory = null;
+                SingleFileAlbumSource? hiddenAlbum = null;
                 bool hiddenIsPreGapPicture = false;
                 if (trackNum == 1 && trk.SplitIndex00 is { DedicatedFileName: not null } htoa)
                 {
-                    (hiddenFrames, hiddenFactory, hiddenIsPreGapPicture) = ReadDedicatedHiddenAudio(htoa, cueDirectory, audioDecoder);
+                    (hiddenFrames, hiddenFactory, hiddenAlbum, hiddenIsPreGapPicture) = ReadDedicatedHiddenAudio(htoa, cueDirectory, audioDecoder);
                 }
                 else if (_tracks.Count > 0 && !_tracks[^1].IsDataTrack && trk.SplitIndex00 is { DedicatedFileName: null } prevSplit)
                 {
@@ -836,6 +919,7 @@ public class AudioCdCompilation
                     Index00LeadFrames = index00Lead,
                     HiddenAudioFrames = hiddenFrames,
                     HiddenAudioPcmStreamFactory = hiddenFactory,
+                    HiddenAudioAlbumSource = hiddenAlbum,
                     HiddenAudioIsPreGapPicture = hiddenIsPreGapPicture,
                     IsPictureTrack = isPictureTrack,
                     PreEmphasis = trk.Flags.Contains("PRE"),
@@ -890,6 +974,7 @@ public class AudioCdCompilation
                     int index00Lead = 0;
                     int hiddenFrames = 0;
                     Func<Stream>? hiddenFactory = null;
+                    SingleFileAlbumSource? hiddenAlbum = null;
                     bool hiddenIsPreGapPicture = false;
                     if (k > 0 && GetIndex00Frames(trk) is int index00 && index00 < startFrame)
                     {
@@ -899,12 +984,13 @@ public class AudioCdCompilation
                     else if (k == 0 && trackNum == 1 && trk.SplitIndex00 is { DedicatedFileName: not null } htoa)
                     {
                         // Hidden audio in its own file in front of a single-file album (EAC's layout).
-                        (hiddenFrames, hiddenFactory, hiddenIsPreGapPicture) = ReadDedicatedHiddenAudio(htoa, cueDirectory, audioDecoder);
+                        (hiddenFrames, hiddenFactory, hiddenAlbum, hiddenIsPreGapPicture) = ReadDedicatedHiddenAudio(htoa, cueDirectory, audioDecoder);
                     }
                     else if (k == 0 && trackNum == 1 && startFrame > 0)
                     {
                         hiddenFrames = startFrame;
                         hiddenFactory = Slice(0, hiddenFrames);
+                        hiddenAlbum = album;
                     }
 
                     bool isPictureTrack = DiscArtSidecarInfo.IsPictureTrack(audioFilePath);
@@ -927,6 +1013,7 @@ public class AudioCdCompilation
                         Index00LeadFrames = index00Lead,
                         HiddenAudioFrames = hiddenFrames,
                         HiddenAudioPcmStreamFactory = hiddenFrames > 0 ? hiddenFactory : null,
+                        HiddenAudioAlbumSource = hiddenFrames > 0 ? hiddenAlbum : null,
                         HiddenAudioIsPreGapPicture = hiddenFrames > 0 && hiddenIsPreGapPicture,
                         IsPictureTrack = isPictureTrack,
                         PreEmphasis = trk.Flags.Contains("PRE"),
@@ -941,17 +1028,17 @@ public class AudioCdCompilation
     }
 
     /// <summary>Audio before track 1 held in its own FILE (a CUE's dedicated INDEX 00 file): its length in frames from
-    /// the INDEX 00 position to the end of the file, a reader for it, and whether its sidecar marks it as a pre-gap
-    /// picture. (0, null, false) when the file is missing or empty.</summary>
-    private static (int Frames, Func<Stream>? Factory, bool IsPreGapPicture) ReadDedicatedHiddenAudio(CueSplitIndex00 htoa, string cueDirectory,
-        IAudioDecoder? audioDecoder)
+    /// the INDEX 00 position to the end of the file, a reader for it, its optional album source, and whether its sidecar
+    /// marks it as a pre-gap picture. (0, null, null, false) when the file is missing or empty.</summary>
+    private static (int Frames, Func<Stream>? Factory, SingleFileAlbumSource? AlbumSource, bool IsPreGapPicture) ReadDedicatedHiddenAudio(
+        CueSplitIndex00 htoa, string cueDirectory, IAudioDecoder? audioDecoder)
     {
         string htoaPath = Path.IsPathRooted(htoa.DedicatedFileName!)
             ? htoa.DedicatedFileName!
             : Path.Combine(cueDirectory, htoa.DedicatedFileName!);
         if (!File.Exists(htoaPath))
         {
-            return (0, null, false);
+            return (0, null, null, false);
         }
 
         string htoaType = htoa.DedicatedFileType ?? "WAVE";
@@ -961,12 +1048,15 @@ public class AudioCdCompilation
         int frames = Math.Max(0, htoaTotal - htoaStart);
         if (frames == 0)
         {
-            return (0, null, false);
+            return (0, null, null, false);
         }
 
-        return (frames, rawHtoa
-            ? RawCdAudioFile.CreateSliceFactory(htoaPath, htoaStart, frames, string.Equals(htoaType, "MOTOROLA", StringComparison.OrdinalIgnoreCase))
-            : new SingleFileAlbumSource(htoaPath, audioDecoder).CreateSliceFactory(htoaStart, frames),
+        SingleFileAlbumSource? htoaAlbum = rawHtoa ? null : new SingleFileAlbumSource(htoaPath, audioDecoder);
+        return (frames,
+            htoaAlbum != null
+                ? htoaAlbum.CreateSliceFactory(htoaStart, frames)
+                : RawCdAudioFile.CreateSliceFactory(htoaPath, htoaStart, frames, string.Equals(htoaType, "MOTOROLA", StringComparison.OrdinalIgnoreCase)),
+            htoaAlbum,
             DiscArtSidecarInfo.IsPreGapPicture(htoaPath));
     }
 

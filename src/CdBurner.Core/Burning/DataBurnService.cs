@@ -422,59 +422,66 @@ public class DataBurnService
         if (verifyRequested && !burnOptions.Simulate)
         {
             int sectorsWritten = burnResult.SectorsWritten > 0 ? burnResult.SectorsWritten : estimatedSectors;
-            if (burnOptions.PictureZone is { Count: > 0 } picZone)
+            try
             {
-                int picStartRel = Math.Clamp(picZone.Start, 0, sectorsWritten);
-                int picEndRel = Math.Clamp(picZone.Start + picZone.Count, picStartRel, sectorsWritten);
-                bool hasNonPictureSectors = picStartRel > 0 || picEndRel < sectorsWritten;
-                if (!hasNonPictureSectors)
+                if (burnOptions.PictureZone is { Count: > 0 } picZone)
                 {
-                    verified = false;
-                    filesCompared = false;
-                    pictureAreaCompared = false;
-                    verificationNote = FormatPictureOnlySummary(burnResult);
+                    int picStartRel = Math.Clamp(picZone.Start, 0, sectorsWritten);
+                    int picEndRel = Math.Clamp(picZone.Start + picZone.Count, picStartRel, sectorsWritten);
+                    bool hasNonPictureSectors = picStartRel > 0 || picEndRel < sectorsWritten;
+                    if (!hasNonPictureSectors)
+                    {
+                        verified = false;
+                        filesCompared = false;
+                        pictureAreaCompared = false;
+                        verificationNote = FormatPictureOnlySummary(burnResult);
+                    }
+                    else
+                    {
+                        var verifyResult = await VerifyNonPictureRangesAsync(
+                            recorder,
+                            imageStream,
+                            sectorsWritten,
+                            initialStreamPosition,
+                            burnStartLba,
+                            picStartRel,
+                            picEndRel,
+                            burnOptions.StrictVerify,
+                            progress,
+                            cancellationToken);
+                        if (!verifyResult.Success)
+                        {
+                            return verificationResultToFailure(verifyResult.ErrorMessage, cancellationToken);
+                        }
+                        verified = true;
+                        filesCompared = true;
+                        pictureAreaCompared = false;
+                        verificationNote = JoinNotes(verifyResult.Note, "Picture area was not compared.");
+                    }
                 }
                 else
                 {
-                    var verifyResult = await VerifyNonPictureRangesAsync(
+                    var verifyResult = await VerifyBurnedDiscAsync(
                         recorder,
                         imageStream,
                         sectorsWritten,
                         initialStreamPosition,
                         burnStartLba,
-                        picStartRel,
-                        picEndRel,
                         burnOptions.StrictVerify,
                         progress,
                         cancellationToken);
+                    verificationNote = verifyResult.Note;
                     if (!verifyResult.Success)
                     {
-                        return DataBurnResult.Failed(verifyResult.ErrorMessage ?? "Post-burn verification failed.");
+                        return verificationResultToFailure(verifyResult.ErrorMessage, cancellationToken);
                     }
                     verified = true;
                     filesCompared = true;
-                    pictureAreaCompared = false;
-                    verificationNote = JoinNotes(verifyResult.Note, "Picture area was not compared.");
                 }
             }
-            else
+            catch (OperationCanceledException oce)
             {
-                var verifyResult = await VerifyBurnedDiscAsync(
-                    recorder,
-                    imageStream,
-                    sectorsWritten,
-                    initialStreamPosition,
-                    burnStartLba,
-                    burnOptions.StrictVerify,
-                    progress,
-                    cancellationToken);
-                verificationNote = verifyResult.Note;
-                if (!verifyResult.Success)
-                {
-                    return DataBurnResult.Failed(verifyResult.ErrorMessage ?? "Post-burn verification failed.");
-                }
-                verified = true;
-                filesCompared = true;
+                return DataBurnResult.Cancelled(oce.Message);
             }
         }
         else if (hasPictureZone && !burnOptions.Simulate)
@@ -512,6 +519,11 @@ public class DataBurnService
         };
         return succeeded;
     }
+
+    private static DataBurnResult verificationResultToFailure(string? errorMessage, CancellationToken cancellationToken) =>
+        cancellationToken.IsCancellationRequested
+            ? DataBurnResult.Cancelled(errorMessage ?? "Post-burn verification was cancelled.")
+            : DataBurnResult.Failed(errorMessage ?? "Post-burn verification failed.");
 
     private static string FormatPictureOnlySummary(BurnOperationResult burnResult)
     {
@@ -607,6 +619,10 @@ public class DataBurnService
 
         if (!ripResult.Success)
         {
+            if (ripResult.Exception is OperationCanceledException oce)
+            {
+                throw oce;
+            }
             string where = ripResult.BadSectorsList.Count > 0 ? DescribeFiles(ripResult.BadSectorsList, fileMap) : string.Empty;
             return (false, (ripResult.ErrorMessage ?? "Failed to read burned sectors during verification.") + where, null);
         }
@@ -717,6 +733,10 @@ public class DataBurnService
 
             if (!ripResult.Success)
             {
+                if (ripResult.Exception is OperationCanceledException oce)
+                {
+                    throw oce;
+                }
                 string where = ripResult.BadSectorsList.Count > 0 ? DescribeFiles(ripResult.BadSectorsList, fileMap) : string.Empty;
                 return (false, (ripResult.ErrorMessage ?? "Failed to read burned sectors during verification.") + where, null);
             }

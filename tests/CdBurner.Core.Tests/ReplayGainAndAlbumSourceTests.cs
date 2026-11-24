@@ -1,4 +1,5 @@
 using System.Buffers.Binary;
+using CdBurner.Core.Abstractions;
 using CdBurner.Core.Audio;
 using CdBurner.Core.Primitives;
 
@@ -405,6 +406,272 @@ public sealed class ReplayGainAndAlbumSourceTests : IDisposable
         // Release cached buffers through compilation
         comp.ReleaseCachedAlbumBuffers();
         Assert.False(album.IsDecoded, "ReleaseCachedAlbumBuffers must release all album source buffers.");
+    }
+
+    [Fact]
+    public void AudioCdCompilation_RemoveTrack_ReleasesOrphanedAlbumSource_OnlyWhenLastReferenceRemoved()
+    {
+        byte[] pcm = new byte[OpticalConstants.RawSectorSize * 10];
+        string wavA = Path.Combine(_testDir, "album_a.wav");
+        string wavB = Path.Combine(_testDir, "album_b.wav");
+        WavFileCodec.WriteWavFile(wavA, pcm, 44100, 2, 16);
+        WavFileCodec.WriteWavFile(wavB, pcm, 44100, 2, 16);
+
+        var albumA = new SingleFileAlbumSource(wavA);
+        var albumB = new SingleFileAlbumSource(wavB);
+        var comp = new AudioCdCompilation();
+
+        var t1 = new AudioCdTrackItem(1, wavA, "A1", "Artist", CustomPcmStreamFactory: albumA.CreateSliceFactory(0, 5))
+        { SourceStartFrame = 0, SourceFrameCount = 5, AlbumSource = albumA };
+        var t2 = new AudioCdTrackItem(2, wavA, "A2", "Artist", CustomPcmStreamFactory: albumA.CreateSliceFactory(5, 5))
+        { SourceStartFrame = 5, SourceFrameCount = 5, AlbumSource = albumA };
+        var t3 = new AudioCdTrackItem(3, wavB, "B1", "Artist", CustomPcmStreamFactory: albumB.CreateSliceFactory(0, 5))
+        { SourceStartFrame = 0, SourceFrameCount = 5, AlbumSource = albumB };
+
+        comp.AddTracks(new[] { t1, t2, t3 });
+
+        using (var s1 = t1.CustomPcmStreamFactory!()) { }
+        using (var s3 = t3.CustomPcmStreamFactory!()) { }
+        Assert.True(albumA.IsDecoded);
+        Assert.True(albumB.IsDecoded);
+
+        Assert.True(comp.RemoveTrack(1));
+        Assert.True(albumA.IsDecoded, "Shared AlbumSource must remain cached while track 2 still references it.");
+        Assert.True(albumB.IsDecoded);
+
+        // Track 2 was renumbered to 1; removing it orphans albumA
+        Assert.True(comp.RemoveTrack(1));
+        Assert.False(albumA.IsDecoded, "Orphaned AlbumSource must release its buffer immediately on RemoveTrack.");
+        Assert.True(albumB.IsDecoded);
+
+        Assert.True(comp.RemoveTrack(1));
+        Assert.False(albumB.IsDecoded);
+    }
+
+    [Fact]
+    public void AudioCdCompilation_ImportCueSheet_DedicatedHtoa_TrackedAndReleased()
+    {
+        byte[] htoaPcm = new byte[OpticalConstants.RawSectorSize * 6];
+        byte[] mainPcm = new byte[OpticalConstants.RawSectorSize * 8];
+        for (int i = 0; i < htoaPcm.Length; i++) htoaPcm[i] = (byte)(i % 251);
+
+        string htoaPath = Path.Combine(_testDir, "htoa.wav");
+        string mainPath = Path.Combine(_testDir, "main.wav");
+        WavFileCodec.WriteWavFile(htoaPath, htoaPcm, 44100, 2, 16);
+        WavFileCodec.WriteWavFile(mainPath, mainPcm, 44100, 2, 16);
+
+        string cuePath = Path.Combine(_testDir, "album.cue");
+        File.WriteAllText(cuePath, """
+            FILE "htoa.wav" WAVE
+              TRACK 01 AUDIO
+                INDEX 00 00:00:00
+            FILE "main.wav" WAVE
+                INDEX 01 00:00:00
+            """);
+
+        var comp = new AudioCdCompilation();
+        comp.ImportCueSheet(cuePath);
+
+        Assert.Single(comp.Tracks);
+        var track1 = comp.Tracks[0];
+        Assert.Equal(6, track1.HiddenAudioFrames);
+        Assert.NotNull(track1.HiddenAudioAlbumSource);
+        Assert.False(track1.HiddenAudioAlbumSource!.IsDecoded);
+
+        using (var s = track1.HiddenAudioPcmStreamFactory!())
+        {
+            Assert.True(track1.HiddenAudioAlbumSource.IsDecoded);
+        }
+
+        comp.ReleaseCachedAlbumBuffers();
+        Assert.False(track1.HiddenAudioAlbumSource.IsDecoded);
+
+        using (var s = track1.HiddenAudioPcmStreamFactory!())
+        {
+            Assert.True(track1.HiddenAudioAlbumSource.IsDecoded);
+        }
+
+        Assert.True(comp.RemoveTrack(1));
+        Assert.False(track1.HiddenAudioAlbumSource.IsDecoded);
+    }
+
+    [Fact]
+    public void AudioCdTrackItem_DurationFrames_NonFlacWavSource_NeverTriggersSyncDecode()
+    {
+        string mp3Path = Path.Combine(_testDir, "album.mp3");
+        File.WriteAllBytes(mp3Path, new byte[256]);
+
+        var probeDecoder = new CountingAudioDecoder(totalFrames: 120);
+        var albumProbed = new SingleFileAlbumSource(mp3Path, probeDecoder);
+        var trackProbed = new AudioCdTrackItem(2, mp3Path, "Tail", "Artist",
+            CustomPcmStreamFactory: albumProbed.CreateSliceFactory(45, null))
+        {
+            SourceStartFrame = 45,
+            SourceFrameCount = null,
+            AlbumSource = albumProbed
+        };
+
+        Assert.Equal(75, trackProbed.DurationFrames);
+        Assert.False(albumProbed.IsDecoded);
+        Assert.Equal(0, probeDecoder.OpenCalls);
+
+        // Even when metadata probing yields nothing, DurationFrames must not synchronously decode the album.
+        var unprobedAlbum = new SingleFileAlbumSource(mp3Path, new CountingAudioDecoder(totalFrames: 0));
+        var trackUnprobed = new AudioCdTrackItem(2, mp3Path, "Tail", "Artist",
+            CustomPcmStreamFactory: unprobedAlbum.CreateSliceFactory(45, null))
+        {
+            SourceStartFrame = 45,
+            SourceFrameCount = null,
+            AlbumSource = unprobedAlbum
+        };
+
+        Assert.Equal(0, trackUnprobed.DurationFrames);
+        Assert.False(unprobedAlbum.IsDecoded);
+    }
+
+    [Fact]
+    public async Task AudioCdBurnService_BurnAsync_SingleFileAlbumSource_StreamsSlicesWithoutDuplicatingPcm_AndReleasesOnFinish()
+    {
+        byte[] pcm = new byte[OpticalConstants.RawSectorSize * 12];
+        for (int i = 0; i < pcm.Length; i++) pcm[i] = (byte)(i % 251);
+        string wavPath = Path.Combine(_testDir, "stream_album.wav");
+        WavFileCodec.WriteWavFile(wavPath, pcm, 44100, 2, 16);
+
+        var album = new SingleFileAlbumSource(wavPath);
+        var comp = new AudioCdCompilation();
+        comp.AddTrack(new AudioCdTrackItem(1, wavPath, "T1", "Artist", CustomPcmStreamFactory: album.CreateSliceFactory(0, 6))
+        {
+            DurationFrames = 6,
+            SourceStartFrame = 0,
+            SourceFrameCount = 6,
+            AlbumSource = album
+        });
+        comp.AddTrack(new AudioCdTrackItem(2, wavPath, "T2", "Artist", CustomPcmStreamFactory: album.CreateSliceFactory(6, null))
+        {
+            DurationFrames = 6,
+            SourceStartFrame = 6,
+            SourceFrameCount = null,
+            AlbumSource = album
+        });
+
+        bool sawNullPcmStream = false;
+        bool sawAlbumDecodedDuringBurn = false;
+        var capturedBytes = new List<byte[]>();
+
+        var recorder = new FakeAudioRecorder();
+        var engine = new CapturingAudioBurnEngine((tracks, _) =>
+        {
+            sawNullPcmStream = tracks.All(t => t.PcmStream == null && t.PcmStreamFactory != null);
+            foreach (var trk in tracks)
+            {
+                using var s = trk.PcmStreamFactory!();
+                sawAlbumDecodedDuringBurn |= album.IsDecoded;
+                using var ms = new MemoryStream();
+                s.CopyTo(ms);
+                capturedBytes.Add(ms.ToArray());
+            }
+        });
+
+        var service = new AudioCdBurnService(engine);
+        var result = await service.BurnAsync(recorder, comp);
+
+        Assert.True(result.Success);
+        Assert.True(sawNullPcmStream, "Streaming slices must not materialize duplicate PcmStream buffers.");
+        Assert.True(sawAlbumDecodedDuringBurn);
+        Assert.False(album.IsDecoded, "AlbumSource buffer must be released after burn completes.");
+        Assert.Equal(2, capturedBytes.Count);
+        Assert.Equal(pcm.AsSpan(0, 6 * OpticalConstants.RawSectorSize).ToArray(), capturedBytes[0]);
+        Assert.Equal(pcm.AsSpan(6 * OpticalConstants.RawSectorSize, 6 * OpticalConstants.RawSectorSize).ToArray(), capturedBytes[1]);
+    }
+
+    [Fact]
+    public async Task AudioCdBurnService_BurnAsync_SingleFileAlbumSource_WithPerAlbumLoudness_ReleasesAlbumBufferBeforeBurnStarts()
+    {
+        byte[] pcm = new byte[OpticalConstants.RawSectorSize * 8];
+        string wavPath = Path.Combine(_testDir, "album_dsp.wav");
+        WavFileCodec.WriteWavFile(wavPath, pcm, 44100, 2, 16);
+
+        var album = new SingleFileAlbumSource(wavPath);
+        var comp = new AudioCdCompilation { LoudnessNormalization = LoudnessNormalizationMode.PerAlbum };
+        comp.AddTrack(new AudioCdTrackItem(1, wavPath, "T1", "Artist", CustomPcmStreamFactory: album.CreateSliceFactory(0, 4))
+        {
+            DurationFrames = 4,
+            SourceStartFrame = 0,
+            SourceFrameCount = 4,
+            AlbumSource = album
+        });
+        comp.AddTrack(new AudioCdTrackItem(2, wavPath, "T2", "Artist", CustomPcmStreamFactory: album.CreateSliceFactory(4, 4))
+        {
+            DurationFrames = 4,
+            SourceStartFrame = 4,
+            SourceFrameCount = 4,
+            AlbumSource = album
+        });
+
+        bool albumStillDecodedAtBurnStart = true;
+        var engine = new CapturingAudioBurnEngine((_, _) =>
+        {
+            albumStillDecodedAtBurnStart = album.IsDecoded;
+        });
+
+        var result = await new AudioCdBurnService(engine).BurnAsync(new FakeAudioRecorder(), comp);
+
+        Assert.True(result.Success);
+        Assert.False(albumStillDecodedAtBurnStart, "AlbumSource._pcm must be released before BurnAudioTracksAsync when preparedTracks are used.");
+        Assert.False(album.IsDecoded);
+    }
+
+    private sealed class CountingAudioDecoder(int totalFrames) : IAudioDecoder
+    {
+        public int OpenCalls { get; private set; }
+        public AudioFormatMetadata ProbeAudioFile(string filePath) => new()
+        {
+            FilePath = filePath,
+            FormatName = "MP3",
+            SampleRate = 44100,
+            Channels = 2,
+            BitsPerSample = 16,
+            TotalRedBookBytes = (long)totalFrames * OpticalConstants.RawSectorSize,
+            Duration = TimeSpan.FromSeconds((double)totalFrames / OpticalConstants.AudioFramesPerSecond)
+        };
+        public Stream OpenRedBookPcmStream(string filePath)
+        {
+            OpenCalls++;
+            return new MemoryStream(new byte[totalFrames * OpticalConstants.RawSectorSize]);
+        }
+    }
+
+    private sealed class FakeAudioRecorder : IDiscRecorderBackend
+    {
+        public string UniqueId => "FAKE-AUD-01";
+        public string VendorId => "TEST";
+        public string ProductId => "FAKE";
+        public string ProductRevision => "1.0";
+        public string VolumePath => @"T:\";
+        public bool IsVirtual => true;
+        public DriveCapabilitiesDto GetCapabilities() => new() { CanWriteCdR = true, SupportedMediaTypes = new[] { DiscMediaType.CdR } };
+        public MediaStatusDto QueryMediaStatus() => new() { MediaPresent = true, IsBlank = true, MediaType = DiscMediaType.CdR, TotalSectors = 360000, FreeSectors = 360000 };
+        public MediaStatusDto ReadFullToc() => QueryMediaStatus();
+        public void EjectMedia() { }
+        public void CloseTray() { }
+        public bool AcquireExclusiveAccess(string clientName) => true;
+        public void ReleaseExclusiveAccess() { }
+        public void Dispose() { }
+    }
+
+    private sealed class CapturingAudioBurnEngine(Action<IReadOnlyList<AudioTrackSource>, AudioBurnOptions> onBurn) : IBurnEngineBackend
+    {
+        public Task<BurnOperationResult> BurnDataStreamAsync(IDiscRecorderBackend recorder, Stream imageStream, DataBurnOptions options, IProgress<BurnProgressSnapshot>? progress, CancellationToken cancellationToken) =>
+            throw new NotSupportedException();
+        public Task<BurnOperationResult> BurnAudioTracksAsync(IDiscRecorderBackend recorder, IReadOnlyList<AudioTrackSource> tracks, AudioBurnOptions options, IProgress<BurnProgressSnapshot>? progress, CancellationToken cancellationToken)
+        {
+            onBurn(tracks, options);
+            return Task.FromResult(BurnOperationResult.Succeeded(10, TimeSpan.FromMilliseconds(1), 16.0));
+        }
+        public Task<BurnOperationResult> EraseMediaAsync(IDiscRecorderBackend recorder, bool fullErase, IProgress<BurnProgressSnapshot>? progress, CancellationToken cancellationToken) =>
+            throw new NotSupportedException();
+        public Task<RipOperationResult> ReadSectorsAsync(IDiscRecorderBackend recorder, int startLba, int sectorCount, bool raw2352Mode, Func<int, ReadOnlyMemory<byte>, ValueTask> sectorConsumer, IProgress<BurnProgressSnapshot>? progress, CancellationToken cancellationToken) =>
+            throw new NotSupportedException();
     }
 
     #endregion

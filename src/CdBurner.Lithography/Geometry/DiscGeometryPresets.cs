@@ -2,7 +2,7 @@ namespace CdBurner.Lithography.Geometry;
 
 /// <summary>
 /// Nominal (textbook) spiral geometry for CD, DVD and single-layer BD.
-/// These are only starting values: real discs differ, and calibration (Phase 2) will replace the start
+/// These are only starting values: real discs differ, and per-disc calibration replaces the start
 /// radius, the pitch model p(r), the sector length and the start angle θ0 for each disc.
 /// </summary>
 public static class DiscGeometryPresets
@@ -49,7 +49,7 @@ public static class DiscGeometryPresets
 
     /// <summary>
     /// Nominal CD: start radius 25.0 mm (LBA 0), pitch 1.6 µm, sector length 1.2 m/s ÷ 75 sectors/s = 16.0 mm,
-    /// start angle 0. Nominal values only; calibration (Phase 2) replaces them per disc.
+    /// start angle 0. Nominal values only; per-disc calibration replaces them.
     /// </summary>
     public static SpiralGeometry CdNominal { get; } = new SpiralGeometry(
         new ConstantTrackPitch(CdTrackPitchMeters),
@@ -61,8 +61,8 @@ public static class DiscGeometryPresets
 
     /// <summary>
     /// Nominal single-layer DVD: start radius 24.0 mm (LBA 0 = PSN 0x30000), pitch 0.74 µm, sector length
-    /// 26 × 1488 channel bits × 0.1333 µm ≈ 5.157 mm, start angle 0. Nominal values only; calibration
-    /// (Phase 2) replaces them per disc.
+    /// 26 × 1488 channel bits × 0.1333 µm ≈ 5.157 mm, start angle 0. Nominal values only; per-disc calibration
+    /// replaces them.
     /// </summary>
     public static SpiralGeometry DvdNominal { get; } = new SpiralGeometry(
         new ConstantTrackPitch(DvdTrackPitchMeters),
@@ -75,7 +75,7 @@ public static class DiscGeometryPresets
     /// <summary>
     /// Nominal single-layer 25 GB BD: start radius 24.0 mm (LBA 0), pitch 0.32 µm, sector length
     /// 496 × 1932 channel bits × 74.5 nm ÷ 32 sectors ≈ 2.231 mm, start angle 0. Nominal values only;
-    /// calibration (Phase 2) replaces them per disc.
+    /// per-disc calibration replaces them.
     /// </summary>
     public static SpiralGeometry BdSingleLayer25GbNominal { get; } = new SpiralGeometry(
         new ConstantTrackPitch(BdTrackPitchMeters),

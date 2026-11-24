@@ -385,5 +385,111 @@ public class PostBurnActionAndQueueTests : IDisposable
         Assert.True(soundPlayed);
     }
 
+    [Fact]
+    public async Task DataBurnService_VerifyAfterBurn_CancelledDuringReadSectors_ReturnsCancelledWithoutThrowing()
+    {
+        using var cts = new CancellationTokenSource();
+        var engine = new CancellingBurnEngine { ThrowOnReadSectors = true, CancelSource = cts };
+        var service = new DataBurnService(engine);
+        var recorder = new FakeRecorder();
+
+        var result = await service.BurnStreamAsync(
+            recorder,
+            new MemoryStream(new byte[2048 * 4]),
+            new DataBurnOptions { VerifyAfterBurn = true },
+            cancellationToken: cts.Token);
+
+        Assert.False(result.Success);
+        Assert.Equal(BurnStatus.Cancelled, result.Status);
+    }
+
+    [Fact]
+    public async Task BurnQueueService_PreCancelledOrSwapCancelledOrBurnCancelled_UnifiesCancelledResult()
+    {
+        string iso1 = Path.Combine(_testTempDir, "q1.iso");
+        string iso2 = Path.Combine(_testTempDir, "q2.iso");
+        await File.WriteAllBytesAsync(iso1, new byte[2048 * 2]);
+        await File.WriteAllBytesAsync(iso2, new byte[2048 * 2]);
+
+        var recorder = new FakeRecorder();
+
+        // 1. Pre-cancelled token must not throw OperationCanceledException
+        using (var preCts = new CancellationTokenSource())
+        {
+            preCts.Cancel();
+            var items1 = new List<BurnQueueItem> { new(iso1, VerifyAfterBurn: false), new(iso2, VerifyAfterBurn: false) };
+            var res1 = await new BurnQueueService(new FakeBurnEngine()).ExecuteQueueAsync(recorder, items1, cancellationToken: preCts.Token);
+            Assert.False(res1.Success);
+            Assert.Equal(BurnQueueItemStatus.Cancelled, items1[0].Status);
+            Assert.Equal(BurnQueueItemStatus.Skipped, items1[1].Status);
+            Assert.Equal(0, res1.FailedItems);
+        }
+
+        // 2. Cancelled by throwing OperationCanceledException in swap prompt
+        int shutdowns = 0;
+        var items2 = new List<BurnQueueItem> { new(iso1, VerifyAfterBurn: false), new(iso2, VerifyAfterBurn: false) };
+        var res2 = await new BurnQueueService(new FakeBurnEngine()).ExecuteQueueAsync(
+            recorder,
+            items2,
+            promptForNextDiscAsync: (_, _, _) => throw new OperationCanceledException("Swap cancelled"),
+            postBurnAction: PostBurnAction.ShutDown,
+            shutdownInitiator: () => shutdowns++);
+        Assert.False(res2.Success);
+        Assert.Equal(BurnQueueItemStatus.Completed, items2[0].Status);
+        Assert.Equal(BurnQueueItemStatus.Cancelled, items2[1].Status);
+        Assert.Equal(0, shutdowns);
+
+        // 3. Cancelled inside DataBurnService (returns DataBurnResult.Cancelled) even with continueOnError: true
+        using var midCts = new CancellationTokenSource();
+        var cancellingEngine = new CancellingBurnEngine { ThrowOnBurnStream = true, CancelSource = midCts };
+        var items3 = new List<BurnQueueItem> { new(iso1, VerifyAfterBurn: false), new(iso2, VerifyAfterBurn: false) };
+        var res3 = await new BurnQueueService(cancellingEngine).ExecuteQueueAsync(
+            recorder,
+            items3,
+            postBurnAction: PostBurnAction.ShutDown,
+            shutdownInitiator: () => shutdowns++,
+            continueOnError: true,
+            cancellationToken: midCts.Token);
+        Assert.False(res3.Success);
+        Assert.Equal(BurnQueueItemStatus.Cancelled, items3[0].Status);
+        Assert.Equal(BurnQueueItemStatus.Skipped, items3[1].Status);
+        Assert.Equal(0, res3.FailedItems);
+        Assert.Equal(0, shutdowns);
+    }
+
+    private sealed class CancellingBurnEngine : IBurnEngineBackend
+    {
+        public bool ThrowOnBurnStream { get; set; }
+        public bool ThrowOnReadSectors { get; set; }
+        public CancellationTokenSource? CancelSource { get; set; }
+
+        public Task<BurnOperationResult> BurnDataStreamAsync(IDiscRecorderBackend recorder, Stream imageStream, DataBurnOptions options, IProgress<BurnProgressSnapshot>? progress, CancellationToken cancellationToken)
+        {
+            if (ThrowOnBurnStream)
+            {
+                CancelSource?.Cancel();
+                throw new OperationCanceledException("Cancelled during burn", cancellationToken);
+            }
+            int sectors = OpticalConstants.BytesToSectors(imageStream.Length, OpticalConstants.DataSectorSize);
+            return Task.FromResult(BurnOperationResult.Succeeded(sectors, TimeSpan.FromMilliseconds(1), 16.0));
+        }
+
+        public Task<BurnOperationResult> BurnAudioTracksAsync(IDiscRecorderBackend recorder, IReadOnlyList<AudioTrackSource> tracks, AudioBurnOptions options, IProgress<BurnProgressSnapshot>? progress, CancellationToken cancellationToken) =>
+            throw new NotSupportedException();
+
+        public Task<BurnOperationResult> EraseMediaAsync(IDiscRecorderBackend recorder, bool fullErase, IProgress<BurnProgressSnapshot>? progress, CancellationToken cancellationToken) =>
+            throw new NotSupportedException();
+
+        public Task<RipOperationResult> ReadSectorsAsync(IDiscRecorderBackend recorder, int startLba, int sectorCount, bool raw2352Mode, Func<int, ReadOnlyMemory<byte>, ValueTask> sectorConsumer, IProgress<BurnProgressSnapshot>? progress, CancellationToken cancellationToken)
+        {
+            if (ThrowOnReadSectors)
+            {
+                CancelSource?.Cancel();
+                throw new OperationCanceledException("Cancelled during verify", cancellationToken);
+            }
+            return Task.FromResult(new RipOperationResult { Success = true, SectorsRead = sectorCount });
+        }
+    }
+
     #endregion
 }

@@ -115,7 +115,7 @@ public class AsyncRelayCommand : ICommand
     /// </summary>
     public void RaiseCanExecuteChanged()
     {
-        CanExecuteChanged?.Invoke(this, EventArgs.Empty);
+        UiDispatch.InvokeOrMarshal(() => CanExecuteChanged?.Invoke(this, EventArgs.Empty));
     }
 
     /// <summary>
@@ -245,7 +245,7 @@ public class AsyncRelayCommand<T> : ICommand
     /// </summary>
     public void RaiseCanExecuteChanged()
     {
-        CanExecuteChanged?.Invoke(this, EventArgs.Empty);
+        UiDispatch.InvokeOrMarshal(() => CanExecuteChanged?.Invoke(this, EventArgs.Empty));
     }
 
     /// <summary>

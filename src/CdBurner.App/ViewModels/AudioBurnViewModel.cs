@@ -2140,6 +2140,7 @@ public class AudioBurnViewModel : ObservableObject, IDisposable
         }
 
         var cts = new CancellationTokenSource();
+        var ct = cts.Token;
         _previewCts = cts;
         PreviewStatusText = $"Preparing preview of Track {target.TrackNumber:D2}…";
 
@@ -2148,8 +2149,8 @@ public class AudioBurnViewModel : ObservableObject, IDisposable
 
         try
         {
-            byte[] pcmBytes = await Task.Run(() => DecodePreviewPcm(target, leveling, normalize, cts.Token), cts.Token);
-            if (cts.IsCancellationRequested || !ReferenceEquals(_previewCts, cts))
+            byte[] pcmBytes = await Task.Run(() => DecodePreviewPcm(target, leveling, normalize, ct), ct);
+            if (ct.IsCancellationRequested || !ReferenceEquals(_previewCts, cts))
             {
                 return; // superseded by StopPreview or a newer preview
             }
@@ -2170,15 +2171,22 @@ public class AudioBurnViewModel : ObservableObject, IDisposable
             StatusMessage = PreviewStatusText;
 
             double clipSeconds = (double)pcmBytes.Length / (OpticalConstants.CdAudioSampleRate * OpticalConstants.CdAudioBytesPerSample);
-            _ = ResetPreviewWhenClipEndsAsync(TimeSpan.FromSeconds(clipSeconds), cts);
+            _ = ResetPreviewWhenClipEndsAsync(TimeSpan.FromSeconds(clipSeconds), cts, ct);
         }
         catch (OperationCanceledException)
         {
+            if (ReferenceEquals(_previewCts, cts))
+            {
+                _previewCts = null;
+                cts.Dispose();
+            }
         }
         catch (Exception ex)
         {
             if (ReferenceEquals(_previewCts, cts))
             {
+                _previewCts = null;
+                cts.Dispose();
                 IsPreviewPlaying = false;
                 PreviewStatusText = $"Preview failed: {ex.Message}";
                 StatusMessage = PreviewStatusText;
@@ -2224,22 +2232,27 @@ public class AudioBurnViewModel : ObservableObject, IDisposable
         }
     }
 
-    private async Task ResetPreviewWhenClipEndsAsync(TimeSpan clipLength, CancellationTokenSource cts)
+    private async Task ResetPreviewWhenClipEndsAsync(TimeSpan clipLength, CancellationTokenSource cts, CancellationToken ct)
     {
         try
         {
-            await Task.Delay(clipLength + TimeSpan.FromMilliseconds(250), cts.Token);
+            await Task.Delay(clipLength + TimeSpan.FromMilliseconds(250), ct);
         }
         catch (OperationCanceledException)
         {
             return;
         }
 
-        if (ReferenceEquals(_previewCts, cts) && IsPreviewPlaying)
+        if (ReferenceEquals(_previewCts, cts))
         {
-            ReleasePreviewPlayer();
-            IsPreviewPlaying = false;
-            PreviewStatusText = "Preview finished.";
+            _previewCts = null;
+            cts.Dispose();
+            if (IsPreviewPlaying)
+            {
+                ReleasePreviewPlayer();
+                IsPreviewPlaying = false;
+                PreviewStatusText = "Preview finished.";
+            }
         }
     }
 
@@ -2248,14 +2261,19 @@ public class AudioBurnViewModel : ObservableObject, IDisposable
     /// </summary>
     public void StopPreview()
     {
-        try
-        {
-            _previewCts?.Cancel();
-        }
-        catch (ObjectDisposedException)
-        {
-        }
+        var cts = _previewCts;
         _previewCts = null;
+        if (cts != null)
+        {
+            try
+            {
+                cts.Cancel();
+            }
+            catch (ObjectDisposedException)
+            {
+            }
+            cts.Dispose();
+        }
 
         ReleasePreviewPlayer();
 

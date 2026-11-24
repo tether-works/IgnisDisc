@@ -423,7 +423,15 @@ public class AudioCdBurnService
         {
             int totalRequiredFrames = 0;
             var preparedTracks = new byte[compilation.Tracks.Count][];
+            var streamedFactories = new Func<Stream>?[compilation.Tracks.Count];
+            var streamedFrames = new int[compilation.Tracks.Count];
             var albumMeasurements = new ReplayGainResult?[compilation.Tracks.Count];
+            byte[]? materializedHtoaBytes = null;
+
+            bool albumWideTransform =
+                compilation.LoudnessNormalization != LoudnessNormalizationMode.Off ||
+                compilation.UseRmsLoudnessLeveling ||
+                (compilation.CrossfadeSeconds > 0 && compilation.RecordingMode == AudioRecordingMode.DiscAtOnceGapless);
 
             for (int i = 0; i < compilation.Tracks.Count; i++)
             {
@@ -442,6 +450,19 @@ public class AudioCdBurnService
                 {
                     preparedTracks[i] = Array.Empty<byte>(); // read from the image while writing; nothing to decode
                     continue;
+                }
+
+                bool shouldNormalize = compilation.NormalizeAllTracks || trackItem.NormalizeAudio || options.PerformNormalization;
+                if (!shouldNormalize && !albumWideTransform && trackItem.AlbumSource != null && trackItem.CustomPcmStreamFactory != null)
+                {
+                    int knownFrames = trackItem.DurationFrames;
+                    if (knownFrames > 0)
+                    {
+                        streamedFactories[i] = trackItem.CustomPcmStreamFactory;
+                        streamedFrames[i] = knownFrames;
+                        preparedTracks[i] = Array.Empty<byte>();
+                        continue;
+                    }
                 }
 
                 Stream pcmStream;
@@ -478,7 +499,6 @@ public class AudioCdBurnService
                 try
                 {
                     // Normalization
-                    bool shouldNormalize = compilation.NormalizeAllTracks || trackItem.NormalizeAudio || options.PerformNormalization;
                     if (shouldNormalize)
                     {
                         try
@@ -536,6 +556,36 @@ public class AudioCdBurnService
                 }
 
                 preparedTracks[i] = pcmBytes;
+
+                // Release single-file album PCM as soon as the last track using it has been prepared into preparedTracks,
+                // rather than holding both _pcm (~800 MB) and preparedTracks (~800 MB) across the entire burn.
+                if (trackItem.AlbumSource is { } album)
+                {
+                    bool usedLater = false;
+                    for (int j = i + 1; j < compilation.Tracks.Count; j++)
+                    {
+                        if (ReferenceEquals(compilation.Tracks[j].AlbumSource, album))
+                        {
+                            usedLater = true;
+                            break;
+                        }
+                    }
+
+                    if (!usedLater)
+                    {
+                        if (options.KeepIndexMarks &&
+                            compilation.Tracks[0] is { HiddenAudioFrames: > 0, HiddenAudioPcmStreamFactory: not null } t0 &&
+                            ReferenceEquals(t0.HiddenAudioAlbumSource, album) &&
+                            materializedHtoaBytes == null)
+                        {
+                            using var htoaStream = t0.HiddenAudioPcmStreamFactory();
+                            using var htoaMem = new MemoryStream();
+                            await htoaStream.CopyToAsync(htoaMem, cancellationToken).ConfigureAwait(false);
+                            materializedHtoaBytes = htoaMem.ToArray();
+                        }
+                        album.ReleaseDecodedBuffer();
+                    }
+                }
             }
 
             // Album mode: one gain from all tracks' gated blocks together (data tracks have no measurement).
@@ -572,10 +622,14 @@ public class AudioCdBurnService
             // this track's pre-gap audio. The bytes on the disc stay in the same order; only the track mark moves.
             // Not done with a crossfade (track lengths have changed) or when it would leave a track under 4 seconds.
             var gapAudio = new (byte[] Source, int Offset, int Frames)?[preparedTracks.Length];
+            var gapStreamFactories = new Func<Stream>?[preparedTracks.Length];
+            var gapStreamFrames = new int[preparedTracks.Length];
             var audibleLength = new int[preparedTracks.Length];
             for (int i = 0; i < preparedTracks.Length; i++)
             {
-                audibleLength[i] = preparedTracks[i].Length;
+                audibleLength[i] = streamedFactories[i] != null
+                    ? streamedFrames[i] * OpticalConstants.RawSectorSize
+                    : preparedTracks[i].Length;
             }
             if (options.KeepIndexMarks && compilation.CrossfadeSeconds <= 0)
             {
@@ -584,11 +638,27 @@ public class AudioCdBurnService
                 {
                     if (compilation.Tracks[i - 1].IsDataTrack) continue;
                     int lead = compilation.Tracks[i].Index00LeadFrames;
-                    int previousFrames = preparedTracks[i - 1].Length / OpticalConstants.RawSectorSize;
+                    int previousFrames = audibleLength[i - 1] / OpticalConstants.RawSectorSize;
                     if (lead > 0 && previousFrames - lead >= minimumTrackFrames)
                     {
-                        audibleLength[i - 1] = (previousFrames - lead) * OpticalConstants.RawSectorSize;
-                        gapAudio[i] = (preparedTracks[i - 1], audibleLength[i - 1], lead);
+                        if (streamedFactories[i - 1] != null)
+                        {
+                            var prevTrack = compilation.Tracks[i - 1];
+                            if (prevTrack.AlbumSource is { } prevAlbum && prevTrack.SourceStartFrame is int prevStart)
+                            {
+                                int audibleTrackFrames = previousFrames - lead;
+                                audibleLength[i - 1] = audibleTrackFrames * OpticalConstants.RawSectorSize;
+                                streamedFrames[i - 1] = audibleTrackFrames;
+                                streamedFactories[i - 1] = prevAlbum.CreateSliceFactory(prevStart, audibleTrackFrames);
+                                gapStreamFactories[i] = prevAlbum.CreateSliceFactory(prevStart + audibleTrackFrames, lead);
+                                gapStreamFrames[i] = lead;
+                            }
+                        }
+                        else
+                        {
+                            audibleLength[i - 1] = (previousFrames - lead) * OpticalConstants.RawSectorSize;
+                            gapAudio[i] = (preparedTracks[i - 1], audibleLength[i - 1], lead);
+                        }
                     }
                 }
             }
@@ -618,7 +688,9 @@ public class AudioCdBurnService
 
                 byte[] pcmBytes = preparedTracks[i];
                 int pcmLength = audibleLength[i];
-                int frames = pcmBytes.Length / OpticalConstants.RawSectorSize;
+                int frames = streamedFactories[i] != null
+                    ? trackItem.DurationFrames
+                    : pcmBytes.Length / OpticalConstants.RawSectorSize;
                 trackItem.DurationFrames = frames;
                 int preGap = i > 0 ? Math.Max(0, trackItem.PreGapFrames) : Math.Max(0, trackItem.PreGapFrames - OpticalConstants.CdLeadInFrames);
                 totalRequiredFrames += frames + preGap;
@@ -626,18 +698,28 @@ public class AudioCdBurnService
                 Func<Stream>? preGapFactory = null;
                 int preGapAudioFrames = 0;
                 bool isPreGapPicture = false;
-                if (gapAudio[i] is { } gap)
+                if (gapStreamFactories[i] != null)
+                {
+                    preGapFactory = gapStreamFactories[i];
+                    preGapAudioFrames = gapStreamFrames[i];
+                }
+                else if (gapAudio[i] is { } gap)
                 {
                     preGapFactory = () => new MemoryStream(gap.Source, gap.Offset, gap.Frames * OpticalConstants.RawSectorSize, writable: false);
                     preGapAudioFrames = gap.Frames;
                 }
                 else if (i == 0 && options.KeepIndexMarks && trackItem is { HiddenAudioFrames: > 0, HiddenAudioPcmStreamFactory: not null })
                 {
-                    preGapFactory = trackItem.HiddenAudioPcmStreamFactory;
+                    preGapFactory = materializedHtoaBytes != null
+                        ? () => new MemoryStream(materializedHtoaBytes, writable: false)
+                        : trackItem.HiddenAudioPcmStreamFactory;
                     preGapAudioFrames = trackItem.HiddenAudioFrames;
                     isPreGapPicture = trackItem.HiddenAudioIsPreGapPicture;
                     totalRequiredFrames += preGapAudioFrames;
                 }
+
+                Func<Stream> trackStreamFactory = streamedFactories[i]
+                    ?? (() => new MemoryStream(pcmBytes, 0, pcmLength, writable: false));
 
                 audioTrackSources.Add(new AudioTrackSource
                 {
@@ -651,8 +733,8 @@ public class AudioCdBurnService
                     PreGapFrames = trackItem.PreGapFrames,
                     TotalPcmBytes = pcmLength,
                     Duration = TimeSpan.FromSeconds((double)pcmLength / OpticalConstants.RawSectorSize / OpticalConstants.AudioFramesPerSecond),
-                    PcmStream = new MemoryStream(pcmBytes, 0, pcmLength, writable: false),
-                    PcmStreamFactory = () => new MemoryStream(pcmBytes, 0, pcmLength, writable: false),
+                    PcmStream = streamedFactories[i] != null ? null : new MemoryStream(pcmBytes, 0, pcmLength, writable: false),
+                    PcmStreamFactory = trackStreamFactory,
                     PreGapPcmStreamFactory = preGapFactory,
                     PreGapAudioFrames = preGapAudioFrames,
                     IsPreGapPicture = isPreGapPicture,

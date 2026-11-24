@@ -16,4 +16,22 @@ public static class UiDispatch
         dispatcher is { HasShutdownStarted: false } &&
         dispatcher.Thread.IsAlive &&
         !dispatcher.CheckAccess();
+
+    /// <summary>
+    /// Runs <paramref name="action"/> on the current WPF application dispatcher when marshalling is required,
+    /// or inline on the caller thread otherwise.
+    /// </summary>
+    public static void InvokeOrMarshal(Action action)
+    {
+        ArgumentNullException.ThrowIfNull(action);
+        var dispatcher = System.Windows.Application.Current?.Dispatcher;
+        if (ShouldMarshalTo(dispatcher))
+        {
+            dispatcher!.BeginInvoke(action);
+        }
+        else
+        {
+            action();
+        }
+    }
 }

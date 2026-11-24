@@ -1408,98 +1408,124 @@ public static class FlacFileCodec
     {
         if (order > blockSize) return false;
 
-        for (int i = 0; i < order; i++)
+        long[] work = System.Buffers.ArrayPool<long>.Shared.Rent(blockSize);
+        try
         {
-            dest[i] = (int)reader.ReadSignedBits(bps);
-        }
+            for (int i = 0; i < order; i++)
+            {
+                work[i] = reader.ReadSignedBits(bps);
+            }
 
-        if (!TryDecodeResiduals(ref reader, blockSize, order, dest))
-        {
-            return false;
-        }
-
-        switch (order)
-        {
-            case 0:
-                break;
-            case 1:
-                for (int i = 1; i < blockSize; i++)
-                {
-                    dest[i] += dest[i - 1];
-                }
-                break;
-            case 2:
-                for (int i = 2; i < blockSize; i++)
-                {
-                    dest[i] += (2 * dest[i - 1]) - dest[i - 2];
-                }
-                break;
-            case 3:
-                for (int i = 3; i < blockSize; i++)
-                {
-                    dest[i] += (3 * dest[i - 1]) - (3 * dest[i - 2]) + dest[i - 3];
-                }
-                break;
-            case 4:
-                for (int i = 4; i < blockSize; i++)
-                {
-                    dest[i] += (4 * dest[i - 1]) - (6 * dest[i - 2]) + (4 * dest[i - 3]) - dest[i - 4];
-                }
-                break;
-            default:
+            if (!TryDecodeResiduals(ref reader, blockSize, order, work))
+            {
                 return false;
-        }
+            }
 
-        return true;
+            switch (order)
+            {
+                case 0:
+                    break;
+                case 1:
+                    for (int i = 1; i < blockSize; i++)
+                    {
+                        work[i] += work[i - 1];
+                    }
+                    break;
+                case 2:
+                    for (int i = 2; i < blockSize; i++)
+                    {
+                        work[i] += (2L * work[i - 1]) - work[i - 2];
+                    }
+                    break;
+                case 3:
+                    for (int i = 3; i < blockSize; i++)
+                    {
+                        work[i] += (3L * work[i - 1]) - (3L * work[i - 2]) + work[i - 3];
+                    }
+                    break;
+                case 4:
+                    for (int i = 4; i < blockSize; i++)
+                    {
+                        work[i] += (4L * work[i - 1]) - (6L * work[i - 2]) + (4L * work[i - 3]) - work[i - 4];
+                    }
+                    break;
+                default:
+                    return false;
+            }
+
+            for (int i = 0; i < blockSize; i++)
+            {
+                dest[i] = (int)work[i];
+            }
+
+            return true;
+        }
+        finally
+        {
+            System.Buffers.ArrayPool<long>.Shared.Return(work);
+        }
     }
 
     private static bool TryDecodeLpcSubframe(ref FlacBitReader reader, int blockSize, int bps, int order, int[] dest)
     {
         if (order > blockSize) return false;
 
-        for (int i = 0; i < order; i++)
+        long[] work = System.Buffers.ArrayPool<long>.Shared.Rent(blockSize);
+        try
         {
-            dest[i] = (int)reader.ReadSignedBits(bps);
-        }
-
-        int coeffPrecision = (int)reader.ReadBits(4) + 1;
-        if (coeffPrecision == 16) // 0b1111 + 1 is invalid per spec
-        {
-            return false;
-        }
-
-        int qlpShift = (int)reader.ReadSignedBits(5);
-        if (qlpShift < 0)
-        {
-            // Negative shifts are invalid in compliant streams; clamp to 0
-            qlpShift = 0;
-        }
-
-        Span<int> coeffs = stackalloc int[order];
-        for (int i = 0; i < order; i++)
-        {
-            coeffs[i] = (int)reader.ReadSignedBits(coeffPrecision);
-        }
-
-        if (!TryDecodeResiduals(ref reader, blockSize, order, dest))
-        {
-            return false;
-        }
-
-        for (int i = order; i < blockSize; i++)
-        {
-            long sum = 0;
-            for (int j = 0; j < order; j++)
+            for (int i = 0; i < order; i++)
             {
-                sum += (long)coeffs[j] * dest[i - j - 1];
+                work[i] = reader.ReadSignedBits(bps);
             }
-            dest[i] += (int)(sum >> qlpShift);
-        }
 
-        return true;
+            int coeffPrecision = (int)reader.ReadBits(4) + 1;
+            if (coeffPrecision == 16) // 0b1111 + 1 is invalid per spec
+            {
+                return false;
+            }
+
+            int qlpShift = (int)reader.ReadSignedBits(5);
+            if (qlpShift < 0)
+            {
+                // Negative shifts are invalid in compliant streams; clamp to 0
+                qlpShift = 0;
+            }
+
+            Span<int> coeffs = stackalloc int[order];
+            for (int i = 0; i < order; i++)
+            {
+                coeffs[i] = (int)reader.ReadSignedBits(coeffPrecision);
+            }
+
+            if (!TryDecodeResiduals(ref reader, blockSize, order, work))
+            {
+                return false;
+            }
+
+            for (int i = order; i < blockSize; i++)
+            {
+                long sum = 0;
+                for (int j = 0; j < order; j++)
+                {
+                    sum += coeffs[j] * work[i - j - 1];
+                }
+                work[i] += sum >> qlpShift;
+            }
+
+            for (int i = 0; i < blockSize; i++)
+            {
+                dest[i] = (int)work[i];
+            }
+
+            return true;
+        }
+        finally
+        {
+            System.Buffers.ArrayPool<long>.Shared.Return(work);
+        }
     }
 
-    private static bool TryDecodeResiduals(ref FlacBitReader reader, int blockSize, int predictorOrder, int[] dest)
+    private static bool TryDecodeResiduals(ref FlacBitReader reader, int blockSize, int predictorOrder, long[] dest)
     {
         int codingMethod = (int)reader.ReadBits(2);
         if (codingMethod > 1)
@@ -1537,7 +1563,7 @@ public static class FlacFileCodec
                 {
                     for (int i = 0; i < count; i++)
                     {
-                        dest[sampleIndex++] = (int)reader.ReadSignedBits(rawBits);
+                        dest[sampleIndex++] = reader.ReadSignedBits(rawBits);
                     }
                 }
             }
@@ -1549,9 +1575,9 @@ public static class FlacFileCodec
                     {
                         return false;
                     }
-                    uint r = riceParam > 0 ? reader.ReadBits(riceParam) : 0u;
-                    uint u = ((uint)q << riceParam) | r;
-                    int val = (int)(u >> 1) ^ -(int)(u & 1);
+                    ulong r = riceParam > 0 ? reader.ReadBits(riceParam) : 0UL;
+                    ulong u = ((ulong)(uint)q << riceParam) | r;
+                    long val = (long)(u >> 1) ^ -(long)(u & 1);
                     dest[sampleIndex++] = val;
                 }
             }

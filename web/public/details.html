@@ -3,6 +3,7 @@
 <head>
   <meta charset="UTF-8" />
   <meta name="viewport" content="width=device-width, initial-scale=1.0" />
+  <meta http-equiv="Content-Security-Policy" content="default-src 'self'; style-src 'self'; script-src 'self'; font-src 'self'; img-src 'self';" />
   <title>IgnisDisc Optical Studio — Test Notes &amp; Technical Details</title>
   <meta name="description" content="Full test notes for every IgnisDisc feature (which discs, drives and players each was checked on) and the technical details of its disc image builder, drive access and direct drive-command writer." />
   <link rel="icon" type="image/x-icon" href="/assets/IgnisDisc.ico" />
@@ -285,11 +286,12 @@
       </div>
 
       <div class="cell">
-        <h3 class="spec-module-title">CdBurner.Cli &amp; App</h3>
+        <h3 class="spec-module-title">CdBurner.Cli, App &amp; Lithography</h3>
         <ul class="spec-module-list">
-          <li><code>IgnisDisc.exe</code>: WPF desktop studio with 8 dedicated workspaces, OS-synced Dark/Light theme (<code>ThemeManager</code>), per-movie DVD subtitle controls, burn-finished notice (sound + taskbar flash), instant-save settings, eject-after-burn on by default, and pinned-SHA-256 1-click downloads for optional <code>ffmpeg</code>, <code>par2cmdline-turbo</code> 1.5.0, and <code>whisper.cpp</code> 1.9.5.</li>
-          <li><code>ignisdisc-cli.exe</code>: 37 commands with <code>--json</code> output; it refuses to replace the contents of a rewritable disc unless <code>--overwrite</code> is given.</li>
-          <li>Per-user installer (<code>net48</code> bootstrapper, no administrator rights) with a small separate <code>Uninstall-IgnisDisc.exe</code>.</li>
+          <li><code>IgnisDisc.exe</code>: WPF desktop studio with 10 dedicated workspaces (including Calibration and Disc Art), OS-synced Dark/Light theme (<code>ThemeManager</code>), per-movie DVD subtitle controls, burn-finished notice (sound + taskbar flash), instant-save settings, eject-after-burn on by default, and pinned-SHA-256 1-click downloads for optional <code>ffmpeg</code>, <code>par2cmdline-turbo</code> 1.5.0, and <code>whisper.cpp</code> 1.9.5.</li>
+          <li><code>ignisdisc-cli.exe</code>: 40 commands (including <code>rosetta</code> and <code>disc-art</code>) with <code>--json</code> output; it refuses to replace the contents of a rewritable disc unless <code>--overwrite</code> is given.</li>
+          <li><code>CdBurner.Lithography</code>: headless picture-disc encoding, Rosetta hybrid disc builder, and per-disc calibration fitting.</li>
+          <li>Per-user installer (<code>CdBurner.SetupBootstrapper</code> <code>net48</code> bootstrapper, no administrator rights) with a small separate <code>Uninstall-IgnisDisc.exe</code>.</li>
         </ul>
       </div>
 

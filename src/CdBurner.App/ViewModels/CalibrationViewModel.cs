@@ -101,6 +101,7 @@ public sealed class CalibrationViewModel : ObservableObject
     private string _mediaId = string.Empty;
     private string _storePath = CalibrationStore.GetDefaultPath();
     private bool _isBusy;
+    private int _edgeSearchGeneration;
 
     private sealed class BoundarySegmentDraft(int id, List<CalibrationPoint> points)
     {
@@ -294,6 +295,8 @@ public sealed class CalibrationViewModel : ObservableObject
         _record = session;
         _recordPath = fullPath;
         _recordPhoto = session.Photo;
+        _edgeSearchGeneration++;
+        IsBusy = false;
         ClearPhotoState();
         if (session.Photo is { } photo)
         {
@@ -343,6 +346,8 @@ public sealed class CalibrationViewModel : ObservableObject
     public bool LoadPhoto(byte[] png)
     {
         ArgumentNullException.ThrowIfNull(png);
+        _edgeSearchGeneration++;
+        IsBusy = false;
         ClearPhotoState();
         _recordPhoto = null;
         if (!TrySetPhoto(png, out string? error))
@@ -434,6 +439,7 @@ public sealed class CalibrationViewModel : ObservableObject
             return false;
         }
 
+        int generation = ++_edgeSearchGeneration;
         byte[] png = _photoPng;
         IsBusy = true;
         StatusMessage = "Looking for the disc edges...";
@@ -445,8 +451,17 @@ public sealed class CalibrationViewModel : ObservableObject
         catch (Exception ex) when (ex is InvalidDataException or IOException or ArgumentException or NotSupportedException
             or OverflowException or OutOfMemoryException)
         {
+            if (generation != _edgeSearchGeneration)
+            {
+                return false;
+            }
             IsBusy = false;
             StatusMessage = "The disc edges could not be searched for automatically (" + ex.Message + "). Click the outer rim and the centre hole instead.";
+            return false;
+        }
+
+        if (generation != _edgeSearchGeneration)
+        {
             return false;
         }
 

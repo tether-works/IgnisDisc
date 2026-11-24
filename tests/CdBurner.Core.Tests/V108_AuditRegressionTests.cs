@@ -103,6 +103,44 @@ public sealed class V108_AuditRegressionTests : IDisposable
         Assert.Contains("32-bit FLAC with stereo decorrelation is not supported", ex.Message);
     }
 
+    [Theory]
+    [InlineData(Sub.Fixed1)]
+    [InlineData(Sub.Fixed2)]
+    [InlineData(Sub.Fixed3)]
+    [InlineData(Sub.Fixed4)]
+    public void Flac32_IndependentFixedSubframes_FullScaleValues_NoInt32Overflow(Sub sub)
+    {
+        // Full-scale 32-bit values near ±2,000,000,000: 2*s, 3*s, 4*s, and 6*s overflow Int32
+        // during FIXED predictor reconstruction unless a 64-bit accumulator is used.
+        const int n = 256;
+        var left = new int[n];
+        var right = new int[n];
+        for (int i = 0; i < n; i++)
+        {
+            left[i] = (i % 2 == 0 ? 1 : -1) * (1_800_000_000 + (i * 100_000));
+            right[i] = (i % 2 == 0 ? -1 : 1) * (1_700_000_000 + (i * 100_000));
+        }
+
+        byte[] flac = FlacTestEncoder.Encode(44100, 32, new[] { left, right }, blockSize: 256, assignment: 1, sub);
+        byte[] pcm = FlacFileCodec.DecodeToRedBookPcm(new MemoryStream(flac));
+
+        AssertWithinOneLsb(ExpectedRedBook(left, right, 32), pcm);
+    }
+
+    [Theory]
+    [InlineData(8)]
+    [InlineData(9)]
+    [InlineData(10)]
+    public void Flac32_StereoDecorrelation_WithFixedSubframes_RejectedWithClearMessage(int assignment)
+    {
+        var left = new[] { 1000, 2000, 3000, 4000, 5000, 6000, 7000, 8000 };
+        var right = new[] { -1000, -2000, -3000, -4000, -5000, -6000, -7000, -8000 };
+        byte[] flac = FlacTestEncoder.Encode(44100, 32, new[] { left, right }, blockSize: 8, assignment, Sub.Fixed2);
+
+        var ex = Assert.Throws<InvalidDataException>(() => FlacFileCodec.DecodeToRedBookPcm(new MemoryStream(flac)));
+        Assert.Contains("32-bit FLAC with stereo decorrelation is not supported", ex.Message);
+    }
+
     [Fact]
     public void Flac_WastedBitsSubframes_AreShiftedBack()
     {

@@ -131,4 +131,28 @@ public sealed class CalibrationAutoDetectViewTests
         Assert.False(await vm.FindDiscEdgesAsync());
         Assert.Contains("Open a photo", vm.StatusMessage);
     }
+
+    [Fact]
+    public async Task FindDiscEdgesAsync_WhenSupersededByLoadPhoto_DropsStaleResult()
+    {
+        CalibrationViewModel vm = OpenCoarseRecord();
+        Assert.True(vm.LoadPhoto(DiscPhotoPng()), vm.StatusMessage);
+
+        Task<bool> firstSearch = vm.FindDiscEdgesAsync();
+
+        // Replace the photo while the first edge search is running on a background thread.
+        byte[] second = new byte[400 * 300 * 4];
+        Array.Fill(second, (byte)90);
+        using var stream = new MemoryStream();
+        PngRaster.Write(stream, new BgraRaster(400, 300, second));
+        Assert.True(vm.LoadPhoto(stream.ToArray()), vm.StatusMessage);
+
+        bool firstResult = await firstSearch;
+
+        Assert.False(firstResult);
+        Assert.False(vm.IsBusy);
+        Assert.Equal(400, vm.PhotoPixelWidth);
+        Assert.Equal(300, vm.PhotoPixelHeight);
+        Assert.Equal(0, vm.OuterPointCount);
+    }
 }

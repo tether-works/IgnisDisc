@@ -263,12 +263,58 @@ public sealed class WpfShellViewModelTests : IDisposable
     [Fact]
     public void MainViewModel_ExposesLegalBannerPropertiesAndAboutCommand()
     {
-        var vm = new MainViewModel();
+        using var vm = new MainViewModel();
         Assert.Equal(CdBurner.Core.LegalBanner.Line1, vm.LegalBannerLine1);
         Assert.Equal(CdBurner.Core.LegalBanner.Line2, vm.LegalBannerLine2);
         Assert.Equal(CdBurner.Core.LegalBanner.VersionNotice, vm.LegalBannerNotice);
         Assert.NotNull(vm.ShowAboutCommand);
         Assert.True(vm.ShowAboutCommand.CanExecute(null));
+    }
+
+    [Fact]
+    public void MainViewModel_And_ImageStudioViewModel_Dispose_UnsubscribeEventsAndStopPreviewCleanly()
+    {
+        var deviceService = new StubDeviceService();
+        var main = new MainViewModel(deviceService, _burnEngine);
+
+        Assert.True(deviceService.HasSubscribers);
+        main.Dispose();
+        main.Dispose(); // idempotent
+
+        // Raising DeviceChanged after Dispose must not throw or touch disposed state
+        deviceService.RaiseDeviceChanged("VDRV-01");
+        Assert.False(deviceService.HasSubscribers);
+
+        // ImageStudioViewModel standalone Dispose unsubscribes DeviceChanged
+        var imageVm = new ImageStudioViewModel(deviceService, _burnEngine);
+        Assert.True(deviceService.HasSubscribers);
+        imageVm.Dispose();
+        Assert.False(deviceService.HasSubscribers);
+
+        // AudioBurnViewModel.StopPreview can be called repeatedly without leaking/throwing on _previewCts
+        main.AudioBurn.StopPreview();
+        main.AudioBurn.StopPreview();
+    }
+
+    [Fact]
+    public async Task AsyncRelayCommand_RaiseCanExecuteChanged_FromBackgroundThread_DoesNotThrow()
+    {
+        var cmd = new AsyncRelayCommand(() => Task.CompletedTask);
+        int raised = 0;
+        cmd.CanExecuteChanged += (_, _) => Interlocked.Increment(ref raised);
+
+        await Task.Run(() => cmd.RaiseCanExecuteChanged());
+
+        Assert.True(raised >= 1 || System.Windows.Application.Current?.Dispatcher != null);
+    }
+
+    private sealed class StubDeviceService : CdBurner.Core.Abstractions.IDiscDeviceService
+    {
+        public event EventHandler<CdBurner.Core.Abstractions.DeviceChangeEventArgs>? DeviceChanged;
+        public bool HasSubscribers => DeviceChanged != null;
+        public IReadOnlyList<CdBurner.Core.Abstractions.IDiscRecorderBackend> GetRecorders(bool includeVirtual = true) => Array.Empty<CdBurner.Core.Abstractions.IDiscRecorderBackend>();
+        public CdBurner.Core.Abstractions.IDiscRecorderBackend? GetRecorderById(string uniqueId) => null;
+        public void RaiseDeviceChanged(string id) => DeviceChanged?.Invoke(this, new CdBurner.Core.Abstractions.DeviceChangeEventArgs(id, CdBurner.Core.Abstractions.DeviceChangeType.MediaInserted));
     }
 
     private class TestObservable : ObservableObject

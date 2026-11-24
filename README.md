@@ -152,6 +152,9 @@ ignisdisc-cli <command> [options]
   load       --drive <id>                      Close the tray and wait until the drive is ready; on a drive that
                                                cannot close its own tray (a spring tray, as on slim USB drives) it
                                                sends nothing, says to push the tray in by hand and exits 1
+  rosetta    ladder|build|burn [options]       Build or burn a Rosetta optical resolution ladder or hybrid archival disc
+  disc-art   generate|preview|burn|calibrate|measure [options]
+                                               Draw, preview, calibrate, measure, or burn a picture disc (CD, DVD, or BD)
 
 `eject` and `load` have run on a real drive only on the motorised tray of a Lite-On iHAS124 (2026-11-19 to 21): `eject` opened the tray when clear (and returned `4/53/00` when the case blocked it or once after the tray was pushed shut by hand), and `load` closed itself and came ready 10 to 18 s later; on a spring tray `load` cannot close the tray.
 
@@ -335,10 +338,10 @@ before relying on them.
 
 ## Desktop app
 
-Workspaces: Data Disc (including bootable discs and Save as ISO), Audio CD (burn, and rip with AccurateRip / secure
+Workspaces (10): Data Disc (including bootable discs and Save as ISO), Audio CD (burn, and rip with AccurateRip / secure
 mode / read-offset detection), DVD-Video, Disc Image (burn/rip/verify `.iso` and `.bin/.cue`), Archive (plan, stage,
 burn, verify and repair multi-disc archives), Drive Utilities (erase, scan, media inspector), Virtual Drive manager,
-and Settings.
+Disc Picture Calibration (Calibration), Disc Art, and Settings.
 Projects save as `.cdbproj` JSON files.
 
 ---
@@ -368,9 +371,11 @@ pwsh scripts/Build-Installer.ps1 -FfmpegPath C:\tools\ffmpeg\bin\ffmpeg.exe -Ffm
 | --- | --- |
 | `src/CdBurner.Core` | File system builder (ISO 9660 / Joliet / UDF / El Torito), audio, CUE, DVD-Video, persistence, services |
 | `src/CdBurner.Hardware` | IMAPIv2 COM interop, SCSI pass-through, physical sector reader, virtual drive simulator |
+| `src/CdBurner.Lithography` | Picture-disc encoding, Rosetta hybrid disc builder, and optical calibration solvers |
 | `src/CdBurner.Cli` | `ignisdisc-cli` / `cdburner-cli` |
 | `src/CdBurner.App` | WPF desktop app (`IgnisDisc.exe`) |
-| `tools/CdBurner.Setup` | Per-user installer / uninstaller |
+| `tools/CdBurner.Setup` | Per-user installer / uninstaller (`Uninstall-IgnisDisc.exe`) |
+| `tools/CdBurner.SetupBootstrapper` | `.NET Framework 4.8` self-extracting installer bootstrapper (`IgnisDisc-Setup.exe`) |
 | `tests/*` | xUnit tests (virtual drive, image validation with an independent reader, CLI and view-model tests) |
 
 ---

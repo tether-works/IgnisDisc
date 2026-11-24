@@ -484,97 +484,15 @@ public class MainViewModel : ObservableObject, IDisposable
             getDisableBurnFree: () => !_settings.EnableBurnFreeByDefault,
             getPostBurnAction: () => _settings.EjectAfterBurnByDefault ? CdBurner.Core.Burning.PostBurnAction.Eject : CdBurner.Core.Burning.PostBurnAction.None);
 
-        _discArt.PropertyChanged += (_, e) =>
-        {
-            if (e.PropertyName == nameof(DiscArtViewModel.IsBusy))
-            {
-                OnPropertyChanged(nameof(IsAnyBurnActive));
-            }
-        };
-
-        _dataBurn.PropertyChanged += (_, e) =>
-        {
-            if (e.PropertyName == nameof(DataBurnViewModel.Capacity) && _selectedNavigationTab == NavigationTab.DataDisc)
-            {
-                CurrentCapacity = _dataBurn.Capacity;
-            }
-            else if (e.PropertyName == nameof(DataBurnViewModel.SelectedRecorder) && !_syncingRecorder && _dataBurn.SelectedRecorder != null)
-            {
-                SelectedRecorder = _dataBurn.SelectedRecorder;
-            }
-        };
-
-        _dvdVideo.PropertyChanged += (_, e) =>
-        {
-            if (e.PropertyName == nameof(DvdVideoViewModel.SelectedRecorder) && !_syncingRecorder && _dvdVideo.SelectedRecorder != null)
-            {
-                SelectedRecorder = _dvdVideo.SelectedRecorder;
-            }
-            else if ((e.PropertyName == nameof(DvdVideoViewModel.TotalSectors) || e.PropertyName == nameof(DvdVideoViewModel.IsDualLayerRequired)) && _selectedNavigationTab == NavigationTab.DvdVideo)
-            {
-                UpdateCapacityForActiveWorkspace();
-            }
-        };
-
-        _audioBurn.PropertyChanged += (_, e) =>
-        {
-            if (e.PropertyName == nameof(AudioBurnViewModel.SelectedRecorder) && !_syncingRecorder && _audioBurn.SelectedRecorder != null)
-            {
-                SelectedRecorder = _audioBurn.SelectedRecorder;
-            }
-        };
-
-        _imageStudio.PropertyChanged += (_, e) =>
-        {
-            if (e.PropertyName == nameof(ImageStudioViewModel.SelectedRecorder) && !_syncingRecorder && _imageStudio.SelectedRecorder != null)
-            {
-                SelectedRecorder = _imageStudio.SelectedRecorder;
-            }
-        };
-
-        _archive.PropertyChanged += (_, e) =>
-        {
-            if (e.PropertyName == nameof(ArchiveViewModel.SelectedRecorder) && !_syncingRecorder && _archive.SelectedRecorder != null)
-            {
-                SelectedRecorder = _archive.SelectedRecorder;
-            }
-            else if (e.PropertyName == nameof(ArchiveViewModel.IsBusy))
-            {
-                OnPropertyChanged(nameof(IsAnyBurnActive));
-            }
-        };
-
-        _driveUtilities.PropertyChanged += (_, e) =>
-        {
-            if (e.PropertyName == nameof(DriveUtilitiesViewModel.SelectedRecorder) && !_syncingRecorder && _driveUtilities.SelectedRecorder != null)
-            {
-                SelectedRecorder = _driveUtilities.SelectedRecorder;
-            }
-        };
-
-        _settings.PropertyChanged += (_, e) =>
-        {
-            if (e.PropertyName == nameof(SettingsViewModel.SelectedRecorder) && !_syncingRecorder && _settings.SelectedRecorder != null)
-            {
-                SelectedRecorder = _settings.SelectedRecorder;
-            }
-            else if (e.PropertyName == nameof(SettingsViewModel.EnableVirtualDrive))
-            {
-                ReloadRecordersList();
-            }
-        };
-
-        _settings.SettingsSaved += (_, _) =>
-        {
-            var preferredDrive = _settings.SelectedRecorder;
-            ReloadRecordersList();
-            if (preferredDrive != null && AvailableRecorders.Contains(preferredDrive))
-            {
-                SelectedRecorder = preferredDrive;
-            }
-            ApplySettingsToWorkspaces();
-            SelectDefaultWriteSpeed();
-        };
+        _discArt.PropertyChanged += OnDiscArtPropertyChanged;
+        _dataBurn.PropertyChanged += OnDataBurnPropertyChanged;
+        _dvdVideo.PropertyChanged += OnDvdVideoPropertyChanged;
+        _audioBurn.PropertyChanged += OnAudioBurnPropertyChanged;
+        _imageStudio.PropertyChanged += OnImageStudioPropertyChanged;
+        _archive.PropertyChanged += OnArchivePropertyChanged;
+        _driveUtilities.PropertyChanged += OnDriveUtilitiesPropertyChanged;
+        _settings.PropertyChanged += OnSettingsPropertyChanged;
+        _settings.SettingsSaved += OnSettingsSaved;
 
         // Initialize Commands
         RefreshDrivesCommand = new RelayCommand(RefreshDrives);
@@ -1133,10 +1051,15 @@ public class MainViewModel : ObservableObject, IDisposable
         {
             Interval = TimeSpan.FromSeconds(3.0)
         };
-        _mediaPollTimer.Tick += async (_, _) => await PollHardwareMediaStatusOnceAsync();
+        _mediaPollTimer.Tick += OnMediaPollTimerTick;
         _mediaPollTimer.Start();
 
         _ = PollHardwareMediaStatusOnceAsync();
+    }
+
+    private async void OnMediaPollTimerTick(object? sender, EventArgs e)
+    {
+        await PollHardwareMediaStatusOnceAsync();
     }
 
     private async Task PollHardwareMediaStatusOnceAsync()
@@ -1382,10 +1305,21 @@ public class MainViewModel : ObservableObject, IDisposable
             {
                 if (_mediaPollTimer != null)
                 {
+                    _mediaPollTimer.Tick -= OnMediaPollTimerTick;
                     _mediaPollTimer.Stop();
                     _mediaPollTimer = null;
                 }
+                _discArt.PropertyChanged -= OnDiscArtPropertyChanged;
+                _dataBurn.PropertyChanged -= OnDataBurnPropertyChanged;
+                _dvdVideo.PropertyChanged -= OnDvdVideoPropertyChanged;
+                _audioBurn.PropertyChanged -= OnAudioBurnPropertyChanged;
+                _imageStudio.PropertyChanged -= OnImageStudioPropertyChanged;
+                _archive.PropertyChanged -= OnArchivePropertyChanged;
+                _driveUtilities.PropertyChanged -= OnDriveUtilitiesPropertyChanged;
+                _settings.PropertyChanged -= OnSettingsPropertyChanged;
+                _settings.SettingsSaved -= OnSettingsSaved;
                 _audioBurn.Dispose(); // stops audio preview playback on shutdown
+                _imageStudio.Dispose();
                 _deviceService.DeviceChanged -= OnDeviceChanged;
                 if (_ownsDeviceService && _deviceService is IDisposable d)
                 {
@@ -1394,5 +1328,97 @@ public class MainViewModel : ObservableObject, IDisposable
             }
             _disposed = true;
         }
+    }
+
+    private void OnDiscArtPropertyChanged(object? sender, System.ComponentModel.PropertyChangedEventArgs e)
+    {
+        if (e.PropertyName == nameof(DiscArtViewModel.IsBusy))
+        {
+            OnPropertyChanged(nameof(IsAnyBurnActive));
+        }
+    }
+
+    private void OnDataBurnPropertyChanged(object? sender, System.ComponentModel.PropertyChangedEventArgs e)
+    {
+        if (e.PropertyName == nameof(DataBurnViewModel.Capacity) && _selectedNavigationTab == NavigationTab.DataDisc)
+        {
+            CurrentCapacity = _dataBurn.Capacity;
+        }
+        else if (e.PropertyName == nameof(DataBurnViewModel.SelectedRecorder) && !_syncingRecorder && _dataBurn.SelectedRecorder != null)
+        {
+            SelectedRecorder = _dataBurn.SelectedRecorder;
+        }
+    }
+
+    private void OnDvdVideoPropertyChanged(object? sender, System.ComponentModel.PropertyChangedEventArgs e)
+    {
+        if (e.PropertyName == nameof(DvdVideoViewModel.SelectedRecorder) && !_syncingRecorder && _dvdVideo.SelectedRecorder != null)
+        {
+            SelectedRecorder = _dvdVideo.SelectedRecorder;
+        }
+        else if ((e.PropertyName == nameof(DvdVideoViewModel.TotalSectors) || e.PropertyName == nameof(DvdVideoViewModel.IsDualLayerRequired)) && _selectedNavigationTab == NavigationTab.DvdVideo)
+        {
+            UpdateCapacityForActiveWorkspace();
+        }
+    }
+
+    private void OnAudioBurnPropertyChanged(object? sender, System.ComponentModel.PropertyChangedEventArgs e)
+    {
+        if (e.PropertyName == nameof(AudioBurnViewModel.SelectedRecorder) && !_syncingRecorder && _audioBurn.SelectedRecorder != null)
+        {
+            SelectedRecorder = _audioBurn.SelectedRecorder;
+        }
+    }
+
+    private void OnImageStudioPropertyChanged(object? sender, System.ComponentModel.PropertyChangedEventArgs e)
+    {
+        if (e.PropertyName == nameof(ImageStudioViewModel.SelectedRecorder) && !_syncingRecorder && _imageStudio.SelectedRecorder != null)
+        {
+            SelectedRecorder = _imageStudio.SelectedRecorder;
+        }
+    }
+
+    private void OnArchivePropertyChanged(object? sender, System.ComponentModel.PropertyChangedEventArgs e)
+    {
+        if (e.PropertyName == nameof(ArchiveViewModel.SelectedRecorder) && !_syncingRecorder && _archive.SelectedRecorder != null)
+        {
+            SelectedRecorder = _archive.SelectedRecorder;
+        }
+        else if (e.PropertyName == nameof(ArchiveViewModel.IsBusy))
+        {
+            OnPropertyChanged(nameof(IsAnyBurnActive));
+        }
+    }
+
+    private void OnDriveUtilitiesPropertyChanged(object? sender, System.ComponentModel.PropertyChangedEventArgs e)
+    {
+        if (e.PropertyName == nameof(DriveUtilitiesViewModel.SelectedRecorder) && !_syncingRecorder && _driveUtilities.SelectedRecorder != null)
+        {
+            SelectedRecorder = _driveUtilities.SelectedRecorder;
+        }
+    }
+
+    private void OnSettingsPropertyChanged(object? sender, System.ComponentModel.PropertyChangedEventArgs e)
+    {
+        if (e.PropertyName == nameof(SettingsViewModel.SelectedRecorder) && !_syncingRecorder && _settings.SelectedRecorder != null)
+        {
+            SelectedRecorder = _settings.SelectedRecorder;
+        }
+        else if (e.PropertyName == nameof(SettingsViewModel.EnableVirtualDrive))
+        {
+            ReloadRecordersList();
+        }
+    }
+
+    private void OnSettingsSaved(object? sender, EventArgs e)
+    {
+        var preferredDrive = _settings.SelectedRecorder;
+        ReloadRecordersList();
+        if (preferredDrive != null && AvailableRecorders.Contains(preferredDrive))
+        {
+            SelectedRecorder = preferredDrive;
+        }
+        ApplySettingsToWorkspaces();
+        SelectDefaultWriteSpeed();
     }
 }

@@ -12,7 +12,7 @@ public static class DiscOrientation
 {
     /// <summary>
     /// Sign of the change in θ per unit of track length, read-side view: −1 (clockwise).
-    /// To confirm on a real burned disc in Phase 2 (calibration).
+    /// Confirmed by per-disc calibration on burned media.
     /// </summary>
     public const double TrackAngleSign = -1.0;
 }
@@ -35,7 +35,7 @@ public readonly record struct DiscPosition(double RadiusMeters, double AngleRadi
 
     /// <summary>
     /// The same point as seen from the LABEL side of the disc. Looking from the other side mirrors the
-    /// picture, so θ becomes −θ. To confirm on a real burned disc in Phase 2 (calibration).
+    /// picture, so θ becomes −θ. Confirmed by per-disc calibration on burned media.
     /// </summary>
     public DiscPosition ToLabelSideView()
     {

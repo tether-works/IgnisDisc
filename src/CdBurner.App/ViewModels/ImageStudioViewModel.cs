@@ -21,8 +21,9 @@ namespace CdBurner.App.ViewModels;
 /// View model managing Disc Image Studio operations: burning .iso and .cue image archives to disc,
 /// ripping optical media to .iso or raw .bin + companion .cue sheets, and running standalone SHA-256/sector verification.
 /// </summary>
-public class ImageStudioViewModel : ObservableObject
+public class ImageStudioViewModel : ObservableObject, IDisposable
 {
+    private bool _disposed;
     private readonly IDiscDeviceService _deviceService;
     private readonly IBurnEngineBackend _burnEngine;
     private readonly DataBurnService _dataBurnService;
@@ -956,14 +957,46 @@ public class ImageStudioViewModel : ObservableObject
         CopySourceRecorder = SelectedRecorder;
         CopyTargetRecorder = SelectedRecorder;
         UpdateCopySourceSummary();
-        _deviceService.DeviceChanged += (_, e) =>
-        {
-            if (string.Equals(e.UniqueId, CopySourceRecorder?.UniqueId, StringComparison.OrdinalIgnoreCase))
-            {
-                UpdateCopySourceSummary();
-            }
-        };
+        _deviceService.DeviceChanged += OnDeviceChanged;
         AppendLog("Disc Image Studio initialized. Ready for ISO/CUE/NRG/MDF/CCD mastering & 1-Click Disc Copy.");
+    }
+
+    private void OnDeviceChanged(object? sender, DeviceChangeEventArgs e)
+    {
+        if (_disposed || !string.Equals(e.UniqueId, CopySourceRecorder?.UniqueId, StringComparison.OrdinalIgnoreCase))
+        {
+            return;
+        }
+
+        UiDispatch.InvokeOrMarshal(UpdateCopySourceSummary);
+    }
+
+    /// <inheritdoc/>
+    public void Dispose()
+    {
+        Dispose(true);
+        GC.SuppressFinalize(this);
+    }
+
+    protected virtual void Dispose(bool disposing)
+    {
+        if (!_disposed)
+        {
+            if (disposing)
+            {
+                _deviceService.DeviceChanged -= OnDeviceChanged;
+                try
+                {
+                    _activeCts?.Cancel();
+                }
+                catch (ObjectDisposedException)
+                {
+                }
+                _activeCts?.Dispose();
+                _activeCts = null;
+            }
+            _disposed = true;
+        }
     }
 
     #region Image Inspection Operations

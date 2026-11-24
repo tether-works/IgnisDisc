@@ -202,42 +202,42 @@ public class BurnQueueService
 
         for (int i = 0; i < items.Count; i++)
         {
-            cancellationToken.ThrowIfCancellationRequested();
             var item = items[i];
-
-            // When burning multiple discs sequentially on a single drive, eject previous media and prompt for next blank disc
-            if (i > 0)
-            {
-                try
-                {
-                    recorder.EjectMedia();
-                }
-                catch
-                {
-                    // Ignore hardware ejection exceptions
-                }
-
-                if (promptForNextDiscAsync != null)
-                {
-                    bool proceed = await promptForNextDiscAsync(i, item, cancellationToken).ConfigureAwait(false);
-                    if (!proceed)
-                    {
-                        cancelled = true;
-                        item.Status = BurnQueueItemStatus.Cancelled;
-                        item.ErrorMessage = "Queue cancelled by user prior to disc insertion.";
-                        for (int rem = i + 1; rem < items.Count; rem++)
-                        {
-                            items[rem].Status = BurnQueueItemStatus.Skipped;
-                        }
-                        break;
-                    }
-                }
-            }
-
-            item.Status = BurnQueueItemStatus.Burning;
 
             try
             {
+                cancellationToken.ThrowIfCancellationRequested();
+
+                // When burning multiple discs sequentially on a single drive, eject previous media and prompt for next blank disc
+                if (i > 0)
+                {
+                    try
+                    {
+                        recorder.EjectMedia();
+                    }
+                    catch
+                    {
+                        // Ignore hardware ejection exceptions
+                    }
+
+                    if (promptForNextDiscAsync != null)
+                    {
+                        bool proceed = await promptForNextDiscAsync(i, item, cancellationToken).ConfigureAwait(false);
+                        if (!proceed)
+                        {
+                            cancelled = true;
+                            item.Status = BurnQueueItemStatus.Cancelled;
+                            item.ErrorMessage = "Queue cancelled by user prior to disc insertion.";
+                            item.BurnResult = BurnOperationResult.CancelledResult(item.ErrorMessage);
+                            failureReason ??= item.ErrorMessage;
+                            MarkRemainingSkipped(items, i + 1);
+                            break;
+                        }
+                    }
+                }
+
+                item.Status = BurnQueueItemStatus.Burning;
+
                 if (!File.Exists(item.ImagePath))
                 {
                     item.Status = BurnQueueItemStatus.Failed;
@@ -248,10 +248,7 @@ public class BurnQueueService
 
                     if (!continueOnError)
                     {
-                        for (int rem = i + 1; rem < items.Count; rem++)
-                        {
-                            items[rem].Status = BurnQueueItemStatus.Skipped;
-                        }
+                        MarkRemainingSkipped(items, i + 1);
                         break;
                     }
                     continue;
@@ -272,6 +269,7 @@ public class BurnQueueService
                     StreamingWrite = item.StreamingWrite
                 };
 
+                DataBurnResult? dataResult = null;
                 BurnOperationResult burnResult;
                 if (!IsQueueableImage(item.ImagePath, out string? unsupportedReason))
                 {
@@ -284,32 +282,39 @@ public class BurnQueueService
                     // volume are refused by OpenIsoUserDataStream instead of being written as garbage data.
                     var legacyInfo = LegacyDiscImageConverter.Inspect(item.ImagePath);
                     await using var stream = LegacyDiscImageConverter.OpenIsoUserDataStream(legacyInfo);
-                    var dataResult = await _dataBurnService.BurnStreamAsync(
+                    dataResult = await _dataBurnService.BurnStreamAsync(
                         recorder,
                         stream,
                         burnOptions,
                         progress,
                         cancellationToken).ConfigureAwait(false);
 
-                    burnResult = dataResult.Success
-                        ? BurnOperationResult.Succeeded(dataResult.SectorsWritten, dataResult.TotalTime, dataResult.AverageSpeedMultiplier)
-                        : BurnOperationResult.Failed(dataResult.ErrorMessage ?? "Burn failed");
+                    burnResult = ToBurnOperationResult(dataResult);
                 }
                 else
                 {
-                    var dataResult = await _dataBurnService.BurnIsoFileAsync(
+                    dataResult = await _dataBurnService.BurnIsoFileAsync(
                         recorder,
                         item.ImagePath,
                         burnOptions,
                         progress,
                         cancellationToken).ConfigureAwait(false);
 
-                    burnResult = dataResult.Success
-                        ? BurnOperationResult.Succeeded(dataResult.SectorsWritten, dataResult.TotalTime, dataResult.AverageSpeedMultiplier)
-                        : BurnOperationResult.Failed(dataResult.ErrorMessage ?? "Burn failed");
+                    burnResult = ToBurnOperationResult(dataResult);
                 }
 
                 item.BurnResult = burnResult;
+                if (burnResult.Status == BurnStatus.Cancelled || dataResult?.Status == BurnStatus.Cancelled)
+                {
+                    cancelled = true;
+                    item.Status = BurnQueueItemStatus.Cancelled;
+                    item.ErrorMessage = burnResult.ErrorMessage ?? "Queue execution cancelled.";
+                    item.BurnResult = BurnOperationResult.CancelledResult(item.ErrorMessage);
+                    failureReason ??= item.ErrorMessage;
+                    MarkRemainingSkipped(items, i + 1);
+                    break;
+                }
+
                 if (burnResult.Success)
                 {
                     item.Status = BurnQueueItemStatus.Completed;
@@ -324,24 +329,19 @@ public class BurnQueueService
 
                     if (!continueOnError)
                     {
-                        for (int rem = i + 1; rem < items.Count; rem++)
-                        {
-                            items[rem].Status = BurnQueueItemStatus.Skipped;
-                        }
+                        MarkRemainingSkipped(items, i + 1);
                         break;
                     }
                 }
             }
-            catch (OperationCanceledException)
+            catch (OperationCanceledException oce)
             {
                 cancelled = true;
                 item.Status = BurnQueueItemStatus.Cancelled;
-                item.ErrorMessage = "Queue execution cancelled.";
+                item.ErrorMessage = string.IsNullOrWhiteSpace(oce.Message) ? "Queue execution cancelled." : oce.Message;
                 item.BurnResult = BurnOperationResult.CancelledResult(item.ErrorMessage);
-                for (int rem = i + 1; rem < items.Count; rem++)
-                {
-                    items[rem].Status = BurnQueueItemStatus.Skipped;
-                }
+                failureReason ??= item.ErrorMessage;
+                MarkRemainingSkipped(items, i + 1);
                 break;
             }
             catch (Exception ex)
@@ -354,10 +354,7 @@ public class BurnQueueService
 
                 if (!continueOnError)
                 {
-                    for (int rem = i + 1; rem < items.Count; rem++)
-                    {
-                        items[rem].Status = BurnQueueItemStatus.Skipped;
-                    }
+                    MarkRemainingSkipped(items, i + 1);
                     break;
                 }
             }
@@ -383,6 +380,21 @@ public class BurnQueueService
             ErrorMessage = failureReason
         };
     }
+
+    private static void MarkRemainingSkipped(IReadOnlyList<BurnQueueItem> items, int startIndex)
+    {
+        for (int rem = startIndex; rem < items.Count; rem++)
+        {
+            items[rem].Status = BurnQueueItemStatus.Skipped;
+        }
+    }
+
+    private static BurnOperationResult ToBurnOperationResult(DataBurnResult dataResult) =>
+        dataResult.Success
+            ? BurnOperationResult.Succeeded(dataResult.SectorsWritten, dataResult.TotalTime, dataResult.AverageSpeedMultiplier)
+            : dataResult.Status == BurnStatus.Cancelled
+                ? BurnOperationResult.CancelledResult(dataResult.ErrorMessage ?? "Queue execution cancelled.")
+                : BurnOperationResult.Failed(dataResult.ErrorMessage ?? "Burn failed");
 
     /// <summary>
     /// The queue burns data images only: <c>.iso</c>, a <c>.bin</c> holding an ISO 9660 volume, and Nero / Alcohol /

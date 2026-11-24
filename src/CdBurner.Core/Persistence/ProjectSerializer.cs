@@ -760,6 +760,7 @@ public static class ProjectSerializer
                     RawFileType = track.RawFileType,
                     HiddenAudioFrames = Math.Max(0, track.HiddenAudioFrames),
                     HiddenAudioPcmStreamFactory = hiddenFactory,
+                    HiddenAudioAlbumSource = hiddenFactory != null ? album : null,
                     PreEmphasis = track.PreEmphasis,
                     CopyPermitted = track.CopyPermitted,
                     DataTrack = dataTrack
