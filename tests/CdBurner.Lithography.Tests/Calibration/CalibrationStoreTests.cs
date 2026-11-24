@@ -116,7 +116,6 @@ public sealed class CalibrationStoreTests : IDisposable
     [InlineData("{ not json")]
     [InlineData("null")]
     [InlineData("{\"schemaVersion\":99,\"entries\":[]}")]
-    [InlineData("{\"schemaVersion\":1,\"entries\":[],\"extra\":true}")]
     public void Damaged_store_is_an_error_and_is_not_overwritten(string content)
     {
         Directory.CreateDirectory(Path.GetDirectoryName(StorePath)!);
@@ -125,5 +124,54 @@ public sealed class CalibrationStoreTests : IDisposable
         Assert.Throws<InvalidDataException>(() => CalibrationStore.Load(StorePath));
         Assert.Throws<InvalidDataException>(() => CalibrationStore.Save(StorePath, Entry("Drive A", "MCC 03RG20", Dvd(24, 58))));
         Assert.Equal(content, File.ReadAllText(StorePath));
+    }
+
+    [Fact]
+    public void Unknown_fields_and_one_bad_entry_do_not_hide_valid_entries()
+    {
+        CalibrationStore.Save(StorePath, Entry("Drive A", "MCC 03RG20", Dvd(24, 58)));
+        string validJson = File.ReadAllText(StorePath);
+
+        // Inject a top-level unknown field, an unknown field on the valid entry, and one malformed entry
+        using var doc = System.Text.Json.JsonDocument.Parse(validJson);
+        string entryJson = doc.RootElement.GetProperty("entries")[0].GetRawText();
+        string entryWithExtra = entryJson[..^1] + ",\"futureField\":123}";
+        string badEntry = "{\"driveModel\":\"\",\"mediaId\":\"BAD\",\"rmsErrorMm\":-5}";
+        string mixed = $"{{\"schemaVersion\":1,\"extraTop\":true,\"entries\":[{entryWithExtra},{badEntry}]}}";
+        File.WriteAllText(StorePath, mixed);
+
+        CalibrationStoreDocument loaded = CalibrationStore.Load(StorePath);
+        CalibrationStoreEntry found = Assert.Single(loaded.Entries);
+        Assert.Equal("Drive A", found.DriveModel);
+        Assert.Equal("MCC 03RG20", found.MediaId);
+
+        // Saving a new entry preserves the existing valid entry
+        CalibrationStore.Save(StorePath, Entry("Drive B", "TYG03", Dvd(24.2, 57.8)));
+        CalibrationStoreDocument afterSave = CalibrationStore.Load(StorePath);
+        Assert.Equal(2, afterSave.Entries.Count);
+    }
+
+    [Fact]
+    public void Damaged_primary_file_falls_back_to_backup()
+    {
+        CalibrationStore.Save(StorePath, Entry("Drive A", "MCC 03RG20", Dvd(24, 58)));
+        Assert.True(File.Exists(StorePath + ".bak"));
+
+        File.WriteAllText(StorePath, "{ truncated");
+
+        CalibrationStoreDocument recovered = CalibrationStore.Load(StorePath);
+        CalibrationStoreEntry entry = Assert.Single(recovered.Entries);
+        Assert.Equal("Drive A", entry.DriveModel);
+    }
+
+    [Fact]
+    public async Task Concurrent_saves_preserve_all_distinct_entries_without_temp_leftovers()
+    {
+        await Task.WhenAll(Enumerable.Range(0, 12).Select(i => Task.Run(() =>
+            CalibrationStore.Save(StorePath, Entry($"Drive-{i}", $"MEDIA-{i}", Dvd(24.0 + i * 0.01, 58.0))))));
+
+        CalibrationStoreDocument loaded = CalibrationStore.Load(StorePath);
+        Assert.Equal(12, loaded.Entries.Count);
+        Assert.Empty(Directory.GetFiles(Path.GetDirectoryName(StorePath)!, "*.tmp"));
     }
 }

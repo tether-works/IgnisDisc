@@ -341,6 +341,21 @@ public class SerializedAudioTrack
     public int PreGapFrames { get; set; } = 150;
 
     /// <summary>
+    /// Length of hidden pre-gap audio before track 1 INDEX 01 in Red Book frames (75 fps), if any.
+    /// </summary>
+    public int HiddenAudioFrames { get; set; }
+
+    /// <summary>
+    /// Whether the track is flagged with Red Book 50/15 us pre-emphasis (CUE FLAGS PRE).
+    /// </summary>
+    public bool PreEmphasis { get; set; }
+
+    /// <summary>
+    /// Whether digital copying is permitted for this track (CUE FLAGS DCP).
+    /// </summary>
+    public bool CopyPermitted { get; set; }
+
+    /// <summary>
     /// Whether to apply peak audio normalization during burning.
     /// </summary>
     public bool NormalizeAudio { get; set; }

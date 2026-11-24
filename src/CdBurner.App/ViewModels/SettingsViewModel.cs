@@ -453,7 +453,9 @@ public class SettingsViewModel : ObservableObject
             _loading = false;
         }
         RefreshToolStatuses();
-        StatusMessage = Strings.StatusSettingsSettingsLoaded;
+        StatusMessage = !string.IsNullOrWhiteSpace(_settingsService.LastLoadWarning)
+            ? _settingsService.LastLoadWarning
+            : Strings.StatusSettingsSettingsLoaded;
     }
 
     private void LoadValues()

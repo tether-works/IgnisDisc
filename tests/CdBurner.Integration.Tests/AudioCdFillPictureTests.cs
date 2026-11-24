@@ -620,6 +620,28 @@ public sealed class AudioCdFillPictureTests : IDisposable
         Assert.Equal(AudioCdFillPicture.DefaultDisc(), ignoredDvd);
     }
 
+    [Fact]
+    public async Task Corrupt_calibration_store_does_not_break_picture_resolution_or_burn()
+    {
+        string cue = WriteAlbum();
+        string picture = WritePicture("picture.png", HalfPng());
+        string store = Path.Combine(_tempDir, "corrupt", CalibrationStore.FileName);
+        Directory.CreateDirectory(Path.GetDirectoryName(store)!);
+        File.WriteAllText(store, "{ corrupt json");
+
+        CdDiscParameters fallback = AudioCdFillPicture.ResolveDisc(
+            "IGNIS VIRTUAL DVD/CD-RW", "VIRTUAL-OPTICAL-01", store, out string? source);
+        Assert.Null(source);
+        Assert.Equal(AudioCdFillPicture.DefaultDisc(), fallback);
+
+        using var medium = new VirtualDiscMedium(DiscMediaType.CdR, DiscSectors);
+        _recorder.InsertMedia(medium);
+        var burn = await Cli("burn-audio", "--drive", "VDRV-01", "--tracks", cue, "--dao", "--native",
+            "--fill-picture", picture, "--store", store, "--json");
+        Assert.True(burn.Exit == 0, burn.Out + burn.Err);
+        Assert.Equal(2, medium.Sessions.Count);
+    }
+
     /// <summary>Answers a MusicBrainz release search with one release and the Cover Art Archive with a PNG.</summary>
     private sealed class CoverServer(string releaseId, byte[] png) : HttpMessageHandler
     {

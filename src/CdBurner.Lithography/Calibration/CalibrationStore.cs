@@ -1,6 +1,9 @@
 // SPDX-License-Identifier: GPL-3.0-or-later
 // Copyright (c) 2026 tetherworks
 
+using System.Collections.Concurrent;
+using System.Diagnostics;
+using System.Text;
 using System.Text.Json;
 using System.Text.Json.Serialization;
 
@@ -30,13 +33,14 @@ public static class CalibrationStore
     public const string FileName = "disc-calibrations.json";
     public const int MaxKeyLength = 128;
     private const long MaxFileBytes = 4 * 1024 * 1024;
+    private static readonly UTF8Encoding Utf8NoBom = new(encoderShouldEmitUTF8Identifier: false);
+    private static readonly ConcurrentDictionary<string, object> PathLocks = new(StringComparer.OrdinalIgnoreCase);
 
     private static readonly JsonSerializerOptions JsonOptions = new()
     {
         PropertyNamingPolicy = JsonNamingPolicy.CamelCase,
         WriteIndented = true,
         Converters = { new JsonStringEnumConverter() },
-        UnmappedMemberHandling = JsonUnmappedMemberHandling.Disallow,
     };
 
     public static string GetDefaultPath()
@@ -56,32 +60,116 @@ public static class CalibrationStore
         return trimmed;
     }
 
-    /// <summary>Reads the store; a missing file is an empty store. A damaged file is an error, never silently
-    /// replaced, so saved calibrations are not lost by a later write.</summary>
+    /// <summary>Reads the store; a missing file is an empty store. Unknown properties and individual malformed entries
+    /// are skipped so valid entries remain usable; if the primary file is unreadable, a <c>.bak</c> copy is used if valid.</summary>
     public static CalibrationStoreDocument Load(string path)
     {
         ArgumentException.ThrowIfNullOrWhiteSpace(path);
         string fullPath = Path.GetFullPath(path);
-        if (!File.Exists(fullPath)) return new CalibrationStoreDocument(CurrentSchemaVersion, []);
-        if (new FileInfo(fullPath).Length > MaxFileBytes)
-            throw new InvalidDataException($"The calibration store is too large: {fullPath}");
-        CalibrationStoreDocument? document;
+        lock (GetPathLock(fullPath))
+        {
+            return LoadCore(fullPath);
+        }
+    }
+
+    private static CalibrationStoreDocument LoadCore(string fullPath)
+    {
+        if (!File.Exists(fullPath))
+        {
+            return new CalibrationStoreDocument(CurrentSchemaVersion, []);
+        }
+
         try
         {
-            document = JsonSerializer.Deserialize<CalibrationStoreDocument>(File.ReadAllText(fullPath), JsonOptions);
+            return LoadFromSingleFile(fullPath);
+        }
+        catch (InvalidDataException primaryError)
+        {
+            string backupPath = fullPath + ".bak";
+            if (File.Exists(backupPath))
+            {
+                try
+                {
+                    CalibrationStoreDocument recovered = LoadFromSingleFile(backupPath);
+                    Trace.TraceWarning($"Calibration store '{fullPath}' was damaged ({primaryError.Message}); recovered from '{backupPath}'.");
+                    return recovered;
+                }
+                catch (Exception bakEx) when (bakEx is InvalidDataException or IOException or UnauthorizedAccessException)
+                {
+                    Trace.TraceWarning($"Calibration store '{fullPath}' and backup '{backupPath}' could not be read: {bakEx.Message}");
+                }
+            }
+
+            throw;
+        }
+    }
+
+    private static CalibrationStoreDocument LoadFromSingleFile(string filePath)
+    {
+        string json;
+        using (var stream = new FileStream(filePath, FileMode.Open, FileAccess.Read, FileShare.ReadWrite | FileShare.Delete, 4096, FileOptions.SequentialScan))
+        {
+            if (stream.Length > MaxFileBytes)
+                throw new InvalidDataException($"The calibration store is too large: {filePath}");
+            using var reader = new StreamReader(stream, Encoding.UTF8, detectEncodingFromByteOrderMarks: true);
+            json = reader.ReadToEnd();
+        }
+
+        using JsonDocument doc = ParseJsonDocument(json, filePath);
+        JsonElement root = doc.RootElement;
+        if (root.ValueKind != JsonValueKind.Object)
+            throw new InvalidDataException($"The calibration store is empty or incomplete: {filePath}");
+
+        if (!root.TryGetProperty("schemaVersion", out JsonElement versionEl)
+            || versionEl.ValueKind != JsonValueKind.Number
+            || !versionEl.TryGetInt32(out int schemaVersion))
+        {
+            throw new InvalidDataException($"The calibration store is empty or incomplete: {filePath}");
+        }
+
+        if (schemaVersion != CurrentSchemaVersion)
+        {
+            throw new InvalidDataException(
+                $"The calibration store has schema version {schemaVersion}; this version reads {CurrentSchemaVersion}: {filePath}");
+        }
+
+        if (!root.TryGetProperty("entries", out JsonElement entriesEl) || entriesEl.ValueKind != JsonValueKind.Array)
+            throw new InvalidDataException($"The calibration store is empty or incomplete: {filePath}");
+
+        var validEntries = new List<CalibrationStoreEntry>();
+        foreach (JsonElement element in entriesEl.EnumerateArray())
+        {
+            try
+            {
+                CalibrationStoreEntry? entry = element.Deserialize<CalibrationStoreEntry>(JsonOptions);
+                if (entry is null)
+                {
+                    Trace.TraceWarning($"Skipped null calibration entry in '{filePath}'.");
+                    continue;
+                }
+
+                Validate(entry, filePath);
+                validEntries.Add(entry);
+            }
+            catch (Exception ex) when (ex is JsonException or InvalidDataException)
+            {
+                Trace.TraceWarning($"Skipped invalid calibration entry in '{filePath}': {ex.Message}");
+            }
+        }
+
+        return new CalibrationStoreDocument(CurrentSchemaVersion, validEntries);
+    }
+
+    private static JsonDocument ParseJsonDocument(string json, string filePath)
+    {
+        try
+        {
+            return JsonDocument.Parse(json);
         }
         catch (JsonException ex)
         {
-            throw new InvalidDataException($"The calibration store is not valid JSON: {fullPath} ({ex.Message})", ex);
+            throw new InvalidDataException($"The calibration store is not valid JSON: {filePath} ({ex.Message})", ex);
         }
-
-        if (document is null || document.Entries is null)
-            throw new InvalidDataException($"The calibration store is empty or incomplete: {fullPath}");
-        if (document.SchemaVersion != CurrentSchemaVersion)
-            throw new InvalidDataException(
-                $"The calibration store has schema version {document.SchemaVersion}; this version reads {CurrentSchemaVersion}: {fullPath}");
-        foreach (CalibrationStoreEntry entry in document.Entries) Validate(entry, fullPath);
-        return document;
     }
 
     /// <summary>The saved calibration for a drive model and media ID, or null.</summary>
@@ -97,8 +185,8 @@ public static class CalibrationStore
 
     /// <summary>
     /// Adds the entry, replacing an earlier one for the same drive model, media ID and disc type, and writes the
-    /// file through a temporary file so a crash cannot leave half a store. Two programs saving at the same moment
-    /// are not coordinated: the later write wins.
+    /// file atomically through a temporary file with a <c>.bak</c> backup. Concurrent calls on the same store path
+    /// are serialized so updates do not overwrite each other.
     /// </summary>
     public static CalibrationStoreDocument Save(string path, CalibrationStoreEntry entry)
     {
@@ -111,28 +199,71 @@ public static class CalibrationStore
             MediaId = NormalizeKey(entry.MediaId, "media ID"),
         };
         Validate(normalized, fullPath);
-        CalibrationStoreDocument current = Load(fullPath);
-        List<CalibrationStoreEntry> entries = current.Entries
-            .Where(existing => !(SameKey(existing, normalized.DriveModel, normalized.MediaId)
-                && existing.Parameters.Kind == normalized.Parameters.Kind))
-            .ToList();
-        entries.Add(normalized);
-        CalibrationStoreDocument updated = new(CurrentSchemaVersion, entries);
 
-        string? directory = Path.GetDirectoryName(fullPath);
-        if (!string.IsNullOrEmpty(directory)) Directory.CreateDirectory(directory);
-        string temporary = fullPath + "." + Guid.NewGuid().ToString("N") + ".tmp";
+        lock (GetPathLock(fullPath))
+        {
+            CalibrationStoreDocument current = LoadCore(fullPath);
+            List<CalibrationStoreEntry> entries = current.Entries
+                .Where(existing => !(SameKey(existing, normalized.DriveModel, normalized.MediaId)
+                    && existing.Parameters.Kind == normalized.Parameters.Kind))
+                .ToList();
+            entries.Add(normalized);
+            CalibrationStoreDocument updated = new(CurrentSchemaVersion, entries);
+
+            string? directory = Path.GetDirectoryName(fullPath);
+            if (!string.IsNullOrEmpty(directory)) Directory.CreateDirectory(directory);
+            string json = JsonSerializer.Serialize(updated, JsonOptions);
+            string temporary = fullPath + "." + Guid.NewGuid().ToString("N") + ".tmp";
+            string bakTemp = fullPath + "." + Guid.NewGuid().ToString("N") + ".bak.tmp";
+            try
+            {
+                WriteAtomicText(temporary, json);
+                File.Move(temporary, fullPath, overwrite: true);
+                TryWriteBackup(fullPath, bakTemp, json);
+            }
+            finally
+            {
+                TryDeleteFile(temporary);
+                TryDeleteFile(bakTemp);
+            }
+
+            return updated;
+        }
+    }
+
+    private static object GetPathLock(string fullPath)
+        => PathLocks.GetOrAdd(fullPath, static _ => new object());
+
+    private static void WriteAtomicText(string path, string content)
+    {
+        using var stream = new FileStream(path, FileMode.CreateNew, FileAccess.Write, FileShare.None, 4096, FileOptions.WriteThrough);
+        using var writer = new StreamWriter(stream, Utf8NoBom);
+        writer.Write(content);
+        writer.Flush();
+        stream.Flush(flushToDisk: true);
+    }
+
+    private static void TryWriteBackup(string fullPath, string bakTemp, string json)
+    {
         try
         {
-            File.WriteAllText(temporary, JsonSerializer.Serialize(updated, JsonOptions));
-            File.Move(temporary, fullPath, overwrite: true);
+            WriteAtomicText(bakTemp, json);
+            File.Move(bakTemp, fullPath + ".bak", overwrite: true);
         }
-        finally
+        catch (Exception ex) when (ex is IOException or UnauthorizedAccessException)
         {
-            if (File.Exists(temporary)) File.Delete(temporary);
+            Trace.TraceWarning($"Could not update calibration store backup '{fullPath}.bak': {ex.Message}");
         }
+    }
 
-        return updated;
+    private static void TryDeleteFile(string path)
+    {
+        try
+        {
+            if (File.Exists(path)) File.Delete(path);
+        }
+        catch (IOException) { }
+        catch (UnauthorizedAccessException) { }
     }
 
     private static bool SameKey(CalibrationStoreEntry entry, string driveModel, string mediaId)

@@ -1,6 +1,8 @@
+using System.Diagnostics;
 using System.Text;
 using System.Text.Json;
 using System.Text.Json.Serialization;
+using System.Threading.Channels;
 
 namespace CdBurner.Core.Persistence;
 
@@ -108,6 +110,9 @@ public sealed record BurnLogEntry
 /// </summary>
 public sealed class StructuredBurnLogger : IDisposable, IAsyncDisposable
 {
+    private const int MaxPendingFileEntries = 16_384;
+    private static readonly UTF8Encoding Utf8NoBom = new(encoderShouldEmitUTF8Identifier: false);
+
     private static readonly JsonSerializerOptions JsonlSerializerOptions = new()
     {
         WriteIndented = false,
@@ -124,7 +129,15 @@ public sealed class StructuredBurnLogger : IDisposable, IAsyncDisposable
 
     private readonly string? _jsonlFilePath;
     private StreamWriter? _jsonlWriter;
+    private Channel<string>? _jsonlChannel;
+    private Task? _jsonlWriterTask;
+    private Exception? _lastWriteException;
     private bool _isDisposed;
+
+    /// <summary>
+    /// Most recent error encountered while serializing or flushing JSONL log output, if any.
+    /// </summary>
+    public Exception? LastWriteException => Volatile.Read(ref _lastWriteException);
 
     /// <summary>
     /// Event triggered whenever a new log entry is recorded.
@@ -185,10 +198,19 @@ public sealed class StructuredBurnLogger : IDisposable, IAsyncDisposable
             var stream = new FileStream(jsonlFilePath, FileMode.Append, FileAccess.Write, FileShare.ReadWrite);
             try
             {
-                _jsonlWriter = new StreamWriter(stream, Encoding.UTF8) { AutoFlush = true };
+                _jsonlWriter = new StreamWriter(stream, Utf8NoBom);
+                _jsonlChannel = Channel.CreateBounded<string>(new BoundedChannelOptions(MaxPendingFileEntries)
+                {
+                    SingleReader = true,
+                    SingleWriter = false,
+                    FullMode = BoundedChannelFullMode.DropOldest
+                });
+                _jsonlWriterTask = Task.Run(() => DrainJsonlAsync(_jsonlWriter, _jsonlChannel.Reader));
             }
             catch
             {
+                _jsonlWriter?.Dispose();
+                _jsonlWriter = null;
                 stream.Dispose();
                 throw;
             }
@@ -201,6 +223,12 @@ public sealed class StructuredBurnLogger : IDisposable, IAsyncDisposable
     public void Log(BurnLogEntry entry)
     {
         ArgumentNullException.ThrowIfNull(entry);
+
+        string? jsonLine = null;
+        if (_jsonlChannel != null)
+        {
+            TrySerializeJsonl(entry, out jsonLine);
+        }
 
         Action<BurnLogEntry>? callback;
 
@@ -219,24 +247,52 @@ public sealed class StructuredBurnLogger : IDisposable, IAsyncDisposable
                 _count++;
             }
 
-            // Stream to JSONL file if configured
-            if (_jsonlWriter != null)
+            if (_jsonlChannel != null && jsonLine != null)
             {
-                try
-                {
-                    string jsonLine = JsonSerializer.Serialize(entry, JsonlSerializerOptions);
-                    _jsonlWriter.WriteLine(jsonLine);
-                }
-                catch
-                {
-                    // Swallowing file I/O exceptions on diagnostic log write to prevent caller crash
-                }
+                _jsonlChannel.Writer.TryWrite(jsonLine);
             }
 
             callback = EntryLogged;
         }
 
         callback?.Invoke(entry);
+    }
+
+    private bool TrySerializeJsonl(BurnLogEntry entry, out string? jsonLine)
+    {
+        try
+        {
+            jsonLine = JsonSerializer.Serialize(entry, JsonlSerializerOptions);
+            return true;
+        }
+        catch (Exception ex) when (ex is JsonException or NotSupportedException)
+        {
+            Volatile.Write(ref _lastWriteException, ex);
+            Trace.TraceWarning($"StructuredBurnLogger could not serialize log entry: {ex.Message}");
+            jsonLine = null;
+            return false;
+        }
+    }
+
+    private async Task DrainJsonlAsync(StreamWriter writer, ChannelReader<string> reader)
+    {
+        try
+        {
+            while (await reader.WaitToReadAsync().ConfigureAwait(false))
+            {
+                while (reader.TryRead(out string? line))
+                {
+                    await writer.WriteLineAsync(line).ConfigureAwait(false);
+                }
+
+                await writer.FlushAsync().ConfigureAwait(false);
+            }
+        }
+        catch (Exception ex) when (ex is IOException or UnauthorizedAccessException or ObjectDisposedException)
+        {
+            Volatile.Write(ref _lastWriteException, ex);
+            Trace.TraceWarning($"StructuredBurnLogger JSONL write failed for '{_jsonlFilePath}': {ex.Message}");
+        }
     }
 
     /// <summary>
@@ -343,7 +399,7 @@ public sealed class StructuredBurnLogger : IDisposable, IAsyncDisposable
             Directory.CreateDirectory(dir);
         }
 
-        using var writer = new StreamWriter(destinationFilePath, append: false, Encoding.UTF8);
+        using var writer = new StreamWriter(destinationFilePath, append: false, Utf8NoBom);
         foreach (var entry in entries)
         {
             writer.WriteLine(entry.ToFormattedText());
@@ -365,7 +421,7 @@ public sealed class StructuredBurnLogger : IDisposable, IAsyncDisposable
             Directory.CreateDirectory(dir);
         }
 
-        await using var writer = new StreamWriter(destinationFilePath, append: false, Encoding.UTF8);
+        await using var writer = new StreamWriter(destinationFilePath, append: false, Utf8NoBom);
         foreach (var entry in entries)
         {
             cancellationToken.ThrowIfCancellationRequested();
@@ -388,6 +444,10 @@ public sealed class StructuredBurnLogger : IDisposable, IAsyncDisposable
 
     public void Dispose()
     {
+        Channel<string>? channel;
+        Task? writerTask;
+        StreamWriter? writer;
+
         lock (_syncLock)
         {
             if (_isDisposed)
@@ -396,29 +456,72 @@ public sealed class StructuredBurnLogger : IDisposable, IAsyncDisposable
             }
 
             _isDisposed = true;
-            _jsonlWriter?.Flush();
-            _jsonlWriter?.Dispose();
+            channel = _jsonlChannel;
+            writerTask = _jsonlWriterTask;
+            writer = _jsonlWriter;
+            _jsonlChannel = null;
+            _jsonlWriterTask = null;
             _jsonlWriter = null;
+        }
+
+        channel?.Writer.TryComplete();
+        if (writerTask != null)
+        {
+            writerTask.GetAwaiter().GetResult();
+        }
+
+        if (writer != null)
+        {
+            try
+            {
+                writer.Flush();
+            }
+            catch (Exception ex) when (ex is IOException or UnauthorizedAccessException or ObjectDisposedException)
+            {
+                Volatile.Write(ref _lastWriteException, ex);
+            }
+            writer.Dispose();
         }
     }
 
     public async ValueTask DisposeAsync()
     {
-        StreamWriter? writer = null;
+        Channel<string>? channel;
+        Task? writerTask;
+        StreamWriter? writer;
 
         lock (_syncLock)
         {
-            if (!_isDisposed)
+            if (_isDisposed)
             {
-                _isDisposed = true;
-                writer = _jsonlWriter;
-                _jsonlWriter = null;
+                return;
             }
+
+            _isDisposed = true;
+            channel = _jsonlChannel;
+            writerTask = _jsonlWriterTask;
+            writer = _jsonlWriter;
+            _jsonlChannel = null;
+            _jsonlWriterTask = null;
+            _jsonlWriter = null;
+        }
+
+        channel?.Writer.TryComplete();
+        if (writerTask != null)
+        {
+            await writerTask.ConfigureAwait(false);
         }
 
         if (writer != null)
         {
-            await writer.FlushAsync().ConfigureAwait(false);
+            try
+            {
+                await writer.FlushAsync().ConfigureAwait(false);
+            }
+            catch (Exception ex) when (ex is IOException or UnauthorizedAccessException or ObjectDisposedException)
+            {
+                Volatile.Write(ref _lastWriteException, ex);
+            }
             await writer.DisposeAsync().ConfigureAwait(false);
         }
     }

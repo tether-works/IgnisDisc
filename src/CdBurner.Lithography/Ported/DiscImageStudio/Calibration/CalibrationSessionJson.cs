@@ -4,6 +4,7 @@
 // https://github.com/JiaFeiMiao-K-Cat/DiscImageStudio/blob/619ec7505ac8955f35fe2f353ebda74b6ea90dda/src/DiscImageStudio.Core/Calibration/CalibrationSessionJson.cs
 // IgnisDisc changes: namespace; messages in English, taken from upstream's own translation catalog. See THIRD-PARTY-NOTICES.md.
 
+using System.Text;
 using System.Text.Json;
 using System.Text.Json.Serialization;
 
@@ -181,19 +182,31 @@ public static class CalibrationSessionJson
         string temporary = fullPath + "." + Guid.NewGuid().ToString("N") + ".tmp";
         try
         {
-            File.WriteAllText(temporary, json);
+            using (var stream = new FileStream(temporary, FileMode.CreateNew, FileAccess.Write, FileShare.None, 4096, FileOptions.WriteThrough))
+            using (var writer = new StreamWriter(stream, new UTF8Encoding(encoderShouldEmitUTF8Identifier: false)))
+            {
+                writer.Write(json);
+                writer.Flush();
+                stream.Flush(flushToDisk: true);
+            }
             File.Move(temporary, fullPath, overwrite: true);
         }
         finally
         {
-            if (File.Exists(temporary)) File.Delete(temporary);
+            try
+            {
+                if (File.Exists(temporary)) File.Delete(temporary);
+            }
+            catch (IOException) { }
+            catch (UnauthorizedAccessException) { }
         }
     }
 
     public static CalibrationSession Load(string path)
     {
-        var info = new FileInfo(path);
-        if (info.Length > CalibrationPhotoLimits.MaxSessionLength) throw new ArgumentException("The calibration record file is too large.");
-        return Deserialize(File.ReadAllText(path));
+        using var stream = new FileStream(path, FileMode.Open, FileAccess.Read, FileShare.ReadWrite | FileShare.Delete, 4096, FileOptions.SequentialScan);
+        if (stream.Length > CalibrationPhotoLimits.MaxSessionLength) throw new ArgumentException("The calibration record file is too large.");
+        using var reader = new StreamReader(stream, Encoding.UTF8, detectEncodingFromByteOrderMarks: true);
+        return Deserialize(reader.ReadToEnd());
     }
 }

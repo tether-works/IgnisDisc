@@ -632,8 +632,10 @@ public class ProjectPersistenceTests : IDisposable
         Assert.Contains(logLines, l => l.Contains("[INFO]") && l.Contains("[BurnEngine]"));
         Assert.Contains(logLines, l => l.Contains("[WARN]"));
 
-        // 5. Verify streaming JSONL file contents
         Assert.True(File.Exists(jsonlPath));
+        byte[] rawBytes = await File.ReadAllBytesAsync(jsonlPath);
+        Assert.False(rawBytes.Length >= 3 && rawBytes[0] == 0xEF && rawBytes[1] == 0xBB && rawBytes[2] == 0xBF,
+            "JSONL output must not begin with a UTF-8 BOM.");
         string[] jsonLines = await File.ReadAllLinesAsync(jsonlPath);
         Assert.Equal(totalEntriesToWrite, jsonLines.Length);
 
@@ -696,6 +698,163 @@ public class ProjectPersistenceTests : IDisposable
         await Assert.ThrowsAsync<ArgumentException>(() => ProjectSerializer.SaveToFileAsync(new CdBurnerProjectDocument(), ""));
         await Assert.ThrowsAsync<FileNotFoundException>(() => ProjectSerializer.LoadFromFileAsync(Path.Combine(_testTempDir, "non_existent.cdbproj")));
         Assert.Throws<ArgumentNullException>(() => ProjectSerializer.ValidateProjectSources(null!));
+    }
+
+    [Fact]
+    public async Task AppSettingsService_SurvivesConcurrentSaves_AndLeavesNoTempFiles()
+    {
+        string settingsPath = Path.Combine(_testTempDir, "concurrent", "settings.json");
+        var service = new AppSettingsService(settingsPath);
+
+        await Task.WhenAll(Enumerable.Range(0, 24).Select(i => Task.Run(async () =>
+        {
+            service.CurrentSettings = new AppSettings
+            {
+                DefaultWriteSpeedMultiplier = 8 + (i % 16),
+                StrictVerify = (i % 2) == 0,
+                AudioReadOffsetSamples = i
+            };
+            if (i % 2 == 0)
+            {
+                await service.SaveAsync();
+            }
+            else
+            {
+                service.Save();
+            }
+        })));
+
+        var reloaded = await AppSettingsService.LoadFromFileAsync(settingsPath);
+        Assert.Equal(AppSettings.CurrentVersion, reloaded.SettingsVersion);
+        Assert.InRange(reloaded.DefaultWriteSpeedMultiplier, 8, 23);
+        Assert.True(File.Exists(settingsPath + ".bak"));
+        Assert.Empty(Directory.GetFiles(Path.GetDirectoryName(settingsPath)!, "*.tmp"));
+    }
+
+    [Fact]
+    public async Task AppSettingsService_RecoversFromBackupAndSurfacesWarning_AndNeverSwallowsCancellation()
+    {
+        string settingsPath = Path.Combine(_testTempDir, "recovery", "settings.json");
+        var original = new AppSettingsService(settingsPath)
+        {
+            CurrentSettings = new AppSettings
+            {
+                DefaultWriteSpeedMultiplier = 12,
+                AudioReadOffsetSamples = 42,
+                StrictVerify = true
+            }
+        };
+        await original.SaveAsync();
+
+        File.WriteAllText(settingsPath, "{ corrupt json");
+
+        var recoveredService = new AppSettingsService(settingsPath);
+        string? eventWarning = null;
+        recoveredService.LoadWarning += w => eventWarning = w;
+        recoveredService.Load();
+
+        Assert.Equal(12, recoveredService.CurrentSettings.DefaultWriteSpeedMultiplier);
+        Assert.Equal(42, recoveredService.CurrentSettings.AudioReadOffsetSamples);
+        Assert.True(recoveredService.CurrentSettings.StrictVerify);
+        Assert.False(string.IsNullOrWhiteSpace(recoveredService.LastLoadWarning));
+        Assert.Equal(recoveredService.LastLoadWarning, eventWarning);
+
+        // Corrupt without backup still surfaces warning
+        File.Delete(settingsPath + ".bak");
+        var noBackupService = new AppSettingsService(settingsPath);
+        noBackupService.Load();
+        Assert.False(string.IsNullOrWhiteSpace(noBackupService.LastLoadWarning));
+
+        // Pre-canceled tokens must propagate OperationCanceledException
+        using var cts = new CancellationTokenSource();
+        cts.Cancel();
+        await Assert.ThrowsAnyAsync<OperationCanceledException>(() => recoveredService.LoadAsync(cts.Token));
+        await Assert.ThrowsAnyAsync<OperationCanceledException>(() => AppSettingsService.LoadFromFileAsync(settingsPath, cts.Token));
+        await Assert.ThrowsAnyAsync<OperationCanceledException>(() => recoveredService.SaveAsync(cts.Token));
+        await Assert.ThrowsAnyAsync<OperationCanceledException>(() => AppSettingsService.SaveToFileAsync(new AppSettings(), settingsPath, cts.Token));
+    }
+
+    [Fact]
+    public async Task AudioCd_RoundTrip_PreservesPreEmphasisCopyPermittedAndHiddenAudioFrames()
+    {
+        string projectPath = Path.Combine(_testTempDir, "flags_htoa.cdbproj");
+        var comp = new AudioCdCompilation();
+        comp.AddTrack(new AudioCdTrackItem(1, @"C:\Audio\album.flac", "Intro", "Band")
+        {
+            DurationFrames = 1000,
+            SourceStartFrame = 150,
+            SourceFrameCount = 1000,
+            HiddenAudioFrames = 150,
+            PreEmphasis = true,
+            CopyPermitted = true
+        });
+        comp.AddTrack(new AudioCdTrackItem(2, @"C:\Audio\album.flac", "Main", "Band")
+        {
+            DurationFrames = 2000,
+            SourceStartFrame = 1150,
+            SourceFrameCount = 2000,
+            PreEmphasis = false,
+            CopyPermitted = false
+        });
+
+        var doc = ProjectSerializer.FromAudioCdCompilation(comp);
+        await ProjectSerializer.SaveToFileAsync(doc, projectPath);
+        var loadedDoc = await ProjectSerializer.LoadFromFileAsync(projectPath);
+        var reloaded = ProjectSerializer.ToAudioCdCompilation(loadedDoc);
+
+        Assert.Equal(2, reloaded.TrackCount);
+        Assert.Equal(150, reloaded.Tracks[0].HiddenAudioFrames);
+        Assert.NotNull(reloaded.Tracks[0].HiddenAudioPcmStreamFactory);
+        Assert.True(reloaded.Tracks[0].PreEmphasis);
+        Assert.True(reloaded.Tracks[0].CopyPermitted);
+        Assert.Equal(0, reloaded.Tracks[1].HiddenAudioFrames);
+        Assert.False(reloaded.Tracks[1].PreEmphasis);
+        Assert.False(reloaded.Tracks[1].CopyPermitted);
+    }
+
+    [Fact]
+    public async Task ProjectSerializer_RejectsMissingBootImages_EnforcesTreeDepth_AndSavesAtomically()
+    {
+        string missingDefault = Path.Combine(_testTempDir, "missing_bios.bin");
+        string missingAdditional = Path.Combine(_testTempDir, "missing_efi.img");
+        var bootOptions = new SerializedBootOptions
+        {
+            DefaultEntry = new SerializedBootCatalogEntry { BootImageFilePath = missingDefault },
+            AdditionalSectionEntries = { new SerializedBootCatalogEntry { BootImageFilePath = missingAdditional } }
+        };
+
+        ElToritoBootConfiguration? config = ProjectSerializer.ToBootConfiguration(bootOptions);
+        Assert.NotNull(config);
+        Assert.Throws<FileNotFoundException>(() => config!.DefaultEntry.BootImageStreamFactory());
+        Assert.Throws<FileNotFoundException>(() => config.AdditionalSectionEntries![0].BootImageStreamFactory());
+
+        // Deep nesting beyond MaxCompilationTreeDepth throws InvalidDataException instead of overflowing the stack
+        var leaf = new SerializedCompilationNode { IsDirectory = true, Name = "leaf" };
+        var current = leaf;
+        for (int i = 0; i <= ProjectSerializer.MaxCompilationTreeDepth + 5; i++)
+        {
+            current = new SerializedCompilationNode
+            {
+                IsDirectory = true,
+                Name = $"d{i}",
+                Children = { current }
+            };
+        }
+        Assert.Throws<InvalidDataException>(() => ProjectSerializer.ToCompilationNode(current));
+
+        // Canceled async save preserves existing project file and leaves no temp file
+        string projectPath = Path.Combine(_testTempDir, "atomic_project.cdbproj");
+        var initialDoc = new CdBurnerProjectDocument { Name = "Initial Project" };
+        await ProjectSerializer.SaveToFileAsync(initialDoc, projectPath);
+
+        using var cts = new CancellationTokenSource();
+        cts.Cancel();
+        await Assert.ThrowsAnyAsync<OperationCanceledException>(() =>
+            ProjectSerializer.SaveToFileAsync(new CdBurnerProjectDocument { Name = "Interrupted" }, projectPath, cts.Token));
+
+        var preserved = await ProjectSerializer.LoadFromFileAsync(projectPath);
+        Assert.Equal("Initial Project", preserved.Name);
+        Assert.Empty(Directory.GetFiles(_testTempDir, "*.tmp"));
     }
 
     #endregion

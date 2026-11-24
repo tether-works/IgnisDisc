@@ -1,4 +1,7 @@
-﻿using System.Text.Json;
+﻿using System.Collections.Concurrent;
+using System.Diagnostics;
+using System.Text;
+using System.Text.Json;
 using CdBurner.Core.Primitives;
 
 namespace CdBurner.Core.Persistence;
@@ -214,9 +217,23 @@ public class AppSettings
 /// </summary>
 public class AppSettingsService
 {
+    private static readonly UTF8Encoding Utf8NoBom = new(encoderShouldEmitUTF8Identifier: false);
+    private static readonly ConcurrentDictionary<string, SemaphoreSlim> PathLocks = new(StringComparer.OrdinalIgnoreCase);
+
     private readonly object _lock = new();
+    private readonly SemaphoreSlim _ioLock = new(1, 1);
     private readonly string _settingsFilePath;
     private AppSettings _currentSettings;
+
+    /// <summary>
+    /// Diagnostic warning recorded when the last load had to recover from backup or fall back to defaults.
+    /// </summary>
+    public string? LastLoadWarning { get; private set; }
+
+    /// <summary>
+    /// Raised when a load encounters a corrupt settings file and recovers from backup or falls back to defaults.
+    /// </summary>
+    public event Action<string>? LoadWarning;
 
     /// <summary>
     /// Current in-memory configuration settings snapshot. Setting a new value updates the snapshot thread-safely.
@@ -274,9 +291,25 @@ public class AppSettingsService
     /// </summary>
     public void Load()
     {
-        lock (_lock)
+        _ioLock.Wait();
+        string? warning;
+        try
         {
-            _currentSettings = LoadFromFile(_settingsFilePath);
+            AppSettings loaded = LoadFromFile(_settingsFilePath, out warning);
+            lock (_lock)
+            {
+                _currentSettings = loaded;
+                LastLoadWarning = warning;
+            }
+        }
+        finally
+        {
+            _ioLock.Release();
+        }
+
+        if (warning is not null)
+        {
+            LoadWarning?.Invoke(warning);
         }
     }
 
@@ -285,10 +318,27 @@ public class AppSettingsService
     /// </summary>
     public async Task LoadAsync(CancellationToken cancellationToken = default)
     {
-        var settings = await LoadFromFileAsync(_settingsFilePath, cancellationToken).ConfigureAwait(false);
-        lock (_lock)
+        cancellationToken.ThrowIfCancellationRequested();
+        await _ioLock.WaitAsync(cancellationToken).ConfigureAwait(false);
+        string? warning;
+        try
         {
-            _currentSettings = settings;
+            var (settings, loadWarning) = await LoadFromFileWithWarningAsync(_settingsFilePath, cancellationToken).ConfigureAwait(false);
+            warning = loadWarning;
+            lock (_lock)
+            {
+                _currentSettings = settings;
+                LastLoadWarning = warning;
+            }
+        }
+        finally
+        {
+            _ioLock.Release();
+        }
+
+        if (warning is not null)
+        {
+            LoadWarning?.Invoke(warning);
         }
     }
 
@@ -297,13 +347,21 @@ public class AppSettingsService
     /// </summary>
     public void Save()
     {
-        AppSettings snapshot;
-        lock (_lock)
+        _ioLock.Wait();
+        try
         {
-            snapshot = _currentSettings.Clone();
-        }
+            AppSettings snapshot;
+            lock (_lock)
+            {
+                snapshot = _currentSettings.Clone();
+            }
 
-        SaveToFile(snapshot, _settingsFilePath);
+            SaveToFile(snapshot, _settingsFilePath);
+        }
+        finally
+        {
+            _ioLock.Release();
+        }
     }
 
     /// <summary>
@@ -311,13 +369,22 @@ public class AppSettingsService
     /// </summary>
     public async Task SaveAsync(CancellationToken cancellationToken = default)
     {
-        AppSettings snapshot;
-        lock (_lock)
+        cancellationToken.ThrowIfCancellationRequested();
+        await _ioLock.WaitAsync(cancellationToken).ConfigureAwait(false);
+        try
         {
-            snapshot = _currentSettings.Clone();
-        }
+            AppSettings snapshot;
+            lock (_lock)
+            {
+                snapshot = _currentSettings.Clone();
+            }
 
-        await SaveToFileAsync(snapshot, _settingsFilePath, cancellationToken).ConfigureAwait(false);
+            await SaveToFileAsync(snapshot, _settingsFilePath, cancellationToken).ConfigureAwait(false);
+        }
+        finally
+        {
+            _ioLock.Release();
+        }
     }
 
     /// <summary>
@@ -328,96 +395,327 @@ public class AppSettingsService
         lock (_lock)
         {
             _currentSettings = new AppSettings();
+            LastLoadWarning = null;
         }
     }
 
     /// <summary>
     /// Synchronously reads an <see cref="AppSettings"/> instance from a JSON file.
-    /// Returns default settings if the file does not exist or fails to parse.
+    /// Recovers from a <c>.bak</c> backup if the primary file is corrupt, or returns defaults with a warning.
     /// </summary>
-    public static AppSettings LoadFromFile(string filePath)
+    public static AppSettings LoadFromFile(string filePath) => LoadFromFile(filePath, out _);
+
+    /// <summary>
+    /// Synchronously reads an <see cref="AppSettings"/> instance from a JSON file and reports any recovery warning.
+    /// </summary>
+    public static AppSettings LoadFromFile(string filePath, out string? warning)
     {
-        if (string.IsNullOrWhiteSpace(filePath) || !File.Exists(filePath))
+        warning = null;
+        if (string.IsNullOrWhiteSpace(filePath))
         {
             return new AppSettings();
         }
 
+        string fullPath = Path.GetFullPath(filePath);
+        SemaphoreSlim pathLock = GetPathLock(fullPath);
+        pathLock.Wait();
         try
         {
-            string json = File.ReadAllText(filePath);
-            var settings = JsonSerializer.Deserialize<AppSettings>(json, ProjectSerializer.JsonOptions) ?? new AppSettings();
-            settings.LogRingBufferCapacity = Math.Clamp(settings.LogRingBufferCapacity, 10, 100_000);
-            settings.AudioReadOffsetSamples = Math.Clamp(settings.AudioReadOffsetSamples, -10000, 10000);
-            settings.UpgradeToCurrentVersion();
-            return settings;
+            if (!File.Exists(fullPath))
+            {
+                return new AppSettings();
+            }
+
+            try
+            {
+                return ReadAndNormalizeSettings(fullPath);
+            }
+            catch (Exception ex) when (ex is JsonException or InvalidDataException or IOException or UnauthorizedAccessException)
+            {
+                return TryRecoverFromBackup(fullPath, ex, out warning);
+            }
         }
-        catch
+        finally
         {
-            return new AppSettings();
+            pathLock.Release();
         }
     }
 
     /// <summary>
     /// Asynchronously reads an <see cref="AppSettings"/> instance from a JSON file.
-    /// Returns default settings if the file does not exist or fails to parse.
+    /// Recovers from a <c>.bak</c> backup if the primary file is corrupt, or returns defaults with a logged warning.
     /// </summary>
     public static async Task<AppSettings> LoadFromFileAsync(string filePath, CancellationToken cancellationToken = default)
     {
-        if (string.IsNullOrWhiteSpace(filePath) || !File.Exists(filePath))
+        var (settings, _) = await LoadFromFileWithWarningAsync(filePath, cancellationToken).ConfigureAwait(false);
+        return settings;
+    }
+
+    private static async Task<(AppSettings Settings, string? Warning)> LoadFromFileWithWarningAsync(
+        string filePath,
+        CancellationToken cancellationToken)
+    {
+        cancellationToken.ThrowIfCancellationRequested();
+        if (string.IsNullOrWhiteSpace(filePath))
         {
-            return new AppSettings();
+            return (new AppSettings(), null);
         }
 
+        string fullPath = Path.GetFullPath(filePath);
+        SemaphoreSlim pathLock = GetPathLock(fullPath);
+        await pathLock.WaitAsync(cancellationToken).ConfigureAwait(false);
         try
         {
-            await using var stream = new FileStream(filePath, FileMode.Open, FileAccess.Read, FileShare.Read, 4096, useAsync: true);
-            var settings = await JsonSerializer.DeserializeAsync<AppSettings>(stream, ProjectSerializer.JsonOptions, cancellationToken).ConfigureAwait(false) ?? new AppSettings();
-            settings.LogRingBufferCapacity = Math.Clamp(settings.LogRingBufferCapacity, 10, 100_000);
-            settings.AudioReadOffsetSamples = Math.Clamp(settings.AudioReadOffsetSamples, -10000, 10000);
-            settings.UpgradeToCurrentVersion();
-            return settings;
+            if (!File.Exists(fullPath))
+            {
+                return (new AppSettings(), null);
+            }
+
+            try
+            {
+                AppSettings settings = await ReadAndNormalizeSettingsAsync(fullPath, cancellationToken).ConfigureAwait(false);
+                return (settings, null);
+            }
+            catch (Exception ex) when (ex is JsonException or InvalidDataException or IOException or UnauthorizedAccessException)
+            {
+                return await TryRecoverFromBackupAsync(fullPath, ex, cancellationToken).ConfigureAwait(false);
+            }
         }
-        catch
+        finally
         {
-            return new AppSettings();
+            pathLock.Release();
         }
     }
 
     /// <summary>
-    /// Synchronously writes an <see cref="AppSettings"/> instance to a JSON file.
+    /// Synchronously writes an <see cref="AppSettings"/> instance to a JSON file atomically.
     /// </summary>
     public static void SaveToFile(AppSettings settings, string filePath)
     {
         ArgumentNullException.ThrowIfNull(settings);
         ArgumentException.ThrowIfNullOrWhiteSpace(filePath);
 
-        string? dir = Path.GetDirectoryName(filePath);
-        if (!string.IsNullOrEmpty(dir) && !Directory.Exists(dir))
+        string fullPath = Path.GetFullPath(filePath);
+        SemaphoreSlim pathLock = GetPathLock(fullPath);
+        pathLock.Wait();
+        try
         {
-            Directory.CreateDirectory(dir);
-        }
+            EnsureParentDirectory(fullPath);
+            settings.SettingsVersion = AppSettings.CurrentVersion; // written by this build: never upgrade it again on load
+            string json = JsonSerializer.Serialize(settings, ProjectSerializer.JsonOptions);
 
-        settings.SettingsVersion = AppSettings.CurrentVersion; // written by this build: never upgrade it again on load
-        string json = JsonSerializer.Serialize(settings, ProjectSerializer.JsonOptions);
-        File.WriteAllText(filePath, json);
+            string tempPath = fullPath + "." + Guid.NewGuid().ToString("N") + ".tmp";
+            string bakTempPath = fullPath + "." + Guid.NewGuid().ToString("N") + ".bak.tmp";
+            try
+            {
+                using (var stream = new FileStream(tempPath, FileMode.CreateNew, FileAccess.Write, FileShare.None, 4096, FileOptions.WriteThrough))
+                using (var writer = new StreamWriter(stream, Utf8NoBom))
+                {
+                    writer.Write(json);
+                    writer.Flush();
+                    stream.Flush(flushToDisk: true);
+                }
+
+                File.Move(tempPath, fullPath, overwrite: true);
+                TryWriteBackup(fullPath, bakTempPath, json);
+            }
+            finally
+            {
+                TryDeleteFile(tempPath);
+                TryDeleteFile(bakTempPath);
+            }
+        }
+        finally
+        {
+            pathLock.Release();
+        }
     }
 
     /// <summary>
-    /// Asynchronously writes an <see cref="AppSettings"/> instance to a JSON file.
+    /// Asynchronously writes an <see cref="AppSettings"/> instance to a JSON file atomically.
     /// </summary>
     public static async Task SaveToFileAsync(AppSettings settings, string filePath, CancellationToken cancellationToken = default)
     {
+        cancellationToken.ThrowIfCancellationRequested();
         ArgumentNullException.ThrowIfNull(settings);
         ArgumentException.ThrowIfNullOrWhiteSpace(filePath);
 
-        string? dir = Path.GetDirectoryName(filePath);
+        string fullPath = Path.GetFullPath(filePath);
+        SemaphoreSlim pathLock = GetPathLock(fullPath);
+        await pathLock.WaitAsync(cancellationToken).ConfigureAwait(false);
+        try
+        {
+            EnsureParentDirectory(fullPath);
+            settings.SettingsVersion = AppSettings.CurrentVersion; // written by this build: never upgrade it again on load
+
+            string tempPath = fullPath + "." + Guid.NewGuid().ToString("N") + ".tmp";
+            string bakTempPath = fullPath + "." + Guid.NewGuid().ToString("N") + ".bak.tmp";
+            try
+            {
+                await using (var stream = new FileStream(tempPath, FileMode.CreateNew, FileAccess.Write, FileShare.None, 4096, useAsync: true))
+                {
+                    await JsonSerializer.SerializeAsync(stream, settings, ProjectSerializer.JsonOptions, cancellationToken).ConfigureAwait(false);
+                    await stream.FlushAsync(cancellationToken).ConfigureAwait(false);
+                }
+
+                cancellationToken.ThrowIfCancellationRequested();
+                File.Move(tempPath, fullPath, overwrite: true);
+                await TryWriteBackupAsync(fullPath, bakTempPath, settings, cancellationToken).ConfigureAwait(false);
+            }
+            finally
+            {
+                TryDeleteFile(tempPath);
+                TryDeleteFile(bakTempPath);
+            }
+        }
+        finally
+        {
+            pathLock.Release();
+        }
+    }
+
+    private static SemaphoreSlim GetPathLock(string fullPath)
+        => PathLocks.GetOrAdd(fullPath, static _ => new SemaphoreSlim(1, 1));
+
+    private static void EnsureParentDirectory(string fullPath)
+    {
+        string? dir = Path.GetDirectoryName(fullPath);
         if (!string.IsNullOrEmpty(dir) && !Directory.Exists(dir))
         {
             Directory.CreateDirectory(dir);
         }
+    }
 
-        settings.SettingsVersion = AppSettings.CurrentVersion; // written by this build: never upgrade it again on load
-        await using var stream = new FileStream(filePath, FileMode.Create, FileAccess.Write, FileShare.None, 4096, useAsync: true);
-        await JsonSerializer.SerializeAsync(stream, settings, ProjectSerializer.JsonOptions, cancellationToken).ConfigureAwait(false);
+    private static AppSettings ReadAndNormalizeSettings(string path)
+    {
+        using var stream = new FileStream(path, FileMode.Open, FileAccess.Read, FileShare.ReadWrite | FileShare.Delete, 4096, FileOptions.SequentialScan);
+        var settings = JsonSerializer.Deserialize<AppSettings>(stream, ProjectSerializer.JsonOptions)
+            ?? throw new InvalidDataException($"Settings file '{path}' deserialized to null.");
+        NormalizeSettings(settings);
+        return settings;
+    }
+
+    private static async Task<AppSettings> ReadAndNormalizeSettingsAsync(string path, CancellationToken cancellationToken)
+    {
+        await using var stream = new FileStream(path, FileMode.Open, FileAccess.Read, FileShare.ReadWrite | FileShare.Delete, 4096, useAsync: true);
+        var settings = await JsonSerializer.DeserializeAsync<AppSettings>(stream, ProjectSerializer.JsonOptions, cancellationToken).ConfigureAwait(false)
+            ?? throw new InvalidDataException($"Settings file '{path}' deserialized to null.");
+        NormalizeSettings(settings);
+        return settings;
+    }
+
+    private static void NormalizeSettings(AppSettings settings)
+    {
+        settings.LogRingBufferCapacity = Math.Clamp(settings.LogRingBufferCapacity, 10, 100_000);
+        settings.AudioReadOffsetSamples = Math.Clamp(settings.AudioReadOffsetSamples, -10000, 10000);
+        settings.UpgradeToCurrentVersion();
+    }
+
+    private static AppSettings TryRecoverFromBackup(string fullPath, Exception primaryError, out string warning)
+    {
+        string backupPath = fullPath + ".bak";
+        if (File.Exists(backupPath))
+        {
+            try
+            {
+                AppSettings recovered = ReadAndNormalizeSettings(backupPath);
+                warning = $"Settings file '{fullPath}' could not be read ({primaryError.Message}); recovered from backup '{backupPath}'.";
+                Trace.TraceWarning(warning);
+                return recovered;
+            }
+            catch (Exception bakEx) when (bakEx is JsonException or InvalidDataException or IOException or UnauthorizedAccessException)
+            {
+                warning = $"Settings file '{fullPath}' could not be read ({primaryError.Message}) and backup '{backupPath}' failed ({bakEx.Message}); defaults are in use.";
+                Trace.TraceWarning(warning);
+                return new AppSettings();
+            }
+        }
+
+        warning = $"Settings file '{fullPath}' could not be read ({primaryError.Message}); defaults are in use.";
+        Trace.TraceWarning(warning);
+        return new AppSettings();
+    }
+
+    private static async Task<(AppSettings Settings, string Warning)> TryRecoverFromBackupAsync(
+        string fullPath,
+        Exception primaryError,
+        CancellationToken cancellationToken)
+    {
+        string backupPath = fullPath + ".bak";
+        if (File.Exists(backupPath))
+        {
+            try
+            {
+                AppSettings recovered = await ReadAndNormalizeSettingsAsync(backupPath, cancellationToken).ConfigureAwait(false);
+                string warning = $"Settings file '{fullPath}' could not be read ({primaryError.Message}); recovered from backup '{backupPath}'.";
+                Trace.TraceWarning(warning);
+                return (recovered, warning);
+            }
+            catch (Exception bakEx) when (bakEx is JsonException or InvalidDataException or IOException or UnauthorizedAccessException)
+            {
+                string warning = $"Settings file '{fullPath}' could not be read ({primaryError.Message}) and backup '{backupPath}' failed ({bakEx.Message}); defaults are in use.";
+                Trace.TraceWarning(warning);
+                return (new AppSettings(), warning);
+            }
+        }
+
+        string fallbackWarning = $"Settings file '{fullPath}' could not be read ({primaryError.Message}); defaults are in use.";
+        Trace.TraceWarning(fallbackWarning);
+        return (new AppSettings(), fallbackWarning);
+    }
+
+    private static void TryWriteBackup(string fullPath, string bakTempPath, string json)
+    {
+        try
+        {
+            using (var stream = new FileStream(bakTempPath, FileMode.CreateNew, FileAccess.Write, FileShare.None, 4096, FileOptions.WriteThrough))
+            using (var writer = new StreamWriter(stream, Utf8NoBom))
+            {
+                writer.Write(json);
+                writer.Flush();
+                stream.Flush(flushToDisk: true);
+            }
+
+            File.Move(bakTempPath, fullPath + ".bak", overwrite: true);
+        }
+        catch (Exception ex) when (ex is IOException or UnauthorizedAccessException)
+        {
+            Trace.TraceWarning($"Could not update settings backup '{fullPath}.bak': {ex.Message}");
+        }
+    }
+
+    private static async Task TryWriteBackupAsync(
+        string fullPath,
+        string bakTempPath,
+        AppSettings settings,
+        CancellationToken cancellationToken)
+    {
+        try
+        {
+            await using (var stream = new FileStream(bakTempPath, FileMode.CreateNew, FileAccess.Write, FileShare.None, 4096, useAsync: true))
+            {
+                await JsonSerializer.SerializeAsync(stream, settings, ProjectSerializer.JsonOptions, cancellationToken).ConfigureAwait(false);
+                await stream.FlushAsync(cancellationToken).ConfigureAwait(false);
+            }
+
+            File.Move(bakTempPath, fullPath + ".bak", overwrite: true);
+        }
+        catch (Exception ex) when (ex is IOException or UnauthorizedAccessException)
+        {
+            Trace.TraceWarning($"Could not update settings backup '{fullPath}.bak': {ex.Message}");
+        }
+    }
+
+    private static void TryDeleteFile(string path)
+    {
+        try
+        {
+            if (File.Exists(path))
+            {
+                File.Delete(path);
+            }
+        }
+        catch (IOException) { }
+        catch (UnauthorizedAccessException) { }
     }
 }

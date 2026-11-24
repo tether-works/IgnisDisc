@@ -1,3 +1,4 @@
+using System.Text;
 using System.Text.Json;
 using System.Text.Json.Serialization;
 using CdBurner.Core.Audio;
@@ -59,6 +60,13 @@ public sealed class FileAttributesJsonConverter : JsonConverter<FileAttributes>
 public static class ProjectSerializer
 {
     /// <summary>
+    /// Maximum supported nesting depth when converting serialized compilation trees.
+    /// </summary>
+    public const int MaxCompilationTreeDepth = 256;
+
+    private static readonly UTF8Encoding Utf8NoBom = new(encoderShouldEmitUTF8Identifier: false);
+
+    /// <summary>
     /// Standard JSON serialization settings for .cdbproj project documents and configuration files.
     /// Indented, camelCase naming, case-insensitive reading, string enums.
     /// </summary>
@@ -78,17 +86,19 @@ public static class ProjectSerializer
     #region File I/O Operations
 
     /// <summary>
-    /// Asynchronously saves a project document to disk in JSON format (.cdbproj).
+    /// Asynchronously saves a project document to disk atomically in JSON format (.cdbproj).
     /// </summary>
     public static async Task SaveToFileAsync(
         CdBurnerProjectDocument project,
         string filePath,
         CancellationToken cancellationToken = default)
     {
+        cancellationToken.ThrowIfCancellationRequested();
         ArgumentNullException.ThrowIfNull(project);
         ArgumentException.ThrowIfNullOrWhiteSpace(filePath);
 
-        string? dir = Path.GetDirectoryName(filePath);
+        string fullPath = Path.GetFullPath(filePath);
+        string? dir = Path.GetDirectoryName(fullPath);
         if (!string.IsNullOrEmpty(dir) && !Directory.Exists(dir))
         {
             Directory.CreateDirectory(dir);
@@ -96,26 +106,40 @@ public static class ProjectSerializer
 
         project.ModifiedAtUtc = DateTime.UtcNow;
 
-        await using var stream = new FileStream(
-            filePath,
-            FileMode.Create,
-            FileAccess.Write,
-            FileShare.None,
-            bufferSize: 4096,
-            useAsync: true);
+        string tempPath = fullPath + "." + Guid.NewGuid().ToString("N") + ".tmp";
+        try
+        {
+            await using (var stream = new FileStream(
+                tempPath,
+                FileMode.CreateNew,
+                FileAccess.Write,
+                FileShare.None,
+                bufferSize: 4096,
+                useAsync: true))
+            {
+                await JsonSerializer.SerializeAsync(stream, project, JsonOptions, cancellationToken).ConfigureAwait(false);
+                await stream.FlushAsync(cancellationToken).ConfigureAwait(false);
+            }
 
-        await JsonSerializer.SerializeAsync(stream, project, JsonOptions, cancellationToken).ConfigureAwait(false);
+            cancellationToken.ThrowIfCancellationRequested();
+            File.Move(tempPath, fullPath, overwrite: true);
+        }
+        finally
+        {
+            TryDeleteTempFile(tempPath);
+        }
     }
 
     /// <summary>
-    /// Synchronously saves a project document to disk in JSON format (.cdbproj).
+    /// Synchronously saves a project document to disk atomically in JSON format (.cdbproj).
     /// </summary>
     public static void SaveToFile(CdBurnerProjectDocument project, string filePath)
     {
         ArgumentNullException.ThrowIfNull(project);
         ArgumentException.ThrowIfNullOrWhiteSpace(filePath);
 
-        string? dir = Path.GetDirectoryName(filePath);
+        string fullPath = Path.GetFullPath(filePath);
+        string? dir = Path.GetDirectoryName(fullPath);
         if (!string.IsNullOrEmpty(dir) && !Directory.Exists(dir))
         {
             Directory.CreateDirectory(dir);
@@ -124,7 +148,42 @@ public static class ProjectSerializer
         project.ModifiedAtUtc = DateTime.UtcNow;
 
         string json = JsonSerializer.Serialize(project, JsonOptions);
-        File.WriteAllText(filePath, json);
+        string tempPath = fullPath + "." + Guid.NewGuid().ToString("N") + ".tmp";
+        try
+        {
+            using (var stream = new FileStream(
+                tempPath,
+                FileMode.CreateNew,
+                FileAccess.Write,
+                FileShare.None,
+                bufferSize: 4096,
+                FileOptions.WriteThrough))
+            using (var writer = new StreamWriter(stream, Utf8NoBom))
+            {
+                writer.Write(json);
+                writer.Flush();
+                stream.Flush(flushToDisk: true);
+            }
+
+            File.Move(tempPath, fullPath, overwrite: true);
+        }
+        finally
+        {
+            TryDeleteTempFile(tempPath);
+        }
+    }
+
+    private static void TryDeleteTempFile(string path)
+    {
+        try
+        {
+            if (File.Exists(path))
+            {
+                File.Delete(path);
+            }
+        }
+        catch (IOException) { }
+        catch (UnauthorizedAccessException) { }
     }
 
     /// <summary>
@@ -256,8 +315,13 @@ public static class ProjectSerializer
         return missingPaths.ToList().AsReadOnly();
     }
 
-    private static void CollectMissingNodeSources(SerializedCompilationNode node, HashSet<string> missingPaths)
+    private static void CollectMissingNodeSources(SerializedCompilationNode node, HashSet<string> missingPaths, int depth = 0)
     {
+        if (depth > MaxCompilationTreeDepth)
+        {
+            throw new InvalidDataException($"Compilation tree exceeds maximum nesting depth of {MaxCompilationTreeDepth}.");
+        }
+
         if (!node.IsDirectory && !string.IsNullOrWhiteSpace(node.SourceFilePath))
         {
             if (!File.Exists(node.SourceFilePath))
@@ -270,7 +334,7 @@ public static class ProjectSerializer
         {
             foreach (var child in node.Children)
             {
-                CollectMissingNodeSources(child, missingPaths);
+                CollectMissingNodeSources(child, missingPaths, depth + 1);
             }
         }
     }
@@ -329,12 +393,16 @@ public static class ProjectSerializer
     public static CompilationNode ToCompilationNode(SerializedCompilationNode serialized)
     {
         ArgumentNullException.ThrowIfNull(serialized);
-        return ToCompilationNodeCore(serialized, isRoot: serialized.IsDirectory && string.IsNullOrEmpty(serialized.Name));
+        return ToCompilationNodeCore(serialized, isRoot: serialized.IsDirectory && string.IsNullOrEmpty(serialized.Name), depth: 0);
     }
 
-    private static CompilationNode ToCompilationNodeCore(SerializedCompilationNode serialized, bool isRoot)
+    private static CompilationNode ToCompilationNodeCore(SerializedCompilationNode serialized, bool isRoot, int depth = 0)
     {
         ArgumentNullException.ThrowIfNull(serialized);
+        if (depth > MaxCompilationTreeDepth)
+        {
+            throw new InvalidDataException($"Compilation tree exceeds maximum nesting depth of {MaxCompilationTreeDepth}.");
+        }
 
         if (!isRoot || !string.IsNullOrEmpty(serialized.Name))
         {
@@ -353,7 +421,7 @@ public static class ProjectSerializer
             {
                 foreach (var child in serialized.Children)
                 {
-                    var childNode = ToCompilationNodeCore(child, isRoot: false);
+                    var childNode = ToCompilationNodeCore(child, isRoot: false, depth + 1);
                     if (childNode is CompilationDirectory childDir)
                     {
                         dir.AddDirectory(childDir);
@@ -565,6 +633,9 @@ public static class ProjectSerializer
                 Performer = track.Performer,
                 Isrc = track.Isrc,
                 PreGapFrames = track.PreGapFrames,
+                HiddenAudioFrames = track.HiddenAudioFrames,
+                PreEmphasis = track.PreEmphasis,
+                CopyPermitted = track.CopyPermitted,
                 NormalizeAudio = track.NormalizeAudio,
                 DurationFrames = track.DurationFrames,
                 Songwriter = track.Songwriter,
@@ -634,6 +705,7 @@ public static class ProjectSerializer
                 cdTextTracksByNum?.TryGetValue(track.TrackNumber, out cdt);
 
                 Func<Stream>? sliceFactory = null;
+                Func<Stream>? hiddenFactory = null;
                 SingleFileAlbumSource? album = null;
                 DataTrackImage? dataTrack = null;
                 if (track.DataTrackOffsetBytes is long dataOffset && track.DataTrackSectorCount is int dataSectors &&
@@ -645,8 +717,13 @@ public static class ProjectSerializer
                 }
                 else if (track.RawFileType is { } rawType && RawCdAudioFile.IsRawType(rawType) && !string.IsNullOrWhiteSpace(track.SourceFilePath))
                 {
+                    bool motorola = string.Equals(rawType, "MOTOROLA", StringComparison.OrdinalIgnoreCase);
                     sliceFactory = RawCdAudioFile.CreateSliceFactory(track.SourceFilePath, Math.Max(0, track.SourceStartFrame ?? 0),
-                        track.SourceFrameCount, string.Equals(rawType, "MOTOROLA", StringComparison.OrdinalIgnoreCase));
+                        track.SourceFrameCount, motorola);
+                    if (track.HiddenAudioFrames > 0 && track.SourceStartFrame is > 0)
+                    {
+                        hiddenFactory = RawCdAudioFile.CreateSliceFactory(track.SourceFilePath, 0, track.HiddenAudioFrames, motorola);
+                    }
                 }
                 else if (track.SourceStartFrame.HasValue && !string.IsNullOrWhiteSpace(track.SourceFilePath))
                 {
@@ -656,6 +733,10 @@ public static class ProjectSerializer
                         albumSources[track.SourceFilePath] = album;
                     }
                     sliceFactory = album.CreateSliceFactory(Math.Max(0, track.SourceStartFrame.Value), track.SourceFrameCount);
+                    if (track.HiddenAudioFrames > 0 && track.SourceStartFrame.Value > 0)
+                    {
+                        hiddenFactory = album.CreateSliceFactory(0, track.HiddenAudioFrames);
+                    }
                 }
 
                 var trackItem = new AudioCdTrackItem(
@@ -677,6 +758,10 @@ public static class ProjectSerializer
                     SourceFrameCount = track.SourceFrameCount,
                     AlbumSource = album,
                     RawFileType = track.RawFileType,
+                    HiddenAudioFrames = Math.Max(0, track.HiddenAudioFrames),
+                    HiddenAudioPcmStreamFactory = hiddenFactory,
+                    PreEmphasis = track.PreEmphasis,
+                    CopyPermitted = track.CopyPermitted,
                     DataTrack = dataTrack
                 };
 
@@ -701,15 +786,7 @@ public static class ProjectSerializer
             return null;
         }
 
-        Func<Stream> defaultStreamFactory = () =>
-        {
-            if (!string.IsNullOrEmpty(options.DefaultEntry.BootImageFilePath) &&
-                File.Exists(options.DefaultEntry.BootImageFilePath))
-            {
-                return new FileStream(options.DefaultEntry.BootImageFilePath, FileMode.Open, FileAccess.Read, FileShare.ReadWrite);
-            }
-            return Stream.Null;
-        };
+        Func<Stream> defaultStreamFactory = CreateBootImageStreamFactory(options.DefaultEntry.BootImageFilePath);
 
         var defaultEntrySpec = new BootCatalogEntrySpec(
             Platform: options.DefaultEntry.Platform,
@@ -728,15 +805,7 @@ public static class ProjectSerializer
             additionalEntries = new List<BootCatalogEntrySpec>(options.AdditionalSectionEntries.Count);
             foreach (var entry in options.AdditionalSectionEntries)
             {
-                string path = entry.BootImageFilePath;
-                Func<Stream> streamFactory = () =>
-                {
-                    if (!string.IsNullOrEmpty(path) && File.Exists(path))
-                    {
-                        return new FileStream(path, FileMode.Open, FileAccess.Read, FileShare.ReadWrite);
-                    }
-                    return Stream.Null;
-                };
+                Func<Stream> streamFactory = CreateBootImageStreamFactory(entry.BootImageFilePath);
 
                 var spec = new BootCatalogEntrySpec(
                     Platform: entry.Platform,
@@ -756,6 +825,21 @@ public static class ProjectSerializer
             DefaultEntry: defaultEntrySpec,
             AdditionalSectionEntries: additionalEntries,
             DeveloperId: options.DeveloperId ?? "CDBURNER");
+    }
+
+    private static Func<Stream> CreateBootImageStreamFactory(string? bootImagePath)
+    {
+        return () =>
+        {
+            if (string.IsNullOrWhiteSpace(bootImagePath) || !File.Exists(bootImagePath))
+            {
+                throw new FileNotFoundException(
+                    $"Boot image file not found at '{bootImagePath}'.",
+                    bootImagePath);
+            }
+
+            return new FileStream(bootImagePath, FileMode.Open, FileAccess.Read, FileShare.ReadWrite);
+        };
     }
 
     /// <summary>

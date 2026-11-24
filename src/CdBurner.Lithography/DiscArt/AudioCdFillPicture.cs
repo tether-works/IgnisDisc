@@ -1,3 +1,4 @@
+using System.Diagnostics;
 using System.Runtime.InteropServices;
 using System.Windows.Media;
 using System.Windows.Media.Imaging;
@@ -136,12 +137,19 @@ public static class AudioCdFillPicture
             string path = Path.GetFullPath(string.IsNullOrWhiteSpace(calibrationStorePath)
                 ? CalibrationStore.GetDefaultPath()
                 : calibrationStorePath);
-            CalibrationStoreDocument document = CalibrationStore.Load(path);
-            CalibrationStoreEntry? entry = FindCalibration(document, driveModel!, mediaId!);
-            if (entry is not null)
+            try
             {
-                calibrationSource = $"saved calibration for drive '{entry.DriveModel}' and media '{entry.MediaId}'";
-                return ToCdDiscParameters(entry.Parameters);
+                CalibrationStoreDocument document = CalibrationStore.Load(path);
+                CalibrationStoreEntry? entry = FindCalibration(document, driveModel!, mediaId!);
+                if (entry is not null)
+                {
+                    calibrationSource = $"saved calibration for drive '{entry.DriveModel}' and media '{entry.MediaId}'";
+                    return ToCdDiscParameters(entry.Parameters);
+                }
+            }
+            catch (Exception ex) when (ex is InvalidDataException or IOException or UnauthorizedAccessException or ArgumentException)
+            {
+                Trace.TraceWarning($"Ignoring unreadable calibration store '{path}': {ex.Message}");
             }
         }
 
