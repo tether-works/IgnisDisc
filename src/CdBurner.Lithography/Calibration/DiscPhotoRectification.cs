@@ -44,6 +44,13 @@ public static class DiscPhotoRectifier
     {
         ArgumentNullException.ThrowIfNull(outer);
         ArgumentNullException.ThrowIfNull(hole);
+        if (outer.Any(p => p is null || !double.IsFinite(p.X) || !double.IsFinite(p.Y))
+            || hole.Any(p => p is null || !double.IsFinite(p.X) || !double.IsFinite(p.Y)))
+        {
+            return new DiscPhotoRectification(
+                new CalibrationPhotoFitResult(false, null, double.NaN, double.NaN, "The outline contains invalid coordinates."),
+                NominalHoleRadiusMm, DiscPhotoRectificationKind.Standard);
+        }
         // No hole outline at all (none found in the photo, none clicked): the rim alone has to do.
         if (hole.Count == 0 && outer.Count >= 5) return FitRimOnly(outer, outerRadiusMm, null, cancellationToken);
         CalibrationPhotoFitResult standard = CalibrationPhotoRectifier.Fit(outer, hole, outerRadiusMm, NominalHoleRadiusMm, cancellationToken);

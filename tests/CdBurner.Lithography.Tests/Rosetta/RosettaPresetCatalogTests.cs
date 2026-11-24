@@ -97,6 +97,60 @@ public class RosettaPresetCatalogTests
         string tooFewRows = customJson.Replace("\"rows\": 12", "\"rows\": 7");
         using var badRows = new MemoryStream(Encoding.UTF8.GetBytes(tooFewRows));
         Assert.Throws<InvalidDataException>(() => RosettaPresetCatalog.Load(badRows));
+
+        string tooManyCols = customJson.Replace("\"columns\": 24", $"\"columns\": {RosettaPagePreset.MaxColumns + 1}");
+        using var hugeCols = new MemoryStream(Encoding.UTF8.GetBytes(tooManyCols));
+        Assert.Throws<InvalidDataException>(() => RosettaPresetCatalog.Load(hugeCols));
+
+        string tooManyRows = customJson.Replace("\"rows\": 12", $"\"rows\": {RosettaPagePreset.MaxRows + 1}");
+        using var hugeRows = new MemoryStream(Encoding.UTF8.GetBytes(tooManyRows));
+        Assert.Throws<InvalidDataException>(() => RosettaPresetCatalog.Load(hugeRows));
+    }
+
+    [Fact]
+    public void RosettaPagePreset_RejectsInvalidSmallAndHugeDimensions()
+    {
+        RosettaPagePreset valid = RosettaPresetCatalog.BuiltIn.Hobbyist;
+        Assert.Throws<ArgumentOutOfRangeException>(() => valid with { Columns = 9 });
+        Assert.Throws<ArgumentOutOfRangeException>(() => valid with { Columns = RosettaPagePreset.MaxColumns + 1 });
+        Assert.Throws<ArgumentOutOfRangeException>(() => valid with { Rows = 7 });
+        Assert.Throws<ArgumentOutOfRangeException>(() => valid with { Rows = RosettaPagePreset.MaxRows + 1 });
+        Assert.Throws<ArgumentOutOfRangeException>(() => new RosettaPagePreset(
+            "bad", "Bad", "DVD-R", valid.CellSize, 40_000, 12, 100, 100, false));
+    }
+
+    [Fact]
+    public void TryResolveHeaderCell_PreservesSurrogatePairsAndHandlesWideColumns()
+    {
+        // Title with 300 non-BMP surrogate pairs after 'A' (601 chars) tests both surrogate-pair preservation and Columns > 256.
+        string pair = "\U0001F600";
+        string wideTitle = "A" + string.Concat(Enumerable.Repeat(pair, 300));
+        RosettaPagePreset widePreset = RosettaPresetCatalog.BuiltIn.Hobbyist with { Columns = 300, Rows = 12 };
+        RosettaBook book = RosettaBook.Build(
+            [new RosettaDocument(wideTitle, "Body text")],
+            new RosettaArchiveOptions("ARCHIVE", new DateOnly(2026, 11, 23), widePreset, InnerRadiusMm: 24.0, OuterRadiusMm: 58.0));
+
+        RosettaPagePixelSource src = book.Bands[0].PixelSource;
+        // Doc 0 starts on page 3 (0-based localPageIndex 2 in single band, R00-S02): header prefix is 22 chars at cols 4..25, 'A' at 26, pairs start at 27.
+        int targetCp = char.ConvertToUtf32(pair, 0);
+        Assert.True(src.TryResolveGlyphCell(0, 2, cellRow: 0, cellCol: 27, out int firstCp, out _, out _));
+        Assert.Equal(targetCp, firstCp);
+
+        // Near char index 255/256 and past column 256 on the 300-column preset, every header glyph must resolve to targetCp (never U+FFFD).
+        Assert.True(src.TryResolveGlyphCell(0, 2, cellRow: 0, cellCol: 259, out int boundaryCp, out _, out _));
+        Assert.Equal(targetCp, boundaryCp);
+
+        Assert.True(src.TryResolveGlyphCell(0, 2, cellRow: 0, cellCol: 295, out int lateCp, out _, out _));
+        Assert.Equal(targetCp, lateCp);
+
+        // Also exercise the stackalloc (<= 256 chars) path when Columns = 128 and title fits within 256 chars with a surrogate pair near the end.
+        string fitTitle = "A" + string.Concat(Enumerable.Repeat(pair, 110));
+        RosettaPagePreset mediumPreset = RosettaPresetCatalog.BuiltIn.Hobbyist with { Columns = 128, Rows = 12 };
+        RosettaBook mediumBook = RosettaBook.Build(
+            [new RosettaDocument(fitTitle, "Body text")],
+            new RosettaArchiveOptions("ARCHIVE", new DateOnly(2026, 11, 23), mediumPreset, InnerRadiusMm: 24.0, OuterRadiusMm: 58.0));
+        Assert.True(mediumBook.Bands[0].PixelSource.TryResolveGlyphCell(0, 2, cellRow: 0, cellCol: 127, out int endCp, out _, out _));
+        Assert.Equal(targetCp, endCp);
     }
 
     [Fact]

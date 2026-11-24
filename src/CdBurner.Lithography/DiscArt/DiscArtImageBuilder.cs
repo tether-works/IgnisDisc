@@ -352,10 +352,16 @@ public static class DiscArtImageBuilder
             {
                 DvdStreamingOptions dvd = DvdOptions(sidecar.Parameters, sidecar.Tone, sidecar.StartAngleDegrees, sidecar.ReadCompatibility);
                 long fill = sidecar.Plan.PictureEndLba - sidecar.Plan.PictureStartLba;
+                if (sidecar.Plan.PictureStartLba < 0 || fill <= 0
+                    || sidecar.Plan.PictureStartLba > uint.MaxValue || fill > uint.MaxValue
+                    || sidecar.Plan.PictureEndLba > dvd.TotalSectors)
+                {
+                    throw new ArgumentException("The image does not match its description: invalid picture sector bounds.");
+                }
                 // Enough samples that the picture's pixels are all reached, whatever the disc size.
                 int samples = (int)Math.Clamp(8L * size * size / Math.Max(1, fill), 128, SectorBytes);
                 var options = new IsoReadbackOptions(
-                    dvd.TotalSectors, checked((uint)sidecar.Plan.PictureStartLba), checked((uint)fill), DvdPsnOffset,
+                    dvd.TotalSectors, (uint)sidecar.Plan.PictureStartLba, (uint)fill, DvdPsnOffset,
                     dvd.InnerRadiusMm, dvd.OuterRadiusMm, dvd.ChannelBitLengthNm, Clockwise: true, size, samples,
                     dvd.PitchLinear, dvd.PitchQuadratic, dvd.PitchCubic, PreviewOuterRadiusMm: dvd.OutputOuterRadiusMm);
                 try
@@ -590,9 +596,14 @@ public static class DiscArtImageBuilder
 
         if (!request.Overwrite)
         {
+            string sidecarPath = DiscArtSidecar.PathFor(output);
+            string partialPath = output + ".partial";
+            string tempPath = output + ".picture.tmp";
+            string canvasPath = output + ".canvas.png";
             string?[] outputs = request.Medium == DiscArtMedium.Cd
-                ? [output, combinedCue ?? (extension == ".wav" ? Path.ChangeExtension(output, ".cue") : null)]
-                : [output];
+                ? [output, sidecarPath, partialPath, tempPath, canvasPath,
+                   combinedCue ?? (extension == ".wav" ? Path.ChangeExtension(output, ".cue") : null)]
+                : [output, sidecarPath, partialPath, tempPath, canvasPath];
             foreach (string? existing in outputs)
             {
                 if (existing is not null && File.Exists(existing))

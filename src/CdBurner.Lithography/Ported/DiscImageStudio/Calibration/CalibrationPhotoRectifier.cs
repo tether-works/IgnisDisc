@@ -223,7 +223,7 @@ public static class CalibrationPhotoRectifier
         return [Math.Log(a), b, -a * (cx + meanX) - b * (cy + meanY), Math.Log(d), -d * (cy + meanY), 0, 0];
     }
 
-    private static double[]? InitialJointProjection(double[] outerAffine, IReadOnlyList<CalibrationPoint> hole, double ratio)
+    internal static double[]? InitialJointProjection(double[] outerAffine, IReadOnlyList<CalibrationPoint> hole, double ratio)
     {
         double a = Math.Exp(outerAffine[0]), b = outerAffine[1], c = outerAffine[2];
         double d = Math.Exp(outerAffine[3]), e = outerAffine[4];
@@ -234,7 +234,7 @@ public static class CalibrationPhotoRectifier
         double centerX = -(holeEllipse[2] + holeEllipse[1] * centerY) / Math.Exp(holeEllipse[0]);
         double length = Math.Sqrt(centerX * centerX + centerY * centerY);
         if (length < 1e-10) return (double[])outerAffine.Clone();
-        if (length >= 0.95) return null;
+        if (!double.IsFinite(length) || length >= 0.95) return null;
 
         // After the outer ellipse becomes a unit circle, a disk-preserving
         // projective translation remains. For a concentric circle of radius r,
@@ -242,7 +242,7 @@ public static class CalibrationPhotoRectifier
         // Recover v from BOTH the measured hole ellipse and the known radius ratio.
         double r2 = ratio * ratio, oneMinusR2 = 1 - r2;
         double v = 2 * length / (oneMinusR2 + Math.Sqrt(oneMinusR2 * oneMinusR2 + 4 * length * length * r2));
-        if (v >= 0.98) return null;
+        if (!double.IsFinite(v) || v >= 0.98) return null;
         double nx = centerX / length, ny = centerY / length;
         double vx = v * nx, vy = v * ny, gamma = 1 / Math.Sqrt(1 - v * v);
         double ax = 1 + (gamma - 1) * nx * nx, ay = 1 + (gamma - 1) * ny * ny;
@@ -256,14 +256,21 @@ public static class CalibrationPhotoRectifier
         // Fix only the free in-plane rotation: rotate the first numerator column
         // onto +X, giving the optimizer its nonredundant seven-parameter form.
         double firstLength = Math.Sqrt(matrix[0] * matrix[0] + matrix[3] * matrix[3]);
-        double cosine = matrix[0] / firstLength, sine = matrix[3] / firstLength, scale = matrix[8];
+        double scale = matrix[8];
+        if (!double.IsFinite(firstLength) || firstLength <= 0 || !double.IsFinite(scale) || scale <= 0) return null;
+        double cosine = matrix[0] / firstLength, sine = matrix[3] / firstLength;
         double newA = firstLength / scale;
         double newB = (cosine * matrix[1] + sine * matrix[4]) / scale;
         double newC = (cosine * matrix[2] + sine * matrix[5]) / scale;
         double newD = (-sine * matrix[1] + cosine * matrix[4]) / scale;
         double newE = (-sine * matrix[2] + cosine * matrix[5]) / scale;
-        if (newA <= 0 || newD <= 0) return null;
-        return [Math.Log(newA), newB, newC, Math.Log(newD), newE, matrix[6] / scale, matrix[7] / scale];
+        double newG = matrix[6] / scale;
+        double newH = matrix[7] / scale;
+        if (!double.IsFinite(newA) || newA <= 0 || !double.IsFinite(newD) || newD <= 0
+            || !double.IsFinite(newB) || !double.IsFinite(newC) || !double.IsFinite(newE)
+            || !double.IsFinite(newG) || !double.IsFinite(newH))
+            return null;
+        return [Math.Log(newA), newB, newC, Math.Log(newD), newE, newG, newH];
     }
 
     private static (double[] Parameters, double Cost) Optimize(double[] parameters, Datum[] data, CancellationToken token)

@@ -642,6 +642,49 @@ public sealed class AudioCdFillPictureTests : IDisposable
         Assert.Equal(2, medium.Sessions.Count);
     }
 
+    [Fact]
+    public void Decode_rejects_oversized_536870900x1_png_without_OOM()
+    {
+        using MemoryStream output = new();
+        output.Write([0x89, 0x50, 0x4E, 0x47, 0x0D, 0x0A, 0x1A, 0x0A]);
+        byte[] ihdr = new byte[13];
+        BinaryPrimitives.WriteUInt32BigEndian(ihdr, 536_870_900u);
+        BinaryPrimitives.WriteUInt32BigEndian(ihdr.AsSpan(4), 1u);
+        ihdr[8] = 8;
+        ihdr[9] = 6;
+        WritePngChunk(output, "IHDR", ihdr);
+        using (MemoryStream compressed = new())
+        {
+            using (var deflater = new System.IO.Compression.ZLibStream(compressed, System.IO.Compression.CompressionLevel.Optimal, leaveOpen: true))
+            {
+                deflater.Write([0, 0, 0, 0, 0]);
+            }
+            WritePngChunk(output, "IDAT", compressed.ToArray());
+        }
+        WritePngChunk(output, "IEND", []);
+
+        Assert.Throws<ArgumentException>(() => AudioCdFillPicture.Decode(output.ToArray()));
+    }
+
+    private static void WritePngChunk(Stream output, string type, byte[] data)
+    {
+        byte[] typeAndData = new byte[4 + data.Length];
+        Encoding.ASCII.GetBytes(type, typeAndData);
+        data.CopyTo(typeAndData, 4);
+        Span<byte> len = stackalloc byte[4];
+        BinaryPrimitives.WriteUInt32BigEndian(len, (uint)data.Length);
+        output.Write(len);
+        output.Write(typeAndData);
+        uint crc = uint.MaxValue;
+        foreach (byte b in typeAndData)
+        {
+            crc ^= b;
+            for (int k = 0; k < 8; k++) crc = (crc & 1) != 0 ? 0xEDB88320u ^ (crc >> 1) : crc >> 1;
+        }
+        BinaryPrimitives.WriteUInt32BigEndian(len, crc ^ uint.MaxValue);
+        output.Write(len);
+    }
+
     /// <summary>Answers a MusicBrainz release search with one release and the Cover Art Archive with a PNG.</summary>
     private sealed class CoverServer(string releaseId, byte[] png) : HttpMessageHandler
     {

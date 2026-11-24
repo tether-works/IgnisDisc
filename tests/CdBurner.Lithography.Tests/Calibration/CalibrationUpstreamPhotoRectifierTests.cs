@@ -106,6 +106,23 @@ public static class CalibrationUpstreamPhotoRectifierTests
         cancelled.Cancel();
         Throws<OperationCanceledException>(() => CalibrationPhotoRectifier.Fit(outer, hole, cancellationToken: cancelled.Token),
             "pre-cancelled perspective fitting returns no result");
+
+        // Degenerate outerAffine seeds yielding firstLength == 0 or matrix[8] <= 0 must return null, never NaN/+Infinity.
+        Require(CalibrationPhotoRectifier.InitialJointProjection([-800, 0, 0, -800, 0, 0, 0], hole, 0.125) is null,
+            "zero-scale outerAffine seed returns null instead of NaN/+Infinity");
+        CalibrationPoint[] shiftedHole = Enumerable.Range(0, 10).Select(i =>
+        {
+            double a = 2 * Math.PI * i / 10;
+            return new CalibrationPoint(0.2 * Math.Cos(a) + 0.5, 0.2 * Math.Sin(a));
+        }).ToArray();
+        Require(CalibrationPhotoRectifier.InitialJointProjection([0, 0, 3.0, 0, 0, 0, 0], shiftedHole, 0.125) is null,
+            "non-positive projective scale matrix[8] returns null");
+        CalibrationPoint[] withNaN = [.. outer];
+        withNaN[0] = new CalibrationPoint(double.NaN, 0);
+        Require(!CalibrationPhotoRectifier.Fit(withNaN, hole).Succeeded, "NaN contour point is rejected");
+        CalibrationPoint[] withNull = [.. outer];
+        withNull[0] = null!;
+        Require(!CalibrationPhotoRectifier.Fit(withNull, hole).Succeeded, "null contour point is rejected");
     }
 
     private static CalibrationPoint[] Circle(CalibrationPhotoTransform transform, double radius, int count, double phase)

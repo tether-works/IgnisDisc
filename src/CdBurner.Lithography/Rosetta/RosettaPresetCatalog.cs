@@ -29,6 +29,38 @@ public sealed record RosettaPagePreset(
     double TangentialGutterUm,
     bool CdSupported)
 {
+    public const int MinColumns = 10;
+    public const int MaxColumns = 16384; // 2 * MaxColumns <= ushort.MaxValue so LineSlice.CharLength never overflows.
+    public const int MinRows = 8;
+    public const int MaxRows = 16384;    // Rows - 1 <= ushort.MaxValue so PageEntry.LineCount never overflows.
+
+    private readonly int _columns = ValidateColumns(Columns);
+    private readonly int _rows = ValidateRows(Rows);
+
+    public int Columns
+    {
+        get => _columns;
+        init => _columns = ValidateColumns(value);
+    }
+
+    public int Rows
+    {
+        get => _rows;
+        init => _rows = ValidateRows(value);
+    }
+
+    private static int ValidateColumns(int columns)
+        => columns is >= MinColumns and <= MaxColumns
+            ? columns
+            : throw new ArgumentOutOfRangeException(nameof(Columns), columns,
+                $"Rosetta preset columns ({columns}) must be between {MinColumns} and {MaxColumns}.");
+
+    private static int ValidateRows(int rows)
+        => rows is >= MinRows and <= MaxRows
+            ? rows
+            : throw new ArgumentOutOfRangeException(nameof(Rows), rows,
+                $"Rosetta preset rows ({rows}) must be between {MinRows} and {MaxRows}.");
+
     // 3 base pixels (cellHeight / 8) between header row 0 and body row 0:
     // 1 blank pixel + 1-pixel horizontal rule + 1 blank pixel.
     public double RuleBandHeightMeters => 3.0 * (CellSize.HeightMeters / 8.0);
@@ -158,13 +190,15 @@ public sealed class RosettaPresetCatalog
         double radialGutterUm = ReadNonNegativeDouble(item, "radialGutterUm");
         double tangentialGutterUm = ReadNonNegativeDouble(item, "tangentialGutterUm");
 
-        if (columns < 10)
+        if (columns is < RosettaPagePreset.MinColumns or > RosettaPagePreset.MaxColumns)
         {
-            throw new InvalidDataException($"Rosetta preset columns ({columns}) must be at least 10.");
+            throw new InvalidDataException(
+                $"Rosetta preset columns ({columns}) must be between {RosettaPagePreset.MinColumns} and {RosettaPagePreset.MaxColumns}.");
         }
-        if (rows < 8)
+        if (rows is < RosettaPagePreset.MinRows or > RosettaPagePreset.MaxRows)
         {
-            throw new InvalidDataException($"Rosetta preset rows ({rows}) must be at least 8.");
+            throw new InvalidDataException(
+                $"Rosetta preset rows ({rows}) must be between {RosettaPagePreset.MinRows} and {RosettaPagePreset.MaxRows}.");
         }
 
         var cellSize = new RosettaCellSize(cellWidthUm, cellHeightUm);

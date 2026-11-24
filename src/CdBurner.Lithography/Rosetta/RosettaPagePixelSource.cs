@@ -245,44 +245,74 @@ public sealed class RosettaPagePixelSource : IPagePixelSource
         ref readonly PageEntry page = ref _pages[_firstPageIndex + localPageIndex];
         bool pageForcesUnifont = (page.Flags & RosettaBook.PageFlagForceUnifont) != 0;
 
-        Span<char> header = stackalloc char[256];
+        Span<char> prefix = stackalloc char[64];
         int pos = 0;
         int globalRing = _ringOffset + ring;
         int pageNumber1Based = _firstPageIndex + localPageIndex + 1;
 
-        header[pos++] = 'R';
-        if (!globalRing.TryFormat(header[pos..], out int written, "D2", CultureInfo.InvariantCulture)) return false;
+        prefix[pos++] = 'R';
+        if (!globalRing.TryFormat(prefix[pos..], out int written, "D2", CultureInfo.InvariantCulture)) return false;
         pos += written;
-        header[pos++] = '-';
-        header[pos++] = 'S';
-        if (!sector.TryFormat(header[pos..], out written, "D2", CultureInfo.InvariantCulture)) return false;
+        prefix[pos++] = '-';
+        prefix[pos++] = 'S';
+        if (!sector.TryFormat(prefix[pos..], out written, "D2", CultureInfo.InvariantCulture)) return false;
         pos += written;
-        header[pos++] = ' ';
-        header[pos++] = ' ';
-        header[pos++] = 'p';
-        header[pos++] = ' ';
-        if (!pageNumber1Based.TryFormat(header[pos..], out written, "D4", CultureInfo.InvariantCulture)) return false;
+        prefix[pos++] = ' ';
+        prefix[pos++] = ' ';
+        prefix[pos++] = 'p';
+        prefix[pos++] = ' ';
+        if (!pageNumber1Based.TryFormat(prefix[pos..], out written, "D4", CultureInfo.InvariantCulture)) return false;
         pos += written;
-        header[pos++] = '/';
-        if (!_totalPages.TryFormat(header[pos..], out written, "D4", CultureInfo.InvariantCulture)) return false;
+        prefix[pos++] = '/';
+        if (!_totalPages.TryFormat(prefix[pos..], out written, "D4", CultureInfo.InvariantCulture)) return false;
         pos += written;
-        header[pos++] = ' ';
-        header[pos++] = ' ';
+        prefix[pos++] = ' ';
+        prefix[pos++] = ' ';
 
         ReadOnlySpan<char> title = _titles[page.TitleSourceIndex].AsSpan();
-        int copyLen = Math.Min(title.Length, header.Length - pos);
-        title[..copyLen].CopyTo(header[pos..]);
-        pos += copyLen;
+        int maxTitleChars = Math.Min(title.Length, 2 * Math.Max(0, _columns - 4));
+        if (maxTitleChars > 0 && maxTitleChars < title.Length
+            && char.IsSurrogatePair(title[maxTitleChars - 1], title[maxTitleChars]))
+        {
+            maxTitleChars++;
+        }
 
-        return TryScanLineForColumn(
-            header[..pos],
-            startCol: 4,
-            endColExclusive: _columns,
-            targetCol,
-            pageForcesUnifont,
-            out codePoint,
-            out useUnifont,
-            out wideHalf);
+        int totalLen = pos + maxTitleChars;
+        if (totalLen <= 256)
+        {
+            Span<char> header = stackalloc char[256];
+            prefix[..pos].CopyTo(header);
+            title[..maxTitleChars].CopyTo(header[pos..]);
+            return TryScanLineForColumn(
+                header[..totalLen],
+                startCol: 4,
+                endColExclusive: _columns,
+                targetCol,
+                pageForcesUnifont,
+                out codePoint,
+                out useUnifont,
+                out wideHalf);
+        }
+
+        char[] rented = ArrayPool<char>.Shared.Rent(totalLen);
+        try
+        {
+            prefix[..pos].CopyTo(rented);
+            title[..maxTitleChars].CopyTo(rented.AsSpan(pos));
+            return TryScanLineForColumn(
+                rented.AsSpan(0, totalLen),
+                startCol: 4,
+                endColExclusive: _columns,
+                targetCol,
+                pageForcesUnifont,
+                out codePoint,
+                out useUnifont,
+                out wideHalf);
+        }
+        finally
+        {
+            ArrayPool<char>.Shared.Return(rented);
+        }
     }
 
     private bool TryResolveBodyCell(

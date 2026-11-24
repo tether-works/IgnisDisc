@@ -182,6 +182,10 @@ public class MeasuredTurnCorrectionTests
             string bad = Path.Combine(folder, "bad.json");
             File.WriteAllText(bad, """{ "innerRadiusMm": 24.75 }""");
             Assert.Throws<InvalidDataException>(() => MeasuredTurnCorrection.Load(bad));
+
+            string malformed = Path.Combine(folder, "malformed.json");
+            File.WriteAllText(malformed, "{ not valid json");
+            Assert.Throws<InvalidDataException>(() => MeasuredTurnCorrection.Load(malformed));
         }
         finally
         {

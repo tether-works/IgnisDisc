@@ -79,18 +79,20 @@ public static class DiscPhotoDetector
         var fullPoints = outer.Points.Select(p => (X: p.X * inverse, Y: p.Y * inverse)).ToList();
         Circle fullRim = new(outer.CentreX * inverse, outer.CentreY * inverse, outer.Radius * inverse, fullPoints);
         Circle refined = RefineRim(photo, fullRim, IsFalling(gray, w, h, outer), 3.0 * inverse) ?? fullRim;
-        (CalibrationPoint[] outerPoints, double outerScatter) = SmoothOutline(refined.Points, refined.CentreX, refined.CentreY, OutlinePoints);
+        if (!TrySmoothOutline(refined.Points, refined.CentreX, refined.CentreY, OutlinePoints, out CalibrationPoint[] outerPoints, out double outerScatter))
+            return null;
         // A real rim scatters about 1 % of its radius around its ellipse; noise or a clutter of edges that happen to
         // lie on a rough circle scatter several times more. Better no answer than a wrong one.
-        if (outerScatter > MaxRimScatterFraction * refined.Radius) return null;
+        if (!double.IsFinite(outerScatter) || outerScatter > MaxRimScatterFraction * refined.Radius) return null;
         CalibrationPoint[] holePoints = [];
         double holeScatter = 0;
         double holeRadiusFull = 0;
         if (hole is not null)
         {
             var holeFull = hole.Points.Select(p => (X: p.X * inverse, Y: p.Y * inverse)).ToList();
-            (CalibrationPoint[] smoothHole, double scatter) = SmoothOutline(holeFull, hole.CentreX * inverse, hole.CentreY * inverse, OutlinePoints);
-            if (scatter <= MaxRimScatterFraction * 2 * refined.Radius)
+            if (TrySmoothOutline(holeFull, hole.CentreX * inverse, hole.CentreY * inverse, OutlinePoints, out CalibrationPoint[] smoothHole, out double scatter)
+                && double.IsFinite(scatter)
+                && scatter <= MaxRimScatterFraction * 2 * refined.Radius)
             {
                 holePoints = smoothHole;
                 holeScatter = scatter;
@@ -111,13 +113,17 @@ public static class DiscPhotoDetector
     /// together with the scatter of the measured points around it. One edge point can be several pixels off; the
     /// ellipse through sixty of them is not.
     /// </summary>
-    private static (CalibrationPoint[] Points, double Scatter) SmoothOutline(IReadOnlyList<(double X, double Y)> measured,
-        double cx, double cy, int count)
+    internal static bool TrySmoothOutline(IReadOnlyList<(double X, double Y)> measured,
+        double cx, double cy, int count, out CalibrationPoint[] points, out double scatter)
     {
         const int Terms = 5;
+        points = [];
+        scatter = double.PositiveInfinity;
+        if (measured.Count < Terms) return false;
+
         double[,] normal = new double[Terms, Terms];
         double[] right = new double[Terms];
-        var samples = new List<(double Angle, double Radius)>();
+        var samples = new List<(double Angle, double Radius)>(measured.Count);
         foreach ((double x, double y) in measured)
         {
             double angle = Math.Atan2(y - cy, x - cx);
@@ -132,8 +138,8 @@ public static class DiscPhotoDetector
         }
 
         double[]? coefficients = SolveSmall(normal, right);
-        if (coefficients is null)
-            return (measured.Select(p => new CalibrationPoint(p.X, p.Y)).ToArray(), 0);
+        if (coefficients is null) return false;
+
         double sumSquares = 0;
         foreach ((double angle, double radius) in samples)
         {
@@ -141,7 +147,7 @@ public static class DiscPhotoDetector
             sumSquares += (radius - model) * (radius - model);
         }
 
-        var points = new CalibrationPoint[count];
+        points = new CalibrationPoint[count];
         for (int k = 0; k < count; k++)
         {
             double angle = 2 * Math.PI * k / count;
@@ -149,7 +155,8 @@ public static class DiscPhotoDetector
             points[k] = new CalibrationPoint(cx + radius * Math.Cos(angle), cy + radius * Math.Sin(angle));
         }
 
-        return (points, Math.Sqrt(sumSquares / samples.Count));
+        scatter = Math.Sqrt(sumSquares / samples.Count);
+        return double.IsFinite(scatter);
     }
 
     private static double[] Basis(double angle)
@@ -489,14 +496,26 @@ public static class DiscPhotoDetector
     }
 
     /// <summary>Algebraic least-squares circle through the points (Kasa fit).</summary>
-    private static bool TryFitCircle(IReadOnlyList<(double X, double Y)> points, out double cx, out double cy, out double radius)
+    internal static bool TryFitCircle(IReadOnlyList<(double X, double Y)> points, out double cx, out double cy, out double radius)
     {
         cx = cy = radius = 0;
         if (points.Count < 3) return false;
-        // Solve [2x 2y 1] * [cx cy c]^T = x^2 + y^2 by the normal equations.
-        double sxx = 0, sxy = 0, sx = 0, syy = 0, sy = 0, n = points.Count, bx = 0, by = 0, b1 = 0;
+        // Center coordinates before forming the normal equations so large offsets do not lose precision.
+        double meanX = 0, meanY = 0;
         foreach ((double x, double y) in points)
         {
+            if (!double.IsFinite(x) || !double.IsFinite(y)) return false;
+            meanX += x;
+            meanY += y;
+        }
+        meanX /= points.Count;
+        meanY /= points.Count;
+
+        // Solve [2dx 2dy 1] * [lcx lcy c]^T = dx^2 + dy^2 by the normal equations.
+        double sxx = 0, sxy = 0, sx = 0, syy = 0, sy = 0, n = points.Count, bx = 0, by = 0, b1 = 0;
+        foreach ((double px, double py) in points)
+        {
+            double x = px - meanX, y = py - meanY;
             double a = 2 * x, b = 2 * y, rhs = x * x + y * y;
             sxx += a * a; sxy += a * b; sx += a; syy += b * b; sy += b;
             bx += a * rhs; by += b * rhs; b1 += rhs;
@@ -505,7 +524,8 @@ public static class DiscPhotoDetector
         double[,] m = { { sxx, sxy, sx }, { sxy, syy, sy }, { sx, sy, n } };
         double[] v = { bx, by, b1 };
         double det = Det3(m);
-        if (Math.Abs(det) < 1e-9) return false;
+        double traceScale = sxx + syy;
+        if (!double.IsFinite(det) || Math.Abs(det) < Math.Max(1e-9, n * traceScale * traceScale * 1e-12)) return false;
         double[] solution = new double[3];
         for (int c = 0; c < 3; c++)
         {
@@ -514,12 +534,14 @@ public static class DiscPhotoDetector
             solution[c] = Det3(t) / det;
         }
 
-        cx = solution[0];
-        cy = solution[1];
-        double r2 = solution[2] + cx * cx + cy * cy;
-        if (r2 <= 0) return false;
+        double lcx = solution[0];
+        double lcy = solution[1];
+        double r2 = solution[2] + lcx * lcx + lcy * lcy;
+        if (!double.IsFinite(lcx) || !double.IsFinite(lcy) || !double.IsFinite(r2) || r2 <= 0) return false;
+        cx = meanX + lcx;
+        cy = meanY + lcy;
         radius = Math.Sqrt(r2);
-        return true;
+        return double.IsFinite(cx) && double.IsFinite(cy) && double.IsFinite(radius);
     }
 
     private static double Det3(double[,] m)

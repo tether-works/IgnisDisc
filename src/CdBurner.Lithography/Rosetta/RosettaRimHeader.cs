@@ -84,7 +84,13 @@ public sealed record RosettaRimHeaderMetrics(
         int? turns = null;
         if (trackPitchMm > 0.0)
         {
-            int even = 2 * (int)Math.Floor((rowMm / (2.0 * trackPitchMm)) + 1e-9);
+            double halfTurns = Math.Floor((rowMm / (2.0 * trackPitchMm)) + 1e-9);
+            if (!double.IsFinite(halfTurns) || halfTurns > int.MaxValue / 2)
+            {
+                throw new ArgumentOutOfRangeException(nameof(trackPitchMm), trackPitchMm, string.Create(CultureInfo.InvariantCulture,
+                    $"The track pitch ({trackPitchMm * 1000.0:0.###} um) is too fine for glyph rows of {rowMm * 1000.0:0.#} um."));
+            }
+            int even = 2 * (int)halfTurns;
             if (even < 2)
             {
                 throw new ArgumentOutOfRangeException(nameof(trackPitchMm), trackPitchMm, string.Create(CultureInfo.InvariantCulture,

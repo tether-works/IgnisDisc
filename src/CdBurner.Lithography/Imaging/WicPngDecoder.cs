@@ -95,20 +95,21 @@ internal static unsafe class WicPngDecoder
                 throw new InvalidDataException($"Failed to query PNG dimensions (0x{hr:X8}).");
             }
 
-            if (width == 0 || height == 0 || (long)width * height > BgraRaster.MaxPixels)
+            long pixelCount = (long)width * height;
+            if (width == 0 || height == 0 || pixelCount > BgraRaster.MaxPixels || pixelCount > PngRaster.MaxDecodedPixels)
             {
                 throw new InvalidDataException("PNG picture size is out of range.");
             }
 
             uint stride = checked(width * 4u);
-            uint bufferSize = checked(stride * height);
+            int bufferSize = checked((int)(pixelCount * 4));
             byte[] pixels = new byte[bufferSize];
 
             // IWICBitmapSource::CopyPixels (vtable slot 7)
             fixed (byte* pPixels = pixels)
             {
                 hr = ((delegate* unmanaged[Stdcall]<nint, nint, uint, uint, byte*, int>)convertedVtable[7])(
-                    converted, 0, stride, bufferSize, pPixels);
+                    converted, 0, stride, checked((uint)bufferSize), pPixels);
             }
             if (hr < 0)
             {

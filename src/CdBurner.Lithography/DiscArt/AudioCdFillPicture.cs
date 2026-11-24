@@ -368,13 +368,14 @@ public static class AudioCdFillPicture
         try
         {
             using var stream = new MemoryStream(bytes, writable: false);
-            BitmapDecoder decoder = BitmapDecoder.Create(stream, BitmapCreateOptions.PreservePixelFormat, BitmapCacheOption.OnLoad);
+            BitmapDecoder decoder = BitmapDecoder.Create(stream, BitmapCreateOptions.PreservePixelFormat, BitmapCacheOption.None);
             if (decoder.Frames.Count == 0)
             {
                 throw new ArgumentException("The picture file holds no picture.");
             }
             BitmapSource frame = decoder.Frames[0];
-            if (frame.PixelWidth <= 0 || frame.PixelHeight <= 0 || (long)frame.PixelWidth * frame.PixelHeight > BgraRaster.MaxPixels)
+            long pixelCount = (long)frame.PixelWidth * frame.PixelHeight;
+            if (frame.PixelWidth <= 0 || frame.PixelHeight <= 0 || pixelCount > BgraRaster.MaxPixels || pixelCount > PngRaster.MaxDecodedPixels)
             {
                 throw new ArgumentException("The picture size is not supported.");
             }

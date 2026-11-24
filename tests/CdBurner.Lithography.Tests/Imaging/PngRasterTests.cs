@@ -167,6 +167,78 @@ public sealed class PngRasterTests
             decoded.Pixels);
     }
 
+    [Fact]
+    public void MaxPixels_buffer_fits_within_array_max_length()
+    {
+        Assert.True(BgraRaster.MaxPixels * 4 <= Array.MaxLength);
+        Assert.True(1 + BgraRaster.MaxPixels * 4 <= Array.MaxLength);
+    }
+
+    [Theory]
+    [InlineData(536_870_900, 1)]
+    [InlineData(20_000, 20_000)]
+    public void Crafted_oversized_png_headers_throw_InvalidDataException_without_OOM(int width, int height)
+    {
+        byte[] png = BuildPng(width, height, bitDepth: 8, colorType: 6, interlace: 0, [0, 0, 0, 0, 0]);
+        Assert.Throws<InvalidDataException>(() => PngRaster.Read(new MemoryStream(png)));
+    }
+
+    [Fact]
+    public void Png_without_ihdr_first_is_refused()
+    {
+        using MemoryStream output = new();
+        output.Write([0x89, 0x50, 0x4E, 0x47, 0x0D, 0x0A, 0x1A, 0x0A]);
+        WriteChunk(output, "tEXt", "Comment\0hi"u8.ToArray());
+        byte[] ihdr = new byte[13];
+        BinaryPrimitives.WriteUInt32BigEndian(ihdr, 1);
+        BinaryPrimitives.WriteUInt32BigEndian(ihdr.AsSpan(4), 1);
+        ihdr[8] = 8;
+        ihdr[9] = 6;
+        WriteChunk(output, "IHDR", ihdr);
+        WriteChunk(output, "IDAT", [0x78, 0x9C, 0x63, 0x60, 0x60, 0x60, 0x60, 0x00, 0x00, 0x00, 0x05, 0x00, 0x01]);
+        WriteChunk(output, "IEND", []);
+
+        Assert.Throws<InvalidDataException>(() => PngRaster.Read(new MemoryStream(output.ToArray())));
+    }
+
+    [Fact]
+    public void Png_with_duplicate_or_trailing_plte_is_refused()
+    {
+        byte[] plte = [0, 0, 0, 255, 255, 255];
+        byte[] ihdr = new byte[13];
+        BinaryPrimitives.WriteUInt32BigEndian(ihdr, 1);
+        BinaryPrimitives.WriteUInt32BigEndian(ihdr.AsSpan(4), 1);
+        ihdr[8] = 8;
+        ihdr[9] = 3;
+
+        byte[] compressed;
+        using (MemoryStream ms = new())
+        {
+            using (ZLibStream z = new(ms, CompressionLevel.Optimal, leaveOpen: true))
+            {
+                z.Write([0, 0]);
+            }
+            compressed = ms.ToArray();
+        }
+
+        using MemoryStream dup = new();
+        dup.Write([0x89, 0x50, 0x4E, 0x47, 0x0D, 0x0A, 0x1A, 0x0A]);
+        WriteChunk(dup, "IHDR", ihdr);
+        WriteChunk(dup, "PLTE", plte);
+        WriteChunk(dup, "PLTE", plte);
+        WriteChunk(dup, "IDAT", compressed);
+        WriteChunk(dup, "IEND", []);
+        Assert.Throws<InvalidDataException>(() => PngRaster.Read(new MemoryStream(dup.ToArray())));
+
+        using MemoryStream trailing = new();
+        trailing.Write([0x89, 0x50, 0x4E, 0x47, 0x0D, 0x0A, 0x1A, 0x0A]);
+        WriteChunk(trailing, "IHDR", ihdr);
+        WriteChunk(trailing, "IDAT", compressed);
+        WriteChunk(trailing, "PLTE", plte);
+        WriteChunk(trailing, "IEND", []);
+        Assert.Throws<InvalidDataException>(() => PngRaster.Read(new MemoryStream(trailing.ToArray())));
+    }
+
     private static byte[] BuildPng(
         int width,
         int height,

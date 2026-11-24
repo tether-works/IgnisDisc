@@ -6,8 +6,8 @@ namespace CdBurner.Lithography.Imaging;
 /// <summary>A picture as straight (not premultiplied) BGRA, 4 bytes per pixel, rows top to bottom.</summary>
 public sealed record BgraRaster(int Width, int Height, byte[] Pixels)
 {
-    /// <summary>Largest picture accepted, in pixels (the 4-byte buffer must stay below 2 GB).</summary>
-    public const long MaxPixels = int.MaxValue / 4;
+    /// <summary>Largest picture accepted, in pixels (the 4-byte buffer must stay within .NET Array.MaxLength).</summary>
+    public const long MaxPixels = 0x7FFFFFC7 / 4; // Array.MaxLength (2,147,483,591) / 4 = 536,870,897
 
     public void Validate()
     {
@@ -29,6 +29,9 @@ public static class PngRaster
 
     /// <summary>Largest PNG file read (256 MiB).</summary>
     public const long MaxFileBytes = 256L * 1024 * 1024;
+
+    /// <summary>Largest decoded PNG raster accepted (128 Mi pixels = 512 MiB BGRA).</summary>
+    public const long MaxDecodedPixels = 128L * 1024 * 1024;
 
     public static BgraRaster Load(string path)
     {
@@ -117,6 +120,11 @@ public static class PngRaster
             ReadOnlySpan<byte> type = typeAndData[..4];
             ReadOnlySpan<byte> chunkData = typeAndData[4..];
 
+            if (!sawHeader && !type.SequenceEqual("IHDR"u8))
+            {
+                throw new InvalidDataException("PNG header chunk must appear first.");
+            }
+
             if (type.SequenceEqual("IHDR"u8))
             {
                 if (sawHeader)
@@ -140,11 +148,12 @@ public static class PngRaster
                 {
                     throw new InvalidDataException("PNG uses an unknown interlace method.");
                 }
-                if (colorType is not (0 or 2 or 3 or 4 or 6) || bitDepth is not (1 or 2 or 4 or 8 or 16))
+                if (!IsValidColorAndBitDepth(colorType, bitDepth))
                 {
                     throw new InvalidDataException("PNG uses an unsupported colour type or bit depth.");
                 }
-                if (width == 0 || height == 0 || (long)width * height > BgraRaster.MaxPixels)
+                long pixelCount = (long)width * height;
+                if (width == 0 || height == 0 || pixelCount > BgraRaster.MaxPixels || pixelCount > MaxDecodedPixels)
                 {
                     throw new InvalidDataException("PNG picture size is out of range.");
                 }
@@ -153,6 +162,18 @@ public static class PngRaster
             }
             else if (type.SequenceEqual("PLTE"u8))
             {
+                if (sawPalette)
+                {
+                    throw new InvalidDataException("PNG contains multiple palette chunks.");
+                }
+                if (sawIdat)
+                {
+                    throw new InvalidDataException("PNG palette must appear before image data.");
+                }
+                if (colorType is 0 or 4)
+                {
+                    throw new InvalidDataException("Greyscale PNG must not contain a palette chunk.");
+                }
                 if (chunkData.Length == 0 || chunkData.Length % 3 != 0 || chunkData.Length > 256 * 3)
                 {
                     throw new InvalidDataException("PNG palette is malformed.");
@@ -217,10 +238,10 @@ public static class PngRaster
         using MemoryStream compressed = new();
         using (ZLibStream deflater = new(compressed, CompressionLevel.Optimal, leaveOpen: true))
         {
-            byte[] row = new byte[1 + raster.Width * 4];
+            byte[] row = new byte[checked(1 + raster.Width * 4)];
             for (int y = 0; y < raster.Height; y++)
             {
-                int inRow = y * raster.Width * 4;
+                int inRow = checked(y * raster.Width * 4);
                 for (int x = 0; x < raster.Width; x++)
                 {
                     int i = inRow + x * 4, o = 1 + x * 4;
@@ -262,6 +283,15 @@ public static class PngRaster
         }
         return table;
     }
+
+    private static bool IsValidColorAndBitDepth(int colorType, int bitDepth)
+        => colorType switch
+        {
+            0 => bitDepth is 1 or 2 or 4 or 8 or 16,
+            2 or 4 or 6 => bitDepth is 8 or 16,
+            3 => bitDepth is 1 or 2 or 4 or 8,
+            _ => false,
+        };
 
     private static uint Crc32(ReadOnlySpan<byte> data)
     {

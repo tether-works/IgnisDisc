@@ -169,6 +169,52 @@ public sealed class DiscPhotoDetectorTests
         Assert.False(result.Fit.Succeeded);
     }
 
+    [Fact]
+    public void Rim_only_fit_rejects_null_and_nonfinite_outer_points_cleanly()
+    {
+        CalibrationPoint[] valid = Circle(0, 0, 1000, 8);
+
+        CalibrationPoint[] withNull = [.. valid];
+        withNull[2] = null!;
+        Assert.False(DiscPhotoRectifier.Fit(withNull, []).Fit.Succeeded);
+
+        CalibrationPoint[] withNaN = [.. valid];
+        withNaN[3] = new CalibrationPoint(double.NaN, 0);
+        Assert.False(DiscPhotoRectifier.Fit(withNaN, []).Fit.Succeeded);
+
+        CalibrationPoint[] withInf = [.. valid];
+        withInf[4] = new CalibrationPoint(double.PositiveInfinity, double.NegativeInfinity);
+        Assert.False(DiscPhotoRectifier.Fit(withInf, []).Fit.Succeeded);
+
+        CalibrationPoint[] collinear = Enumerable.Range(0, 8).Select(i => new CalibrationPoint(i * 50.0, i * 25.0)).ToArray();
+        Assert.False(DiscPhotoRectifier.Fit(collinear, []).Fit.Succeeded);
+    }
+
+    [Fact]
+    public void Singular_5x5_smooth_fit_and_degenerate_kasa_circles_are_rejected()
+    {
+        // Points spanning only two distinct angles make the 5-term harmonic normal matrix singular.
+        var degenerateAngles = Enumerable.Range(0, 8)
+            .Select(i => (X: 500.0 + (i % 2 == 0 ? 100.0 + i : -100.0 - i), Y: 500.0))
+            .ToArray();
+        Assert.False(DiscPhotoDetector.TrySmoothOutline(degenerateAngles, 500.0, 500.0, 48, out _, out _));
+
+        // Collinear points must be rejected by Kasa circle fit.
+        var collinear = Enumerable.Range(0, 8).Select(i => (X: 10000.0 + i * 10.0, Y: 10000.0 + i * 20.0)).ToArray();
+        Assert.False(DiscPhotoDetector.TryFitCircle(collinear, out _, out _, out _));
+
+        // Circle centered at large coordinates (1e6, 1e6) with radius 250 must still fit accurately.
+        var offsetCircle = Enumerable.Range(0, 36).Select(i =>
+        {
+            double a = 2 * Math.PI * i / 36;
+            return (X: 1_000_000.0 + 250.0 * Math.Cos(a), Y: 1_000_000.0 + 250.0 * Math.Sin(a));
+        }).ToArray();
+        Assert.True(DiscPhotoDetector.TryFitCircle(offsetCircle, out double cx, out double cy, out double r));
+        Assert.InRange(cx, 999_999.9, 1_000_000.1);
+        Assert.InRange(cy, 999_999.9, 1_000_000.1);
+        Assert.InRange(r, 249.9, 250.1);
+    }
+
     private static CalibrationPoint[] Circle(double cx, double cy, double radius, int count)
         => Enumerable.Range(0, count).Select(i =>
         {

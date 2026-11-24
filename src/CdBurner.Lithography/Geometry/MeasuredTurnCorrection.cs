@@ -165,10 +165,10 @@ public sealed class MeasuredTurnCorrection
     {
         ArgumentException.ThrowIfNullOrWhiteSpace(path);
         using FileStream stream = File.OpenRead(path);
-        using JsonDocument doc = JsonDocument.Parse(stream);
-        JsonElement root = doc.RootElement;
         try
         {
+            using JsonDocument doc = JsonDocument.Parse(stream);
+            JsonElement root = doc.RootElement;
             double[] stations = [.. root.GetProperty("stationSectors").EnumerateArray().Select(e => e.GetDouble())];
             double[] turns = [.. root.GetProperty("correctionTurns").EnumerateArray().Select(e => e.GetDouble())];
             return new MeasuredTurnCorrection(
@@ -178,7 +178,7 @@ public sealed class MeasuredTurnCorrection
                 stations,
                 turns);
         }
-        catch (Exception ex) when (ex is KeyNotFoundException or InvalidOperationException or FormatException)
+        catch (Exception ex) when (ex is JsonException or KeyNotFoundException or InvalidOperationException or FormatException)
         {
             throw new InvalidDataException($"'{Path.GetFileName(path)}' is not a turn map: {ex.Message}", ex);
         }

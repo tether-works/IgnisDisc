@@ -652,4 +652,12 @@ public sealed class RosettaRimHeaderTests : IDisposable
         }
         return runs;
     }
+
+    [Theory]
+    [InlineData(1e-12)]
+    [InlineData(double.Epsilon)]
+    public void Create_RejectsTinyTrackPitchWithoutOverflow(double tinyPitchMm)
+    {
+        Assert.Throws<ArgumentOutOfRangeException>(() => RosettaRimHeaderMetrics.Create(1.0, tinyPitchMm));
+    }
 }

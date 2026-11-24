@@ -496,6 +496,37 @@ public sealed class DiscArtImageBuilderTests : IDisposable
         Assert.Equal(4096L * Sector, new FileInfo(iso).Length);
     }
 
+    [Fact]
+    public void Existing_sidecar_or_temp_file_is_refused_when_overwrite_is_false()
+    {
+        string iso1 = Path_("keep-sidecar.iso");
+        string sidecar = DiscArtSidecar.PathFor(iso1);
+        File.WriteAllText(sidecar, "existing-sidecar");
+
+        Assert.Throws<ArgumentException>(() => DiscArtImageBuilder.Generate(Request(DiscArtMedium.Dvd, iso1)));
+        Assert.Equal("existing-sidecar", File.ReadAllText(sidecar));
+
+        string iso2 = Path_("keep-tmp.iso");
+        string tmp = iso2 + ".picture.tmp";
+        File.WriteAllText(tmp, "existing-tmp");
+
+        Assert.Throws<ArgumentException>(() => DiscArtImageBuilder.Generate(Request(DiscArtMedium.Dvd, iso2)));
+        Assert.Equal("existing-tmp", File.ReadAllText(tmp));
+    }
+
+    [Fact]
+    public void Preview_rejects_negative_or_inverted_lba_bounds_with_ArgumentException()
+    {
+        string iso = Path_("bad-bounds.iso");
+        DiscArtImageBuilder.Generate(Request(DiscArtMedium.Dvd, iso));
+        string sidecarPath = DiscArtSidecar.PathFor(iso);
+        string json = File.ReadAllText(sidecarPath).Replace("\"pictureStartLba\": 0", "\"pictureStartLba\": -16", StringComparison.Ordinal);
+        Assert.Contains("\"pictureStartLba\": -16", json, StringComparison.Ordinal);
+        File.WriteAllText(sidecarPath, json);
+
+        Assert.Throws<ArgumentException>(() => DiscArtImageBuilder.Preview(iso, Path_("bad-bounds.png"), 128));
+    }
+
     // 10 -----------------------------------------------------------------------------------------------------------
 
     [Fact]
