@@ -539,6 +539,21 @@ public static class MmcCommandBuilder
     }
 
     /// <summary>
+    /// Builds a 10-byte MMC READ BUFFER CAPACITY CDB (OpCode 0x5C) to query the drive's hardware write buffer capacity and free space.
+    /// </summary>
+    /// <param name="block">False to request sizes in bytes (BLOCK=0); true to request sizes in blocks (BLOCK=1).</param>
+    /// <param name="allocationLength">Allocation length in bytes (default 12 per MMC-5).</param>
+    public static byte[] BuildReadBufferCapacityCdb(bool block = false, ushort allocationLength = 12)
+    {
+        byte[] cdb = new byte[10];
+        cdb[0] = OpCodeReadBufferCapacity;
+        cdb[1] = (byte)(block ? 0x01 : 0x00);
+        cdb[7] = (byte)(allocationLength >> 8);
+        cdb[8] = (byte)(allocationLength & 0xFF);
+        return cdb;
+    }
+
+    /// <summary>
     /// Builds a 10-byte MMC SEND OPC INFORMATION CDB (OpCode 0x54) for Optimum Power Calibration.
     /// </summary>
     /// <param name="doOpc">True to set DoOpc (bit 0 of byte 1) so the drive calibrates laser power for the current medium.</param>

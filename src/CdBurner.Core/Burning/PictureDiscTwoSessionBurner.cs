@@ -415,6 +415,8 @@ public sealed class PictureDiscTwoSessionBurner
                 CurrentLba = snap.CurrentLba,
                 TotalLba = snap.TotalLba,
                 BufferLevelPercent = snap.BufferLevelPercent,
+                DeviceBufferFillPercent = snap.DeviceBufferFillPercent,
+                HostBufferFillPercent = snap.HostBufferFillPercent,
                 CurrentSpeedMultiplier = snap.CurrentSpeedMultiplier,
                 CurrentBytesPerSecond = snap.CurrentBytesPerSecond,
                 CurrentActionDescription = string.IsNullOrWhiteSpace(snap.CurrentActionDescription)

@@ -751,6 +751,9 @@ public class AudioBurnViewModel : ObservableObject, IDisposable
         set => SetProperty(ref _lastBurnResult, value);
     }
 
+    /// <summary>Live burn telemetry recorder and SVG/JSON plot exporter.</summary>
+    public BurnTelemetryMonitor Telemetry { get; } = new();
+
     /// <summary>
     /// Result of the most recent rip operation.
     /// </summary>
@@ -2510,6 +2513,7 @@ public class AudioBurnViewModel : ObservableObject, IDisposable
         IsBusy = true;
         CancelBurnCommand.RaiseCanExecuteChanged();
         BurnProgress = 0;
+        Telemetry.BeginSession($"Audio CD ({AlbumTitle})", recorder.VolumePath, recorder.QueryMediaStatus().MediaType.GetDisplayName());
         StatusMessage = $"Preparing Audio CD compilation for {recorder.UniqueId}...";
 
         try
@@ -2520,6 +2524,7 @@ public class AudioBurnViewModel : ObservableObject, IDisposable
             var progress = new ClosableProgress<BurnProgressSnapshot>(p =>
             {
                 if (!_isBusy) return; // Prevent stale background progress from overwriting final status
+                Telemetry.RecordSnapshot(p);
                 if (p.TotalLba > 0)
                 {
                     BurnProgress = Math.Min(100.0, (double)p.CurrentLba / p.TotalLba * 100.0);
@@ -2721,6 +2726,7 @@ public class AudioBurnViewModel : ObservableObject, IDisposable
         }
         finally
         {
+            Telemetry.EndSession();
             _activeBurnCts?.Dispose();
             _activeBurnCts = null;
             IsBusy = false;
@@ -3744,6 +3750,7 @@ public class AudioBurnViewModel : ObservableObject, IDisposable
         }
         finally
         {
+            Telemetry.EndSession();
             _activeBurnCts?.Dispose();
             _activeBurnCts = null;
             IsBusy = false;

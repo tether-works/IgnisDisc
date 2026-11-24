@@ -431,7 +431,8 @@ public sealed class NativeSaoAudioWriter
             WriteChunkWithShrink(startLba + written, n, CdTextLeadInEncoder.SubChannelBytesPerSector, ref perWrite, buffer.AsSpan(0, n * 96), state, ct);
             written += n;
             state.LeadInSectors = written;
-            reporter.Report(written, "Writing the CD-Text lead-in");
+            double hostFillPct = count > 0 ? Math.Clamp(100.0 * (count - written) / count, 0.0, 100.0) : 0.0;
+            reporter.Report(written, "Writing the CD-Text lead-in", hostFillPct);
         }
     }
 
@@ -448,45 +449,63 @@ public sealed class NativeSaoAudioWriter
         }
 
         int perWrite = AudioSectorsPerWrite;
-        byte[] buffer = new byte[perWrite * sectorSize];
-        int filled = 0;
+        int hostCapacitySectors = perWrite * 4;
+        byte[] buffer = new byte[hostCapacitySectors * sectorSize];
+        int bufferedStart = 0;
+        int bufferedCount = 0;
         int chunkLba = layout.AudioStartLba; // -150, or right after a mixed-mode CD's data track
-
-        void FlushChunk()
-        {
-            if (filled == 0) return;
-            WriteChunkWithShrink(chunkLba, filled, sectorSize, ref perWrite, buffer.AsSpan(0, filled * sectorSize), state, ct);
-            state.AudioSectors += filled;
-            reporter.Report(doneBefore + state.DataSectors + state.AudioSectors, "Writing audio");
-            chunkLba += filled;
-            filled = 0;
-        }
+        bool sourceEnded = false;
 
         using var source = new ProgramAreaReader(layout, request.OpenTrackAudio, _note, request.ShiftSamples);
         while (true)
         {
-            bool more;
-            try
+            if (!sourceEnded && bufferedCount - bufferedStart < perWrite)
             {
-                more = source.ReadSector(buffer.AsSpan(filled * sectorSize, sectorSize));
-            }
-            catch (Exception ex) when (ex is IOException or InvalidDataException or UnauthorizedAccessException)
-            {
-                throw Stop($"Could not read the audio for track {source.CurrentTrackNumber}: {ex.Message}");
+                int remaining = bufferedCount - bufferedStart;
+                if (bufferedStart > 0 && remaining > 0)
+                {
+                    Buffer.BlockCopy(buffer, bufferedStart * sectorSize, buffer, 0, remaining * sectorSize);
+                }
+                bufferedStart = 0;
+                bufferedCount = remaining;
+
+                while (bufferedCount < hostCapacitySectors)
+                {
+                    bool more;
+                    try
+                    {
+                        more = source.ReadSector(buffer.AsSpan(bufferedCount * sectorSize, sectorSize));
+                    }
+                    catch (Exception ex) when (ex is IOException or InvalidDataException or UnauthorizedAccessException)
+                    {
+                        throw Stop($"Could not read the audio for track {source.CurrentTrackNumber}: {ex.Message}");
+                    }
+                    if (!more)
+                    {
+                        sourceEnded = true;
+                        break;
+                    }
+                    bufferedCount++;
+                }
             }
 
-            if (!more)
+            int available = bufferedCount - bufferedStart;
+            if (available == 0)
             {
                 break;
             }
-            if (++filled >= perWrite)
-            {
-                Check(ct, state);
-                FlushChunk();
-            }
+
+            Check(ct, state);
+            int sendCount = Math.Min(perWrite, available);
+            WriteChunkWithShrink(chunkLba, sendCount, sectorSize, ref perWrite,
+                buffer.AsSpan(bufferedStart * sectorSize, sendCount * sectorSize), state, ct);
+            bufferedStart += sendCount;
+            state.AudioSectors += sendCount;
+            double hostFillPct = Math.Clamp(100.0 * (bufferedCount - bufferedStart) / hostCapacitySectors, 0.0, 100.0);
+            reporter.Report(doneBefore + state.DataSectors + state.AudioSectors, "Writing audio", hostFillPct);
+            chunkLba += sendCount;
         }
 
-        FlushChunk();
         if (chunkLba != layout.LeadOutLba)
         {
             throw Stop($"Internal error: wrote up to LBA {chunkLba}, expected {layout.LeadOutLba}.");
@@ -560,7 +579,8 @@ public sealed class NativeSaoAudioWriter
 
                 WriteChunkWithShrink(lba, count, sectorSize, ref perWrite, chunk, state, ct);
                 state.DataSectors += count;
-                reporter.Report(doneBefore + state.DataSectors, "Writing the data track");
+                double hostFillPct = imageEnded ? 0.0 : Math.Clamp(100.0 * (track.EndLba - lba - count) / Math.Max(1, track.EndLba - track.PreGapLba), 0.0, 100.0);
+                reporter.Report(doneBefore + state.DataSectors, "Writing the data track", hostFillPct);
                 lba += count;
             }
         }
@@ -854,17 +874,6 @@ public sealed class NativeSaoAudioWriter
         }
     }
 
-    private double? ReadBufferPercent()
-    {
-        byte[] buffer = new byte[12];
-        var r = _transport.ExecuteCommand(NativeWriteCommands.BuildReadBufferCapacity(), buffer, ScsiPassThroughNative.SCSI_IOCTL_DATA_IN, ShortTimeout);
-        if (!r.IsSuccess || NativeWriteCommands.ParseBufferCapacity(buffer) is not { Length: > 0 } cap)
-        {
-            return null;
-        }
-        return Math.Clamp(100.0 * (cap.Length - Math.Min(cap.Blank, cap.Length)) / cap.Length, 0, 100);
-    }
-
     private static void Check(CancellationToken ct, RunState? state = null)
     {
         if (ct.IsCancellationRequested)
@@ -898,43 +907,18 @@ public sealed class NativeSaoAudioWriter
 
     private sealed class ProgressReporter
     {
-        private readonly NativeSaoAudioWriter _writer;
-        private readonly IProgress<BurnProgressSnapshot>? _progress;
-        private readonly Stopwatch _clock;
-        private readonly int _total;
-        private TimeSpan? _lastBufferPoll;
-        private double _buffer;
+        private readonly NativeBurnTelemetrySampler _sampler;
 
         public ProgressReporter(NativeSaoAudioWriter writer, IProgress<BurnProgressSnapshot>? progress, Stopwatch clock, int total)
         {
-            _writer = writer;
-            _progress = progress;
-            _clock = clock;
-            _total = total;
+            _sampler = new NativeBurnTelemetrySampler(writer._transport, writer._note, progress, clock, total, ProgramAreaReader.SectorSize, Msf.FramesPerSecond);
         }
 
-        public void Report(int done, string action)
+        public void Report(int done, string action, double? hostBufferPercent = null)
         {
-            if (_lastBufferPoll is null || _clock.Elapsed - _lastBufferPoll.Value >= TimeSpan.FromSeconds(1))
-            {
-                _lastBufferPoll = _clock.Elapsed;
-                _buffer = _writer.ReadBufferPercent() ?? _buffer;
-            }
-
-            if (_progress == null) return;
-            double seconds = _clock.Elapsed.TotalSeconds;
-            double rate = seconds > 0 ? done / seconds : 0;
-            _progress.Report(new BurnProgressSnapshot
-            {
-                CurrentLba = done,
-                TotalLba = _total,
-                ElapsedTime = _clock.Elapsed,
-                RemainingTime = rate > 0 ? TimeSpan.FromSeconds((_total - done) / rate) : TimeSpan.Zero,
-                BufferLevelPercent = _buffer,
-                CurrentSpeedMultiplier = rate / Msf.FramesPerSecond,
-                CurrentBytesPerSecond = (long)(rate * 2352),
-                CurrentActionDescription = action
-            });
+            bool activeWrite = action.StartsWith("Writing", StringComparison.OrdinalIgnoreCase) &&
+                               !action.Contains("lead-out", StringComparison.OrdinalIgnoreCase);
+            _sampler.Report(done, action, hostBufferPercent, activeWrite);
         }
     }
 }

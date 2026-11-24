@@ -267,13 +267,16 @@ public class DiscFormatDataEventsSink : DDiscFormat2DataEvents, IDisposable
         }
 
         double bufferPercent = 100.0;
+        double? hostBufferPercent = null;
         if (totalSystemBuffer > 0)
         {
             bufferPercent = Math.Clamp((double)usedSystemBuffer / totalSystemBuffer * 100.0, 0.0, 100.0);
+            hostBufferPercent = bufferPercent;
         }
         else if (currentAction == ImapiFormat2DataWriteAction.Completed)
         {
             bufferPercent = 0.0;
+            hostBufferPercent = 0.0;
         }
 
         // Speed calculations
@@ -315,6 +318,7 @@ public class DiscFormatDataEventsSink : DDiscFormat2DataEvents, IDisposable
             CurrentLba = relativeLba,
             TotalLba = sectorCount,
             BufferLevelPercent = bufferPercent,
+            HostBufferFillPercent = hostBufferPercent,
             CurrentSpeedMultiplier = speedMultiplier,
             CurrentBytesPerSecond = bytesPerSec,
             CurrentActionDescription = currentAction.ToString()

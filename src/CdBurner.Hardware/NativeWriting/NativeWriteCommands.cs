@@ -295,13 +295,7 @@ public static class NativeWriteCommands
     }
 
     /// <summary>READ BUFFER CAPACITY in byte units (BLOCK = 0); the response is 12 bytes.</summary>
-    public static byte[] BuildReadBufferCapacity()
-    {
-        byte[] cdb = new byte[10];
-        cdb[0] = OpCodeReadBufferCapacity;
-        BinaryPrimitives.WriteUInt16BigEndian(cdb.AsSpan(7, 2), 12);
-        return cdb;
-    }
+    public static byte[] BuildReadBufferCapacity() => Scsi.MmcCommandBuilder.BuildReadBufferCapacityCdb(block: false, allocationLength: 12);
 
     /// <summary>SEND CUE SHEET with a 24-bit cue sheet length.</summary>
     public static byte[] BuildSendCueSheet(int cueSheetLength)
@@ -319,17 +313,11 @@ public static class NativeWriteCommands
         return cdb;
     }
 
-    /// <summary>Parses READ BUFFER CAPACITY data: (buffer length, blank length) in bytes, or null if too short.</summary>
-    public static (uint Length, uint Blank)? ParseBufferCapacity(ReadOnlySpan<byte> response)
-    {
-        if (response.Length < 12)
-        {
-            return null;
-        }
-
-        return (BinaryPrimitives.ReadUInt32BigEndian(response.Slice(4, 4)),
-                BinaryPrimitives.ReadUInt32BigEndian(response.Slice(8, 4)));
-    }
+    /// <summary>Parses READ BUFFER CAPACITY data: (buffer length, blank length) in bytes, or null if invalid/too short.</summary>
+    public static (uint Length, uint Blank)? ParseBufferCapacity(ReadOnlySpan<byte> response) =>
+        Scsi.MmcResponseParser.TryParseBufferCapacity(response, out var cap)
+            ? (cap.TotalLength, cap.BlankLength)
+            : null;
 
     /// <summary>Maximum number of non-buffer-full transient retries (becoming ready, USB comms, seek, unit attention) per command.</summary>
     public const int MaxTransientRetries = 5;

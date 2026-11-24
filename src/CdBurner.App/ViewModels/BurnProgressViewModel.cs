@@ -1,6 +1,7 @@
 using System.Collections.ObjectModel;
 using CdBurner.App.Mvvm;
 using CdBurner.Core.Abstractions;
+using CdBurner.Core.Verification;
 
 namespace CdBurner.App.ViewModels;
 
@@ -18,6 +19,8 @@ public class BurnProgressViewModel : ObservableObject
     private string? _lbaText;
     private string _currentSpeedText = "0.0x";
     private double _bufferFillPercent;
+    private double? _hostBufferFillPercent;
+    private bool _hasDeviceBufferSample;
     private string _elapsedTimeText = "00:00";
     private string _remainingTimeText = "--:--";
     private bool _isRunning;
@@ -129,7 +132,37 @@ public class BurnProgressViewModel : ObservableObject
     /// <summary>
     /// Formatted buffer fill text for display.
     /// </summary>
-    public string BufferPercentText => $"{BufferFillPercent:F0}%";
+    public string BufferPercentText => _hasDeviceBufferSample ? $"{BufferFillPercent:F0}%" : (BufferFillPercent > 0 ? $"{BufferFillPercent:F0}%" : "N/A");
+
+    /// <summary>
+    /// Host I/O staging or system buffer fill percentage (0.0 to 100.0), or null when unavailable.
+    /// </summary>
+    public double? HostBufferFillPercent
+    {
+        get => _hostBufferFillPercent;
+        set
+        {
+            if (SetProperty(ref _hostBufferFillPercent, value))
+            {
+                OnPropertyChanged(nameof(HostBufferBarValue));
+                OnPropertyChanged(nameof(HostBufferPercentText));
+            }
+        }
+    }
+
+    public double HostBufferBarValue => HostBufferFillPercent ?? 0.0;
+
+    public string HostBufferPercentText => HostBufferFillPercent is double h ? $"{h:F0}%" : "N/A";
+
+    /// <summary>
+    /// Live burn telemetry recorder and SVG/JSON exporter for this job.
+    /// </summary>
+    public BurnTelemetryMonitor Telemetry { get; } = new();
+
+    /// <summary>
+    /// Exports the recorded burn telemetry plot to SVG or JSON.
+    /// </summary>
+    public RelayCommand ExportBurnPlotCommand => Telemetry.ExportBurnPlotCommand;
 
     /// <summary>
     /// Formatted string representing elapsed time since operation start.
@@ -231,6 +264,10 @@ public class BurnProgressViewModel : ObservableObject
         LbaText = "0 / 0";
         CurrentSpeedText = "0.0x";
         BufferFillPercent = 0.0;
+        _hasDeviceBufferSample = false;
+        HostBufferFillPercent = null;
+        OnPropertyChanged(nameof(BufferPercentText));
+        Telemetry.BeginSession(jobTitle);
         ElapsedTimeText = "00:00";
         RemainingTimeText = "--:--";
         CurrentActionText = "Starting...";
@@ -252,7 +289,13 @@ public class BurnProgressViewModel : ObservableObject
         CurrentLba = snapshot.CurrentLba;
         TotalSectors = snapshot.TotalLba;
         PercentComplete = Math.Clamp(snapshot.ProgressPercentage, 0.0, 100.0);
-        BufferFillPercent = Math.Clamp(snapshot.BufferLevelPercent, 0.0, 100.0);
+        _hasDeviceBufferSample = snapshot.DeviceBufferFillPercent.HasValue;
+        BufferFillPercent = Math.Clamp(snapshot.DeviceBufferFillPercent ?? snapshot.BufferLevelPercent, 0.0, 100.0);
+        OnPropertyChanged(nameof(BufferPercentText));
+        HostBufferFillPercent = snapshot.HostBufferFillPercent is double hb && double.IsFinite(hb)
+            ? Math.Clamp(hb, 0.0, 100.0)
+            : null;
+        Telemetry.RecordSnapshot(snapshot);
         LbaText = $"{CurrentLba:N0} / {TotalSectors:N0}";
 
         if (snapshot.CurrentBytesPerSecond > 0)
@@ -303,6 +346,7 @@ public class BurnProgressViewModel : ObservableObject
     {
         IsRunning = false;
         CanCancel = false;
+        Telemetry.EndSession();
         if (success)
         {
             PercentComplete = 100.0;

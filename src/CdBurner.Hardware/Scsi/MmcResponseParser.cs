@@ -62,6 +62,20 @@ public sealed record TocResponse(
     IReadOnlyList<TocTrackDescriptor> Tracks);
 
 /// <summary>
+/// Parsed MMC READ BUFFER CAPACITY (0x5C) 12-byte response.
+/// </summary>
+public sealed record BufferCapacityResponse(bool IsBlockUnit, uint TotalLength, uint BlankLength)
+{
+    /// <summary>Buffer bytes (or blocks) currently occupied.</summary>
+    public uint UsedLength => TotalLength > BlankLength ? TotalLength - BlankLength : 0;
+
+    /// <summary>Buffer fill percentage in [0, 100], or null when <see cref="TotalLength"/> is 0.</summary>
+    public double? FillPercent => TotalLength > 0
+        ? Math.Clamp(100.0 * UsedLength / TotalLength, 0.0, 100.0)
+        : null;
+}
+
+/// <summary>
 /// Parsers for SCSI / MMC-5 command responses including INQUIRY and READ TOC.
 /// </summary>
 public static class MmcResponseParser
@@ -318,6 +332,30 @@ public static class MmcResponseParser
         }
 
         isrc = new string(chars);
+        return true;
+    }
+
+    /// <summary>
+    /// Parses a 12-byte MMC READ BUFFER CAPACITY (0x5C) response buffer.
+    /// </summary>
+    public static bool TryParseBufferCapacity(ReadOnlySpan<byte> response, out BufferCapacityResponse capacity)
+    {
+        capacity = new BufferCapacityResponse(false, 0, 0);
+        if (response.Length < 12)
+        {
+            return false;
+        }
+
+        ushort dataLength = BinaryPrimitives.ReadUInt16BigEndian(response.Slice(0, 2));
+        if (dataLength is > 0 and < 10)
+        {
+            return false;
+        }
+
+        bool isBlock = (response[3] & 0x01) != 0;
+        uint total = BinaryPrimitives.ReadUInt32BigEndian(response.Slice(4, 4));
+        uint blank = BinaryPrimitives.ReadUInt32BigEndian(response.Slice(8, 4));
+        capacity = new BufferCapacityResponse(isBlock, total, blank);
         return true;
     }
 

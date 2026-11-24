@@ -4,10 +4,15 @@
              xmlns:d="http://schemas.microsoft.com/expression/blend/2008"
              xmlns:mc="http://schemas.openxmlformats.org/markup-compatibility/2006"
              xmlns:vm="clr-namespace:CdBurner.App.ViewModels"
+             xmlns:controls="clr-namespace:CdBurner.App.Controls"
+             xmlns:converters="clr-namespace:CdBurner.App.Converters"
              mc:Ignorable="d"
              d:DataContext="{d:DesignInstance Type=vm:BurnProgressViewModel}"
              Background="{DynamicResource SurfaceBackgroundBrush}"
              Foreground="{DynamicResource TextPrimaryBrush}">
+    <UserControl.Resources>
+        <converters:BooleanToVisibilityConverter x:Key="BoolToVis" />
+    </UserControl.Resources>
 
     <Border Background="{DynamicResource CardBackgroundBrush}"
             BorderBrush="{DynamicResource CardBorderBrush}"
@@ -23,9 +28,11 @@
                 <RowDefinition Height="Auto" />
                 <!-- Row 2: Telemetry Metrics Grid -->
                 <RowDefinition Height="Auto" />
-                <!-- Row 3: Live Log Drawer (Expander) -->
+                <!-- Row 3: Live Dual-Buffer & Speed Chart -->
+                <RowDefinition Height="Auto" />
+                <!-- Row 4: Live Log Drawer (Expander) -->
                 <RowDefinition Height="*" />
-                <!-- Row 4: Cancellation & Control Footer -->
+                <!-- Row 5: Cancellation & Control Footer -->
                 <RowDefinition Height="Auto" />
             </Grid.RowDefinitions>
 
@@ -172,8 +179,14 @@
                 </Grid>
             </Border>
 
-            <!-- Row 3: Live Expandable Log Drawer -->
-            <Expander Grid.Row="3"
+            <!-- Row 3: Live Dual-Buffer & Speed Telemetry Chart -->
+            <controls:BurnTelemetryChartControl Grid.Row="3"
+                                                DataContext="{Binding Telemetry}"
+                                                Visibility="{Binding IsVisible, Converter={StaticResource BoolToVis}}"
+                                                Margin="0,0,0,12" />
+
+            <!-- Row 4: Live Expandable Log Drawer -->
+            <Expander Grid.Row="4"
                       AutomationProperties.Name="Live Mastering Telemetry Log"
                       Header="Live Mastering Telemetry Log"
                       IsExpanded="True"
@@ -197,8 +210,8 @@
                 </Border>
             </Expander>
 
-            <!-- Row 4: Controls & Cancellation -->
-            <DockPanel Grid.Row="4" LastChildFill="False">
+            <!-- Row 5: Controls & Cancellation -->
+            <DockPanel Grid.Row="5" LastChildFill="False">
                 <Button DockPanel.Dock="Right"
                         Content="Cancel Operation"
                         AutomationProperties.Name="Cancel Operation"

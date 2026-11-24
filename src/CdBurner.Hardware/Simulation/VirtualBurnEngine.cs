@@ -108,6 +108,8 @@ public class VirtualBurnEngine : IBurnEngineBackend, ISecureAudioReader
                 CurrentLba = currentLba,
                 TotalLba = totalLba,
                 BufferLevelPercent = bufferPct,
+                DeviceBufferFillPercent = bufferPct,
+                HostBufferFillPercent = bufferPct,
                 CurrentSpeedMultiplier = speedMultiplier,
                 CurrentBytesPerSecond = bytesPerSec,
                 CurrentActionDescription = action
@@ -354,6 +356,8 @@ public class VirtualBurnEngine : IBurnEngineBackend, ISecureAudioReader
                 CurrentLba = currentLba,
                 TotalLba = totalLba,
                 BufferLevelPercent = bufferPct,
+                DeviceBufferFillPercent = bufferPct,
+                HostBufferFillPercent = bufferPct,
                 CurrentSpeedMultiplier = speedMultiplier,
                 CurrentBytesPerSecond = bytesPerSec,
                 CurrentActionDescription = action

@@ -1070,6 +1070,9 @@ public class DvdVideoViewModel : ObservableObject
     public AsyncRelayCommand InstallSubtitleToolCommand { get; }
     public RelayCommand CancelCommand { get; }
 
+    /// <summary>Live burn telemetry recorder and SVG/JSON plot exporter.</summary>
+    public BurnTelemetryMonitor Telemetry { get; } = new();
+
     #endregion
 
     public DvdVideoViewModel(
@@ -2126,6 +2129,7 @@ public class DvdVideoViewModel : ObservableObject
 
             StatusMessage = $"Building ISO & burning DVD-Video disc to {targetRecorder.VolumePath} ({targetRecorder.ProductId})...";
             BurnProgress = 0;
+            Telemetry.BeginSession($"DVD-Video ({(!string.IsNullOrWhiteSpace(VolumeLabel) ? VolumeLabel : "DVD_VIDEO")})", targetRecorder.VolumePath, targetRecorder.QueryMediaStatus().MediaType.GetDisplayName());
 
             string actualVideoTsPath = !string.IsNullOrEmpty(LastAuthoredVideoTsPath) && Directory.Exists(LastAuthoredVideoTsPath)
                 ? LastAuthoredVideoTsPath
@@ -2162,6 +2166,7 @@ public class DvdVideoViewModel : ObservableObject
             var burnService = new DataBurnService(directEngine ?? _burnEngine);
             var progressHandler = new ClosableProgress<BurnProgressSnapshot>(snap =>
             {
+                Telemetry.RecordSnapshot(snap);
                 if (snap.TotalLba > 0)
                 {
                     BurnProgress = Math.Clamp((double)snap.CurrentLba / snap.TotalLba * 100.0, 0, 100);
@@ -2236,6 +2241,7 @@ public class DvdVideoViewModel : ObservableObject
         }
         finally
         {
+            Telemetry.EndSession();
             CleanupTempAuthoredDirectory();
             if (fill?.TempFrame is { } frame)
             {

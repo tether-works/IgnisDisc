@@ -459,6 +459,9 @@ public class DataBurnViewModel : ObservableObject
     public AsyncRelayCommand StartDataBurnCommand { get; }
     public RelayCommand CancelBurnCommand { get; }
 
+    /// <summary>Live burn telemetry recorder and SVG/JSON plot exporter.</summary>
+    public BurnTelemetryMonitor Telemetry { get; } = new();
+
     #endregion
 
     public DataBurnViewModel(
@@ -889,6 +892,7 @@ public class DataBurnViewModel : ObservableObject
         CancelBurnCommand.RaiseCanExecuteChanged();
         StatusMessage = $"Burning data compilation to {targetRecorder.VolumePath} ({targetRecorder.ProductId})...";
         BurnProgress = 0;
+        Telemetry.BeginSession($"Data Disc ({VolumeLabel})", targetRecorder.VolumePath, targetRecorder.QueryMediaStatus().MediaType.GetDisplayName());
 
         try
         {
@@ -911,6 +915,7 @@ public class DataBurnViewModel : ObservableObject
             var progressHandler = new ClosableProgress<BurnProgressSnapshot>(snap =>
             {
                 if (!_isBusy) return;
+                Telemetry.RecordSnapshot(snap);
                 if (snap.TotalLba > 0)
                 {
                     BurnProgress = Math.Clamp((double)snap.CurrentLba / snap.TotalLba * 100.0, 0, 100);
@@ -992,6 +997,7 @@ public class DataBurnViewModel : ObservableObject
         }
         finally
         {
+            Telemetry.EndSession();
             _activeBurnCts?.Dispose();
             _activeBurnCts = null;
             IsBusy = false;

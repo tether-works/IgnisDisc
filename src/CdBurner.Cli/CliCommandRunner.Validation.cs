@@ -31,7 +31,7 @@ public static partial class CliCommandRunner
         "pregap-seconds", "read-offset", "redundancy", "release", "retries", "rotate", "scale",
         "sectors", "set", "settings-file", "size", "songwriter", "source", "spacing", "speed",
         "stage", "staging", "standard", "start-angle", "store", "subtitle-language",
-        "subtitle-size", "subtitles-default", "target", "text", "title", "title-names",
+        "subtitle-size", "subtitles-default", "target", "telemetry-out", "text", "title", "title-names",
         "title-ring", "title-ring-date", "title-ring-height-mm", "to", "tone", "tracks",
         "tracks-file", "turn-map", "turn-map-offset", "udf-rev", "upc", "value",
         "video-bitrate", "video-ts", "wait-minutes", "write-offset"
@@ -98,19 +98,19 @@ public static partial class CliCommandRunner
 
     private static readonly CommandOptionSpec BurnIsoSpec = CommandOptionSpec.Of(
         ["native", "test-write", "test-first", "windows-writer", "strict-verify", "verify", "no-verify", "close", "no-close", "overwrite", "no-burnfree", "confirm-shutdown"],
-        ["drive", "iso", "speed", "log-dir", "layer-break", "post-action"]);
+        ["drive", "iso", "speed", "log-dir", "layer-break", "post-action", "telemetry-out"]);
 
     private static readonly CommandOptionSpec BurnDataSpec = CommandOptionSpec.Of(
         ["native", "test-write", "test-first", "windows-writer", "strict-verify", "verify", "no-verify", "close", "no-close", "overwrite", "append", "no-burnfree", "udf", "joliet", "sha256sums", "blake3sums", "confirm-shutdown"],
-        ["drive", "input", "label", "speed", "boot-bios", "boot-uefi", "udf-rev", "fixed-time", "log-dir", "layer-break", "post-action", "fill-picture", .. CalibrationParamOptions]);
+        ["drive", "input", "label", "speed", "boot-bios", "boot-uefi", "udf-rev", "fixed-time", "log-dir", "layer-break", "post-action", "fill-picture", "telemetry-out", .. CalibrationParamOptions]);
 
     private static readonly CommandOptionSpec BurnAudioSpec = CommandOptionSpec.Of(
         ["plan-only", "native", "test-write", "test-first", "recovery-session", "blue-book", "no-burnfree", "allow-damaged", "lookup", "confirm-shutdown", .. AudioCompilationFlags],
-        ["drive", "speed", "data-folder", "data-label", "log-dir", "write-offset", "post-action", "fill-picture", "drive-model", "media-id", "store", .. AudioCompilationOptions]);
+        ["drive", "speed", "data-folder", "data-label", "log-dir", "write-offset", "post-action", "fill-picture", "drive-model", "media-id", "store", "telemetry-out", .. AudioCompilationOptions]);
 
     private static readonly CommandOptionSpec BurnDvdSpec = CommandOptionSpec.Of(
         ["native", "test-write", "test-first", "windows-writer", "no-burnfree", "no-verify", "verify", "overwrite", "confirm-shutdown", .. DvdAuthoringFlags],
-        ["drive", "video-ts", "input", "speed", "log-dir", "post-action", "fill-picture", "layer-break", .. DvdAuthoringOptions, .. CalibrationParamOptions]);
+        ["drive", "video-ts", "input", "speed", "log-dir", "post-action", "fill-picture", "layer-break", "telemetry-out", .. DvdAuthoringOptions, .. CalibrationParamOptions]);
 
     private static readonly CommandOptionSpec RosettaLadderSpec = CommandOptionSpec.Of(
         ["no-interleave", "plan-only"],

@@ -98,12 +98,16 @@ public class ImageStudioViewModel : ObservableObject
             lock (_progressLock)
             {
                 if (!_isBusy || epoch != _progressEpoch) return;
+                if (Telemetry.IsActive)
+                {
+                    Telemetry.RecordSnapshot(p);
+                }
                 if (p.TotalLba > 0)
                 {
                     BurnProgress = Math.Min(100.0, (double)p.CurrentLba / p.TotalLba * 100.0);
                 }
-                DeviceBufferPercent = Math.Clamp(p.BufferLevelPercent > 0 ? p.BufferLevelPercent : 100.0, 0.0, 100.0);
-                SoftwareBufferPercent = Math.Clamp(p.BufferLevelPercent > 0 ? Math.Min(100.0, p.BufferLevelPercent + 2.0) : 100.0, 0.0, 100.0);
+                DeviceBufferPercent = Math.Clamp(p.DeviceBufferFillPercent ?? (p.BufferLevelPercent > 0 ? p.BufferLevelPercent : 100.0), 0.0, 100.0);
+                SoftwareBufferPercent = Math.Clamp(p.HostBufferFillPercent ?? (p.BufferLevelPercent > 0 ? p.BufferLevelPercent : 100.0), 0.0, 100.0);
                 if (p.CurrentSpeedMultiplier > 0 || p.CurrentBytesPerSecond > 0)
                 {
                     double kbps = p.CurrentBytesPerSecond / 1024.0;
@@ -482,6 +486,9 @@ public class ImageStudioViewModel : ObservableObject
         get => _lastCopyResult;
         set => SetProperty(ref _lastCopyResult, value);
     }
+
+    /// <summary>Live burn telemetry recorder and SVG/JSON plot exporter.</summary>
+    public BurnTelemetryMonitor Telemetry { get; } = new();
 
     /// <summary>
     /// Hardware drive buffer fill level percentage (0.0 .. 100.0).
@@ -1512,6 +1519,7 @@ public class ImageStudioViewModel : ObservableObject
         }
         finally
         {
+            Telemetry.EndSession();
             _activeCts?.Dispose();
             _activeCts = null;
             IsBusy = false;
@@ -1602,6 +1610,7 @@ public class ImageStudioViewModel : ObservableObject
 
         IsBusy = true;
         BurnProgress = 0;
+        Telemetry.BeginSession($"Disc Image ({Path.GetFileName(SourceImagePath)})", recorder.VolumePath, recorder.QueryMediaStatus().MediaType.GetDisplayName());
         StatusMessage = $"Burning image '{Path.GetFileName(SourceImagePath)}' to {recorder.VolumePath} ({recorder.ProductId})...";
 
         try
@@ -1756,6 +1765,7 @@ public class ImageStudioViewModel : ObservableObject
         }
         finally
         {
+            Telemetry.EndSession();
             _activeCts?.Dispose();
             _activeCts = null;
             IsBusy = false;
@@ -1965,6 +1975,7 @@ public class ImageStudioViewModel : ObservableObject
         }
         finally
         {
+            Telemetry.EndSession();
             _activeCts?.Dispose();
             _activeCts = null;
             IsBusy = false;
@@ -2335,6 +2346,7 @@ public class ImageStudioViewModel : ObservableObject
         }
         finally
         {
+            Telemetry.EndSession();
             _activeCts?.Dispose();
             _activeCts = null;
             IsBusy = false;

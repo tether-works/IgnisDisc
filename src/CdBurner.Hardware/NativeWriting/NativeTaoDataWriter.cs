@@ -416,42 +416,80 @@ public sealed partial class NativeTaoDataWriter
         byte[]? lastSectorOverride = null)
     {
         int minimum = minimumSectorsPerWrite ?? sectorsPerWrite;
-        byte[] buffer = new byte[sectorsPerWrite * SectorSize];
+        int hostCapacityBytes = Math.Max(sectorsPerWrite, sectorsPerWrite * 4) * SectorSize;
+        byte[] buffer = new byte[hostCapacityBytes];
+        int bufferedStart = 0;
+        int bufferedCount = 0;
         long remainingImage = request.ImageBytes - imageBytesAlreadyWritten;
         int lba = startLba;
         int end = startLba + trackSectors;
         while (lba < end)
         {
             Check(ct, state);
+
+            int sectorsLeftInTrack = end - lba;
+            long maxTrackImageBytes = Math.Min(remainingImage, (long)sectorsLeftInTrack * SectorSize);
+            int availableBytes = bufferedCount - bufferedStart;
+            if (availableBytes < sectorsPerWrite * SectorSize && availableBytes < maxTrackImageBytes)
+            {
+                if (bufferedStart > 0 && availableBytes > 0)
+                {
+                    Buffer.BlockCopy(buffer, bufferedStart, buffer, 0, availableBytes);
+                }
+                bufferedStart = 0;
+                bufferedCount = availableBytes;
+
+                int room = hostCapacityBytes - bufferedCount;
+                long needed = maxTrackImageBytes - bufferedCount;
+                int toRead = (int)Math.Min(room, Math.Max(0, needed));
+                if (toRead > 0)
+                {
+                    try
+                    {
+                        ReadExactly(request.Image, buffer.AsSpan(bufferedCount, toRead));
+                    }
+                    catch (Exception ex) when (ex is IOException or UnauthorizedAccessException or EndOfStreamException)
+                    {
+                        throw Stop($"Could not read the image at sector {lba - startLba}: {ex.Message}");
+                    }
+                    bufferedCount += toRead;
+                }
+            }
+
             int n = Math.Min(sectorsPerWrite, end - lba);
             int bytes = n * SectorSize;
-            int fromImage = (int)Math.Min(bytes, Math.Max(0, remainingImage));
-            try
+            availableBytes = bufferedCount - bufferedStart;
+            int fromBuffer = Math.Min(bytes, availableBytes);
+            if (fromBuffer < bytes)
             {
-                ReadExactly(request.Image, buffer.AsSpan(0, fromImage));
+                if (bufferedStart > 0 && fromBuffer > 0)
+                {
+                    Buffer.BlockCopy(buffer, bufferedStart, buffer, 0, fromBuffer);
+                }
+                bufferedStart = 0;
+                bufferedCount = fromBuffer;
+                Array.Clear(buffer, fromBuffer, bytes - fromBuffer);
+                if (lastSectorOverride != null && lba + n == end)
+                {
+                    lastSectorOverride.AsSpan(0, SectorSize).CopyTo(buffer.AsSpan((n - 1) * SectorSize, SectorSize));
+                }
             }
-            catch (Exception ex) when (ex is IOException or UnauthorizedAccessException or EndOfStreamException)
-            {
-                throw Stop($"Could not read the image at sector {lba - startLba}: {ex.Message}");
-            }
-            Array.Clear(buffer, fromImage, bytes - fromImage);
-            if (lastSectorOverride != null && lba + n == end && fromImage < bytes)
-            {
-                lastSectorOverride.AsSpan(0, SectorSize).CopyTo(buffer.AsSpan((n - 1) * SectorSize, SectorSize));
-            }
-            remainingImage -= fromImage;
 
-            if (!WriteBlocks(lba, (ushort)n, buffer.AsSpan(0, bytes), state, canShrink: sectorsPerWrite > minimum, first: lba == startLba, ct))
+            if (!WriteBlocks(lba, (ushort)n, buffer.AsSpan(bufferedStart, bytes), state, canShrink: sectorsPerWrite > minimum, first: lba == startLba, ct))
             {
-                request.Image.Position -= fromImage;
-                remainingImage += fromImage;
                 sectorsPerWrite = Math.Max(minimum, sectorsPerWrite / 2);
                 _note($"The adapter refused {n} sectors in one WRITE; sending {sectorsPerWrite} per WRITE from LBA {lba}.");
                 continue;
             }
+
+            bufferedStart += fromBuffer;
+            remainingImage -= fromBuffer;
             lba += n;
             state.SectorsSent += n;
-            reporter.Report(state.SectorsSent, "Writing data");
+            double hostFillPct = hostCapacityBytes > 0
+                ? Math.Clamp(100.0 * (bufferedCount - bufferedStart) / hostCapacityBytes, 0.0, 100.0)
+                : 0.0;
+            reporter.Report(state.SectorsSent, "Writing data", hostFillPct);
         }
     }
 
@@ -1128,17 +1166,6 @@ public sealed partial class NativeTaoDataWriter
         }
     }
 
-    private double? ReadBufferPercent()
-    {
-        byte[] buffer = new byte[12];
-        var r = _transport.ExecuteCommand(NativeWriteCommands.BuildReadBufferCapacity(), buffer, ScsiPassThroughNative.SCSI_IOCTL_DATA_IN, ShortTimeout);
-        if (!r.IsSuccess || NativeWriteCommands.ParseBufferCapacity(buffer) is not { Length: > 0 } cap)
-        {
-            return null;
-        }
-        return Math.Clamp(100.0 * (cap.Length - Math.Min(cap.Blank, cap.Length)) / cap.Length, 0, 100);
-    }
-
     private static void Check(CancellationToken ct, RunState state)
     {
         if (ct.IsCancellationRequested)
@@ -1178,46 +1205,19 @@ public sealed partial class NativeTaoDataWriter
 
     private sealed class ProgressReporter
     {
-        private readonly NativeTaoDataWriter _writer;
-        private readonly IProgress<BurnProgressSnapshot>? _progress;
-        private readonly Stopwatch _clock;
-        private readonly int _total;
-        private readonly double _sectorsPerSecondAt1x;
-        private TimeSpan? _lastBufferPoll;
-        private double _buffer;
+        private readonly NativeBurnTelemetrySampler _sampler;
 
         /// <param name="sectorsPerSecondAt1x">75 on CD; 1,385,000 / 2,048 on DVD.</param>
         public ProgressReporter(NativeTaoDataWriter writer, IProgress<BurnProgressSnapshot>? progress, Stopwatch clock, int total,
             double sectorsPerSecondAt1x = Msf.FramesPerSecond)
         {
-            _writer = writer;
-            _progress = progress;
-            _clock = clock;
-            _total = total;
-            _sectorsPerSecondAt1x = sectorsPerSecondAt1x;
+            _sampler = new NativeBurnTelemetrySampler(writer._transport, writer._note, progress, clock, total, SectorSize, sectorsPerSecondAt1x);
         }
 
-        public void Report(int done, string action)
+        public void Report(int done, string action, double? hostBufferPercent = null)
         {
-            if (_lastBufferPoll is null || _clock.Elapsed - _lastBufferPoll.Value >= TimeSpan.FromSeconds(1))
-            {
-                _lastBufferPoll = _clock.Elapsed;
-                _buffer = _writer.ReadBufferPercent() ?? _buffer;
-            }
-            if (_progress == null) return;
-            double seconds = _clock.Elapsed.TotalSeconds;
-            double rate = seconds > 0 ? done / seconds : 0;
-            _progress.Report(new BurnProgressSnapshot
-            {
-                CurrentLba = done,
-                TotalLba = _total,
-                ElapsedTime = _clock.Elapsed,
-                RemainingTime = rate > 0 ? TimeSpan.FromSeconds((_total - done) / rate) : TimeSpan.Zero,
-                BufferLevelPercent = _buffer,
-                CurrentSpeedMultiplier = rate / _sectorsPerSecondAt1x,
-                CurrentBytesPerSecond = (long)(rate * SectorSize),
-                CurrentActionDescription = action
-            });
+            bool activeWrite = action.StartsWith("Writing", StringComparison.OrdinalIgnoreCase);
+            _sampler.Report(done, action, hostBufferPercent, activeWrite);
         }
     }
 }

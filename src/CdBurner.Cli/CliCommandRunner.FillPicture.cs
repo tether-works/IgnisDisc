@@ -110,13 +110,13 @@ public static partial class CliCommandRunner
     private static async Task<(DataBurnResult Result, FillOutcome Outcome)> BurnFilledAsync(
         DataBurnService burnService, IDiscRecorderBackend recorder, CompilationDirectory root, IsoBuildOptions isoOptions,
         DataBurnOptions burnOptions, string picture, DiscArtMedium medium, CalibrationParameters disc, string discFrom,
-        TextWriter? progressWriter)
+        TextWriter? progressWriter, IProgress<BurnProgressSnapshot>? burnProgress = null)
     {
         progressWriter?.WriteLine("Drawing the picture on the rest of the disc (the whole disc is written and closed)...");
         try
         {
             (DataBurnResult result, DiscArtPlan plan) = await DiscFillPicture.BurnAsync(burnService, recorder, root, isoOptions,
-                burnOptions, picture, medium, disc, new ConsoleProgress(progressWriter)).ConfigureAwait(false);
+                burnOptions, picture, medium, disc, new ConsoleProgress(progressWriter), burnProgress).ConfigureAwait(false);
             return (result, new FillOutcome(picture, discFrom, plan));
         }
         catch (ArgumentException ex)

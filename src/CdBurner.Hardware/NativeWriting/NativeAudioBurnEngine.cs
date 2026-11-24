@@ -620,6 +620,8 @@ public sealed class NativeAudioBurnEngine : IBurnEngineBackend, IAudioDiscVerifi
                 ElapsedTime = s.ElapsedTime,
                 RemainingTime = s.RemainingTime,
                 BufferLevelPercent = s.BufferLevelPercent,
+                DeviceBufferFillPercent = s.DeviceBufferFillPercent,
+                HostBufferFillPercent = s.HostBufferFillPercent,
                 CurrentSpeedMultiplier = s.CurrentSpeedMultiplier,
                 CurrentBytesPerSecond = s.CurrentBytesPerSecond,
                 CurrentActionDescription = prefix + s.CurrentActionDescription

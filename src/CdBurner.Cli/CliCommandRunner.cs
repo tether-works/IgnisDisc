@@ -789,19 +789,22 @@ public static partial class CliCommandRunner
             DisableBufferUnderrunFree = disableBufe
         };
 
+        string? telemetryOut = ParseTelemetryOutPath(cmd);
         var burnService = new DataBurnService(nativeEngine ?? burnEngine);
+        var telemetry = CreateTelemetrySeries(telemetryOut, innerProgress: null, $"burn-iso ({Path.GetFileName(isoPath)})", recorder, mediaStatus.MediaType);
         DataBurnResult result;
         if (LegacyDiscImageConverter.IsLegacyImageFile(isoPath))
         {
             // .bin / .nrg / .mdf / .mds / .ccd / .img / .cdi: stream the 2048-byte user data directly (no temp .iso, no 2 GB limit).
             await using var legacyStream = LegacyDiscImageConverter.OpenIsoUserDataStream(isoPath);
-            result = await burnService.BurnStreamAsync(recorder, legacyStream, burnOptions).ConfigureAwait(false);
+            result = await burnService.BurnStreamAsync(recorder, legacyStream, burnOptions, telemetry).ConfigureAwait(false);
         }
         else
         {
-            result = await burnService.BurnIsoFileAsync(recorder, isoPath, burnOptions).ConfigureAwait(false);
+            result = await burnService.BurnIsoFileAsync(recorder, isoPath, burnOptions, telemetry).ConfigureAwait(false);
         }
 
+        IReadOnlyList<string> telemetryPaths = SaveTelemetryIfRequested(telemetryOut, telemetry);
         ExecutePostBurnActionIfSucceeded(postAction, result.Success, recorder);
 
         if (cmd.IsJson)
@@ -823,6 +826,8 @@ public static partial class CliCommandRunner
                 verified = result.Verified,
                 verificationNote = result.VerificationNote,
                 directWrite = NativeDataJson(nativeEngine),
+                telemetryOut = FormatTelemetryJsonValue(telemetryPaths),
+                telemetryPoints = telemetry?.Count,
                 error = result.ErrorMessage
             };
 
@@ -840,11 +845,13 @@ public static partial class CliCommandRunner
             stdout.WriteLine($"  Verified:       {(result.Verified ? "Passed" : "No")}");
             if (result.VerificationNote != null) stdout.WriteLine($"  Verify Note:    {result.VerificationNote}");
             WriteNativeDataSummary(stdout, nativeEngine);
+            WriteTelemetryOutSummary(stdout, telemetryPaths);
             return 0;
         }
 
         stderr.WriteLine($"Burn failed: {result.ErrorMessage}");
         WriteNativeDataSummary(stderr, nativeEngine);
+        WriteTelemetryOutSummary(stderr, telemetryPaths);
         return 1;
     }
 
@@ -966,19 +973,23 @@ public static partial class CliCommandRunner
             WriteBlake3Manifest: cmd.HasFlag("blake3sums"));
 
         var phases = new PhaseTimingProgress(cmd.IsJson ? null : stdout);
+        string? telemetryOut = ParseTelemetryOutPath(cmd);
+        var telemetry = CreateTelemetrySeries(telemetryOut, phases, $"burn-data ({effectiveLabel})", recorder, mediaStatus.MediaType);
+        IProgress<BurnProgressSnapshot> progress = (IProgress<BurnProgressSnapshot>?)telemetry ?? phases;
         var burnService = new DataBurnService(nativeEngine ?? burnEngine);
         DataBurnResult result;
         FillOutcome? fillOutcome = null;
         if (fill is { } f)
         {
             (result, fillOutcome) = await BurnFilledAsync(burnService, recorder, root, buildOptions, burnOptions, fillPicture!,
-                f.Medium, f.Disc, f.Source, cmd.IsJson ? null : stderr).ConfigureAwait(false);
+                f.Medium, f.Disc, f.Source, cmd.IsJson ? null : stderr, progress).ConfigureAwait(false);
         }
         else
         {
-            result = await burnService.BurnCompilationAsync(recorder, root, burnOptions, buildOptions, phases).ConfigureAwait(false);
+            result = await burnService.BurnCompilationAsync(recorder, root, burnOptions, buildOptions, progress).ConfigureAwait(false);
         }
         phases.Complete();
+        IReadOnlyList<string> telemetryPaths = SaveTelemetryIfRequested(telemetryOut, telemetry);
         ExecutePostBurnActionIfSucceeded(postAction, result.Success, recorder);
 
         if (cmd.IsJson)
@@ -1004,6 +1015,8 @@ public static partial class CliCommandRunner
                 fillPicture = FillJson(fillOutcome, null),
                 phases = phases.Phases.Select(p => new { phase = p.Name, seconds = Math.Round(p.Duration.TotalSeconds, 1) }),
                 directWrite = NativeDataJson(nativeEngine),
+                telemetryOut = FormatTelemetryJsonValue(telemetryPaths),
+                telemetryPoints = telemetry?.Count,
                 error = result.ErrorMessage
             };
 
@@ -1023,12 +1036,14 @@ public static partial class CliCommandRunner
             if (result.Warning != null) stdout.WriteLine($"  Warning:        {result.Warning}");
             WriteFillSummary(stdout, fillOutcome, null);
             WriteNativeDataSummary(stdout, nativeEngine);
+            WriteTelemetryOutSummary(stdout, telemetryPaths);
             phases.WriteSummary(stdout);
             return 0;
         }
 
         stderr.WriteLine($"Data burn failed: {result.ErrorMessage}");
         WriteNativeDataSummary(stderr, nativeEngine);
+        WriteTelemetryOutSummary(stderr, telemetryPaths);
         phases.WriteSummary(stderr);
         return 1;
     }
@@ -1309,6 +1324,8 @@ public static partial class CliCommandRunner
         }
 
         string? logDir = cmd.GetOption("log-dir");
+        string? telemetryOut = ParseTelemetryOutPath(cmd);
+        var telemetry = CreateTelemetrySeries(telemetryOut, innerProgress: null, $"burn-audio ({compilation.AlbumTitle})", recorder, mediaStatus.MediaType);
         var nativeEngine = native ? new NativeAudioBurnEngine(logDir) { TestWriteFirst = testFirst } : null;
         var nativeDataEngine = native ? new NativeDataBurnEngine(burnEngine, logDir) : null;
         var audioBurnService = new AudioCdBurnService(nativeEngine ?? burnEngine, mfDecoder, nativeDataEngine);
@@ -1334,8 +1351,10 @@ public static partial class CliCommandRunner
                 BlueBookLayout = blueBook,
                 SessionTwoImage = pictureSession,
                 DisableBufferUnderrunFree = disableBufe
-            }).ConfigureAwait(false);
+            },
+            progress: telemetry).ConfigureAwait(false);
 
+        IReadOnlyList<string> telemetryPaths = SaveTelemetryIfRequested(telemetryOut, telemetry);
         ExecutePostBurnActionIfSucceeded(postAction, result.Success, recorder);
 
         var verification = nativeEngine?.LastResult?.Verification;
@@ -1423,6 +1442,8 @@ public static partial class CliCommandRunner
                 totalTime = result.TotalTime.ToString(),
                 totalTimeSeconds = result.TotalTime.TotalSeconds,
                 averageSpeedMultiplier = result.AverageSpeedMultiplier,
+                telemetryOut = FormatTelemetryJsonValue(telemetryPaths),
+                telemetryPoints = telemetry?.Count,
                 error = result.ErrorMessage
             };
 
@@ -1442,6 +1463,7 @@ public static partial class CliCommandRunner
             {
                 stdout.WriteLine($"  Command log:    {nativeEngine.LastLogPath}");
             }
+            WriteTelemetryOutSummary(stdout, telemetryPaths);
             return 0;
         }
 
@@ -1486,6 +1508,7 @@ public static partial class CliCommandRunner
                     stdout.WriteLine($"  Command log:    {nativeEngine.LastLogPath}");
                 }
             }
+            WriteTelemetryOutSummary(stdout, telemetryPaths);
             return 0;
         }
 
@@ -1494,6 +1517,7 @@ public static partial class CliCommandRunner
         {
             stderr.WriteLine("To burn anyway, run the same command with --allow-damaged.");
         }
+        WriteTelemetryOutSummary(stderr, telemetryPaths);
         return 1;
     }
 
@@ -1798,6 +1822,8 @@ public static partial class CliCommandRunner
         string effectiveLabel = !string.IsNullOrWhiteSpace(volumeLabel) ? volumeLabel : (analysis.SuggestedVolumeLabel ?? "DVD_VIDEO");
         DataBurnResult result;
         DvdCellPosition? layerBreak = null;
+        string? telemetryOut = ParseTelemetryOutPath(cmd);
+        BurnTelemetrySeries? telemetry = null;
 
         try
         {
@@ -1844,19 +1870,20 @@ public static partial class CliCommandRunner
                 DisableBufferUnderrunFree = dvdDisableBufe
             };
             var dvdMedia = recorder.QueryMediaStatus().MediaType;
+            telemetry = CreateTelemetrySeries(telemetryOut, innerProgress: null, $"burn-dvd ({effectiveLabel})", recorder, dvdMedia);
             if (fill is { } f)
             {
                 (result, fillOutcome) = await BurnFilledAsync(burnService, recorder, root, buildOptions, dvdOptions, fillPicture!,
-                    f.Medium, f.Disc, f.Source, cmd.IsJson ? null : stderr).ConfigureAwait(false);
+                    f.Medium, f.Disc, f.Source, cmd.IsJson ? null : stderr, telemetry).ConfigureAwait(false);
             }
             else if (nativeEngine != null && dvdMedia is DiscMediaType.DvdPlusRDualLayer or DiscMediaType.DvdMinusRDualLayer)
             {
                 // Dual-layer with the direct writer: build the image first so the break can go on a cell boundary.
-                (result, layerBreak) = await BurnDvdVideoDualLayerAsync(burnService, recorder, root, dvdOptions, buildOptions, stdout, cmd.IsJson).ConfigureAwait(false);
+                (result, layerBreak) = await BurnDvdVideoDualLayerAsync(burnService, recorder, root, dvdOptions, buildOptions, stdout, cmd.IsJson, telemetry).ConfigureAwait(false);
             }
             else
             {
-                result = await burnService.BurnCompilationAsync(recorder, root, dvdOptions, buildOptions).ConfigureAwait(false);
+                result = await burnService.BurnCompilationAsync(recorder, root, dvdOptions, buildOptions, telemetry).ConfigureAwait(false);
             }
         }
         finally
@@ -1872,6 +1899,7 @@ public static partial class CliCommandRunner
             }
         }
 
+        IReadOnlyList<string> telemetryPaths = SaveTelemetryIfRequested(telemetryOut, telemetry);
         ExecutePostBurnActionIfSucceeded(dvdPostAction, result.Success, recorder);
 
         if (cmd.IsJson)
@@ -1903,6 +1931,8 @@ public static partial class CliCommandRunner
                 },
                 directWrite = NativeDataJson(nativeEngine),
                 fillPicture = FillJson(fillOutcome, fillSkipped),
+                telemetryOut = FormatTelemetryJsonValue(telemetryPaths),
+                telemetryPoints = telemetry?.Count,
                 error = result.ErrorMessage
             };
 
@@ -1924,10 +1954,12 @@ public static partial class CliCommandRunner
             {
                 stdout.WriteLine($"  Command log:    {nativeEngine.LastLogPath}");
             }
+            WriteTelemetryOutSummary(stdout, telemetryPaths);
             return 0;
         }
 
         stderr.WriteLine($"DVD-Video burn failed: {result.ErrorMessage}");
+        WriteTelemetryOutSummary(stderr, telemetryPaths);
         return 1;
     }
 
@@ -1938,7 +1970,8 @@ public static partial class CliCommandRunner
     /// Stops with nothing written when no cell start can take the break.
     /// </summary>
     private static async Task<(DataBurnResult Result, DvdCellPosition? LayerBreak)> BurnDvdVideoDualLayerAsync(DataBurnService burnService,
-        IDiscRecorderBackend recorder, CompilationDirectory root, DataBurnOptions options, IsoBuildOptions buildOptions, TextWriter stdout, bool json)
+        IDiscRecorderBackend recorder, CompilationDirectory root, DataBurnOptions options, IsoBuildOptions buildOptions, TextWriter stdout, bool json,
+        IProgress<BurnProgressSnapshot>? burnProgress = null)
     {
         string tempImage = Path.Combine(Path.GetTempPath(), $"ignisdisc_dvd9_{Guid.NewGuid():N}.iso");
         await using var image = new FileStream(tempImage, FileMode.Create, FileAccess.ReadWrite, FileShare.None, 1 << 20,
@@ -1974,7 +2007,76 @@ public static partial class CliCommandRunner
             LayerBreakSectors = chosen?.Lba,
             DisableBufferUnderrunFree = options.DisableBufferUnderrunFree
         };
-        return (await burnService.BurnStreamAsync(recorder, image, withBreak).ConfigureAwait(false), chosen);
+        return (await burnService.BurnStreamAsync(recorder, image, withBreak, burnProgress).ConfigureAwait(false), chosen);
+    }
+
+    private static string? ParseTelemetryOutPath(CommandLineArgs cmd)
+    {
+        if (!cmd.Options.TryGetValue("telemetry-out", out string? raw))
+        {
+            return null;
+        }
+        if (string.IsNullOrWhiteSpace(raw))
+        {
+            throw new CommandLineException("--telemetry-out requires a file path: --telemetry-out <path>");
+        }
+        return raw;
+    }
+
+    private static BurnTelemetrySeries? CreateTelemetrySeries(
+        string? telemetryOutPath,
+        IProgress<BurnProgressSnapshot>? innerProgress,
+        string title,
+        IDiscRecorderBackend recorder,
+        DiscMediaType mediaType)
+    {
+        if (string.IsNullOrWhiteSpace(telemetryOutPath))
+        {
+            return null;
+        }
+        var series = new BurnTelemetrySeries(BurnTelemetrySeries.DefaultMaxPoints, innerProgress);
+        series.Reset(title, $"{recorder.VendorId} {recorder.ProductId} ({recorder.UniqueId})".Trim(), mediaType.GetDisplayName());
+        return series;
+    }
+
+    private static IReadOnlyList<string> SaveTelemetryIfRequested(string? telemetryOutPath, BurnTelemetrySeries? series)
+    {
+        if (string.IsNullOrWhiteSpace(telemetryOutPath) || series == null)
+        {
+            return Array.Empty<string>();
+        }
+        string fullPath = Path.GetFullPath(telemetryOutPath);
+        if (fullPath.EndsWith(".json", StringComparison.OrdinalIgnoreCase))
+        {
+            series.SaveJson(fullPath);
+            return [fullPath];
+        }
+        if (fullPath.EndsWith(".svg", StringComparison.OrdinalIgnoreCase))
+        {
+            series.SaveSvg(fullPath);
+            return [fullPath];
+        }
+
+        string svgPath = fullPath + ".svg";
+        string jsonPath = fullPath + ".json";
+        series.SaveSvg(svgPath);
+        series.SaveJson(jsonPath);
+        return [svgPath, jsonPath];
+    }
+
+    private static object? FormatTelemetryJsonValue(IReadOnlyList<string> paths) => paths.Count switch
+    {
+        0 => null,
+        1 => paths[0],
+        _ => paths
+    };
+
+    private static void WriteTelemetryOutSummary(TextWriter writer, IReadOnlyList<string> paths)
+    {
+        foreach (string p in paths)
+        {
+            writer.WriteLine($"  Telemetry:      {p}");
+        }
     }
 
     private static async Task<int> HandleRipAsync(
@@ -3785,13 +3887,13 @@ public static partial class CliCommandRunner
         stdout.WriteLine("      Closes the tray and waits until the drive is ready. On a drive that cannot close its own tray it says so and exits 1.");
         stdout.WriteLine("  build-iso --input <folder> --output <file.iso> [--label <vol>] [--udf] [--udf-rev <1.02|1.50|2.00|2.01|2.50|2.60>] [--joliet] [--boot-bios <img>] [--boot-uefi <img>] [--fixed-time <unix|iso8601>] [--sha256sums] [--blake3sums] [--json]");
         stdout.WriteLine("      Compiles a folder into an ISO 9660 / Joliet / UDF filesystem image.");
-        stdout.WriteLine("  burn-iso --drive <id> --iso <file.iso|.nrg|.cdi|.mdf|.mds|.ccd|.img> [--speed <X|max>] [--no-verify | --strict-verify] [--no-close] [--no-burnfree] [--overwrite] [--post-action none|eject|sound|eject-sound|shutdown] [--windows-writer | --native [--test-write | --test-first] [--layer-break <sectors>] [--log-dir <folder>]] [--json]");
-        stdout.WriteLine("      Burns an ISO image directly to the target optical drive. --layer-break: sectors on the first layer of a DVD+R DL (multiple of 16). A DVD-RW is written with direct drive commands unless --windows-writer.");
-        stdout.WriteLine("  burn-data --drive <id> --input <folder> [--label <vol>] [--speed <X|max>] [--udf] [--udf-rev <1.02|1.50|2.00|2.01|2.50|2.60>] [--joliet] [--boot-bios <img>] [--boot-uefi <img>] [--no-verify | --strict-verify] [--no-close] [--append] [--no-burnfree] [--overwrite] [--post-action none|eject|sound|eject-sound|shutdown] [--fixed-time <unix|iso8601>] [--sha256sums] [--blake3sums] [--fill-picture <file.png> [--disc-preset <id>]] [--windows-writer | --native [--test-write | --test-first] [--layer-break <sectors>] [--log-dir <folder>]] [--json]");
+        stdout.WriteLine("  burn-iso --drive <id> --iso <file.iso|.nrg|.cdi|.mdf|.mds|.ccd|.img> [--speed <X|max>] [--no-verify | --strict-verify] [--no-close] [--no-burnfree] [--overwrite] [--post-action none|eject|sound|eject-sound|shutdown] [--telemetry-out <path>] [--windows-writer | --native [--test-write | --test-first] [--layer-break <sectors>] [--log-dir <folder>]] [--json]");
+        stdout.WriteLine("      Burns an ISO image directly to the target optical drive. --layer-break: sectors on the first layer of a DVD+R DL (multiple of 16). --telemetry-out writes burn telemetry as .svg or .json (or both if no extension). A DVD-RW is written with direct drive commands unless --windows-writer.");
+        stdout.WriteLine("  burn-data --drive <id> --input <folder> [--label <vol>] [--speed <X|max>] [--udf] [--udf-rev <1.02|1.50|2.00|2.01|2.50|2.60>] [--joliet] [--boot-bios <img>] [--boot-uefi <img>] [--no-verify | --strict-verify] [--no-close] [--append] [--no-burnfree] [--overwrite] [--post-action none|eject|sound|eject-sound|shutdown] [--fixed-time <unix|iso8601>] [--sha256sums] [--blake3sums] [--fill-picture <file.png> [--disc-preset <id>]] [--telemetry-out <path>] [--windows-writer | --native [--test-write | --test-first] [--layer-break <sectors>] [--log-dir <folder>]] [--json]");
         stdout.WriteLine("      Compiles a folder and burns it to optical media (--append merges and adds a session on an appendable disc). A DVD-RW is written with direct drive commands unless --windows-writer.");
-        stdout.WriteLine("  burn-audio (--drive <id> | --plan-only) (--tracks <files|.cue|.m3u|.pls> | --tracks-file <file.json>) [--title <album>] [--artist <name>] [--songwriter <name>] [--upc <13digits>] [--speed <X|max>] [--dao] [--pregap <frames>] [--normalize] [--rms-level] [--loudness track|album|off] [--crossfade <sec>] [--no-cd-text] [--no-burnfree] [--post-action none|eject|sound|eject-sound|shutdown] [--allow-damaged] [--native [--test-write | --test-first] [--recovery-session | --data-folder <dir> [--data-label <label>] [--blue-book] | --fill-picture <picture>|auto [--lookup]] [--write-offset <samples|auto>] [--log-dir <folder>]] [--json]");
+        stdout.WriteLine("  burn-audio (--drive <id> | --plan-only) (--tracks <files|.cue|.m3u|.pls> | --tracks-file <file.json>) [--title <album>] [--artist <name>] [--songwriter <name>] [--upc <13digits>] [--speed <X|max>] [--dao] [--pregap <frames>] [--normalize] [--rms-level] [--loudness track|album|off] [--crossfade <sec>] [--no-cd-text] [--no-burnfree] [--post-action none|eject|sound|eject-sound|shutdown] [--allow-damaged] [--telemetry-out <path>] [--native [--test-write | --test-first] [--recovery-session | --data-folder <dir> [--data-label <label>] [--blue-book] | --fill-picture <picture>|auto [--lookup]] [--write-offset <samples|auto>] [--log-dir <folder>]] [--json]");
         stdout.WriteLine("      Burns Red Book Audio CD from WAV, FLAC, MP3, AAC/M4A, WMA, .cue, .m3u/.pls, or a JSON --tracks-file (--recovery-session adds session-2 PAR2 recovery; --data-folder burns an Enhanced CD data session; --blue-book writes it as CD-ROM XA Mode 2 with CDPLUS/INFO.CDP and PICTURES/; --plan-only previews without burning).");
-        stdout.WriteLine("  burn-dvd --drive <id> --video-ts <folder|movie> [--label <vol>] [--menu-title <title>] [--menu on|off | --no-menu] [--menu-autoplay <never|sec>] [--after-title next|menu] [--standard ntsc|pal] [--aspect 16:9|4:3] [--chapters <none|sec>] [--subtitles-default on|off] [--subtitle-size small|medium|large] [--video-bitrate <fit|kbps>] [--fit-to-disc] [--title-names <a;b;...>] [--dual-layer] [--generate-subtitles [--subtitle-language <code>]] [--speed <X|max>] [--no-verify] [--no-burnfree] [--overwrite] [--fill-picture <file.png>|auto [--disc-preset <id>]] [--post-action none|eject|sound|eject-sound|shutdown] [--native [--test-write | --test-first] [--log-dir <folder>]] [--json]");
+        stdout.WriteLine("  burn-dvd --drive <id> --video-ts <folder|movie> [--label <vol>] [--menu-title <title>] [--menu on|off | --no-menu] [--menu-autoplay <never|sec>] [--after-title next|menu] [--standard ntsc|pal] [--aspect 16:9|4:3] [--chapters <none|sec>] [--subtitles-default on|off] [--subtitle-size small|medium|large] [--video-bitrate <fit|kbps>] [--fit-to-disc] [--title-names <a;b;...>] [--dual-layer] [--generate-subtitles [--subtitle-language <code>]] [--speed <X|max>] [--no-verify] [--no-burnfree] [--overwrite] [--fill-picture <file.png>|auto [--disc-preset <id>]] [--post-action none|eject|sound|eject-sound|shutdown] [--telemetry-out <path>] [--native [--test-write | --test-first] [--log-dir <folder>]] [--json]");
         stdout.WriteLine("      Validates, normalizes/authors, aligns, and burns a DVD-Video compliant disc from VIDEO_TS or movie files.");
         stdout.WriteLine("      --dual-layer authors movie files for a DVD-9 (longest title first). On a dual-layer disc, --native puts the layer break on a cell boundary.");
         stdout.WriteLine("      --generate-subtitles makes subtitles by speech recognition for movies with no .srt next to them (needs install-subtitle-tool);");

@@ -272,8 +272,14 @@ public class BurnProgressSnapshot
     public int CurrentLba { get; init; }
     public int TotalLba { get; init; }
     public double BufferLevelPercent { get; init; }
+    /// <summary>Drive hardware buffer fill percentage (0-100) from MMC 0x5C READ BUFFER CAPACITY, or null when unsupported/unavailable.</summary>
+    public double? DeviceBufferFillPercent { get; init; }
+    /// <summary>Host I/O staging or system buffer fill percentage (0-100), or null when not applicable.</summary>
+    public double? HostBufferFillPercent { get; init; }
     public double CurrentSpeedMultiplier { get; init; }
     public long CurrentBytesPerSecond { get; init; }
+    /// <summary>Instantaneous write throughput in MB/s (1024*1024 bytes/s).</summary>
+    public double CurrentSpeedMegabytesPerSecond => CurrentBytesPerSecond > 0 ? CurrentBytesPerSecond / (1024.0 * 1024.0) : 0.0;
     public string CurrentActionDescription { get; init; } = string.Empty;
     public double ProgressPercentage => TotalLba > 0 ? Math.Clamp((double)CurrentLba / TotalLba * 100.0, 0.0, 100.0) : 0.0;
 }

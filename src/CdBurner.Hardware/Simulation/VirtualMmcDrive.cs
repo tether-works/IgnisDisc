@@ -683,6 +683,21 @@ public sealed class VirtualMmcDrive : IScsiTransport
     /// <summary>The buffer size the drive reports with READ BUFFER CAPACITY.</summary>
     public int BufferCapacityBytes { get; set; } = 4 * 1024 * 1024;
 
+    /// <summary>Refuse READ BUFFER CAPACITY (0x5C) with 5/20/00 (Invalid Command Operation Code).</summary>
+    public bool RejectsReadBufferCapacity { get; set; }
+
+    /// <summary>Fixed buffer fill percentage (0-100) reported by READ BUFFER CAPACITY (0x5C), or null for default.</summary>
+    public double? SimulatedBufferFillPercent { get; set; }
+
+    /// <summary>Explicit blank buffer bytes reported by READ BUFFER CAPACITY (0x5C), or null for default.</summary>
+    public int? BufferBlankBytesOverride { get; set; }
+
+    /// <summary>Optional dynamic callback computing buffer fill percentage (0-100) from <see cref="WriteCommandCount"/>.</summary>
+    public Func<int, double>? BufferFillPercentByWriteCount { get; set; }
+
+    /// <summary>Total READ BUFFER CAPACITY (0x5C) commands received by this virtual drive.</summary>
+    public int ReadBufferCapacityCommands { get; private set; }
+
     /// <summary>Every READ (10) received: start, count and whether FUA was set.</summary>
     public List<(int Lba, int Count, bool Fua)> Read10Log { get; } = new();
 
@@ -810,7 +825,7 @@ public sealed class VirtualMmcDrive : IScsiTransport
             NativeWriteCommands.OpCodeModeSelect10 => ModeSelect(dataBuffer),
             NativeWriteCommands.OpCodeSendCueSheet => SendCueSheet(cdb, dataBuffer),
             NativeWriteCommands.OpCodeWrite10 => TimedWrite(cdb, dataBuffer, timeout),
-            NativeWriteCommands.OpCodeReadBufferCapacity => ReadBufferCapacity(dataBuffer),
+            NativeWriteCommands.OpCodeReadBufferCapacity => ReadBufferCapacity(cdb, dataBuffer),
             0x35 => SynchronizeCache(),
             0xBE => ReadCdTimed(cdb, dataBuffer),
             0x28 => Read10(cdb, dataBuffer),
@@ -2077,12 +2092,48 @@ public sealed class VirtualMmcDrive : IScsiTransport
         return Good(0);
     }
 
-    private ScsiExecutionResult ReadBufferCapacity(Span<byte> data)
+    private ScsiExecutionResult ReadBufferCapacity(ReadOnlySpan<byte> cdb, Span<byte> data)
     {
+        ReadBufferCapacityCommands++;
+        if (RejectsReadBufferCapacity)
+        {
+            return Sense(0x05, 0x20, 0x00);
+        }
+
+        bool block = cdb.Length > 1 && (cdb[1] & 0x01) != 0;
         byte[] r = new byte[12];
         BinaryPrimitives.WriteUInt16BigEndian(r, 10);
-        BinaryPrimitives.WriteUInt32BigEndian(r.AsSpan(4), (uint)BufferCapacityBytes);
-        BinaryPrimitives.WriteUInt32BigEndian(r.AsSpan(8), 512 * 1024);
+        r[3] = block ? (byte)0x01 : (byte)0x00;
+
+        uint totalBytes = BufferCapacityBytes > 0 ? (uint)BufferCapacityBytes : 0u;
+        uint blankBytes;
+        if (totalBytes == 0)
+        {
+            blankBytes = 0;
+        }
+        else if (BufferFillPercentByWriteCount != null)
+        {
+            double pct = Math.Clamp(BufferFillPercentByWriteCount(WriteCommandCount), 0.0, 100.0);
+            blankBytes = (uint)Math.Clamp(Math.Round(totalBytes * (1.0 - pct / 100.0)), 0, totalBytes);
+        }
+        else if (SimulatedBufferFillPercent is double fixedPct)
+        {
+            double pct = Math.Clamp(fixedPct, 0.0, 100.0);
+            blankBytes = (uint)Math.Clamp(Math.Round(totalBytes * (1.0 - pct / 100.0)), 0, totalBytes);
+        }
+        else if (BufferBlankBytesOverride is int blankOverride)
+        {
+            blankBytes = (uint)Math.Clamp(blankOverride, 0, totalBytes);
+        }
+        else
+        {
+            blankBytes = (uint)Math.Min(512 * 1024, totalBytes);
+        }
+
+        uint totalUnits = block ? totalBytes / 2048u : totalBytes;
+        uint blankUnits = block ? blankBytes / 2048u : blankBytes;
+        BinaryPrimitives.WriteUInt32BigEndian(r.AsSpan(4), totalUnits);
+        BinaryPrimitives.WriteUInt32BigEndian(r.AsSpan(8), blankUnits);
         return CopyOut(r, data);
     }
 

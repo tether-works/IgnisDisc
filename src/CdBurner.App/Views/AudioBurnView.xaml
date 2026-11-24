@@ -4,6 +4,7 @@
              xmlns:d="http://schemas.microsoft.com/expression/blend/2008"
              xmlns:mc="http://schemas.openxmlformats.org/markup-compatibility/2006"
              xmlns:vm="clr-namespace:CdBurner.App.ViewModels"
+             xmlns:controls="clr-namespace:CdBurner.App.Controls"
              xmlns:local="clr-namespace:CdBurner.App.Views"
              xmlns:converters="clr-namespace:CdBurner.App.Converters"
              xmlns:audio="clr-namespace:CdBurner.Core.Audio;assembly=CdBurner.Core"
@@ -517,6 +518,7 @@
                             <Grid.RowDefinitions>
                                 <RowDefinition Height="Auto" />
                                 <RowDefinition Height="Auto" />
+                                <RowDefinition Height="Auto" />
                             </Grid.RowDefinitions>
 
                             <WrapPanel Grid.Row="0" Orientation="Horizontal" HorizontalAlignment="Right" VerticalAlignment="Center">
@@ -577,6 +579,11 @@
                                              Margin="0,6,0,0"
                                              Visibility="{Binding IsBusy, Converter={StaticResource BoolToVis}}" />
                             </StackPanel>
+
+                            <controls:BurnTelemetryChartControl Grid.Row="2"
+                                                                DataContext="{Binding Telemetry}"
+                                                                Visibility="{Binding IsVisible, Converter={StaticResource BoolToVis}}"
+                                                                Margin="0,10,0,0" />
                         </Grid>
                     </Border>
                     </Grid>
