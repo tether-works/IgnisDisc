@@ -196,7 +196,7 @@ public static partial class CliCommandRunner
         CommandLineArgs cmd, TextWriter stdout, TextWriter stderr, IDiscDeviceService deviceService, IBurnEngineBackend burnEngine)
     {
         string image = Path.GetFullPath(cmd.GetRequiredOption("image", "--image <file.iso|file.cue>"));
-        cmd.GetRequiredOption("drive", "--drive <id>");
+        string driveId = ResolveTargetDriveId(cmd);
         string ext = Path.GetExtension(image).ToLowerInvariant();
         if (ext == ".bin")
         {
@@ -221,6 +221,7 @@ public static partial class CliCommandRunner
         foreach (string flag in cmd.Flags) forwarded.Flags.Add(flag);
         forwarded.Positionals.AddRange(cmd.Positionals.Skip(1));
         forwarded.Options.Remove("image");
+        forwarded.Options["drive"] = driveId;
 
         if (ext == ".cue")
         {

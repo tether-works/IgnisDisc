@@ -62,7 +62,7 @@ public static partial class CliCommandRunner
         IDiscDeviceService deviceService,
         IBurnEngineBackend burnEngine)
     {
-        string driveId = cmd.GetRequiredOption("drive", "--drive <id>");
+        string driveId = ResolveTargetDriveId(cmd);
         string imagesRaw = cmd.GetRequiredOption("images", "--images <file1,file2,...>");
         string? speedStr = cmd.GetOption("speed");
         bool strictVerify = cmd.HasFlag("strict-verify");
@@ -220,7 +220,7 @@ public static partial class CliCommandRunner
 
     private static int HandleBookTypeCommand(CommandLineArgs cmd, TextWriter stdout, TextWriter stderr, IDiscDeviceService deviceService)
     {
-        string driveId = cmd.GetRequiredOption("drive", "--drive <id>");
+        string driveId = ResolveTargetDriveId(cmd);
         string? targetRaw = cmd.GetOption("set");
 
         var recorder = FindRecorder(deviceService, driveId);

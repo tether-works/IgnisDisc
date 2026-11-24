@@ -8,6 +8,7 @@ using CdBurner.Core.Images;
 using CdBurner.Core.Iso;
 using CdBurner.Core.Primitives;
 using CdBurner.Hardware.Audio;
+using CdBurner.Hardware.Simulation;
 
 namespace CdBurner.Cli;
 
@@ -251,11 +252,78 @@ public static partial class CliCommandRunner
         return 0;
     }
 
-    private static int HandleBrowseImage(CommandLineArgs cmd, TextWriter stdout)
+    private static async Task<int> HandleBrowseImageAsync(
+        CommandLineArgs cmd,
+        TextWriter stdout,
+        IDiscDeviceService deviceService,
+        IBurnEngineBackend burnEngine)
     {
-        string fullPath = ResolveImageFileInput(cmd, "browse-image <file>");
+        string? explicitFile = cmd.GetOption("image") ?? cmd.GetOption("input");
+        bool hasFileArg = !string.IsNullOrWhiteSpace(explicitFile) || cmd.Positionals.Count > 0;
+        bool hasDriveTarget = cmd.Options.ContainsKey("drive") || (!hasFileArg && cmd.Options.ContainsKey("virtual-media"));
+
+        if (hasFileArg && cmd.Options.ContainsKey("drive"))
+        {
+            throw new CommandLineException("Specify either a disc image file or --drive <id>, not both.");
+        }
+
         var browser = new DiscImageBrowserService();
-        var result = browser.Browse(fullPath);
+        DiscImageBrowseResult result;
+
+        if (hasDriveTarget)
+        {
+            string driveId = ResolveTargetDriveId(cmd);
+            var recorder = FindRecorder(deviceService, driveId);
+            var status = recorder.QueryMediaStatus();
+            if (!status.MediaPresent)
+            {
+                throw new CommandLineException($"No optical disc is inserted in drive '{recorder.UniqueId}'.");
+            }
+            if (status.IsBlank || status.UsedSectors <= 0)
+            {
+                throw new CommandLineException($"The disc in drive '{recorder.UniqueId}' is blank.");
+            }
+
+            string sourceLabel = $"virtual://{recorder.UniqueId}";
+            string formatName = $"{status.MediaType.GetDisplayName()} ({(recorder.IsVirtual ? "Virtual Drive" : "Drive")} {recorder.UniqueId})";
+
+            if (recorder is VirtualDiscRecorder vRec && vRec.CurrentMedium is { Raw2352Mode: false })
+            {
+                await using Stream? stream = vRec.CreateReadStream();
+                if (stream == null)
+                {
+                    throw new CommandLineException($"Could not read media stream from drive '{recorder.UniqueId}'.");
+                }
+                result = browser.Browse(stream, sourceLabel, formatName);
+            }
+            else
+            {
+                await using var memStream = new MemoryStream(status.UsedSectors * OpticalConstants.DataSectorSize);
+                var rip = await burnEngine.ReadSectorsAsync(
+                    recorder,
+                    0,
+                    status.UsedSectors,
+                    raw2352Mode: false,
+                    (_, sector) =>
+                    {
+                        memStream.Write(sector.Span);
+                        return ValueTask.CompletedTask;
+                    },
+                    progress: null,
+                    CancellationToken.None).ConfigureAwait(false);
+                if (!rip.Success)
+                {
+                    throw new CommandLineException(rip.ErrorMessage ?? $"Could not read sectors from drive '{recorder.UniqueId}'.");
+                }
+                memStream.Position = 0;
+                result = browser.Browse(memStream, sourceLabel, formatName);
+            }
+        }
+        else
+        {
+            string fullPath = ResolveImageFileInput(cmd, "browse-image <file>");
+            result = browser.Browse(fullPath);
+        }
 
         if (cmd.IsJson)
         {

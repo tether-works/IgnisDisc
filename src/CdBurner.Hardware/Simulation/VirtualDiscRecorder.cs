@@ -120,6 +120,23 @@ public class VirtualDiscRecorder : IDiscRecorderBackend, IAudioSubChannelProvide
     }
 
     /// <summary>
+    /// Removes any mounted or tray-resident medium from the drive completely.
+    /// </summary>
+    public void UnloadMedia(bool openTray = true)
+    {
+        ObjectDisposedException.ThrowIf(_disposed, this);
+
+        lock (_lock)
+        {
+            TrayOpen = openTray;
+            CurrentMedium = null;
+            _trayMedium = null;
+        }
+
+        MediaChanged?.Invoke(this, EventArgs.Empty);
+    }
+
+    /// <summary>
     /// Closes the drive tray, reloading previously inserted media if available.
     /// </summary>
     public void CloseTray()

@@ -142,6 +142,38 @@ public sealed class DiscImageBrowserService
     }
 
     /// <summary>
+    /// Inspects an already-opened seekable ISO 9660 / Joliet / UDF stream read-only without disposing <paramref name="dataStream"/>.
+    /// </summary>
+    public DiscImageBrowseResult Browse(
+        Stream dataStream,
+        string sourceLabel,
+        string? formatName = null,
+        DiscImageFileSystem preferredFileSystem = DiscImageFileSystem.Auto)
+    {
+        ArgumentNullException.ThrowIfNull(dataStream);
+        ArgumentException.ThrowIfNullOrWhiteSpace(sourceLabel);
+        if (!dataStream.CanRead || !dataStream.CanSeek)
+        {
+            throw new ArgumentException("Disc image stream must be readable and seekable.", nameof(dataStream));
+        }
+        if (dataStream.Length == 0)
+        {
+            throw new InvalidDataException($"Disc image '{sourceLabel}' is empty (0 bytes).");
+        }
+
+        using var opened = OpenImageSessionFromStream(
+            dataStream,
+            sourceLabel,
+            ext: ".iso",
+            formatName: string.IsNullOrWhiteSpace(formatName) ? "Optical Disc Stream" : formatName,
+            imageSizeBytes: dataStream.Length,
+            sectorCount: OpticalConstants.BytesToSectors(dataStream.Length, OpticalConstants.DataSectorSize),
+            preferredFileSystem: preferredFileSystem,
+            ownsStream: false);
+        return opened.BuildBrowseResult();
+    }
+
+    /// <summary>
     /// Attempts to browse <paramref name="imagePath"/> without throwing on non-ISO/UDF or audio images.
     /// </summary>
     public bool TryBrowse(
@@ -730,6 +762,27 @@ public sealed class DiscImageBrowserService
             sectorCount = info.SectorCount;
         }
 
+        return OpenImageSessionFromStream(
+            dataStream,
+            fullPath,
+            ext,
+            formatName,
+            imageSizeBytes,
+            sectorCount,
+            preferredFileSystem,
+            ownsStream: true);
+    }
+
+    private static OpenedImageSession OpenImageSessionFromStream(
+        Stream dataStream,
+        string sourceLabel,
+        string ext,
+        string formatName,
+        long imageSizeBytes,
+        int sectorCount,
+        DiscImageFileSystem preferredFileSystem,
+        bool ownsStream)
+    {
         try
         {
             IsoImageReader? isoReader = null;
@@ -757,11 +810,11 @@ public sealed class DiscImageBrowserService
             if (!hasIso && !hasJoliet && !hasUdf)
             {
                 throw new InvalidDataException(
-                    $"'{Path.GetFileName(fullPath)}' does not contain a readable ISO 9660, Joliet, or UDF filesystem.");
+                    $"'{Path.GetFileName(sourceLabel)}' does not contain a readable ISO 9660, Joliet, or UDF filesystem.");
             }
 
             (IsoDirectoryEntry chosenRoot, string fsName, string volumeLabel) = SelectTree(
-                fullPath,
+                sourceLabel,
                 ext,
                 isoReader,
                 udfRoot,
@@ -782,7 +835,7 @@ public sealed class DiscImageBrowserService
             }
 
             return new OpenedImageSession(
-                fullPath,
+                sourceLabel,
                 formatName,
                 volumeLabel,
                 fsName,
@@ -794,11 +847,15 @@ public sealed class DiscImageBrowserService
                 dataStream,
                 isoReader,
                 chosenRoot,
-                udfWarnings);
+                udfWarnings,
+                ownsStream);
         }
         catch
         {
-            dataStream.Dispose();
+            if (ownsStream)
+            {
+                dataStream.Dispose();
+            }
             throw;
         }
     }
@@ -915,6 +972,7 @@ public sealed class DiscImageBrowserService
         public IsoImageReader? IsoReader { get; }
         public IsoDirectoryEntry ChosenRoot { get; }
         public IReadOnlyList<string> Warnings { get; }
+        public bool OwnsStream { get; }
         public Dictionary<string, IsoFileEntry> SourceFilesByRelativePath { get; } = new(StringComparer.OrdinalIgnoreCase);
 
         public OpenedImageSession(
@@ -930,7 +988,8 @@ public sealed class DiscImageBrowserService
             Stream dataStream,
             IsoImageReader? isoReader,
             IsoDirectoryEntry chosenRoot,
-            IReadOnlyList<string> warnings)
+            IReadOnlyList<string> warnings,
+            bool ownsStream = true)
         {
             ImagePath = imagePath;
             FormatName = formatName;
@@ -945,6 +1004,7 @@ public sealed class DiscImageBrowserService
             IsoReader = isoReader;
             ChosenRoot = chosenRoot;
             Warnings = warnings;
+            OwnsStream = ownsStream;
         }
 
         public DiscImageBrowseResult BuildBrowseResult()
@@ -1056,7 +1116,10 @@ public sealed class DiscImageBrowserService
         public void Dispose()
         {
             IsoReader?.Dispose();
-            DataStream.Dispose();
+            if (OwnsStream)
+            {
+                DataStream.Dispose();
+            }
         }
     }
 }

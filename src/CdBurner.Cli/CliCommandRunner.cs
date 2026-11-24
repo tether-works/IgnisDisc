@@ -178,12 +178,19 @@ public static partial class CliCommandRunner
         }
 
         bool ownsDeviceService = customDeviceService == null;
-        var deviceService = customDeviceService ?? new DiscDeviceManager(enablePhysicalEnumeration: OperatingSystem.IsWindows());
+        bool skipPhysical = ShouldSkipPhysicalEnumeration(parsed);
+        var deviceService = customDeviceService ?? new DiscDeviceManager(enablePhysicalEnumeration: !skipPhysical && OperatingSystem.IsWindows());
         var burnEngine = customBurnEngine ?? new CompositeBurnEngine();
+        VirtualAutomationContext? virtualContext = null;
 
         try
         {
-            return await DispatchCommandAsync(parsed, stdout, stderr, deviceService, burnEngine, customHttpClient).ConfigureAwait(false);
+            string subcommand = parsed.Subcommand?.ToLowerInvariant() ?? string.Empty;
+            ValidateCommandOptions(parsed, subcommand);
+            virtualContext = PrepareVirtualAutomation(parsed, deviceService, ownsDeviceService);
+            int exitCode = await DispatchCommandAsync(parsed, stdout, stderr, deviceService, burnEngine, customHttpClient, virtualContext).ConfigureAwait(false);
+            SaveVirtualAutomationState(virtualContext, deviceService, subcommand);
+            return exitCode;
         }
         catch (CommandLineException cle)
         {
@@ -203,6 +210,7 @@ public static partial class CliCommandRunner
         }
         finally
         {
+            virtualContext?.Dispose();
             if (ownsDeviceService && deviceService is IDisposable disp)
             {
                 disp.Dispose();
@@ -230,7 +238,8 @@ public static partial class CliCommandRunner
         TextWriter stderr,
         IDiscDeviceService deviceService,
         IBurnEngineBackend burnEngine,
-        HttpClient? customHttpClient = null)
+        HttpClient? customHttpClient = null,
+        VirtualAutomationContext? virtualContext = null)
     {
         string subcommand = cmd.Subcommand?.ToLowerInvariant() ?? string.Empty;
         ValidateCommandOptions(cmd, subcommand);
@@ -239,6 +248,9 @@ public static partial class CliCommandRunner
         {
             "drives" or "list-drives" => HandleDrives(cmd, stdout, deviceService),
             "media-info" or "mediainfo" or "info" => HandleMediaInfo(cmd, stdout, deviceService),
+            "virtual-mount" or "virtualmount" => HandleVirtualMount(cmd, stdout, deviceService, virtualContext ?? new VirtualAutomationContext()),
+            "virtual-eject" or "virtualeject" => HandleVirtualEject(cmd, stdout, deviceService, virtualContext ?? new VirtualAutomationContext()),
+            "virtual-status" or "virtualstatus" => HandleVirtualStatus(cmd, stdout, deviceService, virtualContext ?? new VirtualAutomationContext()),
             "build-iso" or "buildiso" => await HandleBuildIsoAsync(cmd, stdout).ConfigureAwait(false),
             "burn-iso" or "burniso" => await HandleBurnIsoAsync(cmd, stdout, stderr, deviceService, burnEngine).ConfigureAwait(false),
             "burn-data" or "burndata" => await HandleBurnDataAsync(cmd, stdout, stderr, deviceService, burnEngine).ConfigureAwait(false),
@@ -268,7 +280,7 @@ public static partial class CliCommandRunner
             "install-par2" => await HandleInstallPar2Async(cmd, stdout, stderr).ConfigureAwait(false),
             "check-update" => await HandleCheckUpdateAsync(cmd, stdout, stderr).ConfigureAwait(false),
             "image-info" or "imageinfo" => HandleImageInfo(cmd, stdout),
-            "browse-image" or "browseimage" => HandleBrowseImage(cmd, stdout),
+            "browse-image" or "browseimage" or "browse" => await HandleBrowseImageAsync(cmd, stdout, deviceService, burnEngine).ConfigureAwait(false),
             "extract-image" or "extractimage" => await HandleExtractImageAsync(cmd, stdout, stderr).ConfigureAwait(false),
             "convert-image" or "convertimage" => await HandleConvertImageAsync(cmd, stdout, stderr).ConfigureAwait(false),
             "author-dvd" or "authordvd" => await HandleAuthorDvdAsync(cmd, stdout, stderr).ConfigureAwait(false),
@@ -361,7 +373,7 @@ public static partial class CliCommandRunner
 
     private static int HandleDriveReport(CommandLineArgs cmd, TextWriter stdout, IDiscDeviceService deviceService)
     {
-        string driveId = cmd.GetRequiredOption("drive", "--drive <id>");
+        string driveId = ResolveTargetDriveId(cmd);
         var recorder = FindRecorder(deviceService, driveId);
 
         var caps = recorder.GetCapabilities();
@@ -455,7 +467,7 @@ public static partial class CliCommandRunner
 
     private static int HandleMediaInfo(CommandLineArgs cmd, TextWriter stdout, IDiscDeviceService deviceService)
     {
-        string driveId = cmd.GetRequiredOption("drive", "--drive <id>");
+        string driveId = ResolveTargetDriveId(cmd);
         var recorder = FindRecorder(deviceService, driveId);
 
         var status = recorder.WithManufacturerId(recorder.QueryMediaStatus());
@@ -752,7 +764,7 @@ public static partial class CliCommandRunner
         IDiscDeviceService deviceService,
         IBurnEngineBackend burnEngine)
     {
-        string driveId = cmd.GetRequiredOption("drive", "--drive <id>");
+        string driveId = ResolveTargetDriveId(cmd);
         string isoPath = cmd.GetRequiredOption("iso", "--iso <file.iso>");
         string? speedStr = cmd.GetOption("speed");
         var (nativeEngine, testWrite) = ResolveNativeDataEngine(cmd, burnEngine, hasDirectDefault: true);
@@ -862,7 +874,7 @@ public static partial class CliCommandRunner
         IDiscDeviceService deviceService,
         IBurnEngineBackend burnEngine)
     {
-        string driveId = cmd.GetRequiredOption("drive", "--drive <id>");
+        string driveId = ResolveTargetDriveId(cmd);
         string inputFolder = cmd.GetRequiredOption("input", "--input <folder>");
         string? volumeLabel = cmd.GetOption("label");
         string? speedStr = cmd.GetOption("speed");
@@ -1301,7 +1313,7 @@ public static partial class CliCommandRunner
             return WriteAudioPlanOutput(compilation, 80, cmd.IsJson, stdout);
         }
 
-        string driveId = cmd.GetRequiredOption("drive", "--drive <id>");
+        string driveId = ResolveTargetDriveId(cmd);
         var recorder = FindRecorder(deviceService, driveId);
         if (recorder is VirtualDiscRecorder vRec && !vRec.QueryMediaStatus().MediaPresent)
         {
@@ -1757,7 +1769,7 @@ public static partial class CliCommandRunner
         IDiscDeviceService deviceService,
         IBurnEngineBackend burnEngine)
     {
-        string driveId = cmd.GetRequiredOption("drive", "--drive <id>");
+        string driveId = ResolveTargetDriveId(cmd);
         string? videoTsInput = cmd.GetOption("video-ts") ?? cmd.GetOption("input");
         if (string.IsNullOrWhiteSpace(videoTsInput))
         {
@@ -2086,7 +2098,7 @@ public static partial class CliCommandRunner
         IDiscDeviceService deviceService,
         IBurnEngineBackend burnEngine)
     {
-        string driveId = cmd.GetRequiredOption("drive", "--drive <id>");
+        string driveId = ResolveTargetDriveId(cmd);
         string outputPath = cmd.GetRequiredOption("output", "--output <file.iso|file.bin>");
         bool isRaw = cmd.HasFlag("raw") || outputPath.EndsWith(".bin", StringComparison.OrdinalIgnoreCase);
 
@@ -2154,7 +2166,7 @@ public static partial class CliCommandRunner
         IBurnEngineBackend burnEngine,
         HttpClient? customHttpClient = null)
     {
-        string driveId = cmd.GetRequiredOption("drive", "--drive <id>");
+        string driveId = ResolveTargetDriveId(cmd);
 
         // --library is the finished collection; --output is the working folder for the WAV files (and the
         // destination itself when no --library is given). Without --output, the WAV files go in a hidden
@@ -3022,7 +3034,7 @@ public static partial class CliCommandRunner
         IDiscDeviceService deviceService,
         IBurnEngineBackend burnEngine)
     {
-        string driveId = cmd.GetRequiredOption("drive", "--drive <id>");
+        string driveId = ResolveTargetDriveId(cmd);
         string discFolder = cmd.GetRequiredOption("disc", "--disc <staged disc folder>");
         var (nativeEngine, testWrite) = ResolveNativeDataEngine(cmd, burnEngine);
         bool strictVerify = cmd.HasFlag("strict-verify"); // every read forced from the disc; implies a read-back
@@ -3504,7 +3516,7 @@ public static partial class CliCommandRunner
         IDiscDeviceService deviceService,
         IBurnEngineBackend burnEngine)
     {
-        string driveId = cmd.GetRequiredOption("drive", "--drive <id>");
+        string driveId = ResolveTargetDriveId(cmd);
         if (cmd.GetOption("cue") is { } cuePath)
         {
             return await HandleVerifyCueAsync(cmd, cuePath, FindRecorder(deviceService, driveId), stdout, stderr).ConfigureAwait(false);
@@ -3586,7 +3598,7 @@ public static partial class CliCommandRunner
         IDiscDeviceService deviceService,
         IBurnEngineBackend burnEngine)
     {
-        string driveId = cmd.GetRequiredOption("drive", "--drive <id>");
+        string driveId = ResolveTargetDriveId(cmd);
         bool fullErase = cmd.HasFlag("full");
 
         var recorder = FindRecorder(deviceService, driveId);
@@ -3630,7 +3642,7 @@ public static partial class CliCommandRunner
         IDiscDeviceService deviceService,
         IBurnEngineBackend burnEngine)
     {
-        string driveId = cmd.GetRequiredOption("drive", "--drive <id>");
+        string driveId = ResolveTargetDriveId(cmd);
         string? blockSizeStr = cmd.GetOption("block-size");
         string? csvOutputPath = cmd.GetOption("csv") ?? cmd.GetOption("output");
 
@@ -3885,6 +3897,12 @@ public static partial class CliCommandRunner
         stdout.WriteLine("      Opens the tray. A drive with a spring tray has to be closed by hand afterwards.");
         stdout.WriteLine("  load --drive <id> [--json]");
         stdout.WriteLine("      Closes the tray and waits until the drive is ready. On a drive that cannot close its own tray it says so and exits 1.");
+        stdout.WriteLine("  virtual-mount --drive <id> (--blank <cd-r|cd-rw|dvd-r|dvd+r|dvd+rw|dvd-r-dl|bd-r|bd-re|bd-r-dl|bdxl> | --image <path>) [--virtual-state <path>] [--json]");
+        stdout.WriteLine("      Mounts a blank virtual disc or populated disc image into a persistent virtual drive without touching physical hardware.");
+        stdout.WriteLine("  virtual-eject --drive <id> [--virtual-state <path>] [--json]");
+        stdout.WriteLine("      Ejects and clears mounted virtual media from a virtual drive.");
+        stdout.WriteLine("  virtual-status [--drive <id>] [--virtual-state <path>] [--json]");
+        stdout.WriteLine("      Reports virtual drive state, media geometry, and MMC profile without touching physical hardware.");
         stdout.WriteLine("  build-iso --input <folder> --output <file.iso> [--label <vol>] [--udf] [--udf-rev <1.02|1.50|2.00|2.01|2.50|2.60>] [--joliet] [--boot-bios <img>] [--boot-uefi <img>] [--fixed-time <unix|iso8601>] [--sha256sums] [--blake3sums] [--json]");
         stdout.WriteLine("      Compiles a folder into an ISO 9660 / Joliet / UDF filesystem image.");
         stdout.WriteLine("  burn-iso --drive <id> --iso <file.iso|.nrg|.cdi|.mdf|.mds|.ccd|.img> [--speed <X|max>] [--no-verify | --strict-verify] [--no-close] [--no-burnfree] [--overwrite] [--post-action none|eject|sound|eject-sound|shutdown] [--telemetry-out <path>] [--windows-writer | --native [--test-write | --test-first] [--layer-break <sectors>] [--log-dir <folder>]] [--json]");
@@ -3945,8 +3963,8 @@ public static partial class CliCommandRunner
         stdout.WriteLine("      Checks GitHub Releases for a newer IgnisDisc version.");
         stdout.WriteLine("  image-info --image <file> [--json]");
         stdout.WriteLine("      Inspects an .iso, .cue, .bin, .nrg, .mdf/.mds, .ccd/.img, or .cdi disc image.");
-        stdout.WriteLine("  browse-image <file> [--json]");
-        stdout.WriteLine("      Lists files and directories inside an .iso, .udf, .nrg, .mdf/.mds, .ccd/.img, .cdi, or .bin/.cue image.");
+        stdout.WriteLine("  browse-image (<file> | --drive <id>) [--json]");
+        stdout.WriteLine("      (alias: browse) Lists files and directories inside an .iso, .udf, .nrg, .mdf/.mds, .ccd/.img, .cdi, .bin/.cue image, or mounted virtual drive.");
         stdout.WriteLine("  extract-image <file> --out <dir> [--entry <path>...] [--overwrite] [--json]");
         stdout.WriteLine("      Safely extracts all or selected files from a disc image into <dir>.");
         stdout.WriteLine("  convert-image --input <file> --output <file> [--cue <file.cue>] [--overwrite] [--json]");
@@ -3984,9 +4002,11 @@ public static partial class CliCommandRunner
         stdout.WriteLine("      Experimental, read-only (CD): maps a written disc's spiral by read timing and writes a turn table for '--turn-map' (capture CSV beside it).");
         stdout.WriteLine();
         stdout.WriteLine("General Options:");
-        stdout.WriteLine("  --help, -h       Show help information.");
-        stdout.WriteLine("  --version, -v    Show version information.");
-        stdout.WriteLine("  --json           Format output as machine-readable JSON.");
+        stdout.WriteLine("  --help, -h             Show help information.");
+        stdout.WriteLine("  --version, -v          Show version information.");
+        stdout.WriteLine("  --json                 Format output as machine-readable JSON.");
+        stdout.WriteLine("  --virtual-media <spec> One-shot virtual disc mount (blank spec or image path) for burn, verify, rip, media-info, and browse.");
+        stdout.WriteLine("  --virtual-state <path> Explicit virtual drive state directory (default %LOCALAPPDATA%\\IgnisDisc\\virtual-state).");
         stdout.WriteLine();
         stdout.WriteLine("Safe defaults (each can be turned off):");
         stdout.WriteLine("  Burns use the fastest speed the drive writes at a constant linear velocity for the disc, up to 16x on CD");
@@ -4006,6 +4026,23 @@ public static partial class CliCommandRunner
             stdout.WriteLine();
             stdout.WriteLine("  drive-report --drive <id> [--json]");
             stdout.WriteLine("      Generates a Markdown compatibility report matching GitHub issue template.");
+            return;
+        }
+        if (string.Equals(subcommand, "virtual-mount", StringComparison.OrdinalIgnoreCase) ||
+            string.Equals(subcommand, "virtualmount", StringComparison.OrdinalIgnoreCase) ||
+            string.Equals(subcommand, "virtual-eject", StringComparison.OrdinalIgnoreCase) ||
+            string.Equals(subcommand, "virtualeject", StringComparison.OrdinalIgnoreCase) ||
+            string.Equals(subcommand, "virtual-status", StringComparison.OrdinalIgnoreCase) ||
+            string.Equals(subcommand, "virtualstatus", StringComparison.OrdinalIgnoreCase))
+        {
+            stdout.WriteLine(LegalBanner.VersionNotice);
+            stdout.WriteLine();
+            stdout.WriteLine("  virtual-mount --drive <id> (--blank <cd-r|cd-rw|dvd-r|dvd+r|dvd+rw|dvd-r-dl|bd-r|bd-re|bd-r-dl|bdxl> | --image <path>) [--virtual-state <path>] [--json]");
+            stdout.WriteLine("      Mounts a blank or image-backed virtual medium into a virtual drive persisted in --virtual-state (or the default virtual state directory).");
+            stdout.WriteLine("  virtual-eject --drive <id> [--virtual-state <path>] [--json]");
+            stdout.WriteLine("      Unmounts and clears virtual media from the virtual drive.");
+            stdout.WriteLine("  virtual-status [--drive <id>] [--virtual-state <path>] [--json]");
+            stdout.WriteLine("      Lists virtual drives, mounted media status, and VirtualMmcDrive profile/status without touching physical hardware.");
             return;
         }
         if (string.Equals(subcommand, "eject", StringComparison.OrdinalIgnoreCase) ||
@@ -4085,6 +4122,7 @@ public static partial class CliCommandRunner
             string.Equals(subcommand, "imageinfo", StringComparison.OrdinalIgnoreCase) ||
             string.Equals(subcommand, "browse-image", StringComparison.OrdinalIgnoreCase) ||
             string.Equals(subcommand, "browseimage", StringComparison.OrdinalIgnoreCase) ||
+            string.Equals(subcommand, "browse", StringComparison.OrdinalIgnoreCase) ||
             string.Equals(subcommand, "extract-image", StringComparison.OrdinalIgnoreCase) ||
             string.Equals(subcommand, "extractimage", StringComparison.OrdinalIgnoreCase) ||
             string.Equals(subcommand, "convert-image", StringComparison.OrdinalIgnoreCase) ||
@@ -4094,8 +4132,8 @@ public static partial class CliCommandRunner
             stdout.WriteLine();
             stdout.WriteLine("  image-info --image <file> [--json]");
             stdout.WriteLine("      Inspects sector size, sector count, offsets, and tracks of an .iso, .cue, .bin, .nrg, .mdf/.mds, .ccd/.img, or .cdi image.");
-            stdout.WriteLine("  browse-image <file> [--json]");
-            stdout.WriteLine("      Lists directory tree entries (path, size, UTC timestamp, flags, LBA, filesystem source) in an .iso, .udf, .nrg, .mdf/.mds, .ccd/.img, .cdi, or .bin/.cue image.");
+            stdout.WriteLine("  browse-image (<file> | --drive <id>) [--virtual-media <spec>] [--virtual-state <path>] [--json]");
+            stdout.WriteLine("      (alias: browse) Lists directory tree entries (path, size, UTC timestamp, flags, LBA, filesystem source) in an image or mounted virtual drive.");
             stdout.WriteLine("  extract-image <file> --out <dir> [--entry <path>...] [--overwrite] [--json]");
             stdout.WriteLine("      Safely extracts all entries or repeated --entry <path> selections into <dir> with path-safety validation.");
             stdout.WriteLine("  convert-image --input <file> --output <file> [--cue <file.cue>] [--overwrite] [--json]");

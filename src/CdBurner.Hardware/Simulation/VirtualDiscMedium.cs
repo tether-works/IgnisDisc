@@ -45,6 +45,7 @@ public class VirtualDiscMedium : IDisposable, IBookTypeTarget
     private readonly object _syncRoot = new();
     private readonly Dictionary<int, byte[]> _memorySectors = new();
     private FileStream? _fileStream;
+    private readonly bool _readOnlyBacking;
     private readonly bool _deleteBackingFileOnDispose;
     private bool _disposed;
 
@@ -214,7 +215,8 @@ public class VirtualDiscMedium : IDisposable, IBookTypeTarget
         bool isBlank = true,
         string? backingFilePath = null,
         bool raw2352Mode = false,
-        bool deleteBackingFileOnDispose = false)
+        bool deleteBackingFileOnDispose = false,
+        bool readOnlyBacking = false)
     {
         MediaType = mediaType;
         TotalCapacitySectors = totalCapacitySectors;
@@ -222,15 +224,23 @@ public class VirtualDiscMedium : IDisposable, IBookTypeTarget
         BackingFilePath = backingFilePath;
         Raw2352Mode = raw2352Mode;
         _deleteBackingFileOnDispose = deleteBackingFileOnDispose;
+        _readOnlyBacking = readOnlyBacking;
 
         if (!string.IsNullOrEmpty(backingFilePath))
         {
-            string? dir = Path.GetDirectoryName(backingFilePath);
-            if (!string.IsNullOrEmpty(dir) && !Directory.Exists(dir))
+            if (readOnlyBacking)
             {
-                Directory.CreateDirectory(dir);
+                _fileStream = new FileStream(backingFilePath, FileMode.Open, FileAccess.Read, FileShare.Read);
             }
-            _fileStream = new FileStream(backingFilePath, FileMode.OpenOrCreate, FileAccess.ReadWrite, FileShare.ReadWrite);
+            else
+            {
+                string? dir = Path.GetDirectoryName(backingFilePath);
+                if (!string.IsNullOrEmpty(dir) && !Directory.Exists(dir))
+                {
+                    Directory.CreateDirectory(dir);
+                }
+                _fileStream = new FileStream(backingFilePath, FileMode.OpenOrCreate, FileAccess.ReadWrite, FileShare.ReadWrite);
+            }
         }
     }
 
@@ -375,18 +385,36 @@ public class VirtualDiscMedium : IDisposable, IBookTypeTarget
             }
             if (_fileStream != null)
             {
-                long offset = (long)lba * sz;
-                if (offset >= _fileStream.Length)
+                if (sz == OpticalConstants.RawSectorSize && !Raw2352Mode)
                 {
-                    destination[..sz].Clear();
+                    long dataOffset = (long)lba * OpticalConstants.DataSectorSize;
+                    byte[] user2048 = new byte[OpticalConstants.DataSectorSize];
+                    if (dataOffset < _fileStream.Length)
+                    {
+                        _fileStream.Seek(dataOffset, SeekOrigin.Begin);
+                        int read = _fileStream.Read(user2048);
+                        if (read < user2048.Length)
+                        {
+                            Array.Clear(user2048, read, user2048.Length - read);
+                        }
+                    }
+                    CdBurner.Core.Images.RawSectorCodec.Convert2048To2352Mode1(user2048, lba, destination[..sz]);
                 }
                 else
                 {
-                    _fileStream.Seek(offset, SeekOrigin.Begin);
-                    int read = _fileStream.Read(destination[..sz]);
-                    if (read < sz)
+                    long offset = (long)lba * sz;
+                    if (offset >= _fileStream.Length)
                     {
-                        destination[read..sz].Clear();
+                        destination[..sz].Clear();
+                    }
+                    else
+                    {
+                        _fileStream.Seek(offset, SeekOrigin.Begin);
+                        int read = _fileStream.Read(destination[..sz]);
+                        if (read < sz)
+                        {
+                            destination[read..sz].Clear();
+                        }
                     }
                 }
             }
@@ -489,6 +517,10 @@ public class VirtualDiscMedium : IDisposable, IBookTypeTarget
         {
             if (_fileStream != null)
             {
+                if (_readOnlyBacking)
+                {
+                    throw new InvalidOperationException("Cannot write sectors to a read-only virtual backing image.");
+                }
                 long offset = (long)lba * sz;
                 _fileStream.Seek(offset, SeekOrigin.Begin);
                 _fileStream.Write(source[..sz]);
@@ -558,6 +590,10 @@ public class VirtualDiscMedium : IDisposable, IBookTypeTarget
             InRestrictedOverwriteMode = false; // BLANK leaves a DVD-RW in sequential mode
             if (_fileStream != null)
             {
+                if (_readOnlyBacking)
+                {
+                    throw new InvalidOperationException("Cannot erase a read-only virtual backing image.");
+                }
                 if (fullErase)
                 {
                     long currentLen = _fileStream.Length;

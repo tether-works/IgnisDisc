@@ -18,7 +18,7 @@ public static partial class CliCommandRunner
     private static readonly HashSet<string> KnownValueOptions = new(StringComparer.OrdinalIgnoreCase)
     {
         "aac-bitrate", "after-title", "append-to", "art-inner-radius-mm", "art-outer-radius-mm",
-        "artist", "aspect", "bitrate", "block-size", "boot-bios", "boot-uefi", "candidate",
+        "artist", "aspect", "bitrate", "blank", "block-size", "boot-bios", "boot-uefi", "candidate",
         "cells", "chapters", "compare", "config", "copies", "cover", "cover-art", "crossfade",
         "csv", "cue", "data-folder", "data-label", "date", "dir", "disc", "disc-preset",
         "disc-presets-file", "drive", "drive-model", "entry", "ffmpeg", "files", "fill-picture", "fit",
@@ -34,7 +34,7 @@ public static partial class CliCommandRunner
         "subtitle-size", "subtitles-default", "target", "telemetry-out", "text", "title", "title-names",
         "title-ring", "title-ring-date", "title-ring-height-mm", "to", "tone", "tracks",
         "tracks-file", "turn-map", "turn-map-offset", "udf-rev", "upc", "value",
-        "video-bitrate", "video-ts", "wait-minutes", "write-offset"
+        "video-bitrate", "video-ts", "virtual-media", "virtual-state", "wait-minutes", "write-offset"
     };
 
     private sealed record CommandOptionSpec(HashSet<string> Flags, HashSet<string> Options)
@@ -98,19 +98,19 @@ public static partial class CliCommandRunner
 
     private static readonly CommandOptionSpec BurnIsoSpec = CommandOptionSpec.Of(
         ["native", "test-write", "test-first", "windows-writer", "strict-verify", "verify", "no-verify", "close", "no-close", "overwrite", "no-burnfree", "confirm-shutdown"],
-        ["drive", "iso", "speed", "log-dir", "layer-break", "post-action", "telemetry-out"]);
+        ["drive", "iso", "speed", "log-dir", "layer-break", "post-action", "telemetry-out", "virtual-media", "virtual-state"]);
 
     private static readonly CommandOptionSpec BurnDataSpec = CommandOptionSpec.Of(
         ["native", "test-write", "test-first", "windows-writer", "strict-verify", "verify", "no-verify", "close", "no-close", "overwrite", "append", "no-burnfree", "udf", "joliet", "sha256sums", "blake3sums", "confirm-shutdown"],
-        ["drive", "input", "label", "speed", "boot-bios", "boot-uefi", "udf-rev", "fixed-time", "log-dir", "layer-break", "post-action", "fill-picture", "telemetry-out", .. CalibrationParamOptions]);
+        ["drive", "input", "label", "speed", "boot-bios", "boot-uefi", "udf-rev", "fixed-time", "log-dir", "layer-break", "post-action", "fill-picture", "telemetry-out", "virtual-media", "virtual-state", .. CalibrationParamOptions]);
 
     private static readonly CommandOptionSpec BurnAudioSpec = CommandOptionSpec.Of(
         ["plan-only", "native", "test-write", "test-first", "recovery-session", "blue-book", "no-burnfree", "allow-damaged", "lookup", "confirm-shutdown", .. AudioCompilationFlags],
-        ["drive", "speed", "data-folder", "data-label", "log-dir", "write-offset", "post-action", "fill-picture", "drive-model", "media-id", "store", "telemetry-out", .. AudioCompilationOptions]);
+        ["drive", "speed", "data-folder", "data-label", "log-dir", "write-offset", "post-action", "fill-picture", "drive-model", "media-id", "store", "telemetry-out", "virtual-media", "virtual-state", .. AudioCompilationOptions]);
 
     private static readonly CommandOptionSpec BurnDvdSpec = CommandOptionSpec.Of(
         ["native", "test-write", "test-first", "windows-writer", "no-burnfree", "no-verify", "verify", "overwrite", "confirm-shutdown", .. DvdAuthoringFlags],
-        ["drive", "video-ts", "input", "speed", "log-dir", "post-action", "fill-picture", "layer-break", "telemetry-out", .. DvdAuthoringOptions, .. CalibrationParamOptions]);
+        ["drive", "video-ts", "input", "speed", "log-dir", "post-action", "fill-picture", "layer-break", "telemetry-out", "virtual-media", "virtual-state", .. DvdAuthoringOptions, .. CalibrationParamOptions]);
 
     private static readonly CommandOptionSpec RosettaLadderSpec = CommandOptionSpec.Of(
         ["no-interleave", "plan-only"],
@@ -163,8 +163,8 @@ public static partial class CliCommandRunner
 
     private static readonly IReadOnlyList<string> SupportedCommandNames =
     [
-        "drives", "drive-report", "media-info", "eject", "load", "build-iso", "burn-iso",
-        "burn-data", "burn-audio", "burn-dvd", "install-subtitle-tool", "generate-subtitles",
+        "drives", "drive-report", "media-info", "eject", "load", "virtual-mount", "virtual-eject", "virtual-status",
+        "build-iso", "burn-iso", "burn-data", "burn-audio", "burn-dvd", "install-subtitle-tool", "generate-subtitles",
         "rip", "rip-audio", "convert-audio", "copy-disc", "check-disc", "detect-offset",
         "archive-stage", "archive-burn", "archive-verify", "recover", "verify", "erase", "scan",
         "settings", "tools", "install-ffmpeg", "install-par2", "check-update", "image-info",
@@ -184,37 +184,42 @@ public static partial class CliCommandRunner
             }
         }
 
-        Add(CommandOptionSpec.Empty, "drives", "list-drives", "check-update");
-        Add(CommandOptionSpec.Of([], ["drive"]), "media-info", "mediainfo", "info", "drive-report", "drivereport", "eject", "load", "detect-offset", "detectoffset");
+        Add(CommandOptionSpec.Empty, "check-update");
+        Add(CommandOptionSpec.Of([], ["virtual-state"]), "drives", "list-drives");
+        Add(CommandOptionSpec.Of([], ["drive", "virtual-media", "virtual-state"]), "media-info", "mediainfo", "info", "drive-report", "drivereport");
+        Add(CommandOptionSpec.Of([], ["drive", "virtual-state"]), "eject", "load", "detect-offset", "detectoffset");
+        Add(CommandOptionSpec.Of([], ["drive", "blank", "image", "virtual-state"]), "virtual-mount", "virtualmount");
+        Add(CommandOptionSpec.Of([], ["drive", "virtual-state"]), "virtual-eject", "virtualeject", "virtual-status", "virtualstatus");
         Add(CommandOptionSpec.Of(["udf", "joliet", "sha256sums", "blake3sums"], ["input", "output", "label", "boot-bios", "boot-uefi", "udf-rev", "fixed-time"]), "build-iso", "buildiso");
         Add(BurnIsoSpec, "burn-iso", "burniso");
         Add(BurnDataSpec, "burn-data", "burndata");
         Add(BurnAudioSpec, "burn-audio", "burnaudio");
         Add(BurnDvdSpec, "burn-dvd", "burndvd");
-        Add(CommandOptionSpec.Of(["raw"], ["drive", "output"]), "rip", "rip-disc");
+        Add(CommandOptionSpec.Of(["raw"], ["drive", "output", "virtual-media", "virtual-state"]), "rip", "rip-disc");
         Add(CommandOptionSpec.Of(
             ["lookup", "keep-wav", "no-folder-image", "overwrite", "continue-on-error", "verify-accuraterip", "verify-ctdb", "no-ctdb-repair", "no-cover-lookup", "repair", "repair-from-recovery", "no-secure", "secure", "no-replaygain", "de-emphasis"],
-            ["drive", "library", "output", "release", "naming", "tracks", "read-offset", "cover", "cover-art", .. AudioTargetOptions]),
+            ["drive", "library", "output", "release", "naming", "tracks", "read-offset", "cover", "cover-art", "virtual-media", "virtual-state", .. AudioTargetOptions]),
             "rip-audio", "ripaudio");
         Add(CommandOptionSpec.Of(["overwrite", "recursive"], ["input", "output", "naming", .. AudioTargetOptions]), "convert-audio", "convertaudio");
-        Add(CommandOptionSpec.Of([], ["drive", "compare"]), "check-disc", "checkdisc");
-        Add(CommandOptionSpec.Of(["native", "raw", "allow-suspect"], ["source", "target", "copies", "wait-minutes", "log-dir", "keep-image", "speed"]), "copy-disc", "copydisc", "copy");
+        Add(CommandOptionSpec.Of([], ["drive", "compare", "virtual-state"]), "check-disc", "checkdisc");
+        Add(CommandOptionSpec.Of(["native", "raw", "allow-suspect"], ["source", "target", "copies", "wait-minutes", "log-dir", "keep-image", "speed", "virtual-state"]), "copy-disc", "copydisc", "copy");
         Add(CommandOptionSpec.Of(["plan-only", "keep-folders", "no-fill"], ["input", "staging", "media", "redundancy", "order"]), "archive-stage", "archivestage");
         Add(CommandOptionSpec.Of(
             ["native", "test-write", "test-first", "windows-writer", "strict-verify", "verify", "no-verify", "overwrite", "no-burnfree", "health-certificate", "confirm-shutdown"],
-            ["drive", "disc", "speed", "log-dir", "post-action"]),
+            ["drive", "disc", "speed", "log-dir", "post-action", "virtual-media", "virtual-state"]),
             "archive-burn", "archiveburn");
         Add(CommandOptionSpec.Of([], ["path"]), "archive-verify", "archiveverify");
-        Add(CommandOptionSpec.Of(["keep-image"], ["out", "image", "drive", "retries"]), "recover", "archive-recover");
-        Add(CommandOptionSpec.Of(["strict-verify", "no-cd-text"], ["drive", "cue", "iso", "log-dir", "title", "artist", "write-offset"]), "verify", "verify-disc");
-        Add(CommandOptionSpec.Of(["full"], ["drive"]), "erase", "erase-disc");
-        Add(CommandOptionSpec.Of([], ["drive", "block-size", "csv", "output"]), "scan", "scan-disc");
+        Add(CommandOptionSpec.Of(["keep-image"], ["out", "image", "drive", "retries", "virtual-media", "virtual-state"]), "recover", "archive-recover");
+        Add(CommandOptionSpec.Of(["strict-verify", "no-cd-text"], ["drive", "cue", "iso", "log-dir", "title", "artist", "write-offset", "virtual-media", "virtual-state"]), "verify", "verify-disc");
+        Add(CommandOptionSpec.Of(["full"], ["drive", "virtual-media", "virtual-state"]), "erase", "erase-disc");
+        Add(CommandOptionSpec.Of([], ["drive", "block-size", "csv", "output", "virtual-media", "virtual-state"]), "scan", "scan-disc");
         Add(CommandOptionSpec.Of(["plan-only"], []), "install-subtitle-tool");
         Add(CommandOptionSpec.Of([], ["input", "output", "language", "ffmpeg"]), "generate-subtitles");
         Add(CommandOptionSpec.Of([], ["settings-file", "config", "key", "value"]), "settings");
         Add(CommandOptionSpec.Of([], ["ffmpeg", "par2"]), "tools");
         Add(CommandOptionSpec.Of(["plan-only", "overwrite"], ["dir"]), "install-ffmpeg", "install-par2");
-        Add(CommandOptionSpec.Of([], ["image", "input"]), "image-info", "imageinfo", "browse-image", "browseimage");
+        Add(CommandOptionSpec.Of([], ["image", "input"]), "image-info", "imageinfo");
+        Add(CommandOptionSpec.Of([], ["image", "input", "drive", "virtual-media", "virtual-state"]), "browse-image", "browseimage", "browse");
         Add(CommandOptionSpec.Of(["overwrite"], ["image", "input", "out", "entry"]), "extract-image", "extractimage");
         Add(CommandOptionSpec.Of(["overwrite"], ["input", "output", "cue"]), "convert-image", "convertimage");
         Add(CommandOptionSpec.Of(["overwrite", .. DvdAuthoringFlags], ["input", "video-ts", "output", .. DvdAuthoringOptions]), "author-dvd", "authordvd");
@@ -222,9 +227,9 @@ public static partial class CliCommandRunner
         Add(CommandOptionSpec.Of(AudioCompilationFlags, ["media", .. AudioCompilationOptions]), "audio-plan", "audioplan");
         Add(CommandOptionSpec.Of(
             ["strict-verify", "verify", "no-verify", "close", "no-close", "no-burnfree", "overwrite", "continue-on-error", "confirm-shutdown"],
-            ["drive", "images", "speed", "wait-minutes", "post-action"]),
+            ["drive", "images", "speed", "wait-minutes", "post-action", "virtual-media", "virtual-state"]),
             "burn-queue", "burnqueue");
-        Add(CommandOptionSpec.Of([], ["drive", "set"]), "book-type", "booktype");
+        Add(CommandOptionSpec.Of([], ["drive", "set", "virtual-media", "virtual-state"]), "book-type", "booktype");
         Add(CommandOptionSpec.Of(["delete-backups"], ["path", "par2"]), "repair-par2", "repairpar2");
         Add(RosettaLadderSpec, "rosetta-ladder", "rosettaladder");
 

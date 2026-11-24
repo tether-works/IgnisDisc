@@ -418,13 +418,14 @@ public static partial class CliCommandRunner
         CommandLineArgs cmd, TextWriter stdout, TextWriter stderr, IDiscDeviceService deviceService, IBurnEngineBackend burnEngine)
     {
         string image = Path.GetFullPath(cmd.GetRequiredOption("image", "--image <file.iso|.cue>"));
-        cmd.GetRequiredOption("drive", "--drive <id>");
+        string driveId = ResolveTargetDriveId(cmd);
         string extension = Path.GetExtension(image).ToLowerInvariant();
         var forwarded = new CommandLineArgs();
         foreach (var option in cmd.Options) forwarded.Options[option.Key] = option.Value;
         foreach (string flag in cmd.Flags) forwarded.Flags.Add(flag);
         forwarded.Positionals.AddRange(cmd.Positionals);
         forwarded.Options.Remove("image");
+        forwarded.Options["drive"] = driveId;
 
         switch (extension)
         {
