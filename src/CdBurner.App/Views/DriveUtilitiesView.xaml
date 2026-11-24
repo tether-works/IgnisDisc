@@ -4,6 +4,7 @@
              xmlns:d="http://schemas.microsoft.com/expression/blend/2008"
              xmlns:mc="http://schemas.openxmlformats.org/markup-compatibility/2006"
              xmlns:vm="clr-namespace:CdBurner.App.ViewModels"
+             xmlns:controls="clr-namespace:CdBurner.App.Controls"
              xmlns:converters="clr-namespace:CdBurner.App.Converters"
              mc:Ignorable="d"
              d:DataContext="{d:DesignInstance Type=vm:DriveUtilitiesViewModel}"
@@ -336,15 +337,21 @@
             </Grid>
 
             <!-- ========================================================================= -->
-            <!-- ROW 2: OPTICAL SECTOR SURFACE SCANNER                                     -->
+            <!-- ROW 2: OPTICAL SECTOR SURFACE SCANNER & EXPERIMENTAL QUALITY SCAN         -->
             <!-- ========================================================================= -->
-            <Border Grid.Row="2"
-                    Background="{DynamicResource CardBackgroundBrush}"
-                    BorderBrush="{DynamicResource CardBorderBrush}"
-                    BorderThickness="1"
-                    CornerRadius="8"
-                    Padding="16"
-                    Margin="0,0,0,12">
+            <TabControl Grid.Row="2"
+                        KeyboardNavigation.TabNavigation="Local"
+                        Background="Transparent"
+                        BorderThickness="0"
+                        Margin="0,0,0,12"
+                        AutomationProperties.Name="Drive scan workspaces">
+                <TabItem Header="Surface Scanner &amp; Check Disc" Padding="12,6" FontSize="13">
+                    <Border Background="{DynamicResource CardBackgroundBrush}"
+                            BorderBrush="{DynamicResource CardBorderBrush}"
+                            BorderThickness="1"
+                            CornerRadius="8"
+                            Padding="16"
+                            Margin="0,8,0,0">
                 <Grid>
                     <Grid.RowDefinitions>
                         <RowDefinition Height="Auto" />
@@ -536,7 +543,162 @@
                         </ScrollViewer>
                     </Border>
                 </Grid>
-            </Border>
+                    </Border>
+                </TabItem>
+
+                <TabItem Header="Quality Scan (Experimental)" Padding="12,6" FontSize="13">
+                    <Border Background="{DynamicResource CardBackgroundBrush}"
+                            BorderBrush="{DynamicResource CardBorderBrush}"
+                            BorderThickness="1"
+                            CornerRadius="0"
+                            Padding="16"
+                            Margin="0,8,0,0">
+                        <Grid>
+                            <Grid.RowDefinitions>
+                                <RowDefinition Height="Auto" />
+                                <RowDefinition Height="Auto" />
+                                <RowDefinition Height="Auto" />
+                                <RowDefinition Height="Auto" />
+                                <RowDefinition Height="Auto" />
+                            </Grid.RowDefinitions>
+
+                            <!-- Header + Experimental Notice -->
+                            <StackPanel Grid.Row="0" Margin="0,0,0,10">
+                                <TextBlock Text="Optical Error-Correction Quality Scan (C1/C2, PIE/PIF, LDC/BIS)"
+                                           FontSize="15"
+                                           FontWeight="SemiBold"
+                                           Foreground="{DynamicResource TextPrimaryBrush}" />
+                                <Border Background="{DynamicResource WarningBannerBackgroundBrush}"
+                                        BorderBrush="{DynamicResource WarningBannerBorderBrush}"
+                                        BorderThickness="1"
+                                        CornerRadius="0"
+                                        Padding="8,5"
+                                        Margin="0,6,0,6">
+                                    <TextBlock Text="[ EXPERIMENTAL / UNVERIFIED ] Hardware MediaTek/Lite-On scans (0xF3/0xDF) are gated on the strict drive allow-list and remain experimental until verified against QPxTool on live discs."
+                                               FontSize="12"
+                                               TextWrapping="Wrap"
+                                               Foreground="{DynamicResource WarningBannerForegroundBrush}" />
+                                </Border>
+                                <TextBlock Text="{Binding QualityScanAllowListSummary}"
+                                           AutomationProperties.Name="Quality scan allow-list status"
+                                           FontSize="12"
+                                           TextWrapping="Wrap"
+                                           Foreground="{DynamicResource TextSecondaryBrush}" />
+                                <TextBlock Text="{Binding QualityScanSummaryText}"
+                                           AutomationProperties.Name="Quality scan result summary"
+                                           Visibility="{Binding HasQualityScanReport, Converter={StaticResource BoolToVis}}"
+                                           FontSize="12"
+                                           FontWeight="SemiBold"
+                                           TextWrapping="Wrap"
+                                           Foreground="{DynamicResource TextPrimaryBrush}"
+                                           Margin="0,6,0,0" />
+                            </StackPanel>
+
+                            <!-- Controls -->
+                            <WrapPanel Grid.Row="1" Orientation="Horizontal" VerticalAlignment="Center" Margin="0,0,0,10">
+                                <Button Content="Run Quality Scan"
+                                        AutomationProperties.Name="Run Quality Scan"
+                                        Command="{Binding RunQualityScanCommand}"
+                                        IsEnabled="{Binding IsBusy, Converter={StaticResource InverseBooleanConverter}}"
+                                        Background="{DynamicResource AccentBrush}"
+                                        Foreground="{DynamicResource AccentForegroundBrush}"
+                                        Padding="16,6"
+                                        Margin="0,2,8,2" />
+                                <CheckBox Content="Force legacy 0xDF (CD)"
+                                          AutomationProperties.Name="Force legacy 0xDF"
+                                          IsChecked="{Binding ForceLegacyQualityScan}"
+                                          IsEnabled="{Binding IsBusy, Converter={StaticResource InverseBooleanConverter}}"
+                                          VerticalAlignment="Center"
+                                          Margin="0,2,12,2" />
+                                <Button Content="Export JSON"
+                                        AutomationProperties.Name="Export Quality Scan JSON"
+                                        Command="{Binding ExportQualityScanJsonCommand}"
+                                        Padding="12,6"
+                                        Margin="0,2,8,2" />
+                                <Button Content="Export SVG"
+                                        AutomationProperties.Name="Export Quality Scan SVG"
+                                        Command="{Binding ExportQualityScanSvgCommand}"
+                                        Padding="12,6"
+                                        Margin="0,2,8,2" />
+                                <Button Content="Cancel Quality Scan"
+                                        AutomationProperties.Name="Cancel Quality Scan"
+                                        Command="{Binding CancelCommand}"
+                                        Style="{StaticResource DangerButtonStyle}"
+                                        Visibility="{Binding IsBusy, Converter={StaticResource BoolToVis}}"
+                                        Padding="14,6"
+                                        Margin="0,2,0,2" />
+                            </WrapPanel>
+
+                            <!-- Progress -->
+                            <ProgressBar Grid.Row="2"
+                                         Height="6"
+                                         Minimum="0"
+                                         Maximum="100"
+                                         Value="{Binding OperationProgress}"
+                                         Foreground="{DynamicResource AccentBrush}"
+                                         Background="{DynamicResource ControlBackgroundBrush}"
+                                         Margin="0,0,0,10" />
+
+                            <!-- Summary KPI Strip -->
+                            <Border Grid.Row="3"
+                                    Background="{DynamicResource RibbonBackgroundBrush}"
+                                    BorderBrush="{DynamicResource CardBorderBrush}"
+                                    BorderThickness="1"
+                                    CornerRadius="0"
+                                    Padding="12,8"
+                                    Margin="0,0,0,10">
+                                <Grid>
+                                    <Grid.ColumnDefinitions>
+                                        <ColumnDefinition Width="*" />
+                                        <ColumnDefinition Width="*" />
+                                        <ColumnDefinition Width="*" />
+                                        <ColumnDefinition Width="*" />
+                                        <ColumnDefinition Width="*" />
+                                        <ColumnDefinition Width="*" />
+                                    </Grid.ColumnDefinitions>
+                                    <StackPanel Grid.Column="0">
+                                        <TextBlock Text="GRADE" FontSize="10" FontWeight="Bold" Foreground="{DynamicResource TextMutedBrush}" />
+                                        <TextBlock Text="{Binding LatestQualityScanReport.Summary.Grade, TargetNullValue='NotEvaluated'}"
+                                                   FontFamily="Consolas" FontSize="13" FontWeight="SemiBold" Foreground="{DynamicResource TextPrimaryBrush}" />
+                                    </StackPanel>
+                                    <StackPanel Grid.Column="1">
+                                        <TextBlock Text="PROTOCOL" FontSize="10" FontWeight="Bold" Foreground="{DynamicResource TextMutedBrush}" />
+                                        <TextBlock Text="{Binding LatestQualityScanReport.Protocol, TargetNullValue='None'}"
+                                                   FontFamily="Consolas" FontSize="13" FontWeight="SemiBold" Foreground="{DynamicResource TextPrimaryBrush}" />
+                                    </StackPanel>
+                                    <StackPanel Grid.Column="2">
+                                        <TextBlock Text="SCANNED" FontSize="10" FontWeight="Bold" Foreground="{DynamicResource TextMutedBrush}" />
+                                        <TextBlock Text="{Binding LatestQualityScanReport.Summary.TotalSectorsScanned, StringFormat='{}{0:N0}', TargetNullValue='0'}"
+                                                   FontFamily="Consolas" FontSize="13" FontWeight="SemiBold" Foreground="{DynamicResource TextPrimaryBrush}" />
+                                    </StackPanel>
+                                    <StackPanel Grid.Column="3">
+                                        <TextBlock Text="PEAK C1/PIE/LDC" FontSize="10" FontWeight="Bold" Foreground="{DynamicResource AccentBrush}" />
+                                        <TextBlock Text="{Binding QualityScanPeakPrimaryText}"
+                                                   FontFamily="Consolas" FontSize="13" FontWeight="SemiBold" Foreground="{DynamicResource AccentBrush}" />
+                                    </StackPanel>
+                                    <StackPanel Grid.Column="4">
+                                        <TextBlock Text="PEAK C2/PIF/BIS" FontSize="10" FontWeight="Bold" Foreground="{DynamicResource CapacityOverburnBrush}" />
+                                        <TextBlock Text="{Binding QualityScanPeakSecondaryText}"
+                                                   FontFamily="Consolas" FontSize="13" FontWeight="SemiBold" Foreground="{DynamicResource CapacityOverburnBrush}" />
+                                    </StackPanel>
+                                    <StackPanel Grid.Column="5">
+                                        <TextBlock Text="AVG SPEED" FontSize="10" FontWeight="Bold" Foreground="{DynamicResource TextMutedBrush}" />
+                                        <TextBlock Text="{Binding LatestQualityScanReport.Summary.AverageSpeedX, StringFormat='{}{0:F1}x', TargetNullValue='0.0x'}"
+                                                   FontFamily="Consolas" FontSize="13" FontWeight="SemiBold" Foreground="{DynamicResource TextPrimaryBrush}" />
+                                    </StackPanel>
+                                </Grid>
+                            </Border>
+
+                            <!-- Quality Scan Graph -->
+                            <controls:QualityScanChartControl Grid.Row="4"
+                                                              Samples="{Binding QualityScanSamples}"
+                                                              MediaKind="{Binding QualityScanMediaKind}"
+                                                              SamplesRevision="{Binding QualityScanSamplesRevision}"
+                                                              IsExperimental="{Binding QualityScanIsExperimental}" />
+                        </Grid>
+                    </Border>
+                </TabItem>
+            </TabControl>
         </Grid>
     </ScrollViewer>
 </UserControl>

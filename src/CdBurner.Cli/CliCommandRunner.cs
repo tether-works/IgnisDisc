@@ -21,6 +21,7 @@ using CdBurner.Hardware.Burning;
 using CdBurner.Hardware.Devices;
 using CdBurner.Hardware.NativeWriting;
 using CdBurner.Hardware.Scsi;
+using CdBurner.Hardware.Scsi.QualityScan;
 using CdBurner.Hardware.Simulation;
 using CdBurner.Lithography.Calibration;
 using CdBurner.Lithography.DiscArt;
@@ -57,7 +58,7 @@ public static partial class CliCommandRunner
         "no-burnfree", "append", "delete-backups", "confirm-shutdown", "windows-writer", "no-interleave",
         "no-cover-lookup", "no-folder-image", "recursive", "no-rim", "rim-header",
         "sha256sums", "blake3sums", "native", "test-write", "test-first", "recovery-session", "blue-book", "streaming",
-        "allow-suspect", "repair", "repair-from-recovery", "no-replaygain", "health-certificate", "files-outer", "read-compat"
+        "allow-suspect", "repair", "repair-from-recovery", "no-replaygain", "health-certificate", "files-outer", "read-compat", "force-old"
     };
 
     private static void WriteJsonResult(TextWriter stdout, object payload)
@@ -269,6 +270,7 @@ public static partial class CliCommandRunner
             "verify" or "verify-disc" => await HandleVerifyAsync(cmd, stdout, stderr, deviceService, burnEngine).ConfigureAwait(false),
             "erase" or "erase-disc" => await HandleEraseAsync(cmd, stdout, stderr, deviceService, burnEngine).ConfigureAwait(false),
             "scan" or "scan-disc" => await HandleScanAsync(cmd, stdout, stderr, deviceService, burnEngine).ConfigureAwait(false),
+            "quality-scan" or "qualityscan" => await HandleQualityScanAsync(cmd, stdout, stderr, deviceService).ConfigureAwait(false),
             "drive-report" or "drivereport" => HandleDriveReport(cmd, stdout, deviceService),
             "install-subtitle-tool" => await HandleInstallSubtitleToolAsync(cmd, stdout, stderr).ConfigureAwait(false),
             "generate-subtitles" => await HandleGenerateSubtitlesAsync(cmd, stdout, stderr).ConfigureAwait(false),
@@ -3743,6 +3745,141 @@ public static partial class CliCommandRunner
         return report.DamagedBlocks == 0 ? 0 : 1;
     }
 
+    private static async Task<int> HandleQualityScanAsync(
+        CommandLineArgs cmd,
+        TextWriter stdout,
+        TextWriter stderr,
+        IDiscDeviceService deviceService)
+    {
+        string driveId = cmd.GetRequiredOption("drive", "--drive <id>");
+        string? outJson = cmd.GetOption("out");
+        string? outSvg = cmd.GetOption("svg");
+        string? attachHealth = cmd.GetOption("attach-health") ?? cmd.GetOption("health-json");
+        bool forceOld = cmd.HasFlag("force-old");
+
+        int? speedMultiplier = null;
+        if (cmd.GetOption("speed") is { } speedRaw && !string.Equals(speedRaw, "max", StringComparison.OrdinalIgnoreCase))
+        {
+            string trimmed = speedRaw.Trim().TrimEnd('x', 'X');
+            if (!int.TryParse(trimmed, NumberStyles.Integer, CultureInfo.InvariantCulture, out int parsedSpeed) || parsedSpeed <= 0)
+            {
+                throw new CommandLineException($"Invalid --speed '{speedRaw}'. Expected a positive integer multiplier (e.g. 8 or 8x) or max.");
+            }
+            speedMultiplier = parsedSpeed;
+        }
+
+        var recorder = FindRecorder(deviceService, driveId);
+        var scanOptions = new QualityScanOptions
+        {
+            ReadSpeedMultiplier = speedMultiplier,
+            ForceLegacyProtocol = forceOld
+        };
+
+        QualityScanReport report;
+        var service = new QualityScanService();
+        if (recorder is VirtualDiscRecorder virtualRecorder)
+        {
+            var driver = new VirtualQualityScanDriver(virtualRecorder);
+            report = await service.RunScanAsync(driver, scanOptions).ConfigureAwait(false);
+        }
+        else
+        {
+            string? mediaId = recorder.WithManufacturerId(recorder.QueryMediaStatus()).MediaManufacturerId;
+            using var driver = new MediaTekLiteOnQualityDriver(
+                Win32ScsiTransport.Open(NativeAudioBurnEngine.DevicePathFor(recorder), FileAccess.ReadWrite),
+                ownsTransport: true,
+                mediaId: mediaId);
+            report = await service.RunScanAsync(driver, scanOptions).ConfigureAwait(false);
+        }
+
+        string? fullJsonPath = null;
+        if (!string.IsNullOrWhiteSpace(outJson))
+        {
+            fullJsonPath = Path.GetFullPath(outJson);
+            await report.SaveJsonAsync(fullJsonPath).ConfigureAwait(false);
+        }
+
+        string? fullSvgPath = null;
+        if (!string.IsNullOrWhiteSpace(outSvg))
+        {
+            fullSvgPath = Path.GetFullPath(outSvg);
+            await report.SaveSvgAsync(fullSvgPath).ConfigureAwait(false);
+        }
+
+        string? attachedHealthPath = null;
+        if (!string.IsNullOrWhiteSpace(attachHealth) && report.IsSupported && report.Status == QualityScanStatus.Completed)
+        {
+            attachedHealthPath = Path.GetFullPath(attachHealth);
+            await service.AttachToHealthCertificateAsync(attachedHealthPath, report).ConfigureAwait(false);
+        }
+
+        bool succeeded = report.IsSupported && report.Status == QualityScanStatus.Completed;
+        if (cmd.IsJson)
+        {
+            WriteJsonResult(stdout, new
+            {
+                success = succeeded,
+                supported = report.IsSupported,
+                experimentalHardware = report.IsExperimentalHardwareScan,
+                status = report.Status.ToString(),
+                message = report.StatusMessage,
+                driveId = recorder.UniqueId,
+                vendor = report.DriveVendor,
+                product = report.DriveProduct,
+                protocol = report.Protocol.ToString(),
+                mediaKind = report.MediaKind.ToString(),
+                totalDiscSectors = report.TotalDiscSectors,
+                sectorsScanned = report.Summary.TotalSectorsScanned,
+                intervalCount = report.Summary.IntervalCount,
+                grade = report.Summary.Grade.ToString(),
+                gradeReason = report.Summary.GradeReason,
+                averageSpeedX = report.Summary.AverageSpeedX,
+                maxSpeedX = report.Summary.MaxSpeedX,
+                cd = report.MediaKind == QualityScanMediaKind.Cd ? new
+                {
+                    totalC1 = report.Summary.TotalC1,
+                    totalC2 = report.Summary.TotalC2,
+                    totalCu = report.Summary.TotalCu,
+                    maxC1PerSecond = report.Summary.MaxC1PerSecond,
+                    maxC2PerSecond = report.Summary.MaxC2PerSecond,
+                    averageC1PerSecond = report.Summary.AverageC1PerSecond
+                } : null,
+                dvd = report.MediaKind == QualityScanMediaKind.Dvd ? new
+                {
+                    totalPie = report.Summary.TotalPie,
+                    totalPif = report.Summary.TotalPif,
+                    totalPof = report.Summary.TotalPof,
+                    maxPiePer8Ecc = report.Summary.MaxPiePer8Ecc,
+                    maxPifPerEcc = report.Summary.MaxPifPerEcc,
+                    averagePiePer8Ecc = report.Summary.AveragePiePer8Ecc
+                } : null,
+                bd = report.MediaKind == QualityScanMediaKind.BluRay ? new
+                {
+                    totalLdc = report.Summary.TotalLdc,
+                    totalBis = report.Summary.TotalBis,
+                    maxLdcPerCluster = report.Summary.MaxLdcPerCluster,
+                    maxBisPerCluster = report.Summary.MaxBisPerCluster
+                } : null,
+                outJson = fullJsonPath,
+                outSvg = fullSvgPath,
+                attachedHealthJson = attachedHealthPath
+            });
+            return succeeded ? 0 : 1;
+        }
+
+        if (!succeeded)
+        {
+            stderr.WriteLine(report.Describe());
+            return 1;
+        }
+
+        stdout.WriteLine(report.Describe());
+        if (fullJsonPath != null) stdout.WriteLine($"  JSON Report: {fullJsonPath}");
+        if (fullSvgPath != null) stdout.WriteLine($"  SVG Graph:   {fullSvgPath}");
+        if (attachedHealthPath != null) stdout.WriteLine($"  HEALTH.json: {attachedHealthPath}");
+        return 0;
+    }
+
     #endregion
 
     #region Helper Methods
@@ -3987,6 +4124,8 @@ public static partial class CliCommandRunner
         stdout.WriteLine("      Erases rewritable optical media (CD-RW, DVD-RW, DVD+RW, DVD-RAM).");
         stdout.WriteLine("  scan --drive <id> [--block-size <sectors>] [--csv <file.csv>] [--json]");
         stdout.WriteLine("      Scans optical disc surface and benchmarks transfer rate curve.");
+        stdout.WriteLine("  quality-scan --drive <id> [--out <file.json>] [--svg <file.svg>] [--attach-health <discNN.HEALTH.json>] [--speed <X|max>] [--force-old] [--json]");
+        stdout.WriteLine("      Runs an optical error-correction scan (CD C1/C2/CU, DVD PIE/PIF/POF, BD LDC/BIS). Physical hardware scans use the MediaTek/Lite-On allow-list (experimental until checked against QPxTool).");
         stdout.WriteLine("  settings get [key] | set <key> <value> | reset [--settings-file <path>] [--json]");
         stdout.WriteLine("      Reads, changes, or resets application settings (default settings.json or --settings-file).");
         stdout.WriteLine("  tools [--ffmpeg <path>] [--par2 <path>] [--json]");

@@ -1,0 +1,107 @@
+<UserControl x:Class="CdBurner.App.Controls.QualityScanChartControl"
+             xmlns="http://schemas.microsoft.com/winfx/2006/xaml/presentation"
+             xmlns:x="http://schemas.microsoft.com/winfx/2006/xaml"
+             xmlns:d="http://schemas.microsoft.com/expression/blend/2008"
+             xmlns:mc="http://schemas.openxmlformats.org/markup-compatibility/2006"
+             mc:Ignorable="d"
+             Background="Transparent"
+             Foreground="{DynamicResource TextPrimaryBrush}">
+
+    <Border Background="{DynamicResource CardBackgroundBrush}"
+            BorderBrush="{DynamicResource CardBorderBrush}"
+            BorderThickness="1"
+            CornerRadius="0"
+            Padding="10,8">
+        <Grid>
+            <Grid.RowDefinitions>
+                <RowDefinition Height="Auto" />
+                <RowDefinition Height="190" />
+                <RowDefinition Height="Auto" />
+            </Grid.RowDefinitions>
+
+            <DockPanel Grid.Row="0" Margin="0,0,0,6" LastChildFill="False">
+                <TextBlock x:Name="ChartHeaderText"
+                           DockPanel.Dock="Left"
+                           Text="OPTICAL QUALITY SCAN GRAPH"
+                           FontFamily="Consolas"
+                           FontSize="11"
+                           FontWeight="Bold"
+                           Foreground="{DynamicResource TextSecondaryBrush}" />
+                <TextBlock x:Name="LimitHeaderText"
+                           DockPanel.Dock="Right"
+                           Text="LIMIT: RED BOOK C1 220/s"
+                           FontFamily="Consolas"
+                           FontSize="11"
+                           Foreground="{DynamicResource CapacityWarningBrush}" />
+            </DockPanel>
+
+            <Border Grid.Row="1"
+                    Background="{DynamicResource SurfaceBackgroundBrush}"
+                    BorderBrush="{DynamicResource CardBorderBrush}"
+                    BorderThickness="1"
+                    CornerRadius="0"
+                    Padding="4">
+                <Grid>
+                    <Canvas x:Name="PlotCanvas" ClipToBounds="True">
+                        <Line x:Name="GridH25" Stroke="{DynamicResource CardBorderBrush}" StrokeThickness="1" StrokeDashArray="2 3" />
+                        <Line x:Name="GridH50" Stroke="{DynamicResource CardBorderBrush}" StrokeThickness="1" StrokeDashArray="2 3" />
+                        <Line x:Name="GridH75" Stroke="{DynamicResource CardBorderBrush}" StrokeThickness="1" StrokeDashArray="2 3" />
+                        <Line x:Name="SpecLimitLine" Stroke="{DynamicResource CapacityWarningBrush}" StrokeThickness="1" StrokeDashArray="5 3" />
+                        <Polyline x:Name="SpeedLine"
+                                  Stroke="{DynamicResource TextSecondaryBrush}"
+                                  StrokeThickness="1.25"
+                                  Fill="Transparent" />
+                        <Polyline x:Name="SecondaryErrorLine"
+                                  Stroke="{DynamicResource CapacityOverburnBrush}"
+                                  StrokeThickness="1.5"
+                                  Fill="Transparent" />
+                        <Polyline x:Name="PrimaryErrorLine"
+                                  Stroke="{DynamicResource AccentBrush}"
+                                  StrokeThickness="2"
+                                  Fill="Transparent" />
+                    </Canvas>
+
+                    <TextBlock x:Name="AxisMaxText"
+                               HorizontalAlignment="Left"
+                               VerticalAlignment="Top"
+                               Margin="4,2,0,0"
+                               FontFamily="Consolas"
+                               FontSize="10"
+                               Foreground="{DynamicResource TextMutedBrush}" />
+                    <TextBlock x:Name="SpecLimitTagText"
+                               HorizontalAlignment="Right"
+                               VerticalAlignment="Top"
+                               Margin="0,2,4,0"
+                               FontFamily="Consolas"
+                               FontSize="10"
+                               Foreground="{DynamicResource CapacityWarningBrush}" />
+                    <TextBlock x:Name="EmptyStateText"
+                               Text="Run a quality scan to plot C1/C2, PIE/PIF, or LDC/BIS across the disc."
+                               HorizontalAlignment="Center"
+                               VerticalAlignment="Center"
+                               FontSize="11"
+                               Foreground="{DynamicResource TextMutedBrush}" />
+                </Grid>
+            </Border>
+
+            <DockPanel Grid.Row="2" Margin="0,6,0,0" LastChildFill="False">
+                <StackPanel DockPanel.Dock="Left" Orientation="Horizontal" VerticalAlignment="Center">
+                    <Rectangle Width="12" Height="2" Fill="{DynamicResource AccentBrush}" Margin="0,0,4,0" VerticalAlignment="Center" />
+                    <TextBlock x:Name="PrimaryLegendText" Text="C1 / PIE / LDC" FontSize="10" Foreground="{DynamicResource TextSecondaryBrush}" Margin="0,0,12,0" VerticalAlignment="Center" />
+                    <Rectangle Width="12" Height="2" Fill="{DynamicResource CapacityOverburnBrush}" Margin="0,0,4,0" VerticalAlignment="Center" />
+                    <TextBlock x:Name="SecondaryLegendText" Text="C2 / PIF / BIS" FontSize="10" Foreground="{DynamicResource TextSecondaryBrush}" Margin="0,0,12,0" VerticalAlignment="Center" />
+                    <Rectangle Width="12" Height="2" Fill="{DynamicResource TextSecondaryBrush}" Margin="0,0,4,0" VerticalAlignment="Center" />
+                    <TextBlock Text="Read Speed (x)" FontSize="10" Foreground="{DynamicResource TextSecondaryBrush}" VerticalAlignment="Center" />
+                </StackPanel>
+
+                <TextBlock x:Name="DocControlText"
+                           DockPanel.Dock="Right"
+                           Text="TW-IGN-FIG-001 · EXPERIMENTAL"
+                           FontFamily="Consolas"
+                           FontSize="10"
+                           Foreground="{DynamicResource TextMutedBrush}"
+                           VerticalAlignment="Center" />
+            </DockPanel>
+        </Grid>
+    </Border>
+</UserControl>

@@ -6,6 +6,9 @@ using CdBurner.Core.Verification;
 using CdBurner.Core.Primitives;
 using CdBurner.Core.Utilities;
 using CdBurner.Hardware.Devices;
+using CdBurner.Hardware.NativeWriting;
+using CdBurner.Hardware.Scsi;
+using CdBurner.Hardware.Scsi.QualityScan;
 using CdBurner.Hardware.Simulation;
 
 namespace CdBurner.App.ViewModels;
@@ -21,12 +24,19 @@ public class DriveUtilitiesViewModel : ObservableObject
     private readonly DiscEraseService _eraseService;
     private readonly SurfaceScanService _scanService;
     private readonly BookTypeService _bookTypeService;
+    private readonly QualityScanService _qualityScanService = new();
 
     private IDiscRecorderBackend? _selectedRecorder;
     private bool _isFullEraseSelected;
     private DvdBookType _selectedBookType = DvdBookType.DvdRom;
     private int _scanBlockSizeSectors = 256;
     private SurfaceScanReport? _latestScanReport;
+    private QualityScanReport? _latestQualityScanReport;
+    private QualityScanMediaKind _qualityScanMediaKind = QualityScanMediaKind.Cd;
+    private bool _qualityScanIsExperimental = true;
+    private int _qualityScanSamplesRevision;
+    private bool _forceLegacyQualityScan;
+    private string _qualityScanAllowListSummary = "Select a drive to check quality-scan support.";
     private DriveCapabilitiesDto? _capabilities;
     private MediaStatusDto? _mediaDetails;
     private bool _isBusy;
@@ -72,6 +82,11 @@ public class DriveUtilitiesViewModel : ObservableObject
     public ObservableCollection<SurfaceScanBlockResult> ScanBlocks { get; } = new();
 
     /// <summary>
+    /// Per-interval optical error-correction samples produced by the quality scanner.
+    /// </summary>
+    public ObservableCollection<QualityScanIntervalSample> QualityScanSamples { get; } = new();
+
+    /// <summary>
     /// Supported DVD Book Types available for bitsetting.
     /// </summary>
     public IReadOnlyList<DvdBookType> AvailableBookTypes { get; } = new[]
@@ -110,6 +125,7 @@ public class DriveUtilitiesViewModel : ObservableObject
                 ApplyBookTypeCommand.RaiseCanExecuteChanged();
                 StartSurfaceScanCommand.RaiseCanExecuteChanged();
                 CheckDiscCommand?.RaiseCanExecuteChanged();
+                RunQualityScanCommand?.RaiseCanExecuteChanged();
                 GenerateCompatibilityReportCommand?.RaiseCanExecuteChanged();
             }
         }
@@ -189,7 +205,10 @@ public class DriveUtilitiesViewModel : ObservableObject
                 ApplyBookTypeCommand.RaiseCanExecuteChanged();
                 StartSurfaceScanCommand.RaiseCanExecuteChanged();
                 CheckDiscCommand?.RaiseCanExecuteChanged();
+                RunQualityScanCommand?.RaiseCanExecuteChanged();
                 ExportScanCsvCommand?.RaiseCanExecuteChanged();
+                ExportQualityScanJsonCommand?.RaiseCanExecuteChanged();
+                ExportQualityScanSvgCommand?.RaiseCanExecuteChanged();
                 GenerateCompatibilityReportCommand?.RaiseCanExecuteChanged();
                 CancelCommand?.RaiseCanExecuteChanged();
             }
@@ -295,6 +314,98 @@ public class DriveUtilitiesViewModel : ObservableObject
             ? null
             : CdBurner.Hardware.Scsi.Win32ScsiTransport.Open(recorder.VolumePath);
 
+    /// <summary>Latest completed or unsupported quality scan report.</summary>
+    public QualityScanReport? LatestQualityScanReport
+    {
+        get => _latestQualityScanReport;
+        private set
+        {
+            if (SetProperty(ref _latestQualityScanReport, value))
+            {
+                OnPropertyChanged(nameof(HasQualityScanReport));
+                OnPropertyChanged(nameof(QualityScanSummaryText));
+                OnPropertyChanged(nameof(QualityScanPeakPrimaryText));
+                OnPropertyChanged(nameof(QualityScanPeakSecondaryText));
+                ExportQualityScanJsonCommand?.RaiseCanExecuteChanged();
+                ExportQualityScanSvgCommand?.RaiseCanExecuteChanged();
+            }
+        }
+    }
+
+    public bool HasQualityScanReport => _latestQualityScanReport != null;
+
+    public string QualityScanSummaryText => _latestQualityScanReport?.Describe() ?? string.Empty;
+
+    public string QualityScanPeakPrimaryText
+    {
+        get
+        {
+            var r = _latestQualityScanReport;
+            if (r == null) return "0";
+            return r.MediaKind switch
+            {
+                QualityScanMediaKind.Dvd => $"{r.Summary.MaxPiePer8Ecc} /8ECC",
+                QualityScanMediaKind.BluRay => $"{r.Summary.MaxLdcPerCluster} /clu",
+                _ => $"{r.Summary.MaxC1PerSecond} /s"
+            };
+        }
+    }
+
+    public string QualityScanPeakSecondaryText
+    {
+        get
+        {
+            var r = _latestQualityScanReport;
+            if (r == null) return "0";
+            return r.MediaKind switch
+            {
+                QualityScanMediaKind.Dvd => $"{r.Summary.MaxPifPerEcc} /ECC",
+                QualityScanMediaKind.BluRay => $"{r.Summary.MaxBisPerCluster} /clu",
+                _ => $"{r.Summary.TotalC2} tot"
+            };
+        }
+    }
+
+    public QualityScanMediaKind QualityScanMediaKind
+    {
+        get => _qualityScanMediaKind;
+        private set => SetProperty(ref _qualityScanMediaKind, value);
+    }
+
+    public bool QualityScanIsExperimental
+    {
+        get => _qualityScanIsExperimental;
+        private set => SetProperty(ref _qualityScanIsExperimental, value);
+    }
+
+    public int QualityScanSamplesRevision
+    {
+        get => _qualityScanSamplesRevision;
+        private set => SetProperty(ref _qualityScanSamplesRevision, value);
+    }
+
+    public bool ForceLegacyQualityScan
+    {
+        get => _forceLegacyQualityScan;
+        set => SetProperty(ref _forceLegacyQualityScan, value);
+    }
+
+    public string QualityScanAllowListSummary
+    {
+        get => _qualityScanAllowListSummary;
+        private set => SetProperty(ref _qualityScanAllowListSummary, value);
+    }
+
+    public AsyncRelayCommand RunQualityScanCommand { get; }
+    public AsyncRelayCommand ExportQualityScanJsonCommand { get; }
+    public AsyncRelayCommand ExportQualityScanSvgCommand { get; }
+
+    /// <summary>
+    /// Creates a quality-scan driver for the selected recorder. Default uses <see cref="VirtualQualityScanDriver"/>
+    /// for virtual drives and <see cref="MediaTekLiteOnQualityDriver"/> for physical drives; tests can inject a mock.
+    /// </summary>
+    public Func<IDiscRecorderBackend, IQualityScanDriver?> OpenQualityScanDriver { get; set; }
+
     private DiscHealthReport? _lastDiscHealth;
 
     private CancellationTokenSource? _activeCts;
@@ -316,6 +427,24 @@ public class DriveUtilitiesViewModel : ObservableObject
         _eraseService = eraseService ?? new DiscEraseService(_burnEngine);
         _scanService = scanService ?? new SurfaceScanService(_burnEngine);
         _bookTypeService = bookTypeService ?? new BookTypeService();
+
+        OpenQualityScanDriver = recorder =>
+        {
+            if (recorder is VirtualDiscRecorder vRec)
+            {
+                return new VirtualQualityScanDriver(vRec);
+            }
+            string devicePath = NativeAudioBurnEngine.DevicePathFor(recorder);
+            if (string.IsNullOrWhiteSpace(devicePath))
+            {
+                return null;
+            }
+            string? mediaId = recorder.WithManufacturerId(recorder.QueryMediaStatus()).MediaManufacturerId;
+            return new MediaTekLiteOnQualityDriver(
+                Win32ScsiTransport.Open(devicePath, System.IO.FileAccess.ReadWrite),
+                ownsTransport: true,
+                mediaId: mediaId);
+        };
 
         EraseDiscCommand = new AsyncRelayCommand(
             execute: async param => await EraseDiscAsync(param),
@@ -340,6 +469,15 @@ public class DriveUtilitiesViewModel : ObservableObject
         CheckDiscCommand = new AsyncRelayCommand(
             execute: async param => await CheckDiscAsync(param),
             canExecute: _ => SelectedRecorder != null && !IsBusy);
+        RunQualityScanCommand = new AsyncRelayCommand(
+            execute: async param => await RunQualityScanAsync(param),
+            canExecute: _ => SelectedRecorder != null && !IsBusy);
+        ExportQualityScanJsonCommand = new AsyncRelayCommand(
+            execute: async param => await ExportQualityScanJsonAsync(param),
+            canExecute: _ => LatestQualityScanReport != null && !IsBusy);
+        ExportQualityScanSvgCommand = new AsyncRelayCommand(
+            execute: async param => await ExportQualityScanSvgAsync(param),
+            canExecute: _ => LatestQualityScanReport != null && !IsBusy);
 
         RefreshRecorders();
     }
@@ -389,12 +527,31 @@ public class DriveUtilitiesViewModel : ObservableObject
         {
             Capabilities = SelectedRecorder.GetCapabilities();
             MediaDetails = SelectedRecorder.WithManufacturerId(SelectedRecorder.QueryMediaStatus());
+            QualityScanAllowListSummary = BuildAllowListSummary(SelectedRecorder);
+            QualityScanIsExperimental = !SelectedRecorder.IsVirtual;
         }
         else
         {
             Capabilities = null;
             MediaDetails = null;
+            QualityScanAllowListSummary = "Select a drive to check quality-scan support.";
+            QualityScanIsExperimental = true;
         }
+    }
+
+    private static string BuildAllowListSummary(IDiscRecorderBackend recorder)
+    {
+        if (recorder.IsVirtual)
+        {
+            return "Virtual Simulator: deterministic CD (C1/C2/CU), DVD (PIE/PIF/POF), BD (LDC/BIS) quality scan.";
+        }
+
+        if (QualityScanDriveAllowList.Evaluate(recorder.VendorId, recorder.ProductId) is { } match)
+        {
+            return $"Allow-listed ({match.Family}): {match.VendorId} {match.ProductId} — experimental hardware scan (0xF3 / 0xDF; unverified until compared against QPxTool).";
+        }
+
+        return $"Unsupported drive ({recorder.VendorId} {recorder.ProductId}): not on the MediaTek/Lite-On allow-list; vendor scan commands are blocked.";
     }
 
     /// <summary>
@@ -691,6 +848,157 @@ public class DriveUtilitiesViewModel : ObservableObject
 
         await LatestScanReport.ExportCsvAsync(targetPath, cancellationToken);
         StatusMessage = $"Surface scan CSV exported to {targetPath}.";
+        return targetPath;
+    }
+
+    /// <summary>
+    /// Runs an optical quality scan (CD C1/C2/CU, DVD PIE/PIF/POF, BD LDC/BIS) on the selected drive
+    /// and populates <see cref="QualityScanSamples"/> and <see cref="LatestQualityScanReport"/>.
+    /// </summary>
+    public async Task<QualityScanReport?> RunQualityScanAsync(object? parameter = null, CancellationToken cancellationToken = default)
+    {
+        var targetRecorder = ResolveTargetRecorder(parameter);
+        if (targetRecorder == null)
+        {
+            StatusMessage = "No optical recorder selected for quality scan.";
+            return null;
+        }
+
+        _activeCts?.Dispose();
+        _activeCts = cancellationToken.CanBeCanceled
+            ? CancellationTokenSource.CreateLinkedTokenSource(cancellationToken)
+            : new CancellationTokenSource();
+        var ct = _activeCts.Token;
+
+        IsBusy = true;
+        QualityScanSamples.Clear();
+        LatestQualityScanReport = null;
+        QualityScanSamplesRevision++;
+        OperationProgress = 0.0;
+        StatusMessage = $"Starting quality scan on {targetRecorder.UniqueId}...";
+
+        IQualityScanDriver? driver = null;
+        try
+        {
+            driver = OpenQualityScanDriver(targetRecorder);
+            if (driver == null)
+            {
+                StatusMessage = $"No quality-scan driver available for {targetRecorder.UniqueId}.";
+                return null;
+            }
+
+            QualityScanIsExperimental = driver.IsExperimentalHardware;
+            var progress = new ClosableProgress<QualityScanProgressSnapshot>(snap =>
+            {
+                OperationProgress = snap.ProgressPercent;
+                StatusMessage = snap.StatusText;
+                if (snap.LatestSample != null)
+                {
+                    QualityScanSamples.Add(snap.LatestSample);
+                    QualityScanSamplesRevision++;
+                }
+            });
+
+            var options = new QualityScanOptions
+            {
+                ForceLegacyProtocol = ForceLegacyQualityScan
+            };
+
+            var report = await _qualityScanService.RunScanAsync(driver, options, progress, ct);
+            progress.Close();
+
+            QualityScanMediaKind = report.MediaKind;
+            QualityScanIsExperimental = report.IsExperimentalHardwareScan;
+            if (QualityScanSamples.Count == 0 && report.Samples.Count > 0)
+            {
+                foreach (var s in report.Samples)
+                {
+                    QualityScanSamples.Add(s);
+                }
+            }
+            QualityScanSamplesRevision++;
+            LatestQualityScanReport = report;
+            OperationProgress = report.IsSupported && report.Status == QualityScanStatus.Completed ? 100.0 : 0.0;
+            StatusMessage = report.Describe();
+            return report;
+        }
+        catch (OperationCanceledException)
+        {
+            StatusMessage = "Quality scan cancelled.";
+            return null;
+        }
+        catch (Exception ex)
+        {
+            StatusMessage = $"Quality scan error: {ex.Message}";
+            return null;
+        }
+        finally
+        {
+            if (driver is IDisposable disposable)
+            {
+                disposable.Dispose();
+            }
+            _activeCts?.Dispose();
+            _activeCts = null;
+            IsBusy = false;
+        }
+    }
+
+    public async Task<string?> ExportQualityScanJsonAsync(object? parameter = null, CancellationToken cancellationToken = default)
+    {
+        if (LatestQualityScanReport == null)
+        {
+            StatusMessage = "Run a quality scan before exporting JSON.";
+            return null;
+        }
+
+        string? targetPath = parameter as string;
+        if (string.IsNullOrWhiteSpace(targetPath))
+        {
+            var dlg = new Microsoft.Win32.SaveFileDialog
+            {
+                Title = "Export Quality Scan JSON",
+                Filter = "JSON Files (*.json)|*.json|All Files (*.*)|*.*",
+                FileName = $"IgnisDisc-QualityScan-{SelectedRecorder?.UniqueId ?? "Drive"}.json"
+            };
+            if (dlg.ShowDialog() != true)
+            {
+                return null;
+            }
+            targetPath = dlg.FileName;
+        }
+
+        await LatestQualityScanReport.SaveJsonAsync(targetPath, cancellationToken);
+        StatusMessage = $"Quality scan JSON exported to {targetPath}.";
+        return targetPath;
+    }
+
+    public async Task<string?> ExportQualityScanSvgAsync(object? parameter = null, CancellationToken cancellationToken = default)
+    {
+        if (LatestQualityScanReport == null)
+        {
+            StatusMessage = "Run a quality scan before exporting SVG.";
+            return null;
+        }
+
+        string? targetPath = parameter as string;
+        if (string.IsNullOrWhiteSpace(targetPath))
+        {
+            var dlg = new Microsoft.Win32.SaveFileDialog
+            {
+                Title = "Export Quality Scan SVG",
+                Filter = "SVG Files (*.svg)|*.svg|All Files (*.*)|*.*",
+                FileName = $"IgnisDisc-QualityScan-{SelectedRecorder?.UniqueId ?? "Drive"}.svg"
+            };
+            if (dlg.ShowDialog() != true)
+            {
+                return null;
+            }
+            targetPath = dlg.FileName;
+        }
+
+        await LatestQualityScanReport.SaveSvgAsync(targetPath, cancellationToken);
+        StatusMessage = $"Quality scan SVG exported to {targetPath}.";
         return targetPath;
     }
 }

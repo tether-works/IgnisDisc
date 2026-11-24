@@ -18,11 +18,11 @@ public static partial class CliCommandRunner
     private static readonly HashSet<string> KnownValueOptions = new(StringComparer.OrdinalIgnoreCase)
     {
         "aac-bitrate", "after-title", "append-to", "art-inner-radius-mm", "art-outer-radius-mm",
-        "artist", "aspect", "bitrate", "blank", "block-size", "boot-bios", "boot-uefi", "candidate",
+        "artist", "aspect", "attach-health", "bitrate", "blank", "block-size", "boot-bios", "boot-uefi", "candidate",
         "cells", "chapters", "compare", "config", "copies", "cover", "cover-art", "crossfade",
         "csv", "cue", "data-folder", "data-label", "date", "dir", "disc", "disc-preset",
         "disc-presets-file", "drive", "drive-model", "entry", "ffmpeg", "files", "fill-picture", "fit",
-        "fixed-time", "format", "from", "image", "images", "inner-radius-mm", "input", "iso",
+        "fixed-time", "format", "from", "health-json", "image", "images", "inner-radius-mm", "input", "iso",
         "json-output", "key", "label", "language", "layer-break", "library", "log-dir",
         "loudness", "media", "media-id", "menu", "menu-autoplay", "menu-title", "mp3-bitrate",
         "mp3-quality", "naming", "offset-x-mm", "offset-y-mm", "opus-bitrate", "order", "out",
@@ -31,7 +31,7 @@ public static partial class CliCommandRunner
         "pregap-seconds", "read-offset", "redundancy", "release", "retries", "rotate", "scale",
         "sectors", "set", "settings-file", "size", "songwriter", "source", "spacing", "speed",
         "stage", "staging", "standard", "start-angle", "store", "subtitle-language",
-        "subtitle-size", "subtitles-default", "target", "telemetry-out", "text", "title", "title-names",
+        "subtitle-size", "subtitles-default", "svg", "target", "telemetry-out", "text", "title", "title-names",
         "title-ring", "title-ring-date", "title-ring-height-mm", "to", "tone", "tracks",
         "tracks-file", "turn-map", "turn-map-offset", "udf-rev", "upc", "value",
         "video-bitrate", "video-ts", "virtual-media", "virtual-state", "wait-minutes", "write-offset"
@@ -166,7 +166,7 @@ public static partial class CliCommandRunner
         "drives", "drive-report", "media-info", "eject", "load", "virtual-mount", "virtual-eject", "virtual-status",
         "build-iso", "burn-iso", "burn-data", "burn-audio", "burn-dvd", "install-subtitle-tool", "generate-subtitles",
         "rip", "rip-audio", "convert-audio", "copy-disc", "check-disc", "detect-offset",
-        "archive-stage", "archive-burn", "archive-verify", "recover", "verify", "erase", "scan",
+        "archive-stage", "archive-burn", "archive-verify", "recover", "verify", "erase", "scan", "quality-scan",
         "settings", "tools", "install-ffmpeg", "install-par2", "check-update", "image-info",
         "convert-image", "browse-image", "extract-image", "author-dvd", "jewel-cover", "audio-plan", "burn-queue", "book-type",
         "repair-par2", "rosetta", "disc-art"
@@ -213,6 +213,7 @@ public static partial class CliCommandRunner
         Add(CommandOptionSpec.Of(["strict-verify", "no-cd-text"], ["drive", "cue", "iso", "log-dir", "title", "artist", "write-offset", "virtual-media", "virtual-state"]), "verify", "verify-disc");
         Add(CommandOptionSpec.Of(["full"], ["drive", "virtual-media", "virtual-state"]), "erase", "erase-disc");
         Add(CommandOptionSpec.Of([], ["drive", "block-size", "csv", "output", "virtual-media", "virtual-state"]), "scan", "scan-disc");
+        Add(CommandOptionSpec.Of(["force-old"], ["drive", "out", "svg", "attach-health", "health-json", "speed", "virtual-media", "virtual-state"]), "quality-scan", "qualityscan");
         Add(CommandOptionSpec.Of(["plan-only"], []), "install-subtitle-tool");
         Add(CommandOptionSpec.Of([], ["input", "output", "language", "ffmpeg"]), "generate-subtitles");
         Add(CommandOptionSpec.Of([], ["settings-file", "config", "key", "value"]), "settings");

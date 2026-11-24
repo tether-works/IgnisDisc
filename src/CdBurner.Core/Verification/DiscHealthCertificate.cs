@@ -18,10 +18,28 @@ public sealed record CertificateScan(
     IReadOnlyList<int> ProblemsPerMinute,
     IReadOnlyList<TrackHealth> Tracks);
 
+/// <summary>Summary of one longitudinal optical quality scan attached to a <c>HEALTH.json</c> certificate.</summary>
+public sealed record QualityScanAttachment(
+    DateTimeOffset ScannedUtc,
+    string Drive,
+    QualityScanProtocol Protocol,
+    QualityScanMediaKind MediaKind,
+    bool IsExperimentalHardwareScan,
+    QualityScanGrade Grade,
+    string GradeReason,
+    int TotalSectorsScanned,
+    double AverageSpeedX,
+    long TotalPrimaryErrors,
+    int PeakPrimaryErrors,
+    long TotalSecondaryErrors,
+    int PeakSecondaryErrors,
+    long TotalUncorrectableErrors);
+
 /// <summary>
 /// A record of one archive disc made right after it was burned: the read-back result, the write-speed curve, the
 /// drive, the media ID, the date and (when the drive could read the disc once more) the per-minute counts of a
-/// read-health pass. Written only when asked for. A later <c>check-disc --compare</c> against it shows ageing.
+/// read-health pass. Written only when asked for. A later <c>check-disc --compare</c> against it shows ageing,
+/// and later <c>quality-scan</c> passes can be appended longitudinally to <see cref="QualityScans"/>.
 /// </summary>
 public sealed record DiscHealthCertificate(
     int SchemaVersion,
@@ -37,7 +55,9 @@ public sealed record DiscHealthCertificate(
     bool Verified,
     string? VerificationNote,
     IReadOnlyList<TransferCurvePoint> TransferCurve,
-    CertificateScan? Scan)
+    CertificateScan? Scan,
+    [property: JsonIgnore(Condition = JsonIgnoreCondition.WhenWritingNull)]
+    IReadOnlyList<QualityScanAttachment>? QualityScans = null)
 {
     public const int CurrentSchemaVersion = 1;
     public const string JsonFileSuffix = "HEALTH.json";
@@ -112,6 +132,59 @@ public sealed record DiscHealthCertificate(
             throw new InvalidOperationException("This certificate has no check-disc counts to compare with (the disc could not be read after the burn).");
         }
         return HealthComparison.Between(Scan, now);
+    }
+
+    /// <summary>Returns a copy of this certificate with a longitudinal quality scan summary appended.</summary>
+    public DiscHealthCertificate WithQualityScan(QualityScanReport report)
+    {
+        ArgumentNullException.ThrowIfNull(report);
+        if (!report.IsSupported || report.Status != QualityScanStatus.Completed)
+        {
+            throw new InvalidOperationException($"Only completed quality scans can be attached to a health certificate (status: {report.Status}).");
+        }
+
+        (long tot1, int peak1, long tot2, int peak2, long totUncr) = report.MediaKind switch
+        {
+            QualityScanMediaKind.Dvd => (report.Summary.TotalPie, report.Summary.MaxPiePer8Ecc, report.Summary.TotalPif, report.Summary.MaxPifPerEcc, report.Summary.TotalPof),
+            QualityScanMediaKind.BluRay => (report.Summary.TotalLdc, report.Summary.MaxLdcPerCluster, report.Summary.TotalBis, report.Summary.MaxBisPerCluster, 0L),
+            _ => (report.Summary.TotalC1, report.Summary.MaxC1PerSecond, report.Summary.TotalC2, report.Summary.MaxC2PerSecond, report.Summary.TotalCu)
+        };
+
+        var attachment = new QualityScanAttachment(
+            ScannedUtc: report.CreatedUtc,
+            Drive: $"{report.DriveVendor} {report.DriveProduct}".Trim(),
+            Protocol: report.Protocol,
+            MediaKind: report.MediaKind,
+            IsExperimentalHardwareScan: report.IsExperimentalHardwareScan,
+            Grade: report.Summary.Grade,
+            GradeReason: report.Summary.GradeReason,
+            TotalSectorsScanned: report.Summary.TotalSectorsScanned,
+            AverageSpeedX: report.Summary.AverageSpeedX,
+            TotalPrimaryErrors: tot1,
+            PeakPrimaryErrors: peak1,
+            TotalSecondaryErrors: tot2,
+            PeakSecondaryErrors: peak2,
+            TotalUncorrectableErrors: totUncr);
+
+        var list = QualityScans != null ? new List<QualityScanAttachment>(QualityScans) : new List<QualityScanAttachment>();
+        list.Add(attachment);
+        return this with { QualityScans = list };
+    }
+
+    /// <summary>Loads an existing <c>HEALTH.json</c> file, appends the quality scan summary, and writes it atomically.</summary>
+    public static Task<DiscHealthCertificate> AttachQualityScanAsync(
+        string healthJsonPath,
+        QualityScanReport report,
+        CancellationToken cancellationToken = default)
+    {
+        ArgumentException.ThrowIfNullOrWhiteSpace(healthJsonPath);
+        ArgumentNullException.ThrowIfNull(report);
+        cancellationToken.ThrowIfCancellationRequested();
+
+        var existing = Load(healthJsonPath);
+        var updated = existing.WithQualityScan(report);
+        WriteAtomic(healthJsonPath, updated.ToJson());
+        return Task.FromResult(updated);
     }
 
     // ---- SVG chart -------------------------------------------------------------------------------------------

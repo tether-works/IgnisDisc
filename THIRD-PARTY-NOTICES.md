@@ -151,3 +151,14 @@ identifiers, never audio or personal data.
 
 xUnit, Microsoft.NET.Test.Sdk, coverlet, and LTRData.DiscUtils (used as an independent ISO 9660 / Joliet / UDF
 reader to validate generated images).
+
+## QPxTool and OptiScan (clean-room quality-scan protocol reference)
+
+The MediaTek / Lite-On SCSI quality-scan command builders and reply parsers (`0xF3 0x0E` and `0xDF`) in
+`src/CdBurner.Hardware/Scsi/QualityScan/` are clean-room C# implementations derived from the hardware command tables
+and reply layouts documented in:
+
+- [QPxTool](https://github.com/speed47/qpxtool) (`plugins/liteon/qscan_plugin.h`, `plugins/liteon/qscan_cmd.cpp`,
+  commit `9c6a3fdb5e2759db1fd1b8d719e85d086b2b4489`; Copyright (C) 2005–2008 Gennady "ShultZ" Kozlov, `GPL-2.0-or-later`).
+- [OptiScan](https://github.com/dhucul/OptiScan) (`docs/scsi-quality-scan-commands.md`,
+  commit `a92f2d5a77e7ea7417f52cf234e0624dcbd8ce24`, `GPL-3.0`).

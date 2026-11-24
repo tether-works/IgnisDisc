@@ -36,6 +36,27 @@ public sealed class VirtualMmcDrive : IScsiTransport
 
     // ---- Disc and drive description ----
 
+    public string InquiryVendorId { get; set; } = "IGNIS";
+    public string InquiryProductId { get; set; } = "VIRTUAL DVD/CD-RW";
+    public string InquiryProductRevision { get; set; } = "1.00";
+
+    public bool RejectsQualityScanF3 { get; set; }
+    public bool RejectsQualityScanDf { get; set; }
+    public int? QualityScanStepSectors { get; set; }
+    public int? QualityScanErrorAtLba { get; set; }
+    public int? QualityScanWin32ErrorAtPoll { get; set; }
+    public int QualityScanStalePollsRemaining { get; set; }
+    public int QualityScanStopCommandCount { get; private set; }
+    public int QualityScanTeardownReadyCount { get; private set; }
+
+    private int _qualityScanCursorLba;
+    private int _qualityScanPollCount;
+    private bool _qualityScanDfArmed;
+    private bool _qualityScanHadActivity;
+    private int _latchedDfC1;
+    private int _latchedDfC2;
+    private int _latchedDfCu;
+
     public bool MediaPresent { get; set; } = true;
 
     /// <summary>Removable Medium feature (0x0003) loading mechanism: 0 caddy, 1 tray (the default, as the GP60NB50), 2 pop-up.</summary>
@@ -936,7 +957,10 @@ public sealed class VirtualMmcDrive : IScsiTransport
         return op switch
         {
             0x00 => TestUnitReady(),
+            MmcCommandBuilder.OpCodeInquiry => Inquiry(cdb, dataBuffer),
             MmcCommandBuilder.OpCodeStartStopUnit => StartStopUnit(cdb),
+            0x25 => ReadCapacity10(dataBuffer),
+            0x2B => Seek10(cdb),
             0x46 => GetConfiguration(cdb, dataBuffer),
             0x51 => ReadDiscInformation(dataBuffer),
             MmcCommandBuilder.OpCodeSendOpcInformation => SendOpcInformation(cdb),
@@ -964,6 +988,8 @@ public sealed class VirtualMmcDrive : IScsiTransport
             MmcCommandBuilder.OpCodeReadDiscStructure => ReadDiscStructure(cdb, dataBuffer),
             NativeWriteCommands.OpCodeSendDiscStructure => SendDiscStructure(cdb, dataBuffer),
             NativeWriteCommands.OpCodeSetStreaming => SetStreaming(cdb, dataBuffer),
+            0xF3 => HandleQualityScanF3(cdb, dataBuffer),
+            0xDF => HandleQualityScanDf(cdb, dataBuffer),
             _ => Sense(0x05, 0x20, 0x00) // invalid command operation code
         };
     }
@@ -1000,7 +1026,227 @@ public sealed class VirtualMmcDrive : IScsiTransport
             NotReadyResponses--;
             return Sense(0x02, 0x04, 0x01);
         }
+        if (_qualityScanHadActivity)
+        {
+            QualityScanTeardownReadyCount++;
+        }
         return Good(0);
+    }
+
+    private ScsiExecutionResult Inquiry(ReadOnlySpan<byte> cdb, Span<byte> data)
+    {
+        byte[] response = new byte[36];
+        response[0] = 0x05; // CD/DVD optical device
+        response[1] = 0x80; // removable
+        response[2] = 0x05; // SPC-3
+        response[3] = 0x32;
+        response[4] = 31;
+        WriteAsciiField(response.AsSpan(8, 8), InquiryVendorId);
+        WriteAsciiField(response.AsSpan(16, 16), InquiryProductId);
+        WriteAsciiField(response.AsSpan(32, 4), InquiryProductRevision);
+        int alloc = cdb.Length >= 5 ? (cdb[3] << 8) | cdb[4] : 36;
+        int len = Math.Min(Math.Min(response.Length, data.Length), alloc > 0 ? alloc : 36);
+        response.AsSpan(0, len).CopyTo(data);
+        return Good((uint)len);
+    }
+
+    private static void WriteAsciiField(Span<byte> target, string value)
+    {
+        target.Fill((byte)' ');
+        byte[] ascii = System.Text.Encoding.ASCII.GetBytes(value ?? string.Empty);
+        ascii.AsSpan(0, Math.Min(ascii.Length, target.Length)).CopyTo(target);
+    }
+
+    private int RecordedSectorCount()
+    {
+        if (_cue != null) return _cue.LeadOutLba;
+        if (_dataSessions.Count > 0) return _dataSessions[^1].TrackStartLba + _dataSessions[^1].TrackSectors;
+        if (DataDiscImage != null) return DataDiscImage.Length / 2048;
+        return Capacity;
+    }
+
+    private ScsiExecutionResult ReadCapacity10(Span<byte> data)
+    {
+        int total = RecordedSectorCount();
+        uint lastLba = total > 0 ? (uint)(total - 1) : 0u;
+        byte[] r = new byte[8];
+        BinaryPrimitives.WriteUInt32BigEndian(r.AsSpan(0, 4), lastLba);
+        BinaryPrimitives.WriteUInt32BigEndian(r.AsSpan(4, 4), 2048u);
+        return CopyOut(r, data);
+    }
+
+    private ScsiExecutionResult Seek10(ReadOnlySpan<byte> cdb)
+    {
+        int lba = cdb.Length >= 6 ? BinaryPrimitives.ReadInt32BigEndian(cdb.Slice(2, 4)) : 0;
+        _timingHeadLba = Math.Max(0, lba);
+        _qualityScanCursorLba = Math.Max(0, lba);
+        if (_qualityScanHadActivity && lba == 0)
+        {
+            QualityScanStopCommandCount++;
+        }
+        return Good(0);
+    }
+
+    private ScsiExecutionResult HandleQualityScanF3(ReadOnlySpan<byte> cdb, Span<byte> data)
+    {
+        if (RejectsQualityScanF3 || cdb.Length < 12 || cdb[1] != 0x0E)
+        {
+            return Sense(0x05, 0x20, 0x00);
+        }
+
+        if (!_qualityScanHadActivity)
+        {
+            // First 0xF3 0x0E call is the probe/start command.
+            _qualityScanHadActivity = true;
+            _qualityScanPollCount = 0;
+            byte[] initReply = new byte[16];
+            return CopyOut(initReply, data);
+        }
+
+        _qualityScanPollCount++;
+        if (QualityScanWin32ErrorAtPoll is int winErrPoll && _qualityScanPollCount >= winErrPoll)
+        {
+            return ScsiExecutionResult.Failed(121, "Simulated Win32 timeout during quality scan.");
+        }
+
+        int total = Math.Max(1, RecordedSectorCount());
+        if (QualityScanStalePollsRemaining > 0)
+        {
+            QualityScanStalePollsRemaining--;
+            return BuildF3SampleReply(_qualityScanCursorLba, 0, 0, data);
+        }
+
+        int step = QualityScanStepSectors ?? (IsDvd ? 128 : IsBluRay ? 32 : 75);
+        int start = _qualityScanCursorLba;
+        int next = Math.Min(total, start + step);
+        if (QualityScanErrorAtLba is int errLba && errLba >= start && errLba < next)
+        {
+            return Sense(0x03, 0x11, 0x00);
+        }
+
+        _qualityScanCursorLba = next;
+        int badHits = CountQualityIssues(start, next);
+        int primary = IsDvd ? 6 + (badHits * 150) : IsBluRay ? 10 + (badHits * 180) : 4 + (badHits * 120);
+        int secondary = IsDvd ? badHits * 3 : IsBluRay ? badHits * 14 : badHits * 5;
+        return BuildF3SampleReply(next, primary, secondary, data);
+    }
+
+    private ScsiExecutionResult BuildF3SampleReply(int lba, int primary, int secondary, Span<byte> data)
+    {
+        byte[] r = new byte[16];
+        if (!IsDvd && !IsBluRay)
+        {
+            r[1] = (byte)(lba / 4500);
+            r[2] = (byte)((lba / 75) % 60);
+            r[3] = (byte)(lba % 75);
+        }
+        else
+        {
+            BinaryPrimitives.WriteUInt32BigEndian(r.AsSpan(0, 4), (uint)Math.Max(0, lba));
+        }
+
+        BinaryPrimitives.WriteUInt16BigEndian(r.AsSpan(4, 2), (ushort)Math.Clamp(primary, 0, ushort.MaxValue));
+        BinaryPrimitives.WriteUInt16BigEndian(r.AsSpan(6, 2), (ushort)Math.Clamp(secondary, 0, ushort.MaxValue));
+        return CopyOut(r, data);
+    }
+
+    private ScsiExecutionResult HandleQualityScanDf(ReadOnlySpan<byte> cdb, Span<byte> data)
+    {
+        if (RejectsQualityScanDf || cdb.Length < 3)
+        {
+            return Sense(0x05, 0x20, 0x00);
+        }
+
+        byte sub1 = cdb[1];
+        byte sub2 = cdb[2];
+
+        // End scan: DF A3 01
+        if (sub1 == 0xA3 && sub2 == 0x01)
+        {
+            _qualityScanDfArmed = false;
+            QualityScanStopCommandCount++;
+            return CopyOut(new byte[256], data);
+        }
+
+        // Init A: DF A3 00
+        if (sub1 == 0xA3 && sub2 == 0x00)
+        {
+            _qualityScanHadActivity = true;
+            _qualityScanPollCount = 0;
+            _qualityScanCursorLba = 0;
+            _qualityScanDfArmed = false;
+            return CopyOut(new byte[256], data);
+        }
+
+        // Init B..E: DF A0
+        if (sub1 == 0xA0)
+        {
+            _qualityScanDfArmed = true;
+            return CopyOut(new byte[256], data);
+        }
+
+        // Reset interval: DF 97
+        if (sub1 == 0x97)
+        {
+            _latchedDfC1 = 0;
+            _latchedDfC2 = 0;
+            _latchedDfCu = 0;
+            return CopyOut(new byte[256], data);
+        }
+
+        // Read interval latch: DF 82 09
+        if (sub1 == 0x82 && sub2 == 0x09)
+        {
+            if (!_qualityScanDfArmed)
+            {
+                return Sense(0x05, 0x24, 0x00);
+            }
+            _qualityScanPollCount++;
+            if (QualityScanWin32ErrorAtPoll is int winErrPoll && _qualityScanPollCount >= winErrPoll)
+            {
+                return ScsiExecutionResult.Failed(121, "Simulated Win32 timeout during 0xDF quality scan.");
+            }
+            int total = Math.Max(1, RecordedSectorCount());
+            int step = QualityScanStepSectors ?? 75;
+            int start = _qualityScanCursorLba;
+            int next = Math.Min(total, start + step);
+            if (QualityScanErrorAtLba is int errLba && errLba >= start && errLba < next)
+            {
+                return Sense(0x03, 0x11, 0x00);
+            }
+            _qualityScanCursorLba = next;
+            int badHits = CountQualityIssues(start, next);
+            _latchedDfC1 = 5 + (badHits * 130);
+            _latchedDfC2 = badHits * 4;
+            _latchedDfCu = badHits > 1 ? 1 : 0;
+            return CopyOut(new byte[256], data);
+        }
+
+        // Get latched interval counters: DF 82 05
+        if (sub1 == 0x82 && sub2 == 0x05)
+        {
+            byte[] r = new byte[256];
+            BinaryPrimitives.WriteUInt16BigEndian(r.AsSpan(0, 2), (ushort)Math.Clamp(_latchedDfC1, 0, ushort.MaxValue));
+            BinaryPrimitives.WriteUInt16BigEndian(r.AsSpan(2, 2), (ushort)Math.Clamp(_latchedDfC2, 0, ushort.MaxValue));
+            r[4] = (byte)Math.Clamp(_latchedDfCu, 0, 255);
+            return CopyOut(r, data);
+        }
+
+        return Sense(0x05, 0x24, 0x00);
+    }
+
+    private int CountQualityIssues(int startLba, int endLba)
+    {
+        int hits = 0;
+        foreach (int lba in MarginalLbas)
+        {
+            if (lba >= startLba && lba < endLba) hits++;
+        }
+        if (ReadErrorAtLba is int bad && bad >= startLba && bad < endLba)
+        {
+            hits += 2;
+        }
+        return hits;
     }
 
     /// <summary>
