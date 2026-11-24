@@ -33,8 +33,10 @@ public sealed class MusicBrainzClient
     private readonly HttpClient _httpClient;
     private readonly string _userAgent;
     private readonly string _baseUrl;
+    private readonly RequestGate _gate;
 
-    public MusicBrainzClient(HttpClient httpClient, string userAgent, string baseUrl = DefaultBaseUrl)
+    /// <param name="gate">Spaces requests; the default is <see cref="RequestGate.Shared"/> (one request per second).</param>
+    public MusicBrainzClient(HttpClient httpClient, string userAgent, string baseUrl = DefaultBaseUrl, RequestGate? gate = null)
     {
         ArgumentNullException.ThrowIfNull(httpClient);
 
@@ -51,6 +53,7 @@ public sealed class MusicBrainzClient
         _httpClient = httpClient;
         _userAgent = userAgent;
         _baseUrl = baseUrl.TrimEnd('/') + "/";
+        _gate = gate ?? RequestGate.Shared;
     }
 
     public async Task<IReadOnlyList<MusicBrainzRelease>> LookupDiscIdAsync(string musicBrainzDiscId, CancellationToken cancellationToken = default)
@@ -62,16 +65,7 @@ public sealed class MusicBrainzClient
 
         string url = $"{_baseUrl}discid/{Uri.EscapeDataString(musicBrainzDiscId)}?inc=recordings+artist-credits+isrcs&fmt=json";
 
-        HttpResponseMessage response = await SendRequestAsync(url, cancellationToken).ConfigureAwait(false);
-
-        if (response.StatusCode == HttpStatusCode.ServiceUnavailable)
-        {
-            response.Dispose();
-            await Task.Delay(1100, cancellationToken).ConfigureAwait(false);
-            response = await SendRequestAsync(url, cancellationToken).ConfigureAwait(false);
-        }
-
-        using (response)
+        using (HttpResponseMessage response = await SendRequestAsync(url, cancellationToken).ConfigureAwait(false))
         {
             if (response.StatusCode == HttpStatusCode.NotFound)
             {
@@ -190,14 +184,26 @@ public sealed class MusicBrainzClient
         return true;
     }
 
-    private async Task<HttpResponseMessage> SendRequestAsync(string url, CancellationToken cancellationToken)
-    {
-        using var request = new HttpRequestMessage(HttpMethod.Get, url);
-        request.Headers.TryAddWithoutValidation("User-Agent", _userAgent);
-        request.Headers.Accept.Clear();
-        request.Headers.Accept.Add(new MediaTypeWithQualityHeaderValue("application/json"));
-        return await _httpClient.SendAsync(request, cancellationToken).ConfigureAwait(false);
-    }
+    /// <summary>
+    /// One GET, spaced by the shared gate. HTTP 429 and 503 are retried after the <c>Retry-After</c> wait (up to
+    /// <see cref="HttpClientResilience.MaxAttempts"/> tries); the final response is returned for the caller to judge.
+    /// </summary>
+    private Task<HttpResponseMessage> SendRequestAsync(string url, CancellationToken cancellationToken) =>
+        HttpClientResilience.SendWithRetryAsync(
+            _httpClient,
+            () =>
+            {
+                var request = new HttpRequestMessage(HttpMethod.Get, url);
+                request.Headers.TryAddWithoutValidation("User-Agent", _userAgent);
+                request.Headers.Accept.Clear();
+                request.Headers.Accept.Add(new MediaTypeWithQualityHeaderValue("application/json"));
+                return request;
+            },
+            HttpCompletionOption.ResponseContentRead,
+            HttpClientResilience.IsThrottled,
+            _gate,
+            delay: null,
+            cancellationToken);
 
     private static IReadOnlyList<MusicBrainzRelease> ParseReleases(JsonElement root, string targetDiscId)
     {
@@ -216,6 +222,11 @@ public sealed class MusicBrainzClient
             }
 
             string releaseId = GetRequiredString(releaseEl, "id");
+            if (string.IsNullOrWhiteSpace(releaseId))
+            {
+                continue; // a release without an id cannot be looked up or tagged: skip it, keep the others
+            }
+
             string title = GetRequiredString(releaseEl, "title");
             string artist = ParseArtistCredit(releaseEl);
             string? date = GetNullableString(releaseEl, "date");

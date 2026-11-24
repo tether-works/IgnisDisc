@@ -252,6 +252,34 @@ public static class CueToolsDatabase
             throw new InvalidDataException($"Invalid CTDB XML response: {ex.Message}", ex);
         }
 
+        return ParseDocument(doc);
+    }
+
+    /// <summary>Same as <see cref="ParseXml(Stream)"/> but reads the stream asynchronously so cancellation works mid-download.</summary>
+    private static async Task<IReadOnlyList<CtdbEntry>> ParseXmlAsync(Stream xmlStream, CancellationToken cancellationToken)
+    {
+        var settings = CreateSafeXmlSettings();
+        settings.Async = true;
+        XDocument doc;
+        try
+        {
+            using var xmlReader = XmlReader.Create(xmlStream, settings);
+            doc = await XDocument.LoadAsync(xmlReader, LoadOptions.None, cancellationToken).ConfigureAwait(false);
+        }
+        catch (XmlException ex)
+        {
+            throw new InvalidDataException($"Invalid CTDB XML response: {ex.Message}", ex);
+        }
+
+        return ParseDocument(doc);
+    }
+
+    /// <summary>
+    /// Turns a loaded document into entries. An <c>&lt;entry&gt;</c> with a missing or unreadable attribute is skipped;
+    /// the other entries of the response are kept.
+    /// </summary>
+    private static IReadOnlyList<CtdbEntry> ParseDocument(XDocument doc)
+    {
         var root = doc.Root;
         if (root == null || root.Name.LocalName != "ctdb")
         {
@@ -268,6 +296,22 @@ public static class CueToolsDatabase
                 continue;
             }
 
+            try
+            {
+                entries.Add(ParseEntry(element, defaultNpar));
+            }
+            catch (InvalidDataException)
+            {
+                // one bad entry must not discard the valid ones that came with it
+            }
+        }
+
+        return entries;
+    }
+
+    private static CtdbEntry ParseEntry(XElement element, int? defaultNpar)
+    {
+        {
             string? crcRaw = element.Attribute("crc32")?.Value;
             if (string.IsNullOrWhiteSpace(crcRaw) ||
                 !uint.TryParse(crcRaw.Trim(), NumberStyles.HexNumber, CultureInfo.InvariantCulture, out uint crc32))
@@ -303,7 +347,7 @@ public static class CueToolsDatabase
                 }
             }
 
-            entries.Add(new CtdbEntry(
+            return new CtdbEntry(
                 Id: id,
                 Crc32: crc32,
                 Confidence: confidence,
@@ -313,10 +357,8 @@ public static class CueToolsDatabase
                 HasParity: element.Attribute("hasparity")?.Value,
                 ParityBase64: element.Attribute("parity")?.Value,
                 SyndromeBase64: element.Attribute("syndrome")?.Value,
-                Toc: element.Attribute("toc")?.Value));
+                Toc: element.Attribute("toc")?.Value);
         }
-
-        return entries;
     }
 
     private static int? ParseOptionalInt(string? raw, string attributeName)
@@ -597,7 +639,12 @@ public static class CueToolsDatabase
         }
 
         response.EnsureSuccessStatusCode();
-        using var stream = await response.Content.ReadAsStreamAsync(cancellationToken).ConfigureAwait(false);
-        return ParseXml(stream);
+        // Read the capped body first (async, cancellable), then parse it from memory: the cap also bounds the XML parser.
+        byte[] body = await HttpClientResilience.ReadBodyLimitedAsync(response.Content, MaxResponseBytes, cancellationToken).ConfigureAwait(false);
+        using var stream = new MemoryStream(body, writable: false);
+        return await ParseXmlAsync(stream, cancellationToken).ConfigureAwait(false);
     }
+
+    /// <summary>Largest CTDB lookup response accepted (a real answer is a few KB per entry).</summary>
+    public const long MaxResponseBytes = 4 * 1024 * 1024;
 }

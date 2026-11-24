@@ -185,20 +185,41 @@ public static class AccurateRipDatabase
         HttpClient httpClient,
         DiscIdentifiers ids,
         string baseUrl = DefaultBaseUrl,
-        CancellationToken cancellationToken = default)
+        CancellationToken cancellationToken = default,
+        string? userAgent = null,
+        Func<TimeSpan, CancellationToken, Task>? retryDelay = null)
     {
         ArgumentNullException.ThrowIfNull(httpClient);
         ArgumentNullException.ThrowIfNull(ids);
 
         var uri = new Uri(baseUrl.TrimEnd('/') + "/" + ids.AccurateRipDatabasePath);
-        using var response = await httpClient.GetAsync(uri, cancellationToken).ConfigureAwait(false);
+        string agent = string.IsNullOrWhiteSpace(userAgent) ? MusicBrainzClient.DefaultUserAgent : userAgent;
+        using var response = await HttpClientResilience.SendWithRetryAsync(
+            httpClient,
+            () =>
+            {
+                var request = new HttpRequestMessage(HttpMethod.Get, uri);
+                request.Headers.TryAddWithoutValidation("User-Agent", agent);
+                return request;
+            },
+            HttpCompletionOption.ResponseHeadersRead,
+            HttpClientResilience.IsTransientServerError,
+            gate: null,
+            retryDelay,
+            cancellationToken).ConfigureAwait(false);
         if (response.StatusCode == HttpStatusCode.NotFound)
         {
             return Array.Empty<AccurateRipPressing>();
         }
 
         response.EnsureSuccessStatusCode();
-        byte[] body = await response.Content.ReadAsByteArrayAsync(cancellationToken).ConfigureAwait(false);
+        byte[] body = await HttpClientResilience.ReadBodyLimitedAsync(response.Content, MaxResponseBytes, cancellationToken).ConfigureAwait(false);
         return Parse(body);
     }
+
+    /// <summary>
+    /// Largest dBAR response accepted. A real file is 13 bytes of header plus 9 bytes per track for each pressing, so
+    /// even a hundred pressings of a 99-track disc stay far below this.
+    /// </summary>
+    public const long MaxResponseBytes = 4 * 1024 * 1024;
 }

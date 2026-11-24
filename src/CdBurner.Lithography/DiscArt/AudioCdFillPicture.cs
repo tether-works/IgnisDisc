@@ -1,4 +1,5 @@
 using System.Diagnostics;
+using System.Net;
 using System.Runtime.InteropServices;
 using System.Windows.Media;
 using System.Windows.Media.Imaging;
@@ -282,7 +283,8 @@ public static class AudioCdFillPicture
     /// </summary>
     public static async Task<AudioCdPicture?> LookUpCoverAsync(
         HttpClient http, string? albumTitle, string? artist, string musicBrainzBaseUrl = MusicBrainzClient.DefaultBaseUrl,
-        string coverArtBaseUrl = CoverArtArchiveClient.DefaultBaseUrl, CancellationToken cancellationToken = default)
+        string coverArtBaseUrl = CoverArtArchiveClient.DefaultBaseUrl, CancellationToken cancellationToken = default,
+        RequestGate? gate = null, TimeSpan? lookupTimeout = null, TimeSpan? releaseTimeout = null)
     {
         ArgumentNullException.ThrowIfNull(http);
         if (string.IsNullOrWhiteSpace(albumTitle) || string.IsNullOrWhiteSpace(artist))
@@ -290,19 +292,50 @@ public static class AudioCdFillPicture
             return null;
         }
 
-        var client = new MusicBrainzClient(http, MusicBrainzClient.DefaultUserAgent, musicBrainzBaseUrl);
-        IReadOnlyList<string> releases = await client.SearchReleaseIdsAsync(albumTitle, artist, 5, cancellationToken).ConfigureAwait(false);
-        foreach (string release in releases.Take(3))
+        // The whole lookup is bounded; a cover fetch that hangs or is throttled costs only its own share of that time.
+        using var lookupCts = CancellationTokenSource.CreateLinkedTokenSource(cancellationToken);
+        lookupCts.CancelAfter(lookupTimeout ?? DefaultLookupTimeout);
+        CancellationToken lookupToken = lookupCts.Token;
+
+        try
         {
-            CoverArtImage? image = await CoverArtArchiveClient.FetchFrontAsync(http, release, MusicBrainzClient.DefaultUserAgent,
-                coverArtBaseUrl, cancellationToken).ConfigureAwait(false);
-            if (image != null && CanDecode(image.Bytes))
+            var client = new MusicBrainzClient(http, MusicBrainzClient.DefaultUserAgent, musicBrainzBaseUrl, gate);
+            IReadOnlyList<string> releases = await client.SearchReleaseIdsAsync(albumTitle, artist, 5, lookupToken).ConfigureAwait(false);
+            foreach (string release in releases.Take(3))
             {
-                return new AudioCdPicture(image.Bytes, "coverartarchive", $"https://musicbrainz.org/release/{release}");
+                using var releaseCts = CancellationTokenSource.CreateLinkedTokenSource(lookupToken);
+                releaseCts.CancelAfter(releaseTimeout ?? DefaultReleaseTimeout);
+                try
+                {
+                    CoverArtImage? image = await CoverArtArchiveClient.FetchFrontAsync(http, release, MusicBrainzClient.DefaultUserAgent,
+                        coverArtBaseUrl, releaseCts.Token, gate).ConfigureAwait(false);
+                    if (image != null && CanDecode(image.Bytes))
+                    {
+                        return new AudioCdPicture(image.Bytes, "coverartarchive", $"https://musicbrainz.org/release/{release}");
+                    }
+                }
+                catch (HttpRequestException ex) when (ex.StatusCode is HttpStatusCode.TooManyRequests or HttpStatusCode.ServiceUnavailable)
+                {
+                    // throttled even after the retries: try the next release
+                }
+                catch (OperationCanceledException) when (!lookupToken.IsCancellationRequested)
+                {
+                    // this release's own time ran out: try the next release
+                }
             }
+            return null;
         }
-        return null;
+        catch (OperationCanceledException) when (!cancellationToken.IsCancellationRequested && lookupCts.IsCancellationRequested)
+        {
+            return null; // the whole lookup timed out: no picture, the disc is burned without one
+        }
     }
+
+    /// <summary>Longest an online cover lookup (search plus up to three cover downloads) may take.</summary>
+    public static readonly TimeSpan DefaultLookupTimeout = TimeSpan.FromSeconds(60);
+
+    /// <summary>Longest one release's cover download may take, retries included.</summary>
+    public static readonly TimeSpan DefaultReleaseTimeout = TimeSpan.FromSeconds(25);
 
     /// <summary>
     /// The automatic picture: embedded cover art, then cover/folder pictures next to the files, then (only when

@@ -381,6 +381,63 @@ public sealed class AudioCdFillPictureTests : IDisposable
         Assert.Equal($"https://coverartarchive.org/release/{release}/front-500", handler.Requests[1].ToString());
     }
 
+    private const string ReleaseA = "11111111-1111-4111-8111-111111111111";
+    private const string ReleaseB = "22222222-2222-4222-8222-222222222222";
+    private const string ReleaseC = "33333333-3333-4333-8333-333333333333";
+
+    private static RequestGate InstantGate() => new(TimeSpan.Zero, delay: (_, _) => Task.CompletedTask);
+
+    [Fact]
+    public async Task Online_cover_lookup_moves_on_to_the_next_release_when_one_is_throttled()
+    {
+        var handler = new ScriptedCoverServer([ReleaseA, ReleaseB, ReleaseC], release => release switch
+        {
+            ReleaseA => new HttpResponseMessage(HttpStatusCode.TooManyRequests),
+            ReleaseB => new HttpResponseMessage(HttpStatusCode.ServiceUnavailable),
+            _ => new HttpResponseMessage(HttpStatusCode.OK) { Content = new ByteArrayContent(HalfPng()) },
+        });
+        using var http = new HttpClient(handler);
+
+        AudioCdPicture? picture = await AudioCdFillPicture.LookUpCoverAsync(
+            http, "Picture Album", "Studio Band", gate: InstantGate());
+
+        Assert.NotNull(picture);
+        Assert.Equal($"https://musicbrainz.org/release/{ReleaseC}", picture!.Origin);
+        // Each throttled release is tried the full number of times before the next one is.
+        Assert.Equal(HttpClientResilience.MaxAttempts, handler.CoverRequests.Count(r => r.Contains(ReleaseA)));
+        Assert.Equal(HttpClientResilience.MaxAttempts, handler.CoverRequests.Count(r => r.Contains(ReleaseB)));
+        Assert.Single(handler.CoverRequests, r => r.Contains(ReleaseC));
+    }
+
+    [Fact]
+    public async Task Online_cover_lookup_moves_on_when_one_release_hangs_past_its_own_time()
+    {
+        var handler = new ScriptedCoverServer([ReleaseA, ReleaseB], release => release == ReleaseA
+            ? null // hangs until cancelled
+            : new HttpResponseMessage(HttpStatusCode.OK) { Content = new ByteArrayContent(HalfPng()) });
+        using var http = new HttpClient(handler);
+
+        AudioCdPicture? picture = await AudioCdFillPicture.LookUpCoverAsync(
+            http, "Picture Album", "Studio Band", gate: InstantGate(), releaseTimeout: TimeSpan.FromSeconds(2));
+
+        Assert.NotNull(picture);
+        Assert.Equal($"https://musicbrainz.org/release/{ReleaseB}", picture!.Origin);
+    }
+
+    [Fact]
+    public async Task Online_cover_lookup_gives_no_picture_when_the_whole_lookup_times_out_but_throws_when_cancelled()
+    {
+        var handler = new ScriptedCoverServer([ReleaseA], _ => null, hangSearch: true);
+        using var http = new HttpClient(handler);
+
+        Assert.Null(await AudioCdFillPicture.LookUpCoverAsync(
+            http, "Picture Album", "Studio Band", gate: InstantGate(), lookupTimeout: TimeSpan.FromMilliseconds(150)));
+
+        using var cts = new CancellationTokenSource(TimeSpan.FromMilliseconds(100));
+        await Assert.ThrowsAnyAsync<OperationCanceledException>(() => AudioCdFillPicture.LookUpCoverAsync(
+            http, "Picture Album", "Studio Band", cancellationToken: cts.Token, gate: InstantGate()));
+    }
+
     [Fact]
     public async Task Audio_screen_option_is_off_by_default_excludes_other_session_two_uses_and_burns_the_picture()
     {
@@ -709,6 +766,44 @@ public sealed class AudioCdFillPictureTests : IDisposable
                 response = new HttpResponseMessage(HttpStatusCode.NotFound);
             }
             return Task.FromResult(response);
+        }
+    }
+
+    /// <summary>
+    /// Answers the release search with the given releases (all scored 100) and each cover request with what
+    /// <paramref name="coverFor"/> returns for that release; a null answer hangs until the request is cancelled.
+    /// </summary>
+    private sealed class ScriptedCoverServer(string[] releases, Func<string, HttpResponseMessage?> coverFor, bool hangSearch = false) : HttpMessageHandler
+    {
+        public List<string> CoverRequests { get; } = new();
+
+        protected override async Task<HttpResponseMessage> SendAsync(HttpRequestMessage request, CancellationToken cancellationToken)
+        {
+            Uri uri = request.RequestUri!;
+            if (uri.Host == "musicbrainz.org")
+            {
+                if (hangSearch)
+                {
+                    await Task.Delay(Timeout.Infinite, cancellationToken);
+                }
+
+                string items = string.Join(",", releases.Select(id =>
+                    $$"""{"id":"{{id}}","score":100,"title":"Picture Album","artist-credit":[{"name":"Studio Band"}]}"""));
+                return new HttpResponseMessage(HttpStatusCode.OK)
+                {
+                    Content = new StringContent("{\"releases\":[" + items + "]}", Encoding.UTF8, "application/json")
+                };
+            }
+
+            lock (CoverRequests) CoverRequests.Add(uri.AbsolutePath);
+            string release = releases.First(id => uri.AbsolutePath.Contains(id));
+            HttpResponseMessage? answer = coverFor(release);
+            if (answer == null)
+            {
+                await Task.Delay(Timeout.Infinite, cancellationToken);
+            }
+
+            return answer!;
         }
     }
 
