@@ -13,6 +13,7 @@ public class DiscDeviceManager : IDiscDeviceService, IDisposable
     private readonly object _lock = new();
     private bool _enablePhysicalEnumeration;
     private readonly DeviceChangeMonitor _changeMonitor;
+    private readonly IImapiComProvider _comProvider;
     private readonly Dictionary<string, VirtualDiscRecorder> _virtualRecorders = new(StringComparer.OrdinalIgnoreCase);
     private readonly Dictionary<string, ImapiDiscRecorder> _physicalRecorders = new(StringComparer.OrdinalIgnoreCase);
     private bool _disposed;
@@ -64,9 +65,21 @@ public class DiscDeviceManager : IDiscDeviceService, IDisposable
     /// <param name="enablePhysicalEnumeration">True to enumerate physical IMAPIv2 drives; false for virtual-only operation.</param>
     /// <param name="changeMonitor">Optional custom change monitor; defaults to new instance.</param>
     public DiscDeviceManager(bool enablePhysicalEnumeration = true, DeviceChangeMonitor? changeMonitor = null)
+        : this(enablePhysicalEnumeration, changeMonitor, null)
+    {
+    }
+
+    /// <summary>
+    /// Initializes a new instance of <see cref="DiscDeviceManager"/> with an injectable IMAPIv2 COM provider.
+    /// </summary>
+    /// <param name="enablePhysicalEnumeration">True to enumerate physical IMAPIv2 drives; false for virtual-only operation.</param>
+    /// <param name="changeMonitor">Optional custom change monitor; defaults to new instance.</param>
+    /// <param name="comProvider">Optional IMAPIv2 COM provider; defaults to <see cref="DefaultImapiComProvider.Instance"/>.</param>
+    public DiscDeviceManager(bool enablePhysicalEnumeration, DeviceChangeMonitor? changeMonitor, IImapiComProvider? comProvider)
     {
         _enablePhysicalEnumeration = enablePhysicalEnumeration;
         _changeMonitor = changeMonitor ?? new DeviceChangeMonitor();
+        _comProvider = comProvider ?? DefaultImapiComProvider.Instance;
         _changeMonitor.DeviceChanged += OnMonitorDeviceChanged;
 
         // Register default virtual recorder
@@ -229,60 +242,125 @@ public class DiscDeviceManager : IDiscDeviceService, IDisposable
             return;
         }
 
+        HashSet<string> existingIds;
         lock (_lock)
         {
-            IDiscMaster2? master = null;
-            try
+            if (_disposed)
             {
-                master = Imapi2ComFactory.CreateDiscMaster2();
-                if (master == null || !master.IsSupportedEnvironment)
-                {
-                    return;
-                }
+                return;
+            }
+            existingIds = new HashSet<string>(_physicalRecorders.Keys, StringComparer.OrdinalIgnoreCase);
+        }
 
-                int count = master.Count;
-                var activeIds = new HashSet<string>(StringComparer.OrdinalIgnoreCase);
+        var activeIds = new HashSet<string>(StringComparer.OrdinalIgnoreCase);
+        var newlyCreated = new Dictionary<string, ImapiDiscRecorder>(StringComparer.OrdinalIgnoreCase);
+        IDiscMaster2? master = null;
+        bool enumerationSucceeded = false;
 
-                for (int i = 0; i < count; i++)
+        try
+        {
+            master = _comProvider.CreateDiscMaster2();
+            if (master == null || !master.IsSupportedEnvironment)
+            {
+                return;
+            }
+
+            int count = master.Count;
+            for (int i = 0; i < count; i++)
+            {
+                IDiscRecorder2? recorder = null;
+                bool transferredToBackend = false;
+                try
                 {
-                    try
+                    string uniqueId = master[i];
+                    if (string.IsNullOrWhiteSpace(uniqueId))
                     {
-                        string uniqueId = master[i];
-                        if (string.IsNullOrWhiteSpace(uniqueId)) continue;
+                        continue;
+                    }
 
-                        activeIds.Add(uniqueId);
-                        if (!_physicalRecorders.ContainsKey(uniqueId))
+                    activeIds.Add(uniqueId);
+                    if (!existingIds.Contains(uniqueId) && !newlyCreated.ContainsKey(uniqueId))
+                    {
+                        recorder = _comProvider.CreateDiscRecorder2();
+                        if (recorder != null)
                         {
-                            var recorder = Imapi2ComFactory.CreateDiscRecorder2();
-                            if (recorder != null)
-                            {
-                                recorder.InitializeDiscRecorder(uniqueId);
-                                var backend = new ImapiDiscRecorder(recorder, uniqueId);
-                                _physicalRecorders[uniqueId] = backend;
-                            }
+                            recorder.InitializeDiscRecorder(uniqueId);
+                            var backend = new ImapiDiscRecorder(recorder, uniqueId, _comProvider);
+                            transferredToBackend = true;
+                            newlyCreated[uniqueId] = backend;
                         }
                     }
-                    catch
-                    {
-                    }
                 }
-
-                var toRemove = _physicalRecorders.Keys.Where(k => !activeIds.Contains(k)).ToList();
-                foreach (var key in toRemove)
+                catch
                 {
-                    if (_physicalRecorders.Remove(key, out var oldRecorder))
+                }
+                finally
+                {
+                    if (!transferredToBackend && recorder != null)
                     {
-                        oldRecorder.Dispose();
+                        _comProvider.ReleaseComObject(ref recorder);
                     }
                 }
+            }
+
+            enumerationSucceeded = true;
+        }
+        catch
+        {
+            // Gracefully degrade to virtual recorders if IMAPIv2 throws
+        }
+        finally
+        {
+            _comProvider.ReleaseComObject(ref master);
+        }
+
+        var toDispose = new List<ImapiDiscRecorder>();
+        if (!enumerationSucceeded)
+        {
+            toDispose.AddRange(newlyCreated.Values);
+        }
+        else
+        {
+            lock (_lock)
+            {
+                if (_disposed)
+                {
+                    toDispose.AddRange(newlyCreated.Values);
+                }
+                else
+                {
+                    foreach (var (uniqueId, backend) in newlyCreated)
+                    {
+                        if (!_physicalRecorders.ContainsKey(uniqueId))
+                        {
+                            _physicalRecorders[uniqueId] = backend;
+                        }
+                        else
+                        {
+                            toDispose.Add(backend);
+                        }
+                    }
+
+                    var toRemove = _physicalRecorders.Keys.Where(k => !activeIds.Contains(k)).ToList();
+                    foreach (var key in toRemove)
+                    {
+                        if (_physicalRecorders.Remove(key, out var oldRecorder))
+                        {
+                            toDispose.Add(oldRecorder);
+                        }
+                    }
+                }
+            }
+        }
+
+        foreach (var oldRecorder in toDispose)
+        {
+            try
+            {
+                oldRecorder.Dispose();
             }
             catch
             {
-                // Gracefully degrade to virtual recorders if IMAPIv2 throws
-            }
-            finally
-            {
-                Imapi2ComFactory.FinalRelease(ref master);
             }
         }
     }
@@ -338,29 +416,44 @@ public class DiscDeviceManager : IDiscDeviceService, IDisposable
 
     protected virtual void Dispose(bool disposing)
     {
-        if (!_disposed)
+        List<VirtualDiscRecorder>? virtualToDispose = null;
+        List<ImapiDiscRecorder>? physicalToDispose = null;
+
+        lock (_lock)
         {
+            if (_disposed)
+            {
+                return;
+            }
+
+            _disposed = true;
             if (disposing)
             {
-                lock (_lock)
-                {
-                    _changeMonitor.DeviceChanged -= OnMonitorDeviceChanged;
+                _changeMonitor.DeviceChanged -= OnMonitorDeviceChanged;
 
-                    foreach (var virtualRec in _virtualRecorders.Values)
-                    {
-                        virtualRec.MediaChanged -= OnVirtualRecorderMediaChanged;
-                        virtualRec.Dispose();
-                    }
-                    _virtualRecorders.Clear();
+                virtualToDispose = _virtualRecorders.Values.ToList();
+                _virtualRecorders.Clear();
 
-                    foreach (var physRec in _physicalRecorders.Values)
-                    {
-                        physRec.Dispose();
-                    }
-                    _physicalRecorders.Clear();
-                }
+                physicalToDispose = _physicalRecorders.Values.ToList();
+                _physicalRecorders.Clear();
             }
-            _disposed = true;
+        }
+
+        if (virtualToDispose != null)
+        {
+            foreach (var virtualRec in virtualToDispose)
+            {
+                virtualRec.MediaChanged -= OnVirtualRecorderMediaChanged;
+                try { virtualRec.Dispose(); } catch { }
+            }
+        }
+
+        if (physicalToDispose != null)
+        {
+            foreach (var physRec in physicalToDispose)
+            {
+                try { physRec.Dispose(); } catch { }
+            }
         }
     }
 }

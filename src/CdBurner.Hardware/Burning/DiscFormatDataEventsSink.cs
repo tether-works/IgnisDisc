@@ -121,10 +121,19 @@ public class DiscFormatDataEventsSink : DDiscFormat2DataEvents, IDisposable
             var snapshot = ExtractSnapshot(sender, progress);
             if (snapshot != null)
             {
-                _progress?.Report(snapshot);
-                _onSnapshot?.Invoke(snapshot);
-                ProgressReported?.Invoke(this, snapshot);
+                try { _progress?.Report(snapshot); }
+                catch (Exception ex) { System.Diagnostics.Trace.TraceWarning($"DiscFormatDataEventsSink progress callback failed: {ex.Message}"); }
+
+                try { _onSnapshot?.Invoke(snapshot); }
+                catch (Exception ex) { System.Diagnostics.Trace.TraceWarning($"DiscFormatDataEventsSink snapshot callback failed: {ex.Message}"); }
+
+                try { ProgressReported?.Invoke(this, snapshot); }
+                catch (Exception ex) { System.Diagnostics.Trace.TraceWarning($"DiscFormatDataEventsSink event handler failed: {ex.Message}"); }
             }
+        }
+        catch (Exception ex)
+        {
+            System.Diagnostics.Trace.TraceWarning($"DiscFormatDataEventsSink Update failed: {ex.Message}");
         }
         finally
         {
@@ -243,18 +252,18 @@ public class DiscFormatDataEventsSink : DDiscFormat2DataEvents, IDisposable
         object? sender = null)
     {
         int relativeLba = 0;
-        if (lastWrittenLba >= startLba && sectorCount > 0)
-        {
-            relativeLba = Math.Min(sectorCount, lastWrittenLba - startLba + 1);
-        }
-        else if (lastWrittenLba > 0)
-        {
-            relativeLba = Math.Min(sectorCount, lastWrittenLba);
-        }
+        bool isPreWriteAction = currentAction is ImapiFormat2DataWriteAction.ValidatingMedia
+            or ImapiFormat2DataWriteAction.FormattingMedia
+            or ImapiFormat2DataWriteAction.InitializingHardware
+            or ImapiFormat2DataWriteAction.CalibratingPower;
 
         if (currentAction == ImapiFormat2DataWriteAction.Completed && sectorCount > 0)
         {
             relativeLba = sectorCount;
+        }
+        else if (!isPreWriteAction && sectorCount > 0 && lastWrittenLba >= startLba)
+        {
+            relativeLba = Math.Min(sectorCount, lastWrittenLba - startLba + 1);
         }
 
         double bufferPercent = 100.0;

@@ -70,27 +70,23 @@ public class Imapi2BurnEngine : IBurnEngineBackend, ISecureAudioReader
         DiscFormatDataEventsSink? eventSink = null;
         ManagedComStream? comStream = null;
         IDiscRecorder2? comRecorder = null;
-        bool createdComRecorder = false;
         bool acquiredLock = false;
         bool wasCancelled = false;
         var sw = Stopwatch.StartNew();
 
         try
         {
-            // 1. Resolve COM recorder
-            if (recorder is ImapiDiscRecorder imapiRecorder && imapiRecorder.Recorder != null)
+            // 1. Always activate and initialize a fresh MTA IDiscRecorder2 on the worker thread.
+            comRecorder = CreateAndInitializeMtaRecorder(recorder);
+            if (comRecorder == null)
             {
-                comRecorder = imapiRecorder.Recorder;
+                return BurnOperationResult.Failed("Failed to instantiate MsftDiscRecorder2 COM object.");
             }
-            else
+
+            acquiredLock = TryAcquireExclusiveLock(recorder, comRecorder);
+            if (!acquiredLock)
             {
-                comRecorder = _comProvider.CreateDiscRecorder2();
-                if (comRecorder == null)
-                {
-                    return BurnOperationResult.Failed("Failed to instantiate MsftDiscRecorder2 COM object.");
-                }
-                comRecorder.InitializeDiscRecorder(recorder.UniqueId);
-                createdComRecorder = true;
+                return ExclusiveAccessDeniedResult(recorder, comRecorder);
             }
 
             // 2. Create and configure MsftDiscFormat2Data
@@ -100,7 +96,6 @@ public class Imapi2BurnEngine : IBurnEngineBackend, ISecureAudioReader
                 return BurnOperationResult.Failed("Failed to instantiate MsftDiscFormat2Data COM object.");
             }
 
-            acquiredLock = recorder.AcquireExclusiveAccess(ClientName);
             formatData.put_Recorder(comRecorder);
             formatData.put_ClientName(ClientName);
 
@@ -190,14 +185,20 @@ public class Imapi2BurnEngine : IBurnEngineBackend, ISecureAudioReader
                 {
                     int totalSecs = OpticalConstants.BytesToSectors(totalStreamBytes, OpticalConstants.DataSectorSize);
                     int currentSec = Math.Clamp(OpticalConstants.BytesToSectors(current, OpticalConstants.DataSectorSize), 0, totalSecs);
-                    progress.Report(new BurnProgressSnapshot
+                    try
                     {
-                        CurrentActionDescription = "WritingData",
-                        CurrentLba = currentSec,
-                        TotalLba = totalSecs,
-                        BufferLevelPercent = 100.0,
-                        ElapsedTime = sw.Elapsed
-                    });
+                        progress.Report(new BurnProgressSnapshot
+                        {
+                            CurrentActionDescription = "WritingData",
+                            CurrentLba = currentSec,
+                            TotalLba = totalSecs,
+                            BufferLevelPercent = 100.0,
+                            ElapsedTime = sw.Elapsed
+                        });
+                    }
+                    catch
+                    {
+                    }
                 }
             });
 
@@ -240,13 +241,7 @@ public class Imapi2BurnEngine : IBurnEngineBackend, ISecureAudioReader
 
             if (options.EjectWhenDone || options.EjectAfterBurn)
             {
-                try
-                {
-                    recorder.EjectMedia();
-                }
-                catch
-                {
-                }
+                TryEjectMedia(recorder, comRecorder);
             }
 
             return new BurnOperationResult
@@ -295,26 +290,27 @@ public class Imapi2BurnEngine : IBurnEngineBackend, ISecureAudioReader
         finally
         {
             eventSink?.Dispose();
-            comStream?.Dispose();
 
             if (formatData != null)
             {
-                Imapi2ComFactory.FinalRelease(ref formatData);
+                _comProvider.ReleaseComObject(ref formatData);
             }
 
-            if (createdComRecorder && comRecorder != null)
-            {
-                Imapi2ComFactory.FinalRelease(ref comRecorder);
-            }
+            comStream?.Dispose();
 
             if (acquiredLock)
             {
-                try { recorder.ReleaseExclusiveAccess(); } catch { }
+                ReleaseExclusiveLock(recorder, comRecorder);
+            }
+
+            if (comRecorder != null)
+            {
+                _comProvider.ReleaseComObject(ref comRecorder);
             }
 
             if (wasCancelled && !recorder.IsVirtual)
             {
-                _comProvider.TrySpinDown(recorder.VolumePath);
+                _comProvider.TrySpinDown(GetVolumePath(recorder, comRecorder));
             }
         }
     }
@@ -357,7 +353,6 @@ public class Imapi2BurnEngine : IBurnEngineBackend, ISecureAudioReader
         cancellationToken.ThrowIfCancellationRequested();
 
         IDiscRecorder2? comRecorder = null;
-        bool createdComRecorder = false;
         bool acquiredLock = false;
         bool wasCancelled = false;
         IDiscFormat2TrackAtOnce? tao = null;
@@ -367,22 +362,17 @@ public class Imapi2BurnEngine : IBurnEngineBackend, ISecureAudioReader
 
         try
         {
-            if (recorder is ImapiDiscRecorder imapiRecorder && imapiRecorder.Recorder != null)
+            comRecorder = CreateAndInitializeMtaRecorder(recorder);
+            if (comRecorder == null)
             {
-                comRecorder = imapiRecorder.Recorder;
-            }
-            else
-            {
-                comRecorder = _comProvider.CreateDiscRecorder2();
-                if (comRecorder == null)
-                {
-                    return BurnOperationResult.Failed("Failed to instantiate MsftDiscRecorder2 COM object.");
-                }
-                comRecorder.InitializeDiscRecorder(recorder.UniqueId);
-                createdComRecorder = true;
+                return BurnOperationResult.Failed("Failed to instantiate MsftDiscRecorder2 COM object.");
             }
 
-            acquiredLock = recorder.AcquireExclusiveAccess(ClientName);
+            acquiredLock = TryAcquireExclusiveLock(recorder, comRecorder);
+            if (!acquiredLock)
+            {
+                return ExclusiveAccessDeniedResult(recorder, comRecorder);
+            }
 
             // Compute total padded Red Book bytes and sectors across all tracks
             const long MinRedBookTrackBytes = 300L * OpticalConstants.RawSectorSize; // 4 seconds (300 frames) minimum per Red Book standard
@@ -409,17 +399,23 @@ public class Imapi2BurnEngine : IBurnEngineBackend, ISecureAudioReader
                     ? (currentBytes / elapsed.TotalSeconds) / (75.0 * OpticalConstants.RawSectorSize)
                     : (options.Speed?.Multiplier > 0 ? options.Speed.Value.Multiplier : 16.0);
 
-                progress.Report(new BurnProgressSnapshot
+                try
                 {
-                    ElapsedTime = elapsed,
-                    RemainingTime = remaining,
-                    CurrentLba = currentSector,
-                    TotalLba = totalSectors,
-                    BufferLevelPercent = 95.0,
-                    CurrentSpeedMultiplier = speedMult,
-                    CurrentBytesPerSecond = (long)(speedMult * 75 * OpticalConstants.RawSectorSize),
-                    CurrentActionDescription = statusMsg
-                });
+                    progress.Report(new BurnProgressSnapshot
+                    {
+                        ElapsedTime = elapsed,
+                        RemainingTime = remaining,
+                        CurrentLba = currentSector,
+                        TotalLba = totalSectors,
+                        BufferLevelPercent = 95.0,
+                        CurrentSpeedMultiplier = speedMult,
+                        CurrentBytesPerSecond = (long)(speedMult * 75 * OpticalConstants.RawSectorSize),
+                        CurrentActionDescription = statusMsg
+                    });
+                }
+                catch
+                {
+                }
             }
 
             ReportAudioProgress(0, "Preparing optical drive and laser calibration for Audio CD...");
@@ -508,7 +504,7 @@ public class Imapi2BurnEngine : IBurnEngineBackend, ISecureAudioReader
                         {
                             cancellationToken.ThrowIfCancellationRequested();
                             writeStarted = true;
-                            ReportAudioProgress(0, $"Writing Audio CD (Disc-At-Once) to {recorder.VolumePath}...");
+                            ReportAudioProgress(0, $"Writing Audio CD (Disc-At-Once) to {GetVolumePath(recorder, comRecorder)}...");
                             rawCd.WriteMedia(resultImageStream);
                             ReportAudioProgress(0, "Finalizing Audio CD lead-out...");
                             completedViaDao = true;
@@ -535,13 +531,30 @@ public class Imapi2BurnEngine : IBurnEngineBackend, ISecureAudioReader
                     }
                     finally
                     {
-                        if (resultImageStream != null && Marshal.IsComObject(resultImageStream))
+                        // Release IMAPIv2 COM objects before disposing managed IStream wrappers they hold references to.
+                        if (rawCd != null)
                         {
-                            try { Marshal.FinalReleaseComObject(resultImageStream); } catch { }
+                            _comProvider.ReleaseComObject(ref rawCd);
                         }
-                        foreach (var d in disposables)
+
+                        var disposableResultStream = resultImageStream as IDisposable;
+                        if (resultImageStream != null)
                         {
-                            try { d.Dispose(); } catch { }
+                            _comProvider.ReleaseComObject(ref resultImageStream);
+                        }
+                        if (disposableResultStream != null)
+                        {
+                            try { disposableResultStream.Dispose(); } catch { }
+                        }
+
+                        if (rawCreator != null)
+                        {
+                            _comProvider.ReleaseComObject(ref rawCreator);
+                        }
+
+                        for (int i = disposables.Count - 1; i >= 0; i--)
+                        {
+                            try { disposables[i].Dispose(); } catch { }
                         }
                     }
                 }
@@ -642,7 +655,7 @@ public class Imapi2BurnEngine : IBurnEngineBackend, ISecureAudioReader
 
             if (options.EjectWhenDone)
             {
-                try { recorder.EjectMedia(); } catch { }
+                TryEjectMedia(recorder, comRecorder);
             }
 
             progress?.Report(new BurnProgressSnapshot
@@ -653,7 +666,7 @@ public class Imapi2BurnEngine : IBurnEngineBackend, ISecureAudioReader
                 TotalLba = totalSectors,
                 BufferLevelPercent = 0.0,
                 CurrentSpeedMultiplier = speedMultiplier,
-                CurrentActionDescription = $"Audio CD burn completed ({tracks.Count} tracks written to {recorder.VolumePath})."
+                CurrentActionDescription = $"Audio CD burn completed ({tracks.Count} tracks written to {GetVolumePath(recorder, comRecorder)})."
             });
 
             return BurnOperationResult.Succeeded(totalSectors, sw.Elapsed, speedMultiplier);
@@ -691,17 +704,17 @@ public class Imapi2BurnEngine : IBurnEngineBackend, ISecureAudioReader
         }
         finally
         {
-            if (rawCreator != null) Imapi2ComFactory.FinalRelease(ref rawCreator);
-            if (tao != null) Imapi2ComFactory.FinalRelease(ref tao);
-            if (rawCd != null) Imapi2ComFactory.FinalRelease(ref rawCd);
-            if (createdComRecorder && comRecorder != null) Imapi2ComFactory.FinalRelease(ref comRecorder);
+            if (rawCreator != null) _comProvider.ReleaseComObject(ref rawCreator);
+            if (tao != null) _comProvider.ReleaseComObject(ref tao);
+            if (rawCd != null) _comProvider.ReleaseComObject(ref rawCd);
             if (acquiredLock)
             {
-                try { recorder.ReleaseExclusiveAccess(); } catch { }
+                ReleaseExclusiveLock(recorder, comRecorder);
             }
+            if (comRecorder != null) _comProvider.ReleaseComObject(ref comRecorder);
             if (wasCancelled && !recorder.IsVirtual)
             {
-                _comProvider.TrySpinDown(recorder.VolumePath);
+                _comProvider.TrySpinDown(GetVolumePath(recorder, comRecorder));
             }
         }
     }
@@ -810,64 +823,74 @@ public class Imapi2BurnEngine : IBurnEngineBackend, ISecureAudioReader
             var sw = Stopwatch.StartNew();
 
             IDiscFormat2Erase? erase = null;
+            DiscFormatEraseEventsSink? eraseSink = null;
             IDiscRecorder2? comRecorder = null;
-            bool createdComRecorder = false;
             bool acquiredLock = false;
             bool wasCancelled = false;
             try
             {
+                comRecorder = CreateAndInitializeMtaRecorder(recorder);
+                if (comRecorder == null)
+                {
+                    return BurnOperationResult.Failed("Failed to resolve physical recorder COM instance.");
+                }
+
+                acquiredLock = TryAcquireExclusiveLock(recorder, comRecorder);
+                if (!acquiredLock)
+                {
+                    return ExclusiveAccessDeniedResult(recorder, comRecorder);
+                }
+
                 erase = _comProvider.CreateDiscFormat2Erase();
                 if (erase == null)
                 {
                     return BurnOperationResult.Failed("Failed to create MsftDiscFormat2Erase COM object.");
                 }
 
-                comRecorder = (recorder as ImapiDiscRecorder)?.Recorder;
-                if (comRecorder == null)
-                {
-                    comRecorder = _comProvider.CreateDiscRecorder2();
-                    if (comRecorder != null)
-                    {
-                        createdComRecorder = true;
-                        comRecorder.InitializeDiscRecorder(recorder.UniqueId);
-                    }
-                }
-
-                if (comRecorder == null)
-                {
-                    return BurnOperationResult.Failed("Failed to resolve physical recorder COM instance.");
-                }
-
-                acquiredLock = recorder.AcquireExclusiveAccess(ClientName);
-
                 erase.put_Recorder(comRecorder);
                 erase.put_ClientName(ClientName);
                 erase.put_FullErase(fullErase);
 
+                string eraseAction = fullErase ? "FullErasing" : "QuickErasing";
+                eraseSink = new DiscFormatEraseEventsSink(mtaProgress, eraseAction);
+                eraseSink.Connect(erase);
+
                 token.ThrowIfCancellationRequested();
 
-                mtaProgress?.Report(new BurnProgressSnapshot
+                try
                 {
-                    ElapsedTime = sw.Elapsed,
-                    RemainingTime = TimeSpan.Zero,
-                    CurrentLba = 0,
-                    TotalLba = 100,
-                    BufferLevelPercent = 100.0,
-                    CurrentActionDescription = fullErase ? "FullErasing" : "QuickErasing"
-                });
+                    mtaProgress?.Report(new BurnProgressSnapshot
+                    {
+                        ElapsedTime = sw.Elapsed,
+                        RemainingTime = TimeSpan.Zero,
+                        CurrentLba = 0,
+                        TotalLba = 100,
+                        BufferLevelPercent = 100.0,
+                        CurrentActionDescription = eraseAction
+                    });
+                }
+                catch
+                {
+                }
 
                 erase.EraseMedia();
                 sw.Stop();
 
-                mtaProgress?.Report(new BurnProgressSnapshot
+                try
                 {
-                    ElapsedTime = sw.Elapsed,
-                    RemainingTime = TimeSpan.Zero,
-                    CurrentLba = 100,
-                    TotalLba = 100,
-                    BufferLevelPercent = 0.0,
-                    CurrentActionDescription = "Completed"
-                });
+                    mtaProgress?.Report(new BurnProgressSnapshot
+                    {
+                        ElapsedTime = sw.Elapsed,
+                        RemainingTime = TimeSpan.Zero,
+                        CurrentLba = 100,
+                        TotalLba = 100,
+                        BufferLevelPercent = 0.0,
+                        CurrentActionDescription = "Completed"
+                    });
+                }
+                catch
+                {
+                }
 
                 return BurnOperationResult.Succeeded(0, sw.Elapsed);
             }
@@ -892,27 +915,117 @@ public class Imapi2BurnEngine : IBurnEngineBackend, ISecureAudioReader
             }
             finally
             {
+                eraseSink?.Dispose();
+
                 if (erase != null)
                 {
-                    Imapi2ComFactory.FinalRelease(ref erase);
-                }
-
-                if (createdComRecorder && comRecorder != null)
-                {
-                    Imapi2ComFactory.FinalRelease(ref comRecorder);
+                    _comProvider.ReleaseComObject(ref erase);
                 }
 
                 if (acquiredLock)
                 {
-                    try { recorder.ReleaseExclusiveAccess(); } catch { }
+                    ReleaseExclusiveLock(recorder, comRecorder);
+                }
+
+                if (comRecorder != null)
+                {
+                    _comProvider.ReleaseComObject(ref comRecorder);
                 }
 
                 if (wasCancelled && !recorder.IsVirtual)
                 {
-                    _comProvider.TrySpinDown(recorder.VolumePath);
+                    _comProvider.TrySpinDown(GetVolumePath(recorder, comRecorder));
                 }
             }
         }, progress, cancellationToken);
+    }
+
+    private IDiscRecorder2? CreateAndInitializeMtaRecorder(IDiscRecorderBackend recorder)
+    {
+        var comRecorder = _comProvider.CreateDiscRecorder2();
+        if (comRecorder == null)
+        {
+            return null;
+        }
+
+        try
+        {
+            comRecorder.InitializeDiscRecorder(recorder.UniqueId);
+            return comRecorder;
+        }
+        catch
+        {
+            _comProvider.ReleaseComObject(ref comRecorder);
+            throw;
+        }
+    }
+
+    private bool TryAcquireExclusiveLock(IDiscRecorderBackend recorder, IDiscRecorder2 comRecorder)
+    {
+        if (recorder is ImapiDiscRecorder)
+        {
+            try
+            {
+                comRecorder.AcquireExclusiveAccess(false, ClientName);
+                return true;
+            }
+            catch
+            {
+                return false;
+            }
+        }
+
+        return recorder.AcquireExclusiveAccess(ClientName);
+    }
+
+    private static void ReleaseExclusiveLock(IDiscRecorderBackend recorder, IDiscRecorder2? comRecorder)
+    {
+        if (recorder is ImapiDiscRecorder)
+        {
+            try { comRecorder?.ReleaseExclusiveAccess(); } catch { }
+            return;
+        }
+
+        try { recorder.ReleaseExclusiveAccess(); } catch { }
+    }
+
+    private static void TryEjectMedia(IDiscRecorderBackend recorder, IDiscRecorder2 comRecorder)
+    {
+        if (recorder is ImapiDiscRecorder)
+        {
+            try { comRecorder.EjectMedia(); } catch { }
+            return;
+        }
+
+        try { recorder.EjectMedia(); } catch { }
+    }
+
+    private static BurnOperationResult ExclusiveAccessDeniedResult(IDiscRecorderBackend recorder, IDiscRecorder2? comRecorder) =>
+        BurnOperationResult.Failed($"Failed to acquire exclusive access to optical drive '{GetVolumePath(recorder, comRecorder)}' (it may be locked by another application).");
+
+    private static string GetVolumePath(IDiscRecorderBackend recorder, IDiscRecorder2? comRecorder)
+    {
+        if (recorder is ImapiDiscRecorder)
+        {
+            if (comRecorder == null)
+            {
+                return string.Empty;
+            }
+            try
+            {
+                var paths = comRecorder.VolumePathNames;
+                if (paths != null && paths.Length > 0)
+                {
+                    return paths.GetValue(0)?.ToString() ?? string.Empty;
+                }
+            }
+            catch
+            {
+            }
+            return string.Empty;
+        }
+
+        return recorder.VolumePath;
     }
 
     /// <inheritdoc/>

@@ -11,6 +11,7 @@ namespace CdBurner.Hardware.Devices;
 /// </summary>
 public class ImapiDiscRecorder : IDiscRecorderBackend, IDiscTocProvider, IAudioSubChannelProvider, IMediaManufacturerIdProvider, IDriveMediaReportProvider
 {
+    private readonly object _disposeLock = new();
     private IDiscRecorder2? _recorder;
     private readonly string _uniqueId;
     private readonly IImapiComProvider _comProvider;
@@ -20,7 +21,7 @@ public class ImapiDiscRecorder : IDiscRecorderBackend, IDiscTocProvider, IAudioS
     /// <summary>
     /// Gets the underlying native IMAPIv2 COM recorder instance.
     /// </summary>
-    public IDiscRecorder2? Recorder => _recorder;
+    public IDiscRecorder2? Recorder => Volatile.Read(ref _recorder);
 
     public string UniqueId => _uniqueId;
     public bool IsVirtual => false;
@@ -150,7 +151,15 @@ public class ImapiDiscRecorder : IDiscRecorderBackend, IDiscTocProvider, IAudioS
         {
             var recorder = _comProvider.CreateDiscRecorder2()
                 ?? throw new InvalidOperationException($"Failed to activate MsftDiscRecorder2 COM CoClass for unique ID '{uniqueId}'.");
-            recorder.InitializeDiscRecorder(uniqueId);
+            try
+            {
+                recorder.InitializeDiscRecorder(uniqueId);
+            }
+            catch
+            {
+                _comProvider.ReleaseComObject(ref recorder);
+                throw;
+            }
             _recorder = recorder;
         }
         else
@@ -340,7 +349,7 @@ public class ImapiDiscRecorder : IDiscRecorderBackend, IDiscTocProvider, IAudioS
         }
         finally
         {
-            Imapi2ComFactory.FinalRelease(ref formatData);
+            _comProvider.ReleaseComObject(ref formatData);
         }
 
         if (mediaTypes.Contains(DiscMediaType.CdR)) canWriteCdR = true;
@@ -687,8 +696,8 @@ public class ImapiDiscRecorder : IDiscRecorderBackend, IDiscTocProvider, IAudioS
         }
         finally
         {
-            Imapi2ComFactory.FinalRelease(ref dataFormat);
-            Imapi2ComFactory.FinalRelease(ref eraseFormat);
+            _comProvider.ReleaseComObject(ref dataFormat);
+            _comProvider.ReleaseComObject(ref eraseFormat);
         }
 
         // Pressed / read-only discs (CD-ROM, DVD-ROM, BD-ROM) are not writable formats for IMAPI, but they can
@@ -956,32 +965,6 @@ public class ImapiDiscRecorder : IDiscRecorderBackend, IDiscTocProvider, IAudioS
         _ => DiscMediaType.Unknown
     };
 
-    /// <summary>
-    /// Size of the file system Windows has mounted for the drive, in 2048-byte sectors, or null if none is mounted.
-    /// </summary>
-    private static int? TryGetMountedVolumeSectors(string? volumePath)
-    {
-        if (string.IsNullOrWhiteSpace(volumePath) || volumePath.StartsWith(@"\\", StringComparison.Ordinal))
-        {
-            return null;
-        }
-
-        try
-        {
-            var drive = new DriveInfo(volumePath);
-            if (!drive.IsReady || drive.TotalSize <= 0)
-            {
-                return null;
-            }
-
-            return (int)Math.Min(int.MaxValue, (drive.TotalSize + OpticalConstants.DataSectorSize - 1) / OpticalConstants.DataSectorSize);
-        }
-        catch
-        {
-            return null;
-        }
-    }
-
     private static MediaStatusDto EmptyMediaStatus() => new()
     {
         MediaType = DiscMediaType.NoMedia,
@@ -1007,27 +990,40 @@ public class ImapiDiscRecorder : IDiscRecorderBackend, IDiscTocProvider, IAudioS
 
     protected virtual void Dispose(bool disposing)
     {
-        if (!_disposed)
-        {
-            if (_recorder != null)
-            {
-                if (disposing && _exclusiveClient != null)
-                {
-                    try
-                    {
-                        _recorder.ReleaseExclusiveAccess();
-                    }
-                    catch
-                    {
-                    }
-                    _exclusiveClient = null;
-                }
+        IDiscRecorder2? recorderToRelease;
+        string? exclusiveClient;
 
-                Imapi2ComFactory.FinalRelease(ref _recorder);
+        lock (_disposeLock)
+        {
+            if (_disposed)
+            {
+                return;
             }
 
             _disposed = true;
+            recorderToRelease = _recorder;
+            _recorder = null;
+            exclusiveClient = _exclusiveClient;
+            _exclusiveClient = null;
         }
+
+        if (!disposing || recorderToRelease == null)
+        {
+            return;
+        }
+
+        if (exclusiveClient != null)
+        {
+            try
+            {
+                recorderToRelease.ReleaseExclusiveAccess();
+            }
+            catch
+            {
+            }
+        }
+
+        _comProvider.ReleaseComObject(ref recorderToRelease);
     }
 
     ~ImapiDiscRecorder()

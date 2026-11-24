@@ -1264,6 +1264,9 @@ public interface IImapiComProvider
     /// <summary>Sector count of the file system on the disc, from its own volume descriptors; null if unknown.</summary>
     int? ReadFileSystemEndSector(string volumePath);
     bool TrySpinDown(string? volumePath);
+
+    /// <summary>Releases a COM RCW reference and clears the target reference.</summary>
+    void ReleaseComObject<T>(ref T? comObject) where T : class => Imapi2ComFactory.FinalRelease(ref comObject);
 }
 
 /// <summary>
