@@ -167,7 +167,8 @@ public class BookTypeService
     }
 
     /// <summary>
-    /// Builds both the 12-byte 0xBF CDB and the 4-byte structure header for setting the DVD Book Type.
+    /// Builds both the 12-byte 0xBF CDB and the full parameter list payload (4-byte header + structure data encoding
+    /// <paramref name="bookType"/>) for setting the DVD Book Type.
     /// </summary>
     public static (byte[] Cdb, byte[] StructureHeader) BuildBookTypeCommand(
         DvdBookType bookType = DvdBookType.DvdRom,
@@ -179,9 +180,9 @@ public class BookTypeService
             throw new ArgumentOutOfRangeException(nameof(dataLength), "Structure data length must be between 1 and 65531 bytes.");
         }
 
-        byte[] cdb = BuildSendDiscStructureCdb(formatCode, (ushort)(4 + dataLength));
-        byte[] header = BuildStructureHeader(dataLength);
-        return (cdb, header);
+        byte[] payload = BuildBookTypePayload(bookType, dataLength);
+        byte[] cdb = BuildSendDiscStructureCdb(formatCode, (ushort)payload.Length);
+        return (cdb, payload);
     }
 
     /// <summary>

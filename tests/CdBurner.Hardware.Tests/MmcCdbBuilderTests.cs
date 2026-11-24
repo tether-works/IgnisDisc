@@ -392,6 +392,39 @@ public class MmcCdbBuilderTests
         Assert.Equal("No Additional Sense Information", zeroInfo.Description);
     }
 
+    [Theory]
+    [InlineData(ScsiSenseDecoder.StatusBusy, "Busy", "SCSI Busy (Status 0x08)")]
+    [InlineData(ScsiSenseDecoder.StatusReservationConflict, "Reservation Conflict", "SCSI Reservation Conflict (Status 0x18)")]
+    [InlineData(ScsiSenseDecoder.StatusTaskSetFull, "Task Set Full", "SCSI Task Set Full (Status 0x28)")]
+    public void ScsiSenseDecoder_NonCheckConditionStatus_DoesNotDecodeZeroBufferAsCheckConditionSense(
+        byte scsiStatus,
+        string expectedStatusName,
+        string expectedErrorMessage)
+    {
+        byte[] allZeros = new byte[32];
+
+        Assert.Equal(expectedStatusName, ScsiSenseDecoder.GetStatusName(scsiStatus));
+        Assert.Null(ScsiSenseDecoder.Decode(allZeros, scsiStatus));
+        Assert.Equal(expectedErrorMessage, ScsiSenseDecoder.FormatStatusError(scsiStatus, null));
+
+        var result = ScsiExecutionResult.CheckCondition(scsiStatus, 0, allZeros);
+        Assert.False(result.IsSuccess);
+        Assert.Equal(scsiStatus, result.ScsiStatus);
+        Assert.Null(result.SenseInfo);
+        Assert.Equal(expectedErrorMessage, result.ErrorMessage);
+        Assert.DoesNotContain("Check Condition", result.ErrorMessage);
+        Assert.DoesNotContain("00/00/00", result.ErrorMessage);
+    }
+
+    [Fact]
+    public void Win32ScsiTransport_ComputeTimeoutSeconds_ClampsLargeTimeoutsWithoutOverflow()
+    {
+        Assert.Equal(10u, Win32ScsiTransport.ComputeTimeoutSeconds(TimeSpan.Zero));
+        Assert.Equal(10u, Win32ScsiTransport.ComputeTimeoutSeconds(Timeout.InfiniteTimeSpan));
+        Assert.Equal(1u, Win32ScsiTransport.ComputeTimeoutSeconds(TimeSpan.FromMilliseconds(1)));
+        Assert.Equal(uint.MaxValue, Win32ScsiTransport.ComputeTimeoutSeconds(TimeSpan.MaxValue));
+    }
+
     #endregion
 
     #region MmcResponseParser Tests

@@ -132,16 +132,19 @@ public sealed class ScsiExecutionResult
         byte scsiStatus,
         uint dataTransferLength,
         byte[] senseData,
-        ScsiSenseInfo? senseInfo = null) => new()
+        ScsiSenseInfo? senseInfo = null)
     {
-        IsSuccess = false,
-        ScsiStatus = scsiStatus,
-        DataTransferLength = dataTransferLength,
-        SenseData = senseData,
-        SenseInfo = senseInfo ?? (senseData.Length > 0 ? ScsiSenseDecoder.Decode(senseData) : null),
-        ErrorMessage = (senseInfo ?? (senseData.Length > 0 ? ScsiSenseDecoder.Decode(senseData) : null))?.Description
-                       ?? $"SCSI Check Condition (Status 0x{scsiStatus:X2})"
-    };
+        ScsiSenseInfo? resolvedSense = senseInfo ?? (senseData.Length > 0 ? ScsiSenseDecoder.Decode(senseData, scsiStatus) : null);
+        return new()
+        {
+            IsSuccess = false,
+            ScsiStatus = scsiStatus,
+            DataTransferLength = dataTransferLength,
+            SenseData = senseData,
+            SenseInfo = resolvedSense,
+            ErrorMessage = resolvedSense?.Description ?? ScsiSenseDecoder.FormatStatusError(scsiStatus, null)
+        };
+    }
 
     public static ScsiExecutionResult Failed(int win32Error, string errorMessage, byte[]? senseData = null) => new()
     {
@@ -238,26 +241,9 @@ public sealed partial class Win32ScsiTransport : IScsiTransport
 
         if (handle.IsInvalid)
         {
-            // If read/write failed, attempt read-only access fallback
-            if (desiredAccess != ScsiPassThroughNative.GENERIC_READ)
-            {
-                handle.Dispose();
-                handle = CreateFileNative(
-                    normalizedPath,
-                    ScsiPassThroughNative.GENERIC_READ,
-                    ScsiPassThroughNative.FILE_SHARE_READ | ScsiPassThroughNative.FILE_SHARE_WRITE,
-                    nint.Zero,
-                    ScsiPassThroughNative.OPEN_EXISTING,
-                    ScsiPassThroughNative.FILE_ATTRIBUTE_NORMAL,
-                    nint.Zero);
-            }
-
-            if (handle.IsInvalid)
-            {
-                int error = Marshal.GetLastWin32Error();
-                handle.Dispose();
-                throw new Win32Exception(error, $"Failed to open device handle for '{normalizedPath}' (Win32 error: {error}).");
-            }
+            int error = Marshal.GetLastWin32Error();
+            handle.Dispose();
+            throw new Win32Exception(error, $"Failed to open device handle for '{normalizedPath}' (Win32 error: {error}).");
         }
 
         return new Win32ScsiTransport(handle, ownsHandle: true);
@@ -285,7 +271,7 @@ public sealed partial class Win32ScsiTransport : IScsiTransport
         packet.Sptd.SenseInfoLength = 32;
         packet.Sptd.DataIn = hasData ? dataDirection : ScsiPassThroughNative.SCSI_IOCTL_DATA_UNSPECIFIED;
         packet.Sptd.DataTransferLength = hasData ? (uint)dataBuffer.Length : 0;
-        packet.Sptd.TimeOutValue = timeout <= TimeSpan.Zero ? 10 : (uint)Math.Max(1, Math.Ceiling(timeout.TotalSeconds));
+        packet.Sptd.TimeOutValue = ComputeTimeoutSeconds(timeout);
         packet.Sptd.SenseInfoOffset = (uint)sizeof(ScsiPassThroughDirect);
 
         for (int i = 0; i < cdb.Length; i++)
@@ -343,7 +329,7 @@ public sealed partial class Win32ScsiTransport : IScsiTransport
 
         if (packet.Sptd.ScsiStatus != 0)
         {
-            ScsiSenseInfo? sense = ScsiSenseDecoder.Decode(senseBytes);
+            ScsiSenseInfo? sense = ScsiSenseDecoder.Decode(senseBytes, packet.Sptd.ScsiStatus);
             return new ScsiExecutionResult
             {
                 IsSuccess = false,
@@ -352,7 +338,7 @@ public sealed partial class Win32ScsiTransport : IScsiTransport
                 SenseData = senseBytes,
                 SenseInfo = sense,
                 Win32Error = 0,
-                ErrorMessage = $"SCSI Check Condition (Status 0x{packet.Sptd.ScsiStatus:X2}): {sense?.Description ?? "Unknown sense"}"
+                ErrorMessage = ScsiSenseDecoder.FormatStatusError(packet.Sptd.ScsiStatus, sense)
             };
         }
 
@@ -375,6 +361,17 @@ public sealed partial class Win32ScsiTransport : IScsiTransport
         ReadOnlySpan<byte> cdb,
         Span<byte> dataBuffer,
         byte dataDirection) => ExecuteCommand(cdb, dataBuffer, dataDirection, TimeSpan.FromSeconds(10));
+
+    internal static uint ComputeTimeoutSeconds(TimeSpan timeout)
+    {
+        if (timeout <= TimeSpan.Zero)
+        {
+            return 10u;
+        }
+
+        double seconds = Math.Ceiling(timeout.TotalSeconds);
+        return seconds >= uint.MaxValue ? uint.MaxValue : (uint)Math.Max(1.0, seconds);
+    }
 
     public void Dispose()
     {

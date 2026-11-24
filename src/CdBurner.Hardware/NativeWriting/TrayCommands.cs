@@ -1,3 +1,4 @@
+using System.Diagnostics;
 using CdBurner.Hardware.Scsi;
 
 namespace CdBurner.Hardware.NativeWriting;
@@ -61,6 +62,7 @@ public static class TrayCommands
     {
         ArgumentNullException.ThrowIfNull(transport);
         ArgumentNullException.ThrowIfNull(sleep);
+        ct.ThrowIfCancellationRequested();
 
         var info = TrayReload.ReadRemovableMedium(transport);
         if (info is not null && !CanCloseItself(info))
@@ -69,6 +71,7 @@ public static class TrayCommands
                 $"This drive cannot close its own tray ({DescribeMechanism(info)}, no Load capability reported). Push the tray in by hand.", info);
         }
 
+        ct.ThrowIfCancellationRequested();
         var r = transport.ExecuteCommand(MmcCommandBuilder.BuildStartStopUnitCdb(start: true, loadEject: true), Span<byte>.Empty,
             ScsiPassThroughNative.SCSI_IOCTL_DATA_UNSPECIFIED, CommandTimeout);
         if (!r.IsSuccess)
@@ -101,7 +104,8 @@ public static class TrayCommands
     private static bool? WaitAfterLoad(IScsiTransport transport, Action<TimeSpan> sleep, CancellationToken ct)
     {
         int noDiscAnswers = 0;
-        for (var waited = TimeSpan.Zero; waited <= TrayReload.ReadyTimeout; waited += PollStep)
+        var wallClock = Stopwatch.StartNew();
+        for (var waited = TimeSpan.Zero; ; waited += PollStep)
         {
             ct.ThrowIfCancellationRequested();
             var r = transport.ExecuteCommand(new byte[6], Span<byte>.Empty, ScsiPassThroughNative.SCSI_IOCTL_DATA_UNSPECIFIED, CommandTimeout);
@@ -115,9 +119,13 @@ public static class TrayCommands
             {
                 return false;
             }
+            if (wallClock.Elapsed >= TrayReload.ReadyTimeout || waited >= TrayReload.ReadyTimeout)
+            {
+                return null;
+            }
+            ct.ThrowIfCancellationRequested();
             sleep(PollStep);
         }
-        return null;
     }
 
     private static string Describe(ScsiExecutionResult r) => r.SenseInfo?.ToString() ?? r.ErrorMessage ?? "no reason given";

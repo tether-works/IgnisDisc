@@ -7,6 +7,8 @@ using CdBurner.Core.Compilation;
 using CdBurner.Core.Iso;
 using CdBurner.Core.Primitives;
 using CdBurner.Core.Utilities;
+using CdBurner.Hardware.NativeWriting;
+using CdBurner.Hardware.Simulation;
 
 namespace CdBurner.Hardware.Tests;
 
@@ -445,5 +447,184 @@ public class PhysicalDriveSafetyTests
         Assert.Equal(2, tracks.Count);
         Assert.Equal(new DiscTocTrack(1, StartLba: 0, SectorCount: 2_230, IsAudio: false), tracks[0]);
         Assert.Equal(new DiscTocTrack(2, StartLba: 13_630, SectorCount: 302, IsAudio: false), tracks[1]);
+    }
+
+    [Fact]
+    public void PhysicalSectorReader_ParseFullTocAndCdText_RespectBytesReturnedLimit()
+    {
+        // Full TOC response with 1 track + lead-out (22 bytes) + 4-byte header = 26 bytes valid, in a 2048-byte buffer
+        // whose trailing bytes contain another bogus descriptor that must be ignored.
+        byte[] resp = new byte[2048];
+        int dataLen = 2 + 22;
+        resp[0] = (byte)(dataLen >> 8);
+        resp[1] = (byte)(dataLen & 0xFF);
+        // Track 1 @ LBA 0 (00:02:00)
+        resp[4] = 1; resp[5] = 0x14; resp[7] = 0x01; resp[12] = 0; resp[13] = 2; resp[14] = 0;
+        // Lead-out @ LBA 100 (00:03:25)
+        resp[15] = 1; resp[16] = 0x14; resp[18] = 0xA2; resp[23] = 0; resp[24] = 3; resp[25] = 25;
+        // Trailing unreturned bytes beyond validLength (26) must not be read even if dataLen claimed more
+        resp[0] = 0x01; resp[1] = 0x00;
+        resp[26] = 1; resp[27] = 0x14; resp[29] = 0x02; resp[34] = 0; resp[35] = 10; resp[36] = 0;
+
+        var tracks = CdBurner.Hardware.Scsi.PhysicalSectorReader.ParseFullToc(resp, validLength: 26);
+        Assert.Single(tracks);
+        Assert.Equal(100, tracks[0].SectorCount);
+
+        // ExtractCdTextPacks must respect validLength even when header claims larger length.
+        byte[] cdText = new byte[128];
+        cdText[0] = 0x00; cdText[1] = 2 + 36; // claims 2 packs (36 bytes)
+        cdText[4] = 0x80; // pack 1
+        byte[]? packs = CdBurner.Hardware.Scsi.PhysicalSectorReader.ExtractCdTextPacks(cdText, validLength: 4 + 18);
+        Assert.NotNull(packs);
+        Assert.Equal(18, packs.Length);
+    }
+
+    [Fact]
+    public void PhysicalSectorReader_ReadCapacity_AllowsLastLbaZero()
+    {
+        var transport = new SingleSectorCapacityTransport();
+        int? capacity = CdBurner.Hardware.Scsi.PhysicalSectorReader.ReadCapacity(transport);
+        Assert.Equal(1, capacity);
+    }
+
+    [Fact]
+    public async Task PhysicalSectorReader_CdExtraFuaRefused_FlushesFromSession2DataTrack()
+    {
+        // Build a CD-Extra disc: Session 1 audio (tracks 1..2, LBA 0..600), Session 2 data (track 3 at LBA 12,150..12,550).
+        var drive = new VirtualMmcDrive { Profile = NativeSaoAudioWriter.ProfileCdR, RejectsFua = true };
+        byte[] pcm = new byte[300 * 2352];
+        var audioRes = new NativeSaoAudioWriter(drive, sleep: _ => { }).Write(new NativeSaoWriteRequest(
+            new[] { new SaoTrack(1, 300, 150), new SaoTrack(2, 300, 150) },
+            _ => new MemoryStream(pcm),
+            CdTextPacks: null,
+            MediaCatalogNumber: null,
+            TestWrite: false) { LeaveSessionOpen = true });
+        Assert.True(audioRes.Success, audioRes.Message);
+
+        int session2Start = drive.NextSessionAddress!.Value;
+        byte[] dataImage = new byte[400 * 2048];
+        new Random(42).NextBytes(dataImage);
+        var dataRes = new NativeTaoDataWriter(drive, sleep: _ => { }).Write(
+            new NativeDataWriteRequest(new MemoryStream(dataImage), 0, dataImage.Length, TestWrite: false, CloseDisc: true, SessionStartLba: session2Start));
+        Assert.True(dataRes.Success, dataRes.Message);
+
+        drive.Read10Log.Clear();
+        int readCount = 0;
+        var verify = await CdBurner.Hardware.Scsi.PhysicalSectorReader.ReadDataSectorsAsync(
+            drive,
+            session2Start,
+            400,
+            CdBurner.Hardware.Scsi.DriveCacheBypass.RecentlyWritten,
+            (_, _) => { readCount++; return ValueTask.CompletedTask; },
+            null,
+            CancellationToken.None);
+
+        Assert.True(verify.Success, verify.ErrorMessage);
+        Assert.Equal(400, readCount);
+        Assert.NotNull(verify.Note);
+        Assert.DoesNotContain("so 0 MB", verify.Note);
+        // Every READ(10) issued during flush/verify stayed in Session 2 data track (never hit audio/gap < session2Start).
+        Assert.All(drive.Read10Log, entry => Assert.True(entry.Lba >= session2Start, $"READ(10) hit LBA {entry.Lba} before session 2 ({session2Start})"));
+    }
+
+    [Fact]
+    public void PhysicalSectorReader_MixedModeFlushReadCache_StaysInsideAudioTracks()
+    {
+        // Mixed-mode CD: Track 1 Mode 1 data (LBA 0..500), Track 2..3 audio (LBA 500..1100).
+        var drive = new VirtualMmcDrive { Profile = NativeSaoAudioWriter.ProfileCdR };
+        byte[] track1Data = new byte[500 * 2048];
+        byte[] audioPcm = new byte[300 * 2352];
+        var tracks = new[]
+        {
+            new SaoTrack(1, 500, 150, IsData: true),
+            new SaoTrack(2, 300, 150),
+            new SaoTrack(3, 300, 0)
+        };
+        var writeRes = new NativeSaoAudioWriter(drive, sleep: _ => { }).Write(new NativeSaoWriteRequest(
+            tracks,
+            i => new MemoryStream(i == 0 ? track1Data : audioPcm),
+            CdTextPacks: null,
+            MediaCatalogNumber: null,
+            TestWrite: false));
+        Assert.True(writeRes.Success, writeRes.Message);
+
+        var recorderTransport = new RecordingReadCdTransport(drive);
+        CdBurner.Hardware.Scsi.PhysicalSectorReader.FlushReadCache(recorderTransport, nearLba: 800, audioEndLba: 1100, CancellationToken.None);
+
+        Assert.NotEmpty(recorderTransport.ReadCdRanges);
+        Assert.All(recorderTransport.ReadCdRanges, r => Assert.True(r.Lba >= 500 && r.Lba + r.Count <= 1100,
+            $"FlushReadCache hit LBA {r.Lba}..{r.Lba + r.Count - 1} outside audio tracks (500..1100)"));
+    }
+
+    [Fact]
+    public async Task PhysicalSectorReader_ReadDataSectors_BacksOffOnBecomingReady20401()
+    {
+        byte[] sector = new byte[2048];
+        sector[0] = 0x5A;
+        var transport = new BecomingReadyTwiceTransport(sector);
+        var sleeps = new List<TimeSpan>();
+        byte[]? captured = null;
+
+        var res = await CdBurner.Hardware.Scsi.PhysicalSectorReader.ReadDataSectorsAsync(
+            transport, 0, 1, CdBurner.Hardware.Scsi.DriveCacheBypass.None,
+            (_, mem) => { captured = mem.ToArray(); return ValueTask.CompletedTask; },
+            null, CancellationToken.None, null, null, sleeps.Add);
+
+        Assert.True(res.Success, res.ErrorMessage);
+        Assert.Equal(2, sleeps.Count);
+        Assert.Equal(sector, captured);
+    }
+
+    private sealed class SingleSectorCapacityTransport : CdBurner.Hardware.Scsi.IScsiTransport
+    {
+        public CdBurner.Hardware.Scsi.ScsiExecutionResult ExecuteCommand(ReadOnlySpan<byte> cdb, Span<byte> data, byte direction, TimeSpan timeout)
+        {
+            if (cdb[0] == 0x25) // READ CAPACITY (10): lastLba = 0, blockLength = 2048
+            {
+                data.Clear();
+                data[6] = 0x08;
+                return CdBurner.Hardware.Scsi.ScsiExecutionResult.Success(8);
+            }
+            return CdBurner.Hardware.Scsi.ScsiExecutionResult.Failed(5, "Unexpected");
+        }
+
+        public void Dispose() { }
+    }
+
+    private sealed class RecordingReadCdTransport(VirtualMmcDrive inner) : CdBurner.Hardware.Scsi.IScsiTransport
+    {
+        public List<(int Lba, int Count)> ReadCdRanges { get; } = new();
+
+        public CdBurner.Hardware.Scsi.ScsiExecutionResult ExecuteCommand(ReadOnlySpan<byte> cdb, Span<byte> data, byte direction, TimeSpan timeout)
+        {
+            if (cdb[0] == 0xBE)
+            {
+                int lba = System.Buffers.Binary.BinaryPrimitives.ReadInt32BigEndian(cdb.Slice(2, 4));
+                int count = (cdb[6] << 16) | (cdb[7] << 8) | cdb[8];
+                ReadCdRanges.Add((lba, count));
+            }
+            return inner.ExecuteCommand(cdb, data, direction, timeout);
+        }
+
+        public void Dispose() { }
+    }
+
+    private sealed class BecomingReadyTwiceTransport(byte[] sector) : CdBurner.Hardware.Scsi.IScsiTransport
+    {
+        private int _calls;
+
+        public CdBurner.Hardware.Scsi.ScsiExecutionResult ExecuteCommand(ReadOnlySpan<byte> cdb, Span<byte> data, byte direction, TimeSpan timeout)
+        {
+            if (++_calls <= 2)
+            {
+                byte[] sense = new byte[18];
+                sense[0] = 0x70; sense[2] = 0x02; sense[12] = 0x04; sense[13] = 0x01;
+                return CdBurner.Hardware.Scsi.ScsiExecutionResult.CheckCondition(0x02, 0, sense);
+            }
+            sector.CopyTo(data);
+            return CdBurner.Hardware.Scsi.ScsiExecutionResult.Success((uint)sector.Length);
+        }
+
+        public void Dispose() { }
     }
 }

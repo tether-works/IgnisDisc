@@ -506,4 +506,33 @@ public sealed class NativeAudioBurnEngineTests : IDisposable
             Assert.True(expected == b[i], $"byte {i} (sector {i / SectorSize}) differs");
         }
     }
+
+    [Fact]
+    public async Task CommandLog_IncludesCombinedWriteOffsetChangeNote_AndAvoidsSameSecondCollisions()
+    {
+        string store = Path.Combine(_dir, "offsets.json");
+        string name = "TEST - DRIVE";
+        var list = new[] { new DriveOffsetEntry(name, 12, 100) };
+
+        using var first = Recorder(VirtualDiscMedium.CreateBlankCdR700());
+        var engine1 = OffsetEngine(store, list, writeOffset: -30, readOffset: 12);
+        var r1 = await engine1.BurnAudioTracksAsync(first, Tracks(), Options(), null, CancellationToken.None);
+        Assert.True(r1.Success, r1.ErrorMessage);
+
+        // Second burn in the same second with a different measured combined offset must keep both logs and include the note.
+        using var second = Recorder(VirtualDiscMedium.CreateBlankCdR700());
+        var engine2 = OffsetEngine(store, list, writeOffset: -20, readOffset: 12);
+        var r2 = await engine2.BurnAudioTracksAsync(second, Tracks(), Options(), null, CancellationToken.None);
+        Assert.True(r2.Success, r2.ErrorMessage);
+
+        Assert.NotNull(engine1.LastLogPath);
+        Assert.NotNull(engine2.LastLogPath);
+        Assert.NotEqual(engine1.LastLogPath, engine2.LastLogPath);
+        Assert.True(File.Exists(engine1.LastLogPath));
+        Assert.True(File.Exists(engine2.LastLogPath));
+
+        string log2 = await File.ReadAllTextAsync(engine2.LastLogPath!);
+        Assert.Contains("Combined offset measured", log2);
+        Assert.Contains("earlier burn measured", log2);
+    }
 }

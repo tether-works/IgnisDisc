@@ -27,11 +27,10 @@ public class DiscEraseService
 
     /// <summary>
     /// Validates whether the specified physical medium type is rewritable and eligible for erasure.
-    /// Returns true for CD-RW, DVD-RW, DVD+RW, and DVD-RAM.
+    /// Returns true for CD-RW, DVD-RW, DVD+RW, DVD-RAM, and BD-RE.
     /// </summary>
     /// <param name="mediaType">The optical physical media type to test.</param>
-    public static bool IsRewritable(DiscMediaType mediaType) =>
-        mediaType is DiscMediaType.CdRw or DiscMediaType.DvdMinusRw or DiscMediaType.DvdPlusRw or DiscMediaType.DvdRam;
+    public static bool IsRewritable(DiscMediaType mediaType) => mediaType.IsRewritable();
 
     /// <summary>
     /// Validates whether the media currently inserted in the specified recorder can be erased.
@@ -98,11 +97,11 @@ public class DiscEraseService
             return BurnOperationResult.Failed(CdBurner.Core.Burning.MediaStatusWait.StillLoadingMessage);
         }
 
-        // 2. Validate rewritable media type (CdRw, DvdMinusRw, DvdPlusRw, DvdRam)
+        // 2. Validate rewritable media type (CdRw, DvdMinusRw, DvdPlusRw, DvdRam, BdRe variants)
         if (!IsRewritable(mediaStatus.MediaType) && !mediaStatus.IsRewritable)
         {
             return BurnOperationResult.Failed(
-                $"Media type '{mediaStatus.MediaType.GetDisplayName()}' is not rewritable and cannot be erased. Supported types: CD-RW, DVD-RW, DVD+RW, DVD-RAM.");
+                $"Media type '{mediaStatus.MediaType.GetDisplayName()}' is not rewritable and cannot be erased. Supported types: CD-RW, DVD-RW, DVD+RW, DVD-RAM, BD-RE.");
         }
 
         // 3. Execute erase pipeline via engine backend

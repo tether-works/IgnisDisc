@@ -125,7 +125,21 @@ public static partial class PhysicalSectorReader
         IProgress<BurnProgressSnapshot>? progress,
         CancellationToken cancellationToken,
         int? bypassRangeStart = null,
-        int? bypassRangeCount = null)
+        int? bypassRangeCount = null) =>
+        ReadDataSectorsAsync(transport, startLba, sectorCount, cacheBypass, sectorConsumer, progress, cancellationToken,
+            bypassRangeStart, bypassRangeCount, sleep: null);
+
+    internal static Task<RipOperationResult> ReadDataSectorsAsync(
+        IScsiTransport transport,
+        int startLba,
+        int sectorCount,
+        DriveCacheBypass cacheBypass,
+        Func<int, ReadOnlyMemory<byte>, ValueTask> sectorConsumer,
+        IProgress<BurnProgressSnapshot>? progress,
+        CancellationToken cancellationToken,
+        int? bypassRangeStart,
+        int? bypassRangeCount,
+        Action<TimeSpan>? sleep)
     {
         ArgumentNullException.ThrowIfNull(transport);
         ArgumentNullException.ThrowIfNull(sectorConsumer);
@@ -134,7 +148,7 @@ public static partial class PhysicalSectorReader
             return Task.FromResult(RipOperationResult.Failed($"Invalid sector range (start {startLba}, count {sectorCount})."));
         }
 
-        var source = new SptiSource(transport, ownedHandle: null, raw: false);
+        var source = new SptiSource(transport, ownedHandle: null, raw: false, sleep: sleep);
         if (cacheBypass != DriveCacheBypass.None)
         {
             source.EnableForceUnitAccess(bypassRangeStart ?? startLba, bypassRangeCount ?? sectorCount,
@@ -293,98 +307,124 @@ public static partial class PhysicalSectorReader
         }
 
         IReadOnlyList<DiscTocTrack> parsedTracks = Array.Empty<DiscTocTrack>();
-        using (var handle = OpenDevice(volumePath, FileAccess.Read, out _))
+        Win32ScsiTransport? trackTransport = null;
+        try
         {
-            if (handle == null)
+            (int Start, int Size)? ReadTrackInfo(int number)
             {
-                return Array.Empty<DiscTocTrack>();
+                if (trackTransport == null)
+                {
+                    var rw = OpenDevice(volumePath, FileAccess.ReadWrite, out _);
+                    if (rw == null)
+                    {
+                        return null;
+                    }
+                    trackTransport = new Win32ScsiTransport(rw, ownsHandle: true);
+                }
+                return ReadTrackInformation(trackTransport, number);
             }
 
-            // Prefer Format 2 (Full TOC, MSF=1, SessionTrack=1 at byte 1) so every session's exact Lead-Out
-            // (Point 0xA2) is known, preventing multi-session tracks from spanning the 11,400-sector inter-session gap.
-            byte[] fullTocReq = { 0x80 | TocFormatFullToc, 1, 0, 0 };
-            byte[] fullTocResp = new byte[2048];
-            if (DeviceIoControlBuffer(handle, IOCTL_CDROM_READ_TOC_EX, fullTocReq, fullTocResp, out _))
+            using (var handle = OpenDevice(volumePath, FileAccess.Read, out _))
             {
-                parsedTracks = ParseFullToc(fullTocResp, fullTocResp.Length);
-            }
-
-            if (parsedTracks.Count == 0)
-            {
-                // Fallback: legacy Format 0 CDROM_TOC: Length[2], FirstTrack, LastTrack, TRACK_DATA[100] (8 bytes each) = 804 bytes
-                byte[] toc = new byte[804];
-                if (!DeviceIoControlBuffer(handle, IOCTL_CDROM_READ_TOC, Array.Empty<byte>(), toc, out _))
+                if (handle == null)
                 {
                     return Array.Empty<DiscTocTrack>();
                 }
 
-                int first = toc[2];
-                int last = toc[3];
-                if (first < 1 || last < first || last > 99)
+                // Prefer Format 2 (Full TOC, MSF=1, SessionTrack=1 at byte 1) so every session's exact Lead-Out
+                // (Point 0xA2) is known, preventing multi-session tracks from spanning the 11,400-sector inter-session gap.
+                byte[] fullTocReq = { 0x80 | TocFormatFullToc, 1, 0, 0 };
+                byte[] fullTocResp = new byte[2048];
+                if (DeviceIoControlBuffer(handle, IOCTL_CDROM_READ_TOC_EX, fullTocReq, fullTocResp, out _, out int fullTocBytes))
                 {
-                    return Array.Empty<DiscTocTrack>();
+                    parsedTracks = ParseFullToc(fullTocResp, fullTocBytes);
                 }
 
-                var rawEntries = new List<(int Number, int Lba, bool IsData)>();
-                var trackControls = new Dictionary<int, byte>();
-                for (int i = 0; i <= last - first + 1; i++) // includes lead-out (track 0xAA)
+                if (parsedTracks.Count == 0)
                 {
-                    int off = 4 + i * 8;
-                    byte control = (byte)(toc[off + 1] & 0x0F);
-                    int number = toc[off + 2];
-                    int lba = (toc[off + 5] * 60 + toc[off + 6]) * 75 + toc[off + 7] - 150; // MSF address
-                    rawEntries.Add((number, lba, (control & 0x04) != 0));
-                    if (number is >= 1 and <= 99)
+                    // Fallback: legacy Format 0 CDROM_TOC: Length[2], FirstTrack, LastTrack, TRACK_DATA[100] (8 bytes each) = 804 bytes
+                    byte[] toc = new byte[804];
+                    if (!DeviceIoControlBuffer(handle, IOCTL_CDROM_READ_TOC, Array.Empty<byte>(), toc, out _, out int tocBytes) || tocBytes < 4)
                     {
-                        trackControls[number] = control;
-                    }
-                }
-
-                var entries = RepairTrackStarts(rawEntries, number => ReadTrackInformation(volumePath, number));
-
-                // CDROM_TOC_SESSION_DATA: Length[2], FirstCompleteSession, LastCompleteSession, TRACK_DATA (TrackNumber at byte 6).
-                int? firstTrackOfLastSession = null;
-                byte[] session = new byte[16];
-                byte[] sessionReq = { TocFormatSession, 0, 0, 0 };
-                if ((DeviceIoControlBuffer(handle, IOCTL_CDROM_READ_TOC_EX, sessionReq, session, out _) ||
-                     DeviceIoControlBuffer(handle, IOCTL_CDROM_GET_LAST_SESSION, Array.Empty<byte>(), session, out _)) &&
-                    session[3] > 1)
-                {
-                    firstTrackOfLastSession = session[6];
-                }
-
-                var tracks = new List<DiscTocTrack>();
-                for (int i = 0; i < entries.Count - 1; i++)
-                {
-                    var cur = entries[i];
-                    var next = entries[i + 1];
-                    int count = cur.Size ?? next.Lba - cur.Lba;
-
-                    // Multi-session / Enhanced CD: a session ends ~11,400 sectors (lead-out + lead-in + pre-gap) before the
-                    // track that opens the next session.
-                    bool nextStartsNewSession = next.Number != 0xAA &&
-                        ((firstTrackOfLastSession != null && next.Number == firstTrackOfLastSession) ||
-                         (firstTrackOfLastSession == null && !cur.IsData && next.IsData));
-                    if (cur.Size == null && nextStartsNewSession && count > CdInterSessionGap)
-                    {
-                        count -= CdInterSessionGap;
+                        return Array.Empty<DiscTocTrack>();
                     }
 
-                    if (count > 0)
+                    int first = toc[2];
+                    int last = toc[3];
+                    if (first < 1 || last < first || last > 99)
                     {
-                        byte control = trackControls.GetValueOrDefault(cur.Number);
-                        bool preEmphasis = !cur.IsData && (control & 0x01) != 0;
-                        bool copyPermitted = !cur.IsData && (control & 0x02) != 0;
-                        tracks.Add(new DiscTocTrack(cur.Number, cur.Lba, count, !cur.IsData, preEmphasis, copyPermitted));
+                        return Array.Empty<DiscTocTrack>();
                     }
-                }
 
-                parsedTracks = tracks;
+                    var rawEntries = new List<(int Number, int Lba, bool IsData)>();
+                    var trackControls = new Dictionary<int, byte>();
+                    for (int i = 0; i <= last - first + 1; i++) // includes lead-out (track 0xAA)
+                    {
+                        int off = 4 + i * 8;
+                        if (off + 8 > tocBytes)
+                        {
+                            break;
+                        }
+                        byte control = (byte)(toc[off + 1] & 0x0F);
+                        int number = toc[off + 2];
+                        int lba = (toc[off + 5] * 60 + toc[off + 6]) * 75 + toc[off + 7] - 150; // MSF address
+                        rawEntries.Add((number, lba, (control & 0x04) != 0));
+                        if (number is >= 1 and <= 99)
+                        {
+                            trackControls[number] = control;
+                        }
+                    }
+
+                    var entries = RepairTrackStarts(rawEntries, ReadTrackInfo);
+
+                    // CDROM_TOC_SESSION_DATA: Length[2], FirstCompleteSession, LastCompleteSession, TRACK_DATA (TrackNumber at byte 6).
+                    int? firstTrackOfLastSession = null;
+                    byte[] session = new byte[16];
+                    byte[] sessionReq = { TocFormatSession, 0, 0, 0 };
+                    if (((DeviceIoControlBuffer(handle, IOCTL_CDROM_READ_TOC_EX, sessionReq, session, out _, out int sessBytes) && sessBytes >= 7) ||
+                         (DeviceIoControlBuffer(handle, IOCTL_CDROM_GET_LAST_SESSION, Array.Empty<byte>(), session, out _, out sessBytes) && sessBytes >= 7)) &&
+                        session[3] > 1)
+                    {
+                        firstTrackOfLastSession = session[6];
+                    }
+
+                    var tracks = new List<DiscTocTrack>();
+                    for (int i = 0; i < entries.Count - 1; i++)
+                    {
+                        var cur = entries[i];
+                        var next = entries[i + 1];
+                        int count = cur.Size ?? next.Lba - cur.Lba;
+
+                        // Multi-session / Enhanced CD: a session ends ~11,400 sectors (lead-out + lead-in + pre-gap) before the
+                        // track that opens the next session.
+                        bool nextStartsNewSession = next.Number != 0xAA &&
+                            ((firstTrackOfLastSession != null && next.Number == firstTrackOfLastSession) ||
+                             (firstTrackOfLastSession == null && !cur.IsData && next.IsData));
+                        if (cur.Size == null && nextStartsNewSession && count > CdInterSessionGap)
+                        {
+                            count -= CdInterSessionGap;
+                        }
+
+                        if (count > 0)
+                        {
+                            byte control = trackControls.GetValueOrDefault(cur.Number);
+                            bool preEmphasis = !cur.IsData && (control & 0x01) != 0;
+                            bool copyPermitted = !cur.IsData && (control & 0x02) != 0;
+                            tracks.Add(new DiscTocTrack(cur.Number, cur.Lba, count, !cur.IsData, preEmphasis, copyPermitted));
+                        }
+                    }
+
+                    parsedTracks = tracks;
+                }
             }
+
+            parsedTracks = CorrectSessionEnds(parsedTracks, ReadTrackInfo);
+            return TrimDataTrackRunOut(volumePath, parsedTracks);
         }
-
-        parsedTracks = CorrectSessionEnds(parsedTracks, number => ReadTrackInformation(volumePath, number));
-        return TrimDataTrackRunOut(volumePath, parsedTracks);
+        finally
+        {
+            trackTransport?.Dispose();
+        }
     }
 
     /// <summary>Sectors between the end of one CD session and the first track of the next (lead-out, lead-in, pre-gap).</summary>
@@ -473,8 +513,20 @@ public static partial class PhysicalSectorReader
     public static IReadOnlyList<DiscTocTrack> ReadTableOfContentsCheckedAgainstTracks(string volumePath)
     {
         var toc = ReadTableOfContents(volumePath);
-        return ReadRecordedTrackCount(volumePath) is int recorded
-            ? RebuildMissingTracks(toc, recorded, number => ReadTrackInformation(volumePath, number))
+        if (!OperatingSystem.IsWindows() || string.IsNullOrWhiteSpace(volumePath))
+        {
+            return toc;
+        }
+
+        using var handle = OpenDevice(volumePath, FileAccess.ReadWrite, out _);
+        if (handle == null)
+        {
+            return toc;
+        }
+
+        using var transport = new Win32ScsiTransport(handle, ownsHandle: false);
+        return ReadRecordedTrackCount(transport) is int recorded
+            ? RebuildMissingTracks(toc, recorded, number => ReadTrackInformation(transport, number))
             : toc;
     }
 
@@ -516,15 +568,8 @@ public static partial class PhysicalSectorReader
     /// Recorded tracks by READ DISC INFORMATION (0x51): the last track of the last session (bytes 6 and 11), less the
     /// empty track waiting for the next session on an open disc whose last session is empty. 0 on a blank disc.
     /// </summary>
-    private static int? ReadRecordedTrackCount(string volumePath)
+    private static int? ReadRecordedTrackCount(IScsiTransport transport)
     {
-        using var handle = OpenDevice(volumePath, FileAccess.ReadWrite, out _);
-        if (handle == null)
-        {
-            return null;
-        }
-
-        using var transport = new Win32ScsiTransport(handle, ownsHandle: false);
         byte[] data = new byte[34];
         var r = transport.ExecuteCommand(MmcCommandBuilder.BuildReadDiscInformationCdb(34), data,
             ScsiPassThroughNative.SCSI_IOCTL_DATA_IN, TimeSpan.FromSeconds(10));
@@ -544,15 +589,8 @@ public static partial class PhysicalSectorReader
     }
 
     /// <summary>READ TRACK INFORMATION (0x52) by track number: where the track starts and how long it is.</summary>
-    private static (int Start, int Size)? ReadTrackInformation(string volumePath, int trackNumber)
+    private static (int Start, int Size)? ReadTrackInformation(IScsiTransport transport, int trackNumber)
     {
-        using var handle = OpenDevice(volumePath, FileAccess.ReadWrite, out _);
-        if (handle == null)
-        {
-            return null;
-        }
-
-        using var transport = new Win32ScsiTransport(handle, ownsHandle: false);
         byte[] data = new byte[36];
         byte[] cdb = [0x52, 0x01, 0, 0, 0, (byte)trackNumber, 0, 0, (byte)data.Length, 0];
         var r = transport.ExecuteCommand(cdb, data, ScsiPassThroughNative.SCSI_IOCTL_DATA_IN, TimeSpan.FromSeconds(10));
@@ -1236,16 +1274,6 @@ public static partial class PhysicalSectorReader
 
         return Task.Run(() =>
         {
-            int span = Math.Min(CacheFlushSectors, audioEndLba);
-            int farLba = (nearLba + audioEndLba / 2) % audioEndLba;
-            farLba = Math.Clamp(farLba, 0, Math.Max(0, audioEndLba - span));
-
-            // Keep the flush window clear of the sector being re-read.
-            if (nearLba >= farLba && nearLba < farLba + span)
-            {
-                farLba = nearLba >= span ? 0 : Math.Max(0, audioEndLba - span);
-            }
-
             using var rw = OpenDevice(volumePath, FileAccess.ReadWrite, out _);
             if (rw == null)
             {
@@ -1253,16 +1281,151 @@ public static partial class PhysicalSectorReader
             }
 
             using var transport = new Win32ScsiTransport(rw, ownsHandle: false);
-            byte[] buffer = new byte[ChunkSectors * OpticalConstants.RawSectorSize];
-            for (int done = 0; done < span; done += ChunkSectors)
-            {
-                cancellationToken.ThrowIfCancellationRequested();
-                int count = Math.Min(ChunkSectors, span - done);
-                byte[] cdb = MmcCommandBuilder.BuildReadCdCdb(farLba + done, count, SectorTypeCdda, 0x10);
-                transport.ExecuteCommand(cdb, buffer.AsSpan(0, count * OpticalConstants.RawSectorSize),
-                    ScsiPassThroughNative.SCSI_IOCTL_DATA_IN, CommandTimeout);
-            }
+            FlushReadCache(transport, nearLba, audioEndLba, cancellationToken);
         }, cancellationToken);
+    }
+
+    internal static void FlushReadCache(IScsiTransport transport, int nearLba, int audioEndLba, CancellationToken cancellationToken)
+    {
+        if (audioEndLba <= 0)
+        {
+            return;
+        }
+
+        var (windowStart, windowEnd) = ResolveAudioFlushWindow(transport, nearLba, audioEndLba);
+        int windowLen = windowEnd - windowStart;
+        if (windowLen <= 0)
+        {
+            return;
+        }
+
+        int span = Math.Min(CacheFlushSectors, windowLen);
+        int farLba = windowStart + ((nearLba - windowStart + windowLen / 2) % windowLen);
+        farLba = Math.Clamp(farLba, windowStart, Math.Max(windowStart, windowEnd - span));
+
+        // Keep the flush window clear of the sector being re-read.
+        if (nearLba >= farLba && nearLba < farLba + span)
+        {
+            farLba = nearLba - windowStart >= span ? windowStart : Math.Max(windowStart, windowEnd - span);
+        }
+
+        byte[] buffer = new byte[ChunkSectors * OpticalConstants.RawSectorSize];
+        for (int done = 0; done < span; done += ChunkSectors)
+        {
+            cancellationToken.ThrowIfCancellationRequested();
+            int count = Math.Min(ChunkSectors, span - done);
+            byte[] cdb = MmcCommandBuilder.BuildReadCdCdb(farLba + done, count, SectorTypeCdda, 0x10);
+            transport.ExecuteCommand(cdb, buffer.AsSpan(0, count * OpticalConstants.RawSectorSize),
+                ScsiPassThroughNative.SCSI_IOCTL_DATA_IN, CommandTimeout);
+        }
+    }
+
+    private static (int Start, int End) ResolveAudioFlushWindow(IScsiTransport transport, int nearLba, int audioEndLba)
+    {
+        var tracks = TryReadTocTracksViaScsi(transport);
+        var audioSpans = new List<(int Start, int End)>();
+        foreach (var t in tracks)
+        {
+            if (!t.IsAudio || t.SectorCount <= 0)
+            {
+                continue;
+            }
+
+            int start = Math.Max(0, t.StartLba);
+            int end = (int)Math.Min(audioEndLba, (long)t.StartLba + t.SectorCount);
+            if (end <= start)
+            {
+                continue;
+            }
+
+            if (audioSpans.Count > 0 && start <= audioSpans[^1].End)
+            {
+                audioSpans[^1] = (audioSpans[^1].Start, Math.Max(audioSpans[^1].End, end));
+            }
+            else
+            {
+                audioSpans.Add((start, end));
+            }
+        }
+
+        if (audioSpans.Count == 0)
+        {
+            return (0, audioEndLba);
+        }
+
+        foreach (var s in audioSpans)
+        {
+            if (nearLba >= s.Start && nearLba < s.End)
+            {
+                return s;
+            }
+        }
+
+        return audioSpans.MaxBy(s => s.End - s.Start);
+    }
+
+    private static IReadOnlyList<DiscTocTrack> TryReadTocTracksViaScsi(IScsiTransport transport)
+    {
+        byte[] fullTocResp = new byte[2048];
+        byte[] fullTocCdb = MmcCommandBuilder.BuildReadTocPmaAtipCdb(TocFormatFullToc, 1, (ushort)fullTocResp.Length, msf: true);
+        var fullRes = transport.ExecuteCommand(fullTocCdb, fullTocResp, ScsiPassThroughNative.SCSI_IOCTL_DATA_IN, CommandTimeout);
+        if (fullRes.IsSuccess && fullRes.DataTransferLength >= 15)
+        {
+            var fullTracks = ParseFullToc(fullTocResp, (int)Math.Min(fullRes.DataTransferLength, (uint)fullTocResp.Length));
+            if (fullTracks.Count > 0)
+            {
+                return fullTracks;
+            }
+        }
+
+        byte[] toc = new byte[804];
+        byte[] tocCdb = MmcCommandBuilder.BuildReadTocPmaAtipCdb(0x00, 0, (ushort)toc.Length, msf: false);
+        var tocRes = transport.ExecuteCommand(tocCdb, toc, ScsiPassThroughNative.SCSI_IOCTL_DATA_IN, CommandTimeout);
+        if (!tocRes.IsSuccess || tocRes.DataTransferLength < 12)
+        {
+            return Array.Empty<DiscTocTrack>();
+        }
+
+        int validBytes = (int)Math.Min(tocRes.DataTransferLength, (uint)toc.Length);
+        int dataLen = (toc[0] << 8) | toc[1];
+        int endOffset = Math.Min(validBytes, dataLen + 2);
+        int first = toc[2];
+        int last = toc[3];
+        if (first < 1 || last < first || last > 99)
+        {
+            return Array.Empty<DiscTocTrack>();
+        }
+
+        var entries = new List<(int Number, int Lba, bool IsData)>();
+        for (int i = 0; i <= last - first + 1; i++)
+        {
+            int off = 4 + i * 8;
+            if (off + 8 > endOffset)
+            {
+                break;
+            }
+            byte control = (byte)(toc[off + 1] & 0x0F);
+            int number = toc[off + 2];
+            int lba = System.Buffers.Binary.BinaryPrimitives.ReadInt32BigEndian(toc.AsSpan(off + 4, 4));
+            entries.Add((number, lba, (control & 0x04) != 0));
+        }
+
+        var result = new List<DiscTocTrack>();
+        for (int i = 0; i < entries.Count - 1; i++)
+        {
+            var cur = entries[i];
+            var next = entries[i + 1];
+            int count = next.Lba - cur.Lba;
+            if (next.Number != 0xAA && !cur.IsData && next.IsData && count > CdInterSessionGap)
+            {
+                count -= CdInterSessionGap;
+            }
+            if (count > 0)
+            {
+                result.Add(new DiscTocTrack(cur.Number, cur.Lba, count, !cur.IsData));
+            }
+        }
+        return result;
     }
 
     /// <summary>
@@ -1287,9 +1450,9 @@ public static partial class PhysicalSectorReader
                     // CDROM_READ_TOC_EX { Format:4, Reserved1:3, Msf:1; SessionTrack; Reserved2; Reserved3 }
                     byte[] request = { TocFormatCdText, 0, 0, 0 };
                     byte[] response = new byte[bufferSize];
-                    if (DeviceIoControlBuffer(ro, IOCTL_CDROM_READ_TOC_EX, request, response, out _))
+                    if (DeviceIoControlBuffer(ro, IOCTL_CDROM_READ_TOC_EX, request, response, out _, out int cdTextBytes))
                     {
-                        return ExtractCdTextPacks(response, response.Length);
+                        return ExtractCdTextPacks(response, cdTextBytes);
                     }
                 }
             }
@@ -1352,13 +1515,13 @@ public static partial class PhysicalSectorReader
             // 1. IOCTL_CDROM_READ_TOC_EX Format 1 (Session Info): Length[2], FirstCompleteSession, LastCompleteSession, TRACK_DATA
             byte[] sessionReq = { TocFormatSession, 0, 0, 0 };
             byte[] session = new byte[16];
-            if (DeviceIoControlBuffer(handle, IOCTL_CDROM_READ_TOC_EX, sessionReq, session, out _) && session[3] > 0)
+            if (DeviceIoControlBuffer(handle, IOCTL_CDROM_READ_TOC_EX, sessionReq, session, out _, out int sessBytes) && sessBytes >= 4 && session[3] > 0)
             {
                 return session[3];
             }
 
             // 2. Legacy IOCTL_CDROM_GET_LAST_SESSION
-            if (DeviceIoControlBuffer(handle, IOCTL_CDROM_GET_LAST_SESSION, Array.Empty<byte>(), session, out _) && session[3] > 0)
+            if (DeviceIoControlBuffer(handle, IOCTL_CDROM_GET_LAST_SESSION, Array.Empty<byte>(), session, out _, out sessBytes) && sessBytes >= 4 && session[3] > 0)
             {
                 return session[3];
             }
@@ -1423,23 +1586,9 @@ public static partial class PhysicalSectorReader
             if (rw != null)
             {
                 using var transport = new Win32ScsiTransport(rw, ownsHandle: false);
-                byte[] data = new byte[8];
-                byte[] cdb = new byte[10];
-                cdb[0] = 0x25; // READ CAPACITY (10)
-                var result = transport.ExecuteCommand(cdb, data, ScsiPassThroughNative.SCSI_IOCTL_DATA_IN, TimeSpan.FromSeconds(10));
-                if (result.IsSuccess)
+                if (ReadCapacity(transport) is int count)
                 {
-                    uint lastLba = (uint)(data[0] << 24 | data[1] << 16 | data[2] << 8 | data[3]);
-                    if (lastLba > 0 && lastLba < int.MaxValue)
-                    {
-                        int count = (int)lastLba + 1;
-                        if (count is > 16 and <= 450_000)
-                        {
-                            count = TrimReadCapacityCdRunOut(transport, count);
-                        }
-
-                        return count;
-                    }
+                    return count;
                 }
             }
         }
@@ -1448,7 +1597,7 @@ public static partial class PhysicalSectorReader
         if (ro != null)
         {
             byte[] length = new byte[8];
-            if (DeviceIoControlBuffer(ro, IOCTL_DISK_GET_LENGTH_INFO, Array.Empty<byte>(), length, out _))
+            if (DeviceIoControlBuffer(ro, IOCTL_DISK_GET_LENGTH_INFO, Array.Empty<byte>(), length, out _, out int lenBytes) && lenBytes >= 8)
             {
                 long bytes = BitConverter.ToInt64(length, 0);
                 if (bytes > 0)
@@ -1461,7 +1610,33 @@ public static partial class PhysicalSectorReader
         return null;
     }
 
-    private static int TrimReadCapacityCdRunOut(Win32ScsiTransport transport, int count)
+    internal static int? ReadCapacity(IScsiTransport transport)
+    {
+        byte[] data = new byte[8];
+        byte[] cdb = new byte[10];
+        cdb[0] = 0x25; // READ CAPACITY (10)
+        var result = transport.ExecuteCommand(cdb, data, ScsiPassThroughNative.SCSI_IOCTL_DATA_IN, TimeSpan.FromSeconds(10));
+        if (!result.IsSuccess || result.DataTransferLength < 4)
+        {
+            return null;
+        }
+
+        uint lastLba = System.Buffers.Binary.BinaryPrimitives.ReadUInt32BigEndian(data);
+        if (lastLba >= int.MaxValue)
+        {
+            return null;
+        }
+
+        int count = (int)lastLba + 1;
+        if (count is > 16 and <= 450_000)
+        {
+            count = TrimReadCapacityCdRunOut(transport, count);
+        }
+
+        return count;
+    }
+
+    private static int TrimReadCapacityCdRunOut(IScsiTransport transport, int count)
     {
         // MMC READ CAPACITY (10) on TAO CDs often reports Lead-Out - 1, which includes up to 2 non-user TAO run-out
         // blocks. Probe the last 2 sectors and trim unreadable run-out blocks only when past ISO VolumeSpaceSize.
@@ -1566,6 +1741,7 @@ public static partial class PhysicalSectorReader
         private readonly IScsiTransport _transport;
         private readonly bool _ownsTransport;
         private readonly bool _raw;
+        private readonly Action<TimeSpan> _sleep;
         private bool _fua;
         private bool _fuaEveryRead = true;
         private int _rangeStart;
@@ -1593,12 +1769,13 @@ public static partial class PhysicalSectorReader
             _ownsTransport = true;
         }
 
-        public SptiSource(IScsiTransport transport, SafeFileHandle? ownedHandle, bool raw, object? driveKey = null)
+        public SptiSource(IScsiTransport transport, SafeFileHandle? ownedHandle, bool raw, object? driveKey = null, Action<TimeSpan>? sleep = null)
         {
             _transport = transport;
             _handle = ownedHandle;
             _raw = raw;
             _driveKey = driveKey ?? transport;
+            _sleep = sleep ?? Thread.Sleep;
         }
 
         /// <summary>Set when something about the read is worth telling the user (the FUA fallback).</summary>
@@ -1659,30 +1836,138 @@ public static partial class PhysicalSectorReader
             result.SenseInfo is { SenseKey: 0x05, Asc: 0x24 };
 
         /// <summary>
-        /// The drive refused FUA. Push anything left over from the burn out of its cache by reading
-        /// <see cref="CacheFlushSectors"/> sectors and throwing them away: from before the range when there is room
-        /// (an earlier session), else from its start, which is furthest from the last sectors written. Sectors that
-        /// enter the cache this way were read from the disc, so they are safe to verify against. Reads past the end of
-        /// a small disc just fail and are ignored; on a disc smaller than the drive's cache this cannot push
-        /// everything out, but the note says the drive refused FUA either way.
+        /// The drive refused FUA. Push anything left over from the burn out of its cache by reading up to twice the
+        /// drive's reported buffer capacity (or 8 MiB when unknown) within readable data tracks and throwing them away:
+        /// from data tracks before <see cref="_rangeStart"/> first (skipping audio tracks and inter-session gaps on
+        /// CD-Extra / multi-session discs), then from the start of readable data at or after <see cref="_rangeStart"/>.
         /// </summary>
         private void FlushCacheAfterFuaRefused()
         {
-            int start = Math.Max(0, _rangeStart - CacheFlushSectors);
+            int targetSectors = _guardSectors > 0 ? _guardSectors : ReadGuardSectors();
             byte[] scratch = new byte[ChunkSectors * OpticalConstants.DataSectorSize];
             int flushed = 0;
-            for (int done = 0; done < CacheFlushSectors; done += ChunkSectors)
+
+            int ReadSpan(int spanStart, int spanEnd, bool stopOnError)
             {
-                var r = _transport.ExecuteCommand(MmcCommandBuilder.BuildRead10Cdb(start + done, ChunkSectors),
-                    scratch, ScsiPassThroughNative.SCSI_IOCTL_DATA_IN, CommandTimeout);
-                if (r.IsSuccess)
+                int pos = spanStart;
+                while (flushed < targetSectors && pos < spanEnd)
                 {
-                    flushed += ChunkSectors;
+                    int n = Math.Min(ChunkSectors, Math.Min(targetSectors - flushed, spanEnd - pos));
+                    var r = _transport.ExecuteCommand(MmcCommandBuilder.BuildRead10Cdb(pos, n),
+                        scratch.AsSpan(0, n * OpticalConstants.DataSectorSize),
+                        ScsiPassThroughNative.SCSI_IOCTL_DATA_IN, CommandTimeout);
+                    if (r.IsSuccess)
+                    {
+                        flushed += n;
+                    }
+                    else if (stopOnError)
+                    {
+                        break;
+                    }
+                    pos += n;
+                }
+                return flushed;
+            }
+
+            var dataSpans = TryGetReadableDataSpans();
+            if (dataSpans.Count > 0)
+            {
+                // 1. Earlier readable data tracks/portions before _rangeStart (never hits audio or inter-session gaps).
+                foreach (var (start, end) in dataSpans)
+                {
+                    if (flushed >= targetSectors)
+                    {
+                        break;
+                    }
+                    if (start < _rangeStart)
+                    {
+                        int beforeEnd = Math.Min(end, _rangeStart);
+                        int beforeStart = Math.Max(start, beforeEnd - (targetSectors - flushed));
+                        ReadSpan(beforeStart, beforeEnd, stopOnError: false);
+                    }
+                }
+
+                // 2. Data tracks at or after _rangeStart (e.g. CD-Extra Session 2 or single-session discs).
+                foreach (var (start, end) in dataSpans)
+                {
+                    if (flushed >= targetSectors)
+                    {
+                        break;
+                    }
+                    if (end > _rangeStart)
+                    {
+                        ReadSpan(Math.Max(start, _rangeStart), end, stopOnError: false);
+                    }
                 }
             }
+            else
+            {
+                // No TOC/track table available (e.g. DVD/BD or unrecorded synthetic disc): read within the range first,
+                // then probe immediately before _rangeStart if more flush sectors remain (stopping on first gap error).
+                if (_rangeEnd > _rangeStart)
+                {
+                    ReadSpan(_rangeStart, _rangeEnd, stopOnError: false);
+                }
+                if (flushed < targetSectors && _rangeStart > 0)
+                {
+                    int beforeStart = Math.Max(0, _rangeStart - (targetSectors - flushed));
+                    ReadSpan(beforeStart, _rangeStart, stopOnError: true);
+                }
+            }
+
             Note = $"This drive would not read past its own memory, so {flushed * OpticalConstants.DataSectorSize / 1024 / 1024.0:0.#} MB " +
                    "of the disc was read first to clear the burn out of that memory.";
             FuaRefusedDrives.AddOrUpdate(_driveKey, Note);
+        }
+
+        private List<(int Start, int End)> TryGetReadableDataSpans()
+        {
+            var spans = new List<(int Start, int End)>();
+            var tocTracks = TryReadTocTracksViaScsi(_transport);
+            foreach (var t in tocTracks)
+            {
+                if (!t.IsAudio && t.SectorCount > 0)
+                {
+                    int start = Math.Max(0, t.StartLba);
+                    int end = (int)Math.Min(int.MaxValue, (long)t.StartLba + t.SectorCount);
+                    if (end > start)
+                    {
+                        spans.Add((start, end));
+                    }
+                }
+            }
+            if (spans.Count > 0)
+            {
+                return spans;
+            }
+
+            if (ReadRecordedTrackCount(_transport) is int recorded && recorded > 0 && recorded <= 99)
+            {
+                byte[] trackData = new byte[36];
+                for (int number = 1; number <= recorded; number++)
+                {
+                    byte[] cdb = [0x52, 0x01, 0, 0, 0, (byte)number, 0, 0, (byte)trackData.Length, 0];
+                    var r = _transport.ExecuteCommand(cdb, trackData, ScsiPassThroughNative.SCSI_IOCTL_DATA_IN, CommandTimeout);
+                    if (!r.IsSuccess || r.DataTransferLength < 28)
+                    {
+                        continue;
+                    }
+                    bool isData = (trackData[5] & 0x04) != 0 && (trackData[6] & 0x40) == 0;
+                    if (!isData)
+                    {
+                        continue;
+                    }
+                    int start = (trackData[8] << 24) | (trackData[9] << 16) | (trackData[10] << 8) | trackData[11];
+                    int size = (trackData[24] << 24) | (trackData[25] << 16) | (trackData[26] << 8) | trackData[27];
+                    if (start >= 0 && size > 0)
+                    {
+                        int end = (int)Math.Min(int.MaxValue, (long)start + size);
+                        spans.Add((start, end));
+                    }
+                }
+            }
+
+            return spans;
         }
 
         /// <summary>TEST UNIT READY: confirms pass-through is permitted on this handle.</summary>
@@ -1717,10 +2002,14 @@ public static partial class PhysicalSectorReader
             return null;
         }
 
+        private const int MaxNotReadyRetries = 6;
+        private static readonly TimeSpan NotReadyBackoff = TimeSpan.FromMilliseconds(150);
+
         private string? ReadOnce(int lba, int count, Span<byte> span, out bool tooLargeForAdapter)
         {
             tooLargeForAdapter = false;
             ScsiExecutionResult result = default!;
+            int notReadyRetries = 0;
             for (int attempt = 0; attempt < 2; attempt++)
             {
                 bool fua = WantsFua(lba, count);
@@ -1736,6 +2025,13 @@ public static partial class PhysicalSectorReader
                 {
                     tooLargeForAdapter = true;
                     break;
+                }
+                if (result.SenseInfo is { SenseKey: 0x02, Asc: 0x04, Ascq: 0x01 } && notReadyRetries < MaxNotReadyRetries)
+                {
+                    notReadyRetries++;
+                    _sleep(NotReadyBackoff);
+                    attempt--;
+                    continue;
                 }
                 if (fua && RejectsFua(result))
                 {
@@ -1859,21 +2155,27 @@ public static partial class PhysicalSectorReader
         return handle;
     }
 
-    private static unsafe bool DeviceIoControlBuffer(SafeFileHandle handle, uint code, byte[] input, byte[] output, out int win32Error)
+    private static bool DeviceIoControlBuffer(SafeFileHandle handle, uint code, byte[] input, byte[] output, out int win32Error)
+        => DeviceIoControlBuffer(handle, code, input, output, out win32Error, out _);
+
+    private static unsafe bool DeviceIoControlBuffer(SafeFileHandle handle, uint code, byte[] input, byte[] output, out int win32Error, out int bytesReturned)
     {
         win32Error = 0;
+        bytesReturned = 0;
         fixed (byte* pIn = input)
         fixed (byte* pOut = output)
         {
             bool ok = DeviceIoControl(handle, code,
                 input.Length > 0 ? pIn : null, (uint)input.Length,
                 output.Length > 0 ? pOut : null, (uint)output.Length,
-                out _, nint.Zero);
+                out uint returned, nint.Zero);
             if (!ok)
             {
                 win32Error = Marshal.GetLastWin32Error();
+                return false;
             }
-            return ok;
+            bytesReturned = (int)Math.Min(returned, (uint)output.Length);
+            return true;
         }
     }
 

@@ -6,6 +6,10 @@
   </PropertyGroup>
 
   <ItemGroup>
+    <InternalsVisibleTo Include="CdBurner.Hardware.Tests" />
+  </ItemGroup>
+
+  <ItemGroup>
     <ProjectReference Include="..\CdBurner.Core\CdBurner.Core.csproj" />
   </ItemGroup>
 

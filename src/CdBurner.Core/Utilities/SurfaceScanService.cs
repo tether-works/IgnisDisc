@@ -239,7 +239,8 @@ public class SurfaceScanService
 
         int startLba = Math.Max(0, options.StartLba);
         var scanRanges = BuildScanRanges(recorder, mediaStatus, options, startLba);
-        int totalSectors = scanRanges.Sum(r => r.SectorCount);
+        long totalSectorsLong = scanRanges.Sum(r => (long)r.SectorCount);
+        int totalSectors = (int)Math.Min(int.MaxValue, totalSectorsLong);
 
         if (totalSectors <= 0)
         {
@@ -265,13 +266,13 @@ public class SurfaceScanService
             int sectorSize = range.Raw2352Mode ? OpticalConstants.RawSectorSize : OpticalConstants.DataSectorSize;
             int baseRate = WriteSpeedDescriptor.GetBaseRate(mediaStatus.MediaType, isAudio: range.Raw2352Mode);
             int currentLba = range.StartLba;
-            int endLba = range.StartLba + range.SectorCount;
+            long endLba = (long)range.StartLba + range.SectorCount;
 
             while (currentLba < endLba)
             {
                 cancellationToken.ThrowIfCancellationRequested();
 
-                int currentBlockSize = Math.Min(blockSize, endLba - currentLba);
+                int currentBlockSize = (int)Math.Min(blockSize, endLba - currentLba);
                 var blockSw = Stopwatch.StartNew();
                 bool isDamaged = false;
                 int sectorsReadInBlock = 0;
@@ -291,12 +292,17 @@ public class SurfaceScanService
                         progress: null,
                         cancellationToken: cancellationToken).ConfigureAwait(false);
 
-                    if (!ripResult.Success || ripResult.BadSectorsCount > 0 || sectorsReadInBlock < currentBlockSize)
+                    if (!ripResult.Success)
+                    {
+                        ThrowIfDriveDisconnected(recorder, ripResult);
+                        isDamaged = true;
+                    }
+                    else if (ripResult.BadSectorsCount > 0 || sectorsReadInBlock < currentBlockSize)
                     {
                         isDamaged = true;
                     }
                 }
-                catch (Exception ex) when (ex is not OperationCanceledException)
+                catch (IOException ex) when (IsMediaReadException(ex, recorder))
                 {
                     isDamaged = true;
                 }
@@ -345,7 +351,7 @@ public class SurfaceScanService
 
                 blocks.Add(blockResult);
                 options.BlockProgress?.Report(blockResult);
-                scannedSoFarTotal += currentBlockSize;
+                scannedSoFarTotal = (int)Math.Min(int.MaxValue, (long)scannedSoFarTotal + currentBlockSize);
 
                 if (progress != null)
                 {
@@ -363,10 +369,14 @@ public class SurfaceScanService
                         BufferLevelPercent = 100.0,
                         CurrentSpeedMultiplier = multiplier,
                         CurrentBytesPerSecond = (long)(kbPerSec * 1024.0),
-                        CurrentActionDescription = $"Scanning LBA {currentLba}..{currentLba + currentBlockSize - 1} ({status})"
+                        CurrentActionDescription = $"Scanning LBA {currentLba}..{(long)currentLba + currentBlockSize - 1} ({status})"
                     });
                 }
 
+                if (currentLba > int.MaxValue - currentBlockSize)
+                {
+                    break;
+                }
                 currentLba += currentBlockSize;
             }
         }
@@ -376,7 +386,7 @@ public class SurfaceScanService
         int goodBlocks = blocks.Count(b => b.Status == SectorHealthStatus.Good);
         int slowBlocks = blocks.Count(b => b.Status == SectorHealthStatus.Slow);
         int damagedBlocks = blocks.Count(b => b.Status == SectorHealthStatus.Damaged);
-        int totalSectorsScanned = blocks.Sum(b => b.SectorCount);
+        int totalSectorsScanned = (int)Math.Min(int.MaxValue, blocks.Sum(b => (long)b.SectorCount));
 
         var validBlocks = blocks.Where(b => b.Status != SectorHealthStatus.Damaged && b.ReadSpeedKilobytesPerSec > 0).ToList();
         double minSpeed = validBlocks.Count > 0 ? validBlocks.Min(b => b.ReadSpeedKilobytesPerSec) : 0.0;
@@ -394,6 +404,44 @@ public class SurfaceScanService
             Blocks: blocks);
     }
 
+    private static bool IsMediaReadException(IOException ex, IDiscRecorderBackend recorder) =>
+        string.Equals(ex.GetType().Name, "OpticalReadException", StringComparison.Ordinal) &&
+        recorder.QueryMediaStatus().MediaPresent;
+
+    private static void ThrowIfDriveDisconnected(IDiscRecorderBackend recorder, RipOperationResult ripResult)
+    {
+        bool isOpticalRead = string.Equals(ripResult.Exception?.GetType().Name, "OpticalReadException", StringComparison.Ordinal);
+        if (ripResult.Exception is { } ex && !isOpticalRead)
+        {
+            if (ex is not IOException || IsDisconnectMessage(ripResult.ErrorMessage) || !recorder.QueryMediaStatus().MediaPresent)
+            {
+                System.Runtime.ExceptionServices.ExceptionDispatchInfo.Throw(ex);
+            }
+        }
+
+        bool hasBadSectors = ripResult.BadSectorsCount > 0 || (ripResult.BadSectorsList is { Count: > 0 });
+        if (!hasBadSectors || IsDisconnectMessage(ripResult.ErrorMessage) || !recorder.QueryMediaStatus().MediaPresent)
+        {
+            throw new IOException(ripResult.ErrorMessage ?? "Drive disconnected or media removed during surface scan.");
+        }
+    }
+
+    private static bool IsDisconnectMessage(string? message)
+    {
+        if (string.IsNullOrWhiteSpace(message))
+        {
+            return false;
+        }
+
+        return message.Contains("DeviceIoControl failed", StringComparison.OrdinalIgnoreCase)
+            || message.Contains("Win32 error", StringComparison.OrdinalIgnoreCase)
+            || message.Contains("Unable to open drive", StringComparison.OrdinalIgnoreCase)
+            || message.Contains("No media", StringComparison.OrdinalIgnoreCase)
+            || message.Contains("not connected", StringComparison.OrdinalIgnoreCase)
+            || message.Contains("cannot be read", StringComparison.OrdinalIgnoreCase)
+            || message.Contains("not ready", StringComparison.OrdinalIgnoreCase);
+    }
+
     private static List<(int StartLba, int SectorCount, bool Raw2352Mode)> BuildScanRanges(
         IDiscRecorderBackend recorder,
         MediaStatusDto mediaStatus,
@@ -404,56 +452,69 @@ public class SurfaceScanService
         // recorded track individually so multi-session inter-session gaps (~11,400 unrecorded sectors) are skipped
         // and CD-DA audio tracks are read in 2352-byte raw mode automatically.
         if (startLba == 0 && !options.SectorCount.HasValue &&
-            recorder is IDiscTocProvider tocProvider &&
-            tocProvider.ReadTableOfContents() is { Count: > 0 } tocTracks)
+            recorder is IDiscTocProvider tocProvider)
         {
-            var tocRanges = new List<(int StartLba, int SectorCount, bool Raw2352Mode)>(tocTracks.Count);
-            foreach (var track in tocTracks)
+            IReadOnlyList<DiscTocTrack>? tocTracks = null;
+            try
             {
-                int tStart = Math.Max(0, track.StartLba);
-                int tCount = track.SectorCount;
-                if (!track.IsAudio && mediaStatus.UsedSectors > tStart && tStart + tCount > mediaStatus.UsedSectors)
-                {
-                    tCount = mediaStatus.UsedSectors - tStart;
-                }
-
-                if (tCount > 0)
-                {
-                    tocRanges.Add((tStart, tCount, options.Raw2352Mode || track.IsAudio));
-                }
+                tocTracks = tocProvider.ReadTableOfContents();
+            }
+            catch (Exception ex) when (ex is IOException or UnauthorizedAccessException or System.ComponentModel.Win32Exception
+                or System.Runtime.InteropServices.COMException or InvalidOperationException or NotSupportedException)
+            {
+                tocTracks = null;
             }
 
-            if (tocRanges.Count > 0)
+            if (tocTracks is { Count: > 0 })
             {
-                return tocRanges;
+                var tocRanges = new List<(int StartLba, int SectorCount, bool Raw2352Mode)>(tocTracks.Count);
+                foreach (var track in tocTracks)
+                {
+                    int tStart = Math.Max(0, track.StartLba);
+                    int tCount = Math.Min(Math.Max(0, track.SectorCount), int.MaxValue - tStart);
+                    if (!track.IsAudio && mediaStatus.UsedSectors > tStart && (long)tStart + tCount > mediaStatus.UsedSectors)
+                    {
+                        tCount = mediaStatus.UsedSectors - tStart;
+                    }
+
+                    if (tCount > 0)
+                    {
+                        tocRanges.Add((tStart, tCount, options.Raw2352Mode || track.IsAudio));
+                    }
+                }
+
+                if (tocRanges.Count > 0)
+                {
+                    return tocRanges;
+                }
             }
         }
 
-        int totalSectors;
+        long totalSectors;
         if (options.SectorCount.HasValue && options.SectorCount.Value > 0)
         {
             totalSectors = options.SectorCount.Value;
         }
         else if (mediaStatus.UsedSectors > 0)
         {
-            totalSectors = Math.Max(0, mediaStatus.UsedSectors - startLba);
+            totalSectors = Math.Max(0L, (long)mediaStatus.UsedSectors - startLba);
         }
         else if (mediaStatus.TotalSectors > 0)
         {
-            totalSectors = Math.Max(0, mediaStatus.TotalSectors - startLba);
+            totalSectors = Math.Max(0L, (long)mediaStatus.TotalSectors - startLba);
         }
         else if (mediaStatus.LastRecordedLba >= 0)
         {
-            totalSectors = Math.Max(0, (mediaStatus.LastRecordedLba + 1) - startLba);
+            totalSectors = Math.Max(0L, (long)mediaStatus.LastRecordedLba + 1 - startLba);
         }
         else
         {
             totalSectors = 0;
         }
 
-        totalSectors = Math.Min(totalSectors, int.MaxValue - startLba);
-        return totalSectors > 0
-            ? new List<(int StartLba, int SectorCount, bool Raw2352Mode)> { (startLba, totalSectors, options.Raw2352Mode) }
+        int clampedSectors = (int)Math.Min(totalSectors, int.MaxValue - startLba);
+        return clampedSectors > 0
+            ? new List<(int StartLba, int SectorCount, bool Raw2352Mode)> { (startLba, clampedSectors, options.Raw2352Mode) }
             : new List<(int StartLba, int SectorCount, bool Raw2352Mode)>();
     }
 }

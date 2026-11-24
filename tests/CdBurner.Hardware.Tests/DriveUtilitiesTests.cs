@@ -250,6 +250,21 @@ public class DriveUtilitiesTests
         Assert.False(medium.IsBlank);
     }
 
+    [Theory]
+    [InlineData(DiscMediaType.CdRw, true)]
+    [InlineData(DiscMediaType.DvdMinusRw, true)]
+    [InlineData(DiscMediaType.DvdPlusRw, true)]
+    [InlineData(DiscMediaType.DvdRam, true)]
+    [InlineData(DiscMediaType.BdRe, true)]
+    [InlineData(DiscMediaType.BdReDualLayer, true)]
+    [InlineData(DiscMediaType.BdxlReTripleLayer, true)]
+    [InlineData(DiscMediaType.BdR, false)]
+    [InlineData(DiscMediaType.CdR, false)]
+    public void DiscEraseService_IsRewritable_MatchesAllRewritableMediaIncludingBdReVariants(DiscMediaType mediaType, bool expected)
+    {
+        Assert.Equal(expected, DiscEraseService.IsRewritable(mediaType));
+    }
+
     [Fact]
     public async Task DiscEraseService_NoMedia_ReturnsFailure()
     {
@@ -477,6 +492,115 @@ public class DriveUtilitiesTests
             service.ScanAsync(recorder, engine, options: null, progress: null, cancellationToken: cts.Token));
     }
 
+    [Fact]
+    public async Task SurfaceScanService_DriveDisconnectOrTransportError_SurfacesExceptionInsteadOfDamaged()
+    {
+        using var medium = new VirtualDiscMedium(DiscMediaType.CdRom, 1024, isBlank: false) { UsedSectors = 1024 };
+        using var recorder = new VirtualDiscRecorder();
+        recorder.InsertMedia(medium);
+        var initialStatus = recorder.QueryMediaStatus();
+
+        var disconnectingEngine = new DisconnectOnSecondBlockEngine(recorder);
+        var service = new SurfaceScanService(disconnectingEngine);
+
+        var ex = await Assert.ThrowsAsync<IOException>(() =>
+            service.ScanAsync(recorder, new SurfaceScanOptions { BlockSizeSectors = 256 }));
+        Assert.Contains("disconnected", ex.Message, StringComparison.OrdinalIgnoreCase);
+
+        // Also when ReadTableOfContents throws, scan falls back to MediaStatusDto instead of crashing.
+        var throwingTocRecorder = new StubTocRecorder(initialStatus, () => throw new IOException("TOC read failed"));
+        var healthyEngine = new FixedSuccessReadEngine();
+        var fallbackReport = await new SurfaceScanService(healthyEngine).ScanAsync(
+            throwingTocRecorder, new SurfaceScanOptions { BlockSizeSectors = 256 });
+        Assert.Equal(1024, fallbackReport.TotalSectorsScanned);
+        Assert.Equal(4, fallbackReport.GoodBlocks);
+    }
+
+    [Fact]
+    public async Task SurfaceScanService_LargeTocTrackBounds_DoNotOverflowInt()
+    {
+        var status = new MediaStatusDto
+        {
+            MediaPresent = true,
+            MediaType = DiscMediaType.BdR,
+            TotalSectors = 12_000_000,
+            UsedSectors = 1024
+        };
+        var recorder = new StubTocRecorder(status, () => new[]
+        {
+            new DiscTocTrack(1, StartLba: 500, SectorCount: int.MaxValue - 100, IsAudio: false)
+        });
+        var report = await new SurfaceScanService(new FixedSuccessReadEngine()).ScanAsync(
+            recorder, new SurfaceScanOptions { BlockSizeSectors = 256 });
+
+        Assert.Equal(524, report.TotalSectorsScanned);
+        Assert.Equal(0, report.DamagedBlocks);
+    }
+
+    private sealed class DisconnectOnSecondBlockEngine(VirtualDiscRecorder recorder) : IBurnEngineBackend
+    {
+        private int _calls;
+
+        public async Task<RipOperationResult> ReadSectorsAsync(
+            IDiscRecorderBackend r, int startLba, int sectorCount, bool raw2352Mode,
+            Func<int, ReadOnlyMemory<byte>, ValueTask> sectorConsumer, IProgress<BurnProgressSnapshot>? progress, CancellationToken ct)
+        {
+            if (++_calls == 2)
+            {
+                recorder.EjectMedia();
+                return RipOperationResult.Failed("Drive disconnected (Win32 error 1167).");
+            }
+            byte[] sector = new byte[2048];
+            for (int i = 0; i < sectorCount; i++)
+            {
+                await sectorConsumer(startLba + i, sector);
+            }
+            return RipOperationResult.Succeeded(sectorCount, TimeSpan.Zero);
+        }
+
+        public Task<BurnOperationResult> BurnDataStreamAsync(IDiscRecorderBackend r, Stream s, DataBurnOptions o, IProgress<BurnProgressSnapshot>? p, CancellationToken ct) => throw new NotSupportedException();
+        public Task<BurnOperationResult> BurnAudioTracksAsync(IDiscRecorderBackend r, IReadOnlyList<AudioTrackSource> t, AudioBurnOptions o, IProgress<BurnProgressSnapshot>? p, CancellationToken ct) => throw new NotSupportedException();
+        public Task<BurnOperationResult> EraseMediaAsync(IDiscRecorderBackend r, bool f, IProgress<BurnProgressSnapshot>? p, CancellationToken ct) => throw new NotSupportedException();
+    }
+
+    private sealed class FixedSuccessReadEngine : IBurnEngineBackend
+    {
+        public async Task<RipOperationResult> ReadSectorsAsync(
+            IDiscRecorderBackend r, int startLba, int sectorCount, bool raw2352Mode,
+            Func<int, ReadOnlyMemory<byte>, ValueTask> sectorConsumer, IProgress<BurnProgressSnapshot>? progress, CancellationToken ct)
+        {
+            byte[] sector = new byte[2048];
+            for (int i = 0; i < sectorCount; i++)
+            {
+                await sectorConsumer(startLba + i, sector);
+            }
+            return RipOperationResult.Succeeded(sectorCount, TimeSpan.Zero);
+        }
+
+        public Task<BurnOperationResult> BurnDataStreamAsync(IDiscRecorderBackend r, Stream s, DataBurnOptions o, IProgress<BurnProgressSnapshot>? p, CancellationToken ct) => throw new NotSupportedException();
+        public Task<BurnOperationResult> BurnAudioTracksAsync(IDiscRecorderBackend r, IReadOnlyList<AudioTrackSource> t, AudioBurnOptions o, IProgress<BurnProgressSnapshot>? p, CancellationToken ct) => throw new NotSupportedException();
+        public Task<BurnOperationResult> EraseMediaAsync(IDiscRecorderBackend r, bool f, IProgress<BurnProgressSnapshot>? p, CancellationToken ct) => throw new NotSupportedException();
+    }
+
+    private sealed class StubTocRecorder(MediaStatusDto status, Func<IReadOnlyList<DiscTocTrack>> readToc) : IDiscRecorderBackend, IDiscTocProvider
+    {
+        public string UniqueId => "TEST-TOC";
+        public string VolumePath => "Z:";
+        public string VendorId => "TEST";
+        public string ProductId => "DRIVE";
+        public string ProductRevision => "1.0";
+        public bool IsVirtual => true;
+        public DriveCapabilitiesDto GetCapabilities() => new();
+        public MediaStatusDto QueryMediaStatus() => status;
+        public void EjectMedia() { }
+        public void CloseTray() { }
+        public bool AcquireExclusiveAccess(string clientName) => true;
+        public void ReleaseExclusiveAccess() { }
+        public IReadOnlyList<DiscTocTrack> ReadTableOfContents() => readToc();
+        public byte[]? ReadCdTextPacks() => null;
+        public void Dispose() { }
+    }
+
     #endregion
 
     #region 3. BookTypeService Tests
@@ -617,19 +741,28 @@ public class DriveUtilitiesTests
     [Fact]
     public void BookTypeService_BuildBookTypeCommand_BuildsBothValidCdbAndHeader()
     {
-        var (cdb, header) = BookTypeService.BuildBookTypeCommand(DvdBookType.DvdRom);
+        var (cdb, payload) = BookTypeService.BuildBookTypeCommand(DvdBookType.DvdRom);
 
         // 12-byte CDB
         Assert.Equal(12, cdb.Length);
         Assert.Equal(0xBF, cdb[0]);
         Assert.Equal(0x00, cdb[7]);
+        Assert.Equal(0x00, cdb[8]);
+        Assert.Equal(0x14, cdb[9]); // 4-byte header + 16-byte structure data = 20
 
-        // 4-byte header
-        Assert.Equal(4, header.Length);
-        Assert.Equal(0x00, header[0]);
-        Assert.Equal(0x10, header[1]);
-        Assert.Equal(0x00, header[2]);
-        Assert.Equal(0x00, header[3]);
+        // 4-byte header + 16-byte Physical Format Information payload
+        Assert.Equal(20, payload.Length);
+        Assert.Equal(0x00, payload[0]);
+        Assert.Equal(0x10, payload[1]);
+        Assert.Equal(0x00, payload[2]);
+        Assert.Equal(0x00, payload[3]);
+        Assert.Equal((byte)(((byte)DvdBookType.DvdRom << 4) | 0x01), payload[4]);
+
+        var (_, plusRPayload) = BookTypeService.BuildBookTypeCommand(DvdBookType.DvdPlusR);
+        Assert.Equal((byte)(((byte)DvdBookType.DvdPlusR << 4) | 0x01), plusRPayload[4]);
+
+        var (_, plusRDlPayload) = BookTypeService.BuildBookTypeCommand(DvdBookType.DvdPlusRDualLayer);
+        Assert.Equal((byte)(((byte)DvdBookType.DvdPlusRDualLayer << 4) | 0x01), plusRDlPayload[4]);
     }
 
     [Fact]

@@ -124,6 +124,12 @@ public static class MmcMediaIdInspector
             return null;
         }
 
+        ushort dataLength = BinaryPrimitives.ReadUInt16BigEndian(response.Slice(0, 2));
+        if (dataLength < 33)
+        {
+            return null;
+        }
+
         Span<byte> midBytes = stackalloc byte[12];
         if (response[20] == 0x03 && response[28] == 0x04)
         {
@@ -159,6 +165,12 @@ public static class MmcMediaIdInspector
             return null;
         }
 
+        ushort dataLength = BinaryPrimitives.ReadUInt16BigEndian(response.Slice(0, 2));
+        if (dataLength < 33)
+        {
+            return null;
+        }
+
         string vendor = ExtractPrintableAscii(response.Slice(23, 8));
         string mediaTypeId = ExtractPrintableAscii(response.Slice(31, 3));
         byte revision = response[34];
@@ -186,6 +198,12 @@ public static class MmcMediaIdInspector
     {
         // 4-byte header + DI Unit header ("DI" at offset 4..5) + BD DI body
         if (response.Length < 113)
+        {
+            return null;
+        }
+
+        ushort dataLength = BinaryPrimitives.ReadUInt16BigEndian(response.Slice(0, 2));
+        if (dataLength < 111)
         {
             return null;
         }
@@ -258,7 +276,7 @@ public static class MmcMediaIdInspector
             (97, 17, 0) => "Moser Baer India Limited",
             (97, 18, 1) => "WEALTH FAIR INVESTMENT LIMITED",
             (97, 18, 6) => "TAROKO INTERNATIONAL CO.,LTD.",
-            (97, 20, 1) => "??? CDA Datentr�ger Albrechts GmbH.",
+            (97, 20, 1) => "??? CDA Datenträger Albrechts GmbH.",
             (97, 21, 3) => "Bestdisc Technology Corporation",
             (97, 21, 4) => "Optical Disc Manufacturing Equipment",
             (97, 21, 5) => "Sound Sound Multi-Media Development Limited",
@@ -316,7 +334,7 @@ public static class MmcMediaIdInspector
             (97, 29, 3) => "Hile Optical Disc Technology Corp.",
             (97, 29, 4) => "VIVA MAGNETICS LIMITED",
             (97, 29, 5) => "General Magnetics Ld",
-            (97, 30, 1) => "CDA Datentr�ger Albrechts GmbH.",
+            (97, 30, 1) => "CDA Datenträger Albrechts GmbH.",
             (97, 31, 0) => "Ritek Co.",
             (97, 31, 3) => "Grand Advance Technology Ltd.",
             (97, 32, 0) => "TDK Corporation",
@@ -356,7 +374,7 @@ public static class MmcMediaIdInspector
             (97, 49, 6) => "Matsushita Electric Industrial Co.,Ltd.",
             (97, 50, 1) => "Vanguard Disc Inc.",
             (97, 50, 2) => "Mitsubishi Chemical Corporation",
-            (97, 50, 3) => "CDA Datentr�ger Albrechts GmbH.",
+            (97, 50, 3) => "CDA Datenträger Albrechts GmbH.",
             (97, 51, 1) => "Grand Advance Technology Ltd.",
             (97, 51, 2) => "INFODISC Technology Co., Ltd.",
             (97, 51, 5) => "Hile Optical Disc Technology Corp.",

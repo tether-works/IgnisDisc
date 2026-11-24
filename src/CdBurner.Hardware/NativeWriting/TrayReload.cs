@@ -1,3 +1,4 @@
+using System.Diagnostics;
 using CdBurner.Hardware.Scsi;
 
 namespace CdBurner.Hardware.NativeWriting;
@@ -55,6 +56,7 @@ public static class TrayReload
         ArgumentNullException.ThrowIfNull(note);
         ArgumentNullException.ThrowIfNull(sleep);
         ArgumentNullException.ThrowIfNull(discReadsBlank);
+        ct.ThrowIfCancellationRequested();
 
         var info = ReadRemovableMedium(transport);
         if (info is null)
@@ -77,7 +79,9 @@ public static class TrayReload
             return false;
         }
 
+        ct.ThrowIfCancellationRequested();
         sleep(TimeSpan.FromSeconds(1));
+        ct.ThrowIfCancellationRequested();
         var load = transport.ExecuteCommand(MmcCommandBuilder.BuildStartStopUnitCdb(start: true, loadEject: true), Span<byte>.Empty,
             ScsiPassThroughNative.SCSI_IOCTL_DATA_UNSPECIFIED, CommandTimeout);
         if (!load.IsSuccess)
@@ -105,7 +109,8 @@ public static class TrayReload
     private static bool WaitUntilReady(IScsiTransport transport, Action<TimeSpan> sleep, CancellationToken ct)
     {
         var step = TimeSpan.FromMilliseconds(500);
-        for (var waited = TimeSpan.Zero; waited <= ReadyTimeout; waited += step)
+        var wallClock = Stopwatch.StartNew();
+        for (var waited = TimeSpan.Zero; ; waited += step)
         {
             ct.ThrowIfCancellationRequested();
             var r = transport.ExecuteCommand(new byte[6], Span<byte>.Empty, ScsiPassThroughNative.SCSI_IOCTL_DATA_UNSPECIFIED, CommandTimeout);
@@ -113,9 +118,13 @@ public static class TrayReload
             {
                 return true;
             }
+            if (wallClock.Elapsed >= ReadyTimeout || waited >= ReadyTimeout)
+            {
+                return false;
+            }
             // Becoming ready (2/04/xx), media changed (6/28/00) and no disc yet (2/3A/xx) while loading: wait.
+            ct.ThrowIfCancellationRequested();
             sleep(step);
         }
-        return false;
     }
 }

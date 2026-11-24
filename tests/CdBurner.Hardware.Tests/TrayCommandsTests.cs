@@ -152,6 +152,46 @@ public sealed class TrayCommandsTests
         Assert.Equal(0x02, cdb[4] & 0x03);
     }
 
+    [Fact]
+    public void Load_RespectsCancellationBeforeSendingCommands()
+    {
+        var transport = new Recording(featureReply: null);
+        using var cts = new CancellationTokenSource();
+        cts.Cancel();
+
+        Assert.Throws<OperationCanceledException>(() => TrayCommands.Load(transport, NoSleep, cts.Token));
+        Assert.Empty(transport.Cdbs);
+    }
+
+    [Fact]
+    public void Load_WhenDriveNeverBecomesReady_TimesOutAndReturnsFailure()
+    {
+        var drive = new VirtualMmcDrive { CanLoadTray = true };
+        TrayCommands.Eject(drive);
+        var notReady = new AlwaysNotReadyAfterLoadTransport(drive);
+
+        var result = TrayCommands.Load(notReady, NoSleep, CancellationToken.None);
+
+        Assert.False(result.Success);
+        Assert.Contains("not ready within", result.Message);
+    }
+
+    private sealed class AlwaysNotReadyAfterLoadTransport(VirtualMmcDrive inner) : IScsiTransport
+    {
+        public ScsiExecutionResult ExecuteCommand(ReadOnlySpan<byte> cdb, Span<byte> data, byte direction, TimeSpan timeout)
+        {
+            if (cdb[0] == 0x00) // TEST UNIT READY
+            {
+                byte[] sense = new byte[18];
+                sense[0] = 0x70; sense[2] = 0x02; sense[12] = 0x04; sense[13] = 0x01;
+                return ScsiExecutionResult.CheckCondition(0x02, 0, sense);
+            }
+            return inner.ExecuteCommand(cdb, data, direction, timeout);
+        }
+
+        public void Dispose() { }
+    }
+
     /// <summary>A transport that answers GET CONFIGURATION with a fixed reply (or fails it) and records every command.</summary>
     private sealed class Recording(byte[]? featureReply, bool refuseStartStop = false) : IScsiTransport
     {

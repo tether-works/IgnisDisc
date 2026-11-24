@@ -496,6 +496,23 @@ public sealed class NativeAudioBurnEngine : IBurnEngineBackend, IAudioDiscVerifi
             var writer = new NativeSaoAudioWriter(log, log.Note);
             result = WriteWithTestFirst(writer, request, log, progress, ct);
             log.Note($"Result: {(result.Success ? "success" : "failed")}: {result.Message}");
+            if (result.Verification is { Passed: true, OffsetSamples: int measured } && UsesWriteOffsets(recorder))
+            {
+                // The check compared the disc with what was sent, so this is the drive's own combined offset whatever shift was used.
+                try
+                {
+                    int? before = new DriveOffsetStore(DriveOffsetStorePath).RecordCombinedOffset(AccurateRipDriveOffsets.DriveName(recorder.VendorId, recorder.ProductId), measured);
+                    if (before is int old)
+                    {
+                        log.Note($"Combined offset measured {measured:+0;-0;0}, where an earlier burn measured {old:+0;-0;0}; the new value is kept.");
+                    }
+                }
+                catch (Exception ex) when (ex is IOException or UnauthorizedAccessException or InvalidOperationException)
+                {
+                    // Not saved: the next burn just measures it again. The disc is written either way.
+                    log.Note($"The measured combined offset could not be saved: {ex.Message}");
+                }
+            }
         }
         finally
         {
@@ -504,23 +521,6 @@ public sealed class NativeAudioBurnEngine : IBurnEngineBackend, IAudioDiscVerifi
         }
 
         LastResult = result;
-        if (result.Verification is { Passed: true, OffsetSamples: int measured } && UsesWriteOffsets(recorder))
-        {
-            // The check compared the disc with what was sent, so this is the drive's own combined offset whatever shift was used.
-            try
-            {
-                int? before = new DriveOffsetStore(DriveOffsetStorePath).RecordCombinedOffset(AccurateRipDriveOffsets.DriveName(recorder.VendorId, recorder.ProductId), measured);
-                if (before is int old)
-                {
-                    log.Note($"Combined offset measured {measured:+0;-0;0}, where an earlier burn measured {old:+0;-0;0}; the new value is kept.");
-                }
-            }
-            catch (Exception ex) when (ex is IOException or UnauthorizedAccessException or InvalidOperationException)
-            {
-                // Not saved: the next burn just measures it again. The disc is written either way.
-                log.Note($"The measured combined offset could not be saved: {ex.Message}");
-            }
-        }
         if (result.DiscRecorded && recorder is VirtualDiscRecorder { CurrentMedium: { } medium } && virtualDrive != null)
         {
             CommitToVirtualMedium(medium, virtualDrive, tracks, request);
@@ -710,7 +710,21 @@ public sealed class NativeAudioBurnEngine : IBurnEngineBackend, IAudioDiscVerifi
     {
         try
         {
-            string path = Path.Combine(_logDirectory, $"native-write-{DateTime.Now:yyyyMMdd-HHmmss}.log");
+            Directory.CreateDirectory(_logDirectory);
+            string stamp = DateTime.Now.ToString("yyyyMMdd-HHmmss", System.Globalization.CultureInfo.InvariantCulture);
+            string path = Path.Combine(_logDirectory, $"native-write-{stamp}.log");
+            for (int suffix = 2; ; suffix++)
+            {
+                try
+                {
+                    using (new FileStream(path, FileMode.CreateNew, FileAccess.Write, FileShare.None)) { }
+                    break;
+                }
+                catch (IOException) when (File.Exists(path) && suffix < 1000)
+                {
+                    path = Path.Combine(_logDirectory, $"native-write-{stamp}-{suffix}.log");
+                }
+            }
             log.SaveTo(path);
             LastLogPath = path;
         }

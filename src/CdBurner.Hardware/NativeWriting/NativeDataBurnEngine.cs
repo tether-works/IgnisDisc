@@ -364,7 +364,21 @@ public sealed class NativeDataBurnEngine : IBurnEngineBackend, IWriterMediaStatu
     {
         try
         {
-            string path = Path.Combine(_logDirectory, $"native-write-{DateTime.Now:yyyyMMdd-HHmmss}.log");
+            Directory.CreateDirectory(_logDirectory);
+            string stamp = DateTime.Now.ToString("yyyyMMdd-HHmmss", System.Globalization.CultureInfo.InvariantCulture);
+            string path = Path.Combine(_logDirectory, $"native-write-{stamp}.log");
+            for (int suffix = 2; ; suffix++)
+            {
+                try
+                {
+                    using (new FileStream(path, FileMode.CreateNew, FileAccess.Write, FileShare.None)) { }
+                    break;
+                }
+                catch (IOException) when (File.Exists(path) && suffix < 1000)
+                {
+                    path = Path.Combine(_logDirectory, $"native-write-{stamp}-{suffix}.log");
+                }
+            }
             log.SaveTo(path);
             LastLogPath = path;
         }

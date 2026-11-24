@@ -26,6 +26,18 @@ public sealed record ScsiSenseInfo(byte SenseKey, byte Asc, byte Ascq, string De
 /// </summary>
 public static class ScsiSenseDecoder
 {
+    // Standard SCSI Status Codes (SAM-5 §5.3)
+    public const byte StatusGood = 0x00;
+    public const byte StatusCheckCondition = 0x02;
+    public const byte StatusConditionMet = 0x04;
+    public const byte StatusBusy = 0x08;
+    public const byte StatusIntermediate = 0x10;
+    public const byte StatusIntermediateConditionMet = 0x14;
+    public const byte StatusReservationConflict = 0x18;
+    public const byte StatusTaskSetFull = 0x28;
+    public const byte StatusAcaActive = 0x30;
+    public const byte StatusTaskAborted = 0x40;
+
     // Common SCSI Sense Keys (SAM-5 / SPC-4)
     public const byte SenseKeyNoSense = 0x00;
     public const byte SenseKeyRecoveredError = 0x01;
@@ -281,6 +293,62 @@ public static class ScsiSenseDecoder
 
         string description = GetAscDescription(senseKey, asc, ascq);
         return new ScsiSenseInfo(senseKey, asc, ascq, description);
+    }
+
+    /// <summary>
+    /// Decodes SCSI sense data when <paramref name="scsiStatus"/> carries sense (<see cref="StatusCheckCondition"/>).
+    /// Non-Check-Condition statuses such as BUSY (0x08) and RESERVATION CONFLICT (0x18) do not return sense data in SAM-5,
+    /// so an all-zero or non-sense buffer returns <c>null</c> instead of synthetic 00/00/00 sense.
+    /// </summary>
+    public static ScsiSenseInfo? Decode(ReadOnlySpan<byte> senseBuffer, byte scsiStatus)
+    {
+        if (scsiStatus == StatusCheckCondition)
+        {
+            return Decode(senseBuffer);
+        }
+
+        if (senseBuffer.IsEmpty)
+        {
+            return null;
+        }
+
+        byte responseCode = (byte)(senseBuffer[0] & 0x7F);
+        return responseCode is 0x70 or 0x71 or 0x72 or 0x73 ? Decode(senseBuffer) : null;
+    }
+
+    /// <summary>
+    /// Returns the SAM-5 name for a SCSI status byte (e.g., <c>0x08</c> -&gt; <c>"Busy"</c>).
+    /// </summary>
+    public static string GetStatusName(byte scsiStatus) => scsiStatus switch
+    {
+        StatusGood => "Good",
+        StatusCheckCondition => "Check Condition",
+        StatusConditionMet => "Condition Met",
+        StatusBusy => "Busy",
+        StatusIntermediate => "Intermediate",
+        StatusIntermediateConditionMet => "Intermediate-Condition Met",
+        StatusReservationConflict => "Reservation Conflict",
+        StatusTaskSetFull => "Task Set Full",
+        StatusAcaActive => "ACA Active",
+        StatusTaskAborted => "Task Aborted",
+        _ => $"Status 0x{scsiStatus:X2}"
+    };
+
+    /// <summary>
+    /// Formats a human-readable error message for a non-Good SCSI status and optional decoded sense.
+    /// </summary>
+    public static string FormatStatusError(byte scsiStatus, ScsiSenseInfo? sense)
+    {
+        if (scsiStatus == StatusCheckCondition)
+        {
+            return $"SCSI Check Condition (Status 0x{scsiStatus:X2}): {sense?.Description ?? "Unknown sense"}";
+        }
+
+        string statusName = GetStatusName(scsiStatus);
+        string prefix = statusName.StartsWith("Status ", StringComparison.Ordinal)
+            ? $"SCSI {statusName}"
+            : $"SCSI {statusName} (Status 0x{scsiStatus:X2})";
+        return sense != null ? $"{prefix}: {sense.Description}" : prefix;
     }
 
     /// <summary>

@@ -472,11 +472,35 @@ public class MmcWriteCapabilityProbeTests
     [InlineData(97, 15, 2, "Mitsubishi Chemical Corporation")]
     [InlineData(97, 22, 1, "Seantram Technology Inc.")]
     [InlineData(97, 26, 6, "CMC Magnetics Corporation")]
+    [InlineData(97, 30, 1, "CDA Datenträger Albrechts GmbH.")]
     [InlineData(97, 34, 2, "Mitsubishi Chemical Corporation")]
+    [InlineData(97, 50, 3, "CDA Datenträger Albrechts GmbH.")]
     [InlineData(97, 99, 9, "Unknown Manufacturer")]
     public void LookupCdAtipManufacturer_MatchesOrangeBookAssignments(int m, int s, int frameTens, string expected)
     {
         Assert.Equal(expected, MmcMediaIdInspector.LookupCdAtipManufacturer(m, s, frameTens));
+    }
+
+    [Fact]
+    public void DvdAndBdParsers_RejectTruncatedHeaderDataLength()
+    {
+        byte[] pre = new byte[68];
+        BinaryPrimitives.WriteUInt16BigEndian(pre.AsSpan(0, 2), 10); // too short
+        pre[20] = 0x03; pre[28] = 0x04;
+        "MCC 03"u8.CopyTo(pre.AsSpan(21));
+        "RG20  "u8.CopyTo(pre.AsSpan(29));
+        Assert.Null(MmcMediaIdInspector.ParseDvdPreRecordedLeadIn(pre));
+
+        byte[] adip = new byte[40];
+        BinaryPrimitives.WriteUInt16BigEndian(adip.AsSpan(0, 2), 10); // too short
+        "YUDEN000"u8.CopyTo(adip.AsSpan(23));
+        Assert.Null(MmcMediaIdInspector.ParseDvdAdip(adip));
+
+        byte[] bd = new byte[120];
+        BinaryPrimitives.WriteUInt16BigEndian(bd.AsSpan(0, 2), 20); // too short
+        bd[4] = (byte)'D'; bd[5] = (byte)'I';
+        "MILLEN"u8.CopyTo(bd.AsSpan(104));
+        Assert.Null(MmcMediaIdInspector.ParseBdDiscInfo(bd));
     }
 
     [Fact]
