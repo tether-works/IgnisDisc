@@ -39,6 +39,13 @@ public class RipOptions
     public bool Raw2352Mode { get; set; } = false;
 
     /// <summary>
+    /// When true on a cooked 2,048-byte CD data rip, enables Mode Page 0x01 fast salvage and attempts to re-read
+    /// failed sectors raw (2,352 bytes) with raw L-EC parameters and ECMA-130 P/Q parity correction before reporting
+    /// them as unreadable.
+    /// </summary>
+    public bool RawSectorSalvage { get; set; } = false;
+
+    /// <summary>
     /// Optional speed descriptor request for the rip operation.
     /// </summary>
     public WriteSpeedDescriptor? Speed { get; set; }
@@ -324,7 +331,8 @@ public class DiscRipperService
                 return true;
             },
             onProgress: done => ReportProgress(done, "RippingSectors"),
-            cancellationToken: ct).ConfigureAwait(false);
+            cancellationToken: ct,
+            rawSectorSalvage: !options.Raw2352Mode && options.RawSectorSalvage).ConfigureAwait(false);
 
         totalRetries = outcome.TotalRetries;
 
@@ -338,7 +346,8 @@ public class DiscRipperService
                 BadSectorsCount = badSectorLbas.Count,
                 BadSectorsList = badSectorLbas,
                 TotalTime = sw.Elapsed,
-                TotalRetriesPerformed = totalRetries
+                TotalRetriesPerformed = totalRetries,
+                RawRecoveredSectorsCount = outcome.RawRecoveredSectors
             };
         }
 
@@ -352,7 +361,8 @@ public class DiscRipperService
             BadSectorsCount = badSectorLbas.Count,
             BadSectorsList = badSectorLbas,
             TotalTime = sw.Elapsed,
-            TotalRetriesPerformed = totalRetries
+            TotalRetriesPerformed = totalRetries,
+            RawRecoveredSectorsCount = outcome.RawRecoveredSectors
         };
     }
 

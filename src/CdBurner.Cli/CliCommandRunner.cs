@@ -3232,6 +3232,7 @@ public static partial class CliCommandRunner
 
         var progress = cmd.IsJson ? null : new Progress<string>(message => stdout.WriteLine($"  {message}"));
         IReadOnlyList<int> unreadable = Array.Empty<int>();
+        int rawRecoveredSectors = 0;
         string? ripped = null;
         if (driveId != null)
         {
@@ -3242,12 +3243,13 @@ public static partial class CliCommandRunner
                 stdout.WriteLine($"Reading the disc in {driveId} (up to {retries} retries per bad sector)...");
             }
             var rip = await new DiscRipperService().RipToIsoAsync(recorder, burnEngine, ripped,
-                new RipOptions { MaxRetriesPerSector = retries, ContinueOnUnreadableSector = true }).ConfigureAwait(false);
+                new RipOptions { MaxRetriesPerSector = retries, ContinueOnUnreadableSector = true, RawSectorSalvage = true }).ConfigureAwait(false);
             if (!File.Exists(ripped))
             {
                 throw new CommandLineException("The disc could not be read: " + (rip.ErrorMessage ?? "unknown error"));
             }
             unreadable = rip.BadSectorLbas;
+            rawRecoveredSectors = rip.RawRecoveredSectorsCount;
             image = ripped;
         }
         else if (!File.Exists(image))
@@ -3262,6 +3264,10 @@ public static partial class CliCommandRunner
 
         var report = await ArchiveRecoveryService.RecoverFromImageAsync(
             image!, unreadable, output, Par2Runner.FindPar2Executable(), progress).ConfigureAwait(false);
+        if (rawRecoveredSectors > 0)
+        {
+            report = report with { RawRecoveredSectors = rawRecoveredSectors };
+        }
 
         string reportPath = output.TrimEnd(Path.DirectorySeparatorChar) + "-recovery-report.txt";
         await File.WriteAllTextAsync(reportPath, report.ToText()).ConfigureAwait(false);

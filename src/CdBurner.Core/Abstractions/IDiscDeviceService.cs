@@ -115,6 +115,26 @@ public interface IBurnEngineBackend
         bool readFromDisc = false,
         bool strict = false,
         SectorRange? writtenRange = null) => null;
+
+    /// <summary>
+    /// Opens a reusable read session configured for salvage reading (applying Mode Page 0x01 fast salvage
+    /// Read Retry Count = 1 when supported). Falls back to <see cref="OpenReadSession"/> by default.
+    /// </summary>
+    ISectorReadSession? OpenSalvageReadSession(
+        IDiscRecorderBackend recorder,
+        bool raw2352Mode,
+        bool fastSalvage = true) =>
+        OpenReadSession(recorder, raw2352Mode);
+
+    /// <summary>
+    /// Attempts a single-sector raw 2,352-byte read with Mode Page 0x01 raw damaged-sector return enabled
+    /// (<c>TB=1, DCR=1, PER=1</c>, Read Retry Count = 1) so ECMA-130 P/Q parity correction can be attempted.
+    /// Returns <c>null</c> when unsupported or unreadable.
+    /// </summary>
+    Task<byte[]?> TryReadRawDamagedSectorAsync(
+        IDiscRecorderBackend recorder,
+        int lba,
+        CancellationToken cancellationToken) => Task.FromResult<byte[]?>(null);
 }
 
 /// <summary>
@@ -128,6 +148,14 @@ public interface ISectorReadSession : IDisposable
         Func<int, ReadOnlyMemory<byte>, ValueTask> sectorConsumer,
         IProgress<BurnProgressSnapshot>? progress,
         CancellationToken cancellationToken);
+
+    /// <summary>
+    /// Attempts a single-sector raw 2,352-byte read with Mode Page 0x01 raw damaged-sector return enabled
+    /// using the session's open handle. Returns <c>null</c> when unsupported or unreadable.
+    /// </summary>
+    Task<byte[]?> TryReadRawDamagedSectorAsync(
+        int lba,
+        CancellationToken cancellationToken) => Task.FromResult<byte[]?>(null);
 }
 
 /// <summary>
@@ -364,6 +392,7 @@ public class RipOperationResult
         init => BadSectorsList = value;
     }
     public int TotalRetriesPerformed { get; init; }
+    public int RawRecoveredSectorsCount { get; init; }
     public Exception? Exception { get; init; }
 
     /// <summary>

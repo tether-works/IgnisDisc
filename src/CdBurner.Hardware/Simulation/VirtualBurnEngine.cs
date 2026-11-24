@@ -653,7 +653,7 @@ public class VirtualBurnEngine : IBurnEngineBackend, ISecureAudioReader
             cancellationToken.ThrowIfCancellationRequested();
             int currentLba = startLba + i;
 
-            if (medium.SimulatedBadLbas.Contains(currentLba))
+            if (medium.SimulatedBadLbas.Contains(currentLba) || (!raw2352Mode && medium.SimulatedCorruptedRawSectors.ContainsKey(currentLba)))
             {
                 badSectors.Add(currentLba);
                 var badEx = new OpticalReadException(currentLba, $"Unrecovered read error at LBA {currentLba} (Sense: 03/11/00)");
@@ -786,6 +786,27 @@ public class VirtualBurnEngine : IBurnEngineBackend, ISecureAudioReader
         }
 
         return RipOperationResult.Succeeded(sectorCount, sw.Elapsed);
+    }
+
+    /// <inheritdoc/>
+    public Task<byte[]?> TryReadRawDamagedSectorAsync(
+        IDiscRecorderBackend recorder,
+        int lba,
+        CancellationToken cancellationToken)
+    {
+        cancellationToken.ThrowIfCancellationRequested();
+        var medium = ((recorder as VirtualDiscRecorder) ?? DefaultRecorder)?.CurrentMedium;
+        if (medium == null || lba < 0 || lba >= medium.TotalCapacitySectors || medium.SimulatedBadLbas.Contains(lba))
+        {
+            return Task.FromResult<byte[]?>(null);
+        }
+
+        if (medium.SimulatedCorruptedRawSectors.TryGetValue(lba, out byte[]? corrupted))
+        {
+            return Task.FromResult<byte[]?>((byte[])corrupted.Clone());
+        }
+
+        return Task.FromResult<byte[]?>(null);
     }
 
     /// <inheritdoc/>

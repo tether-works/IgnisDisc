@@ -28,6 +28,7 @@ public sealed class VirtualMmcDrive : IScsiTransport
     public const int MaxTransferBytes = 65536;
 
     private byte[] _modePage05 = CreateDefaultModePage05();
+    private byte[] _modePage01 = CreateDefaultModePage01();
     private CueSheetState? _cue;
     private int _nextLba;
     private int _writesSinceBufferFull;
@@ -229,6 +230,18 @@ public sealed class VirtualMmcDrive : IScsiTransport
 
     /// <summary>Additional sectors that fail read-back with 3/11/00.</summary>
     public HashSet<int> ReadErrorLbas { get; } = new();
+
+    /// <summary>
+    /// Raw 2,352-byte corrupted CD sectors keyed by LBA. Cooked READ(10) always fails with 3/11/00 on these LBAs,
+    /// while raw READ CD returns the stored 2,352-byte frame only when Mode Page 0x01 enables TB=1 and DCR=1.
+    /// </summary>
+    public Dictionary<int, byte[]> CorruptedRawSectors { get; } = new();
+
+    /// <summary>Refuse MODE SENSE(10) / MODE SELECT(10) for Mode Page 0x01 with 5/24/00.</summary>
+    public bool RejectsModePage01 { get; set; }
+
+    /// <summary>Refuse MODE SELECT(10) on Mode Page 0x01 when TB or DCR is set (5/26/00).</summary>
+    public bool RejectsRawErrorRecoveryBits { get; set; }
 
     /// <summary>Fail SYNCHRONIZE CACHE with a write/flush error.</summary>
     public bool RejectsSynchronizeCache { get; set; }
@@ -757,6 +770,29 @@ public sealed class VirtualMmcDrive : IScsiTransport
     public int WriteCommandCount { get; private set; }
     public bool SessionClosed { get; private set; }
     public ReadOnlySpan<byte> CurrentModePage05 => _modePage05;
+    public ReadOnlySpan<byte> CurrentModePage01 => _modePage01;
+    public byte ModePage01ReadRetryCount => _modePage01[3];
+    public bool ModePage01RawDamagedReturnEnabled => (_modePage01[2] & (ModePage01Parameters.FlagTb | ModePage01Parameters.FlagDcr)) == (ModePage01Parameters.FlagTb | ModePage01Parameters.FlagDcr);
+
+    /// <summary>
+    /// Builds a Mode 1 2,352-byte raw sector from the user data at <paramref name="lba"/>, flips
+    /// <paramref name="rawByteOffset"/> by <paramref name="xorMask"/>, and registers it in <see cref="CorruptedRawSectors"/>.
+    /// </summary>
+    public void InjectCorruptedMode1Sector(int lba, int rawByteOffset, byte xorMask = 0x5A)
+    {
+        if (lba < 0 || !TryFindRecorded(lba, 1, out byte[]? source, out int offset))
+        {
+            throw new ArgumentOutOfRangeException(nameof(lba), lba, "No recorded data sector found at LBA.");
+        }
+        if (rawByteOffset is < 0 or >= 2352)
+        {
+            throw new ArgumentOutOfRangeException(nameof(rawByteOffset));
+        }
+
+        byte[] raw = CdBurner.Core.Images.RawSectorCodec.Convert2048To2352Mode1(source.AsSpan(offset, 2048), lba);
+        raw[rawByteOffset] ^= xorMask;
+        CorruptedRawSectors[lba] = raw;
+    }
 
     /// <summary>True once audio has really been recorded (not just test-written).</summary>
     public bool Recorded { get; private set; }
@@ -1023,7 +1059,23 @@ public sealed class VirtualMmcDrive : IScsiTransport
 
     private ScsiExecutionResult ModeSense(ReadOnlySpan<byte> cdb, Span<byte> data)
     {
-        if ((cdb[2] & 0x3F) != WriteParametersPage.PageCode)
+        byte pageCode = (byte)(cdb[2] & 0x3F);
+        if (pageCode == ModePage01Parameters.PageCode)
+        {
+            if (RejectsModePage01)
+            {
+                return Sense(0x05, 0x24, 0x00);
+            }
+
+            byte[] page01 = (byte[])_modePage01.Clone();
+            page01[0] |= 0x80; // PS: the page can be saved
+            byte[] r01 = new byte[8 + page01.Length];
+            BinaryPrimitives.WriteUInt16BigEndian(r01, (ushort)(r01.Length - 2));
+            page01.CopyTo(r01, 8);
+            return CopyOut(r01, data);
+        }
+
+        if (pageCode != WriteParametersPage.PageCode)
         {
             return Sense(0x05, 0x24, 0x00);
         }
@@ -1049,6 +1101,42 @@ public sealed class VirtualMmcDrive : IScsiTransport
         {
             return Sense(0x05, 0x1A, 0x00); // parameter list length error
         }
+
+        int blockDescriptorLength = BinaryPrimitives.ReadUInt16BigEndian(list.Slice(6, 2));
+        int offset = 8 + blockDescriptorLength;
+        if (offset + 2 > list.Length)
+        {
+            return Sense(0x05, 0x26, 0x00);
+        }
+
+        byte pageCode = (byte)(list[offset] & 0x3F);
+        if (pageCode == ModePage01Parameters.PageCode)
+        {
+            if (RejectsModePage01)
+            {
+                return Sense(0x05, 0x24, 0x00);
+            }
+            if ((list[offset] & 0x80) != 0)
+            {
+                return Sense(0x05, 0x26, 0x00); // PS must be zero in MODE SELECT
+            }
+
+            int page01Length = list[offset + 1] + 2;
+            if (page01Length != _modePage01.Length || offset + page01Length > list.Length)
+            {
+                return Sense(0x05, 0x26, 0x00);
+            }
+
+            byte[] page01 = list.Slice(offset, page01Length).ToArray();
+            if (RejectsRawErrorRecoveryBits && (page01[2] & (ModePage01Parameters.FlagTb | ModePage01Parameters.FlagDcr)) != 0)
+            {
+                return Sense(0x05, 0x26, 0x00);
+            }
+
+            _modePage01 = page01;
+            return Good(0);
+        }
+
         if (IsPlusRLike || IsOverwritable)
         {
             // libburn's cookbook: no mode page 05h is sent for DVD+R (nor needed for DVD+RW). Stricter than most
@@ -1056,9 +1144,7 @@ public sealed class VirtualMmcDrive : IScsiTransport
             return Sense(0x05, 0x26, 0x00);
         }
 
-        int blockDescriptorLength = BinaryPrimitives.ReadUInt16BigEndian(list.Slice(6, 2));
-        int offset = 8 + blockDescriptorLength;
-        if (offset + 2 > list.Length || (list[offset] & 0x3F) != WriteParametersPage.PageCode)
+        if (pageCode != WriteParametersPage.PageCode)
         {
             return Sense(0x05, 0x26, 0x00);
         }
@@ -1292,6 +1378,22 @@ public sealed class VirtualMmcDrive : IScsiTransport
         return false;
     }
 
+    private bool HasCorruptedRawInRange(int lba, int count)
+    {
+        if (CorruptedRawSectors.Count == 0)
+        {
+            return false;
+        }
+        for (int i = 0; i < count; i++)
+        {
+            if (CorruptedRawSectors.ContainsKey(lba + i))
+            {
+                return true;
+            }
+        }
+        return false;
+    }
+
     private bool HasReadDifferenceAt(int lba) =>
         ReadBackDifferenceAtLba == lba || ReadBackDifferenceLbas.Contains(lba);
 
@@ -1308,6 +1410,11 @@ public sealed class VirtualMmcDrive : IScsiTransport
             return Sense(0x05, 0x64, 0x00);
         }
         if (HasReadErrorInRange(lba, count))
+        {
+            return Sense(0x03, 0x11, 0x00);
+        }
+        bool hasCorruptedRaw = HasCorruptedRawInRange(lba, count);
+        if (hasCorruptedRaw && !ModePage01RawDamagedReturnEnabled)
         {
             return Sense(0x03, 0x11, 0x00);
         }
@@ -1376,6 +1483,10 @@ public sealed class VirtualMmcDrive : IScsiTransport
         if (c2Bytes > 0)
         {
             C2ReadCommands++;
+        }
+        if (hasCorruptedRaw && (_modePage01[2] & ModePage01Parameters.FlagPer) != 0)
+        {
+            return ScsiExecutionResult.CheckCondition(0x02, (uint)(count * size), CreateSenseBytes(0x03, 0x11, 0x00));
         }
         return Good((uint)(count * size));
     }
@@ -1496,7 +1607,10 @@ public sealed class VirtualMmcDrive : IScsiTransport
                 return Sense(0x05, 0x21, 0x00);
             }
             byte[] programCopy = program.Slice((int)byteOffset, (int)byteCount).ToArray();
-            return ReadDataSectors(lba, count, sectorType, c2Bytes, cdb[9], data, i => programCopy.AsSpan(i * 2352, 2352).ToArray());
+            return ReadDataSectors(lba, count, sectorType, c2Bytes, cdb[9], data, i =>
+                CorruptedRawSectors.TryGetValue(lba + i, out byte[]? corrupted)
+                    ? corrupted
+                    : programCopy.AsSpan(i * 2352, 2352).ToArray());
         }
         if (Recorded && count > 0 && FindDataSession(lba) is { } session)
         {
@@ -1509,11 +1623,23 @@ public sealed class VirtualMmcDrive : IScsiTransport
             byte[]? sub = session.SubHeader;
             return ReadDataSectors(lba, count, sectorType, c2Bytes, cdb[9], data, i =>
             {
+                if (CorruptedRawSectors.TryGetValue(lba + i, out byte[]? corrupted))
+                {
+                    return corrupted;
+                }
                 var block = user.AsSpan(at + i * 2048, 2048);
                 return session.DataMode == 2
                     ? CdBurner.Core.Images.RawSectorCodec.Convert2048To2352Mode2Xa(block, lba + i, sub![0], sub[1], sub[2], sub[3])
                     : CdBurner.Core.Images.RawSectorCodec.Convert2048To2352Mode1(block, lba + i);
             });
+        }
+        if (count > 0 && lba >= 0 && !IsDvd && !IsBluRay && _recordedTracks.Count == 0 &&
+            DataDiscImage is { } directImage && (long)(lba + count) * 2048 <= directImage.Length)
+        {
+            return ReadDataSectors(lba, count, sectorType, c2Bytes, cdb[9], data, i =>
+                CorruptedRawSectors.TryGetValue(lba + i, out byte[]? corrupted)
+                    ? corrupted
+                    : CdBurner.Core.Images.RawSectorCodec.Convert2048To2352Mode1(directImage.AsSpan((lba + i) * 2048, 2048), lba + i));
         }
         if (sectorType is >= 2 and <= 5)
         {
@@ -1648,7 +1774,7 @@ public sealed class VirtualMmcDrive : IScsiTransport
         {
             return Sense(0x05, 0x21, 0x00);
         }
-        if (HasReadErrorInRange(lba, count))
+        if (HasReadErrorInRange(lba, count) || HasCorruptedRawInRange(lba, count))
         {
             return Sense(0x03, 0x11, 0x00);
         }
@@ -2926,6 +3052,17 @@ public sealed class VirtualMmcDrive : IScsiTransport
         return Good(0);
     }
 
+    private static byte[] CreateDefaultModePage01()
+    {
+        byte[] p = new byte[ModePage01Parameters.StandardPageLength];
+        p[0] = ModePage01Parameters.PageCode;
+        p[1] = ModePage01Parameters.StandardPageLength - 2; // 0x0A
+        p[2] = 0x00;
+        p[3] = 0x05; // default Read Retry Count = 5
+        p[8] = 0x05; // default Write Retry Count = 5
+        return p;
+    }
+
     private static byte[] CreateDefaultModePage05()
     {
         byte[] p = new byte[0x34];
@@ -2947,7 +3084,7 @@ public sealed class VirtualMmcDrive : IScsiTransport
 
     private static ScsiExecutionResult Good(uint transferred) => ScsiExecutionResult.Success(transferred);
 
-    private static ScsiExecutionResult Sense(byte key, byte asc, byte ascq)
+    private static byte[] CreateSenseBytes(byte key, byte asc, byte ascq)
     {
         byte[] sense = new byte[18];
         sense[0] = 0x70;
@@ -2955,8 +3092,11 @@ public sealed class VirtualMmcDrive : IScsiTransport
         sense[7] = 10;
         sense[12] = asc;
         sense[13] = ascq;
-        return ScsiExecutionResult.CheckCondition(0x02, 0, sense);
+        return sense;
     }
+
+    private static ScsiExecutionResult Sense(byte key, byte asc, byte ascq) =>
+        ScsiExecutionResult.CheckCondition(0x02, 0, CreateSenseBytes(key, asc, ascq));
 
     /// <summary>A cue sheet checked the way a drive checks it.</summary>
     private sealed class CueSheetState

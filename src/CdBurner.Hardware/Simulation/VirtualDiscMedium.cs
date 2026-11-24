@@ -149,6 +149,12 @@ public class VirtualDiscMedium : IDisposable, IBookTypeTarget
     public Dictionary<int, int> SimulatedC2Errors { get; } = new();
 
     /// <summary>
+    /// LBAs whose cooked 2,048-byte read fails, mapped to raw 2,352-byte CD frames (for testing Mode Page 0x01
+    /// raw damaged-sector salvage + ECMA-130 P/Q parity recovery).
+    /// </summary>
+    public Dictionary<int, byte[]> SimulatedCorruptedRawSectors { get; } = new();
+
+    /// <summary>
     /// Total number of logical sectors recorded so far.
     /// </summary>
     public int UsedSectors { get; set; }

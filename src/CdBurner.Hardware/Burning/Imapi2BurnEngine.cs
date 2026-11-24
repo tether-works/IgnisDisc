@@ -1091,6 +1091,26 @@ public class Imapi2BurnEngine : IBurnEngineBackend, ISecureAudioReader
     }
 
     /// <inheritdoc/>
+    public ISectorReadSession? OpenSalvageReadSession(
+        IDiscRecorderBackend recorder,
+        bool raw2352Mode,
+        bool fastSalvage = true)
+    {
+        ArgumentNullException.ThrowIfNull(recorder);
+        return PhysicalSectorReader.OpenSalvageSession(recorder.VolumePath, raw2352Mode, fastSalvage);
+    }
+
+    /// <inheritdoc/>
+    public Task<byte[]?> TryReadRawDamagedSectorAsync(
+        IDiscRecorderBackend recorder,
+        int lba,
+        CancellationToken cancellationToken)
+    {
+        ArgumentNullException.ThrowIfNull(recorder);
+        return PhysicalSectorReader.TryReadRawDamagedSectorAsync(recorder.VolumePath, lba, cancellationToken);
+    }
+
+    /// <inheritdoc/>
     public bool SupportsC2ErrorPointers(IDiscRecorderBackend recorder, int probeLba)
     {
         ArgumentNullException.ThrowIfNull(recorder);

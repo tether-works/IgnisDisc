@@ -37,6 +37,7 @@ public static class MmcCommandBuilder
     public const ushort FeatureBdWrite            = 0x0041;
 
     // MMC Mode Pages
+    public const byte ModePageReadWriteErrorRecovery = 0x01;
     public const byte ModePageWriteParameters    = 0x05;
 
     // READ TOC Formats
@@ -96,6 +97,20 @@ public static class MmcCommandBuilder
         cdb[7] = (byte)(allocationLength >> 8);
         cdb[8] = (byte)(allocationLength & 0xFF);
         cdb[9] = 0x00; // Control
+        return cdb;
+    }
+
+    /// <summary>
+    /// Builds a 10-byte MMC MODE SELECT (10) CDB (OpCode 0x55) with PF = 1 (MMC page format).
+    /// </summary>
+    /// <param name="parameterListLength">Total parameter list length in bytes (8-byte header + mode pages).</param>
+    /// <param name="savePages">True to set SP (Save Pages) bit; false for volatile current settings.</param>
+    public static byte[] BuildModeSelect10Cdb(ushort parameterListLength, bool savePages = false)
+    {
+        byte[] cdb = new byte[10];
+        cdb[0] = OpCodeModeSelect10;
+        cdb[1] = (byte)(0x10 | (savePages ? 0x01 : 0x00));
+        BinaryPrimitives.WriteUInt16BigEndian(cdb.AsSpan(7, 2), parameterListLength);
         return cdb;
     }
 

@@ -1,3 +1,5 @@
+using CdBurner.Core.Abstractions;
+using CdBurner.Core.Images;
 using CdBurner.Core.Iso;
 using CdBurner.Core.Primitives;
 
@@ -24,7 +26,8 @@ public sealed record ArchiveRecoveryReport(
     IReadOnlyList<string> StillCorrupt,
     string? Problem,
     IReadOnlyList<string>? RejectedPaths = null,
-    IReadOnlyList<string>? UdfSkippedEntries = null)
+    IReadOnlyList<string>? UdfSkippedEntries = null,
+    int RawRecoveredSectors = 0)
 {
     /// <summary>Every file the manifest lists is present and matches its checksum.</summary>
     public bool FullyRecovered => Problem == null && FilesChecked > 0 && StillMissing.Count == 0 && StillCorrupt.Count == 0;
@@ -55,8 +58,12 @@ public sealed record ArchiveRecoveryReport(
                 : "Result: NOT fully recovered.",
             $"Copy written to: {OutputFolder}",
             $"Unreadable sectors: {UnreadableSectors.Count:N0}",
-            $"Damaged files before repair: {DamagedFiles.Count:N0}",
         };
+        if (RawRecoveredSectors > 0)
+        {
+            lines.Add($"Sectors repaired via raw P/Q parity: {RawRecoveredSectors:N0}");
+        }
+        lines.Add($"Damaged files before repair: {DamagedFiles.Count:N0}");
         lines.AddRange(DamagedFiles.Select(f => "  " + f + (RepairedFiles.Contains(f) ? "  (repaired)" : "  (NOT repaired)")));
         lines.Add($"Recovery data on the disc: {(HadRecoveryData ? "yes" : "no")}");
         if (FilesChecked > 0 && !ChecksumListsIntact)
@@ -81,6 +88,75 @@ public sealed record ArchiveRecoveryReport(
 /// </summary>
 public static class ArchiveRecoveryService
 {
+    public static async Task<ArchiveRecoveryReport> RecoverFromDiscAsync(
+        IDiscRecorderBackend recorder,
+        IBurnEngineBackend burnEngine,
+        string outputFolder,
+        string? par2Path,
+        string? tempImagePath = null,
+        bool keepImage = false,
+        int maxRetriesPerSector = 5,
+        IProgress<string>? progress = null,
+        CancellationToken cancellationToken = default)
+    {
+        ArgumentNullException.ThrowIfNull(recorder);
+        ArgumentNullException.ThrowIfNull(burnEngine);
+        ArgumentException.ThrowIfNullOrWhiteSpace(outputFolder);
+        ArgumentOutOfRangeException.ThrowIfNegative(maxRetriesPerSector);
+
+        string imagePath = string.IsNullOrWhiteSpace(tempImagePath)
+            ? outputFolder.TrimEnd(Path.DirectorySeparatorChar, Path.AltDirectorySeparatorChar) + ".read.iso"
+            : tempImagePath;
+
+        try
+        {
+            progress?.Report($"Reading the disc in {recorder.UniqueId} (up to {maxRetriesPerSector} retries per bad sector, raw P/Q fallback enabled)...");
+            var rip = await new DiscRipperService().RipToIsoAsync(
+                recorder,
+                burnEngine,
+                imagePath,
+                new RipOptions
+                {
+                    MaxRetriesPerSector = maxRetriesPerSector,
+                    ContinueOnUnreadableSector = true,
+                    RawSectorSalvage = true
+                },
+                ct: cancellationToken).ConfigureAwait(false);
+
+            if (!File.Exists(imagePath))
+            {
+                return new ArchiveRecoveryReport(
+                    outputFolder,
+                    rip.BadSectorLbas,
+                    Array.Empty<string>(),
+                    false,
+                    false,
+                    0,
+                    Array.Empty<string>(),
+                    Array.Empty<string>(),
+                    "the disc could not be read (" + (rip.ErrorMessage ?? "unknown error") + ").",
+                    RawRecoveredSectors: rip.RawRecoveredSectorsCount);
+            }
+
+            var report = await RecoverFromImageAsync(
+                imagePath,
+                rip.BadSectorLbas,
+                outputFolder,
+                par2Path,
+                progress,
+                cancellationToken).ConfigureAwait(false);
+
+            return report with { RawRecoveredSectors = rip.RawRecoveredSectorsCount };
+        }
+        finally
+        {
+            if (!keepImage && File.Exists(imagePath))
+            {
+                try { File.Delete(imagePath); } catch (IOException) { } catch (UnauthorizedAccessException) { }
+            }
+        }
+    }
+
     public static async Task<ArchiveRecoveryReport> RecoverFromImageAsync(
         string imagePath,
         IReadOnlyCollection<int> unreadableSectors,

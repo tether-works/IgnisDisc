@@ -412,4 +412,16 @@ public sealed class NativeDataBurnEngine : IBurnEngineBackend, IWriterMediaStatu
         bool strict = false,
         SectorRange? writtenRange = null) =>
         _fallback.OpenReadSession(recorder, raw2352Mode, readFromDisc, strict, writtenRange);
+
+    public ISectorReadSession? OpenSalvageReadSession(
+        IDiscRecorderBackend recorder,
+        bool raw2352Mode,
+        bool fastSalvage = true) =>
+        _fallback.OpenSalvageReadSession(recorder, raw2352Mode, fastSalvage);
+
+    public Task<byte[]?> TryReadRawDamagedSectorAsync(
+        IDiscRecorderBackend recorder,
+        int lba,
+        CancellationToken cancellationToken) =>
+        _fallback.TryReadRawDamagedSectorAsync(recorder, lba, cancellationToken);
 }

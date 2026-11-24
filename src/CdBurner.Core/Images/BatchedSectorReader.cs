@@ -1,4 +1,5 @@
 using CdBurner.Core.Abstractions;
+using CdBurner.Core.Primitives;
 
 namespace CdBurner.Core.Images;
 
@@ -8,7 +9,14 @@ namespace CdBurner.Core.Images;
 /// <param name="Completed">True if every sector in the range was delivered to one of the sinks.</param>
 /// <param name="StoppedAtLba">When <see cref="Completed"/> is false, the unreadable LBA at which the caller asked to stop.</param>
 /// <param name="TotalRetries">Number of single-sector re-reads performed on suspect sectors.</param>
-public readonly record struct BatchedReadOutcome(bool Completed, int? StoppedAtLba, int TotalRetries);
+/// <param name="RawRecoveredSectors">Number of failed cooked CD sectors recovered via raw 2,352-byte read + P/Q parity.</param>
+public readonly record struct BatchedReadOutcome(bool Completed, int? StoppedAtLba, int TotalRetries, int RawRecoveredSectors = 0)
+{
+    public BatchedReadOutcome(bool completed, int? stoppedAtLba, int totalRetries)
+        : this(completed, stoppedAtLba, totalRetries, 0)
+    {
+    }
+}
 
 /// <summary>
 /// Reads a sector range through an <see cref="IBurnEngineBackend"/> in large batches, isolating and retrying
@@ -52,7 +60,8 @@ public static class BatchedSectorReader
         CancellationToken cancellationToken = default,
         bool readFromDisc = false,
         bool strict = false,
-        bool adaptiveSalvage = false)
+        bool adaptiveSalvage = false,
+        bool rawSectorSalvage = false)
     {
         ArgumentNullException.ThrowIfNull(engine);
         ArgumentNullException.ThrowIfNull(recorder);
@@ -78,9 +87,19 @@ public static class BatchedSectorReader
 
         int endLba = (int)endLbaLong;
         bool verifyReads = readFromDisc && !raw2352Mode;
+        bool useRawSectorSalvage = rawSectorSalvage && !raw2352Mode;
+        bool canTryRawCdSalvage = false;
+        if (useRawSectorSalvage)
+        {
+            var mediaType = recorder.QueryMediaStatus().MediaType;
+            canTryRawCdSalvage = !mediaType.IsDvd() && !mediaType.IsBluRay();
+        }
+
         var wholeRange = new SectorRange(startLba, sectorCount);
 
-        using ISectorReadSession? session = engine.OpenReadSession(recorder, raw2352Mode, verifyReads, strict, wholeRange);
+        using ISectorReadSession? session = useRawSectorSalvage
+            ? engine.OpenSalvageReadSession(recorder, raw2352Mode, fastSalvage: true)
+            : engine.OpenReadSession(recorder, raw2352Mode, verifyReads, strict, wholeRange);
 
         Task<RipOperationResult> Read(int lba, int count, Func<int, ReadOnlyMemory<byte>, ValueTask> consumer) =>
             session != null
@@ -150,6 +169,42 @@ public static class BatchedSectorReader
             return (false, retriesUsed);
         }
 
+        async Task<bool> TrySalvageRawSectorAsync(int suspectLba)
+        {
+            if (!canTryRawCdSalvage)
+            {
+                return false;
+            }
+
+            cancellationToken.ThrowIfCancellationRequested();
+            byte[]? raw2352 = session != null
+                ? await session.TryReadRawDamagedSectorAsync(suspectLba, cancellationToken).ConfigureAwait(false)
+                : await engine.TryReadRawDamagedSectorAsync(recorder, suspectLba, cancellationToken).ConfigureAwait(false);
+            if (raw2352 == null || raw2352.Length < RawSectorCodec.RawSectorSize)
+            {
+                return false;
+            }
+
+            byte[] user2048 = new byte[RawSectorCodec.UserDataSectorSize];
+            bool edcValid;
+            try
+            {
+                RawSectorCodec.Extract2048From2352(raw2352, user2048, out edcValid);
+            }
+            catch (InvalidDataException)
+            {
+                return false;
+            }
+
+            if (!edcValid)
+            {
+                return false;
+            }
+
+            await onSector(suspectLba, user2048).ConfigureAwait(false);
+            return true;
+        }
+
         if (adaptiveSalvage)
         {
             return await ReadRangeAdaptiveAsync(
@@ -160,11 +215,13 @@ public static class BatchedSectorReader
                 onProgress,
                 ReadBatchAsync,
                 RetrySingleSectorAsync,
+                TrySalvageRawSectorAsync,
                 cancellationToken).ConfigureAwait(false);
         }
 
         int nextLba = startLba;
         int totalRetries = 0;
+        int rawRecovered = 0;
 
         while (nextLba < endLba)
         {
@@ -182,10 +239,16 @@ public static class BatchedSectorReader
                 var (recovered, retriesUsed) = await RetrySingleSectorAsync(suspectLba).ConfigureAwait(false);
                 totalRetries += retriesUsed;
 
+                if (!recovered && await TrySalvageRawSectorAsync(suspectLba).ConfigureAwait(false))
+                {
+                    recovered = true;
+                    rawRecovered++;
+                }
+
                 if (!recovered && !await onUnreadable(suspectLba).ConfigureAwait(false))
                 {
                     onProgress?.Invoke(suspectLba - startLba);
-                    return new BatchedReadOutcome(false, suspectLba, totalRetries);
+                    return new BatchedReadOutcome(false, suspectLba, totalRetries, rawRecovered);
                 }
 
                 nextLba = suspectLba + 1;
@@ -194,7 +257,7 @@ public static class BatchedSectorReader
             onProgress?.Invoke(nextLba - startLba);
         }
 
-        return new BatchedReadOutcome(true, null, totalRetries);
+        return new BatchedReadOutcome(true, null, totalRetries, rawRecovered);
     }
 
     private static async Task<BatchedReadOutcome> ReadRangeAdaptiveAsync(
@@ -205,6 +268,7 @@ public static class BatchedSectorReader
         Action<int>? onProgress,
         Func<int, int, Task<(int Delivered, bool BatchOk)>> readBatch,
         Func<int, Task<(bool Recovered, int RetriesUsed)>> retrySingleSector,
+        Func<int, Task<bool>> trySalvageRawSector,
         CancellationToken cancellationToken)
     {
         var queue = new PriorityQueue<(int Start, int Count), (int Count, int Start)>(
@@ -218,6 +282,7 @@ public static class BatchedSectorReader
         int curCount = sectorCount;
         int sectorsHandled = 0;
         int totalRetries = 0;
+        int rawRecovered = 0;
 
         while (true)
         {
@@ -242,6 +307,12 @@ public static class BatchedSectorReader
                 var (recovered, retriesUsed) = await retrySingleSector(suspectLba).ConfigureAwait(false);
                 totalRetries += retriesUsed;
 
+                if (!recovered && await trySalvageRawSector(suspectLba).ConfigureAwait(false))
+                {
+                    recovered = true;
+                    rawRecovered++;
+                }
+
                 if (recovered)
                 {
                     sectorsHandled++;
@@ -253,7 +324,7 @@ public static class BatchedSectorReader
                 if (!await onUnreadable(suspectLba).ConfigureAwait(false))
                 {
                     onProgress?.Invoke(sectorsHandled);
-                    return new BatchedReadOutcome(false, suspectLba, totalRetries);
+                    return new BatchedReadOutcome(false, suspectLba, totalRetries, rawRecovered);
                 }
 
                 sectorsHandled++;
@@ -288,6 +359,6 @@ public static class BatchedSectorReader
             }
         }
 
-        return new BatchedReadOutcome(true, null, totalRetries);
+        return new BatchedReadOutcome(true, null, totalRetries, rawRecovered);
     }
 }

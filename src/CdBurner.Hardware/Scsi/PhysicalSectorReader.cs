@@ -121,7 +121,17 @@ public static partial class PhysicalSectorReader
         DriveCacheBypass cacheBypass = DriveCacheBypass.None,
         int? bypassRangeStart = null,
         int? bypassRangeCount = null) =>
-        new PhysicalSectorReadSession(volumePath, raw2352Mode, cacheBypass, bypassRangeStart, bypassRangeCount);
+        new PhysicalSectorReadSession(volumePath, raw2352Mode, cacheBypass, bypassRangeStart, bypassRangeCount, fastSalvage: false);
+
+    /// <summary>
+    /// Opens a reusable salvage read session over <paramref name="volumePath"/> with optional Mode Page 0x01
+    /// fast salvage (Read Retry Count = 1) and raw damaged-sector fallback support.
+    /// </summary>
+    public static ISectorReadSession OpenSalvageSession(
+        string volumePath,
+        bool raw2352Mode,
+        bool fastSalvage = true) =>
+        new PhysicalSectorReadSession(volumePath, raw2352Mode, DriveCacheBypass.None, null, null, fastSalvage);
 
     internal static ISectorReadSession OpenSession(
         Func<IScsiTransport?> openTransport,
@@ -129,10 +139,71 @@ public static partial class PhysicalSectorReader
         DriveCacheBypass cacheBypass = DriveCacheBypass.None,
         int? bypassRangeStart = null,
         int? bypassRangeCount = null,
-        Action<TimeSpan>? sleep = null)
+        Action<TimeSpan>? sleep = null,
+        bool fastSalvage = false)
     {
         ArgumentNullException.ThrowIfNull(openTransport);
-        return new PhysicalSectorReadSession(openTransport, raw2352Mode, cacheBypass, bypassRangeStart, bypassRangeCount, sleep);
+        return new PhysicalSectorReadSession(openTransport, raw2352Mode, cacheBypass, bypassRangeStart, bypassRangeCount, sleep, fastSalvage);
+    }
+
+    /// <summary>
+    /// Attempts a single-sector raw 2,352-byte read with Mode Page 0x01 raw damaged-sector return enabled
+    /// (<c>TB=1, DCR=1, PER=1</c>, Read Retry Count = 1) inside <see cref="NativeWriting.CdromExclusiveAccess"/>,
+    /// unconditionally restoring the original Mode Page 0x01 bytes before returning.
+    /// </summary>
+    public static Task<byte[]?> TryReadRawDamagedSectorAsync(
+        string volumePath,
+        int lba,
+        CancellationToken cancellationToken = default)
+    {
+        if (!OperatingSystem.IsWindows() || string.IsNullOrWhiteSpace(volumePath) || lba < -150)
+        {
+            return Task.FromResult<byte[]?>(null);
+        }
+
+        return Task.Run<byte[]?>(() =>
+        {
+            cancellationToken.ThrowIfCancellationRequested();
+            using var handle = OpenDevice(volumePath, FileAccess.ReadWrite, out _);
+            if (handle == null)
+            {
+                return null;
+            }
+
+            using var transport = new Win32ScsiTransport(handle, ownsHandle: false);
+            var spti = new SptiSource(transport, handle, raw: true, driveKey: volumePath);
+            if (!spti.Probe())
+            {
+                return null;
+            }
+
+            return spti.ReadRawDamagedSector(lba, sessionModePage01: null, cancellationToken);
+        }, cancellationToken);
+    }
+
+    internal static Task<byte[]?> TryReadRawDamagedSectorAsync(
+        IScsiTransport transport,
+        int lba,
+        CancellationToken cancellationToken = default,
+        Action<TimeSpan>? sleep = null)
+    {
+        ArgumentNullException.ThrowIfNull(transport);
+        if (lba < -150)
+        {
+            return Task.FromResult<byte[]?>(null);
+        }
+
+        return Task.Run<byte[]?>(() =>
+        {
+            cancellationToken.ThrowIfCancellationRequested();
+            var spti = new SptiSource(transport, ownedHandle: null, raw: true, sleep: sleep);
+            if (!spti.Probe())
+            {
+                return null;
+            }
+
+            return spti.ReadRawDamagedSector(lba, sessionModePage01: null, cancellationToken);
+        }, cancellationToken);
     }
 
     private sealed class PhysicalSectorReadSession : ISectorReadSession
@@ -144,9 +215,11 @@ public static partial class PhysicalSectorReader
         private readonly DriveCacheBypass _cacheBypass;
         private readonly int? _bypassRangeStart;
         private readonly int? _bypassRangeCount;
+        private readonly bool _fastSalvage;
         private readonly SemaphoreSlim _gate = new(1, 1);
         private IScsiTransport? _ownedTransport;
         private ISectorSource? _source;
+        private ModePage01Controller? _salvageModePage01;
         private bool _disposed;
 
         public PhysicalSectorReadSession(
@@ -154,13 +227,15 @@ public static partial class PhysicalSectorReader
             bool raw2352Mode,
             DriveCacheBypass cacheBypass,
             int? bypassRangeStart,
-            int? bypassRangeCount)
+            int? bypassRangeCount,
+            bool fastSalvage)
         {
             _volumePath = volumePath;
             _raw2352Mode = raw2352Mode;
             _cacheBypass = cacheBypass;
             _bypassRangeStart = bypassRangeStart;
             _bypassRangeCount = bypassRangeCount;
+            _fastSalvage = fastSalvage;
         }
 
         public PhysicalSectorReadSession(
@@ -169,7 +244,8 @@ public static partial class PhysicalSectorReader
             DriveCacheBypass cacheBypass,
             int? bypassRangeStart,
             int? bypassRangeCount,
-            Action<TimeSpan>? sleep)
+            Action<TimeSpan>? sleep,
+            bool fastSalvage)
         {
             _openTransport = openTransport;
             _raw2352Mode = raw2352Mode;
@@ -177,6 +253,64 @@ public static partial class PhysicalSectorReader
             _bypassRangeStart = bypassRangeStart;
             _bypassRangeCount = bypassRangeCount;
             _sleep = sleep;
+            _fastSalvage = fastSalvage;
+        }
+
+        private string? EnsureSourceOpened(int startLba, int sectorCount, bool forceUnitAccess)
+        {
+            if (_source != null)
+            {
+                return null;
+            }
+
+            string? openError = null;
+            if (_openTransport != null)
+            {
+                var transport = _openTransport();
+                if (transport == null)
+                {
+                    return "Unable to open SCSI transport for reading.";
+                }
+                var spti = new SptiSource(transport, ownedHandle: null, _raw2352Mode, sleep: _sleep);
+                if (!spti.Probe())
+                {
+                    spti.Dispose();
+                    transport.Dispose();
+                    return "SCSI transport probe failed.";
+                }
+                _ownedTransport = transport;
+                _source = spti;
+            }
+            else
+            {
+                _source = OpenBestSource(_volumePath!, _raw2352Mode, out openError);
+            }
+
+            if (_source == null)
+            {
+                return openError ?? $"Unable to open drive {_volumePath} for reading.";
+            }
+
+            if (forceUnitAccess && !_raw2352Mode && _source is SptiSource sptiSource)
+            {
+                sptiSource.EnableForceUnitAccess(_bypassRangeStart ?? startLba, _bypassRangeCount ?? sectorCount,
+                    _cacheBypass == DriveCacheBypass.EveryRead);
+            }
+
+            if (_fastSalvage && !_raw2352Mode && _source is SptiSource salvageSpti)
+            {
+                var controller = salvageSpti.CreateModePage01Controller();
+                if (controller.TryApply(readRetryCount: 1, rawDamagedSectorReturn: false, out _))
+                {
+                    _salvageModePage01 = controller;
+                }
+                else
+                {
+                    controller.Dispose();
+                }
+            }
+
+            return null;
         }
 
         public Task<RipOperationResult> ReadSectorsAsync(
@@ -215,49 +349,53 @@ public static partial class PhysicalSectorReader
                 try
                 {
                     ObjectDisposedException.ThrowIf(_disposed, this);
-                    if (_source == null)
+                    if (EnsureSourceOpened(startLba, sectorCount, forceUnitAccess) is string openError)
                     {
-                        string? openError = null;
-                        if (_openTransport != null)
-                        {
-                            var transport = _openTransport();
-                            if (transport == null)
-                            {
-                                return RipOperationResult.Failed("Unable to open SCSI transport for reading.");
-                            }
-                            var spti = new SptiSource(transport, ownedHandle: null, _raw2352Mode, sleep: _sleep);
-                            if (!spti.Probe())
-                            {
-                                spti.Dispose();
-                                transport.Dispose();
-                                return RipOperationResult.Failed("SCSI transport probe failed.");
-                            }
-                            _ownedTransport = transport;
-                            _source = spti;
-                        }
-                        else
-                        {
-                            _source = OpenBestSource(_volumePath!, _raw2352Mode, out openError);
-                        }
-
-                        if (_source == null)
-                        {
-                            return RipOperationResult.Failed(openError ?? $"Unable to open drive {_volumePath} for reading.");
-                        }
-
-                        if (forceUnitAccess && !_raw2352Mode && _source is SptiSource sptiSource)
-                        {
-                            sptiSource.EnableForceUnitAccess(_bypassRangeStart ?? startLba, _bypassRangeCount ?? sectorCount,
-                                _cacheBypass == DriveCacheBypass.EveryRead);
-                        }
+                        return RipOperationResult.Failed(openError);
                     }
 
-                    var result = await ReadCoreAsync(_source, startLba, sectorCount, _raw2352Mode, sectorConsumer, progress, cancellationToken).ConfigureAwait(false);
+                    var result = await ReadCoreAsync(_source!, startLba, sectorCount, _raw2352Mode, sectorConsumer, progress, cancellationToken).ConfigureAwait(false);
                     if (forceUnitAccess && !_raw2352Mode && _source is not SptiSource)
                     {
                         return WithNote(result, "The drive could only be read through Windows, which cannot tell it to skip its own cache.");
                     }
                     return result;
+                }
+                finally
+                {
+                    _gate.Release();
+                }
+            }, cancellationToken);
+        }
+
+        public Task<byte[]?> TryReadRawDamagedSectorAsync(int lba, CancellationToken cancellationToken)
+        {
+            ObjectDisposedException.ThrowIf(_disposed, this);
+            if (lba < -150)
+            {
+                return Task.FromResult<byte[]?>(null);
+            }
+            if (_openTransport == null && (!OperatingSystem.IsWindows() || string.IsNullOrWhiteSpace(_volumePath)))
+            {
+                return Task.FromResult<byte[]?>(null);
+            }
+
+            return Task.Run<byte[]?>(async () =>
+            {
+                await _gate.WaitAsync(cancellationToken).ConfigureAwait(false);
+                try
+                {
+                    ObjectDisposedException.ThrowIf(_disposed, this);
+                    if (EnsureSourceOpened(Math.Max(0, lba), 1, _cacheBypass != DriveCacheBypass.None) != null)
+                    {
+                        return null;
+                    }
+                    if (_source is not SptiSource spti)
+                    {
+                        return null;
+                    }
+
+                    return spti.ReadRawDamagedSector(lba, _salvageModePage01, cancellationToken);
                 }
                 finally
                 {
@@ -280,10 +418,18 @@ public static partial class PhysicalSectorReader
                     return;
                 }
                 _disposed = true;
-                _source?.Dispose();
-                _source = null;
-                _ownedTransport?.Dispose();
-                _ownedTransport = null;
+                try
+                {
+                    _salvageModePage01?.Dispose();
+                    _salvageModePage01 = null;
+                }
+                finally
+                {
+                    _source?.Dispose();
+                    _source = null;
+                    _ownedTransport?.Dispose();
+                    _ownedTransport = null;
+                }
             }
             finally
             {
@@ -2231,6 +2377,86 @@ public static partial class PhysicalSectorReader
 
         /// <summary>Windows refuses a pass-through whose transfer is larger than the adapter allows with this code.</summary>
         private const int ErrorInvalidParameter = 87;
+
+        public ModePage01Controller CreateModePage01Controller() =>
+            new(_transport, _handle);
+
+        public byte[]? ReadRawDamagedSector(int lba, ModePage01Controller? sessionModePage01, CancellationToken cancellationToken)
+        {
+            cancellationToken.ThrowIfCancellationRequested();
+
+            if (sessionModePage01 != null && sessionModePage01.IsApplied)
+            {
+                try
+                {
+                    sessionModePage01.SwitchAppliedParameters(readRetryCount: 1, rawDamagedSectorReturn: true);
+                }
+                catch (Exception ex) when (ex is IOException or Win32Exception or InvalidOperationException or TimeoutException)
+                {
+                    return null;
+                }
+
+                try
+                {
+                    return ReadSingleRawDamagedSectorFromTransport(lba, cancellationToken);
+                }
+                finally
+                {
+                    try
+                    {
+                        sessionModePage01.SwitchAppliedParameters(readRetryCount: 1, rawDamagedSectorReturn: false);
+                    }
+                    catch (Exception ex) when (ex is IOException or Win32Exception or InvalidOperationException or TimeoutException)
+                    {
+                        // Outer Dispose() unconditionally restores the snapshotted OriginalPage.
+                    }
+                }
+            }
+
+            using var controller = CreateModePage01Controller();
+            if (!controller.TryApply(readRetryCount: 1, rawDamagedSectorReturn: true, out _))
+            {
+                return null;
+            }
+
+            return ReadSingleRawDamagedSectorFromTransport(lba, cancellationToken);
+        }
+
+        private byte[]? ReadSingleRawDamagedSectorFromTransport(int lba, CancellationToken cancellationToken)
+        {
+            byte[] raw = new byte[OpticalConstants.RawSectorSize];
+            byte[] cdb = MmcCommandBuilder.BuildReadCdCdb(lba, 1, expectedSectorType: 0, mainChannelSelectionBits: 0xF8);
+            int notReadyRetries = 0;
+            bool unitAttentionRetried = false;
+
+            while (true)
+            {
+                cancellationToken.ThrowIfCancellationRequested();
+                Array.Clear(raw);
+                var result = _transport.ExecuteCommand(cdb, raw, ScsiPassThroughNative.SCSI_IOCTL_DATA_IN, CommandTimeout);
+
+                if (result.Win32Error == 0 && result.DataTransferLength >= OpticalConstants.RawSectorSize &&
+                    (result.IsSuccess || result.SenseInfo?.SenseKey is 0x01 or 0x03))
+                {
+                    return raw;
+                }
+
+                if (result.SenseInfo is { SenseKey: 0x06, Asc: 0x28 or 0x29 } && !unitAttentionRetried)
+                {
+                    unitAttentionRetried = true;
+                    continue;
+                }
+
+                if (result.SenseInfo is { SenseKey: 0x02, Asc: 0x04, Ascq: 0x01 } && notReadyRetries < MaxNotReadyRetries)
+                {
+                    notReadyRetries++;
+                    _sleep(NotReadyBackoff);
+                    continue;
+                }
+
+                return null;
+            }
+        }
 
         public void Dispose()
         {

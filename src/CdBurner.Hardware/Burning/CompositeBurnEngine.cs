@@ -118,6 +118,26 @@ public class CompositeBurnEngine : IBurnEngineBackend, ISecureAudioReader
     }
 
     /// <inheritdoc/>
+    public ISectorReadSession? OpenSalvageReadSession(
+        IDiscRecorderBackend recorder,
+        bool raw2352Mode,
+        bool fastSalvage = true)
+    {
+        ArgumentNullException.ThrowIfNull(recorder);
+        return SelectBackend(recorder).OpenSalvageReadSession(recorder, raw2352Mode, fastSalvage);
+    }
+
+    /// <inheritdoc/>
+    public Task<byte[]?> TryReadRawDamagedSectorAsync(
+        IDiscRecorderBackend recorder,
+        int lba,
+        CancellationToken cancellationToken)
+    {
+        ArgumentNullException.ThrowIfNull(recorder);
+        return SelectBackend(recorder).TryReadRawDamagedSectorAsync(recorder, lba, cancellationToken);
+    }
+
+    /// <inheritdoc/>
     public bool SupportsC2ErrorPointers(IDiscRecorderBackend recorder, int probeLba)
     {
         ArgumentNullException.ThrowIfNull(recorder);
