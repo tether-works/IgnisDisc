@@ -1,5 +1,7 @@
-﻿using CdBurner.App.Resources;
+﻿using CdBurner.App.Launch;
+using CdBurner.App.Resources;
 using System.Collections.ObjectModel;
+using System.IO;
 using System.Windows.Input;
 using CdBurner.App.Mvvm;
 using CdBurner.Core;
@@ -34,6 +36,7 @@ public class MainViewModel : ObservableObject, IDisposable
     private readonly SettingsViewModel _settings;
 
     private IDiscRecorderBackend? _selectedRecorder;
+    private string? _pendingDriveSelection;
     private bool _syncingRecorder;
     private bool _hadPhysicalRecorder;
     private MediaStatusDto _currentMediaStatus = new() { MediaType = DiscMediaType.NoMedia, MediaPresent = false };
@@ -598,6 +601,104 @@ public class MainViewModel : ObservableObject, IDisposable
     }
 
     /// <summary>
+    /// Parses shell/command-line startup arguments and navigates to the target workspace with preloaded state.
+    /// </summary>
+    public void ApplyLaunchArguments(string[]? args)
+    {
+        ApplyLaunchOptions(AppLaunchParser.Parse(args));
+    }
+
+    /// <summary>
+    /// Navigates directly to the workspace requested by <paramref name="options"/> and preloads its target path or drive.
+    /// </summary>
+    public void ApplyLaunchOptions(AppLaunchOptions options)
+    {
+        ArgumentNullException.ThrowIfNull(options);
+        if (options.Action == AppLaunchAction.None || string.IsNullOrWhiteSpace(options.TargetPath))
+        {
+            return;
+        }
+
+        string target = options.TargetPath;
+        switch (options.Action)
+        {
+            case AppLaunchAction.OpenImage:
+                SelectedNavigationTab = NavigationTab.ImageStudio;
+                _imageStudio.SelectedTabIndex = 0;
+                _imageStudio.SourceImagePath = target;
+                break;
+
+            case AppLaunchAction.BrowseImage:
+                SelectedNavigationTab = NavigationTab.ImageStudio;
+                _imageStudio.BrowseImageContents(target);
+                break;
+
+            case AppLaunchAction.BurnFolder:
+                SelectedNavigationTab = NavigationTab.DataDisc;
+                if (Directory.Exists(target))
+                {
+                    _dataBurn.AddFolder(target);
+                    _dataBurn.StatusMessage = $"Loaded folder '{target}'.";
+                }
+                else
+                {
+                    _dataBurn.StatusMessage = $"Folder not found: '{target}'.";
+                }
+                break;
+
+            case AppLaunchAction.ArchiveFolder:
+                SelectedNavigationTab = NavigationTab.Archive;
+                _archive.SourceFolder = target;
+                break;
+
+            case AppLaunchAction.VerifyDrive:
+                SelectedNavigationTab = NavigationTab.DriveUtilities;
+                SelectRecorderByDrivePath(target);
+                _driveUtilities.StatusMessage = $"Selected drive '{target}' for verification.";
+                break;
+
+            case AppLaunchAction.ReadDrive:
+                SelectedNavigationTab = NavigationTab.ImageStudio;
+                _imageStudio.SelectedTabIndex = 1;
+                SelectRecorderByDrivePath(target);
+                _imageStudio.StatusMessage = $"Selected drive '{target}' to create disc image.";
+                break;
+        }
+    }
+
+    /// <summary>
+    /// Selects the recorder matching <paramref name="driveTarget"/> (e.g. <c>E:\</c>, <c>E:</c>, or <c>VDRV-01</c>),
+    /// or remembers the request so delayed physical drive discovery selects it as soon as the drive appears.
+    /// </summary>
+    public bool SelectRecorderByDrivePath(string driveTarget)
+    {
+        if (string.IsNullOrWhiteSpace(driveTarget)) return false;
+
+        string normalized = AppLaunchParser.NormalizeDriveTarget(driveTarget);
+        var match = FindRecorderByDrivePath(normalized);
+        if (match != null)
+        {
+            _pendingDriveSelection = null;
+            SelectedRecorder = match;
+            return true;
+        }
+
+        _pendingDriveSelection = normalized;
+        return false;
+    }
+
+    private IDiscRecorderBackend? FindRecorderByDrivePath(string driveTarget)
+    {
+        string normalized = AppLaunchParser.NormalizeDriveTarget(driveTarget);
+        string trimmed = normalized.TrimEnd('\\', '/');
+
+        return AvailableRecorders.FirstOrDefault(r =>
+            string.Equals(r.VolumePath.TrimEnd('\\', '/'), trimmed, StringComparison.OrdinalIgnoreCase) ||
+            string.Equals(r.UniqueId, driveTarget.Trim(), StringComparison.OrdinalIgnoreCase) ||
+            string.Equals(r.UniqueId, trimmed, StringComparison.OrdinalIgnoreCase));
+    }
+
+    /// <summary>
     /// Propagates user settings (default verification, eject, Burn-Free, and FFmpeg path) to child workspace view models.
     /// </summary>
     public void ApplySettingsToWorkspaces()
@@ -798,7 +899,15 @@ public class MainViewModel : ObservableObject, IDisposable
             _hadPhysicalRecorder = true;
         }
 
-        if (newlyDiscoveredPhysical && firstPhysical != null)
+        var pendingMatch = !string.IsNullOrWhiteSpace(_pendingDriveSelection)
+            ? FindRecorderByDrivePath(_pendingDriveSelection)
+            : null;
+        if (pendingMatch != null)
+        {
+            _pendingDriveSelection = null;
+            SelectedRecorder = pendingMatch;
+        }
+        else if (newlyDiscoveredPhysical && firstPhysical != null)
         {
             // Automatically switch from virtual drive to the newly discovered physical optical drive
             SelectedRecorder = firstPhysical;

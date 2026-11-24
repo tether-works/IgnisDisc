@@ -142,6 +142,12 @@ public class AppSettings
     /// </summary>
     public bool CheckForUpdatesOnStartup { get; set; } = false;
 
+    /// <summary>
+    /// Whether per-user Windows Explorer context menus and disc image file associations are enabled.
+    /// Strictly opt-in (default is false).
+    /// </summary>
+    public bool EnableExplorerShellIntegration { get; set; } = false;
+
     /// <summary>The settings layout version this build writes.</summary>
     public const int CurrentVersion = 3;
 
@@ -207,6 +213,7 @@ public class AppSettings
             WriteFolderImage = WriteFolderImage,
             DeEmphasizePreEmphasisOnRip = DeEmphasizePreEmphasisOnRip,
             CheckForUpdatesOnStartup = CheckForUpdatesOnStartup,
+            EnableExplorerShellIntegration = EnableExplorerShellIntegration,
             SettingsVersion = SettingsVersion
         };
     }

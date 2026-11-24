@@ -18,6 +18,10 @@
   </PropertyGroup>
 
   <ItemGroup>
+    <ProjectReference Include="..\..\src\CdBurner.Core\CdBurner.Core.csproj" />
+  </ItemGroup>
+
+  <ItemGroup>
     <InternalsVisibleTo Include="CdBurner.Setup.Tests" />
   </ItemGroup>
 

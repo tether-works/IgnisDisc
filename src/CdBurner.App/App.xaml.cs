@@ -81,6 +81,15 @@ public partial class App : Application
             LogStartupIssue("Loading saved settings failed; defaults are in use", ex);
         }
 
+        try
+        {
+            mainVm.ApplyLaunchArguments(e.Args);
+        }
+        catch (Exception ex)
+        {
+            LogStartupIssue("Startup launch argument routing failed", ex);
+        }
+
         // "Shut down" after burning: Windows' own shutdown.exe with a 60-second countdown that Windows announces and
         // that `shutdown /a` cancels. Set only here, in the real app, so tests can never shut a machine down.
         CdBurner.Core.Burning.PostBurnActionExecutor.DefaultShutdownInitiator = () =>

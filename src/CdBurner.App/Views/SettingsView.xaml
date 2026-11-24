@@ -267,6 +267,13 @@
                               IsChecked="{Binding EnableVirtualDrive}"
                               Margin="0,0,0,12" />
 
+                    <!-- Windows Explorer Shell Integration Toggle (Opt-in, HKCU) -->
+                    <CheckBox Content="Integrate with Windows Explorer context menus and disc image associations (.iso, .cue, .img, .nrg, .mds, .ccd, .cdi)"
+                              AutomationProperties.Name="Windows Explorer shell integration"
+                              ToolTip="Opt-in per-user registration under HKCU\Software\Classes (no administrator rights required) for right-click image, folder, and drive actions."
+                              IsChecked="{Binding EnableExplorerShellIntegration}"
+                              Margin="0,0,0,12" />
+
                     <!-- Log Buffer Capacity -->
                     <Grid>
                         <Grid.ColumnDefinitions>

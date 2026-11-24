@@ -144,6 +144,7 @@ public class ImageStudioViewModel : ObservableObject
     }
     private string _statusMessage = "Ready";
     private double _burnProgress;
+    private int _selectedTabIndex;
     private BurnOperationResult? _lastBurnResult;
     private RipOperationResult? _lastRipResult;
     private VerificationResult? _lastVerificationResult;
@@ -560,6 +561,16 @@ public class ImageStudioViewModel : ObservableObject
     }
 
     /// <summary>
+    /// Active sub-tab index in Disc Image Studio (0 = Burn Disc Image, 1 = Rip Disc to Image,
+    /// 2 = Standalone Verifier, 3 = 1-Click Disc Copy, 4 = Burn Queue).
+    /// </summary>
+    public int SelectedTabIndex
+    {
+        get => _selectedTabIndex;
+        set => SetProperty(ref _selectedTabIndex, value);
+    }
+
+    /// <summary>
     /// Formatted image size string in megabytes or gigabytes.
     /// </summary>
     public string ImageSizeFormatted
@@ -924,6 +935,97 @@ public class ImageStudioViewModel : ObservableObject
         }
 
         OnPropertyChanged(nameof(ImageSizeFormatted));
+    }
+
+    /// <summary>
+    /// Opens an image file in Disc Image Studio and logs its filesystem directory/file listing or track layout
+    /// so users launching with <c>--browse-image</c> can inspect the contents immediately.
+    /// </summary>
+    public void BrowseImageContents(string path)
+    {
+        ArgumentException.ThrowIfNullOrWhiteSpace(path);
+
+        SelectedTabIndex = 0;
+        SourceImagePath = path;
+
+        if (!File.Exists(path))
+        {
+            StatusMessage = $"Image file not found: '{path}'.";
+            AppendLog(StatusMessage);
+            return;
+        }
+
+        string ext = Path.GetExtension(path).ToLowerInvariant();
+        if (ext == ".iso")
+        {
+            try
+            {
+                using var reader = IsoImageReader.FromFile(path);
+                var files = reader.AllFiles;
+                var dirs = reader.AllDirectories;
+                AppendLog($"Browsing ISO image '{Path.GetFileName(path)}' (Label: '{reader.VolumeLabel}', ISO9660={reader.HasIso9660}, Joliet={reader.HasJoliet}, UDF={reader.HasUdf}): {dirs.Count} folder(s), {files.Count} file(s).");
+                const int maxLoggedEntries = 200;
+                int logged = 0;
+                foreach (var d in dirs)
+                {
+                    if (logged++ >= maxLoggedEntries) break;
+                    AppendLog($"  [DIR]  {d.VirtualPath}");
+                }
+                foreach (var f in files)
+                {
+                    if (logged++ >= maxLoggedEntries) break;
+                    AppendLog($"  [FILE] {f.VirtualPath} ({f.SizeBytes:N0} B)");
+                }
+                if (dirs.Count + files.Count > maxLoggedEntries)
+                {
+                    AppendLog($"  ... and {dirs.Count + files.Count - maxLoggedEntries} more entries.");
+                }
+                StatusMessage = $"Browsing '{Path.GetFileName(path)}': {files.Count} file(s), {dirs.Count} folder(s).";
+                return;
+            }
+            catch (Exception ex)
+            {
+                AppendLog($"Could not read ISO filesystem from '{Path.GetFileName(path)}': {ex.Message}");
+            }
+        }
+        else if (ext == ".cue")
+        {
+            try
+            {
+                var cue = CueSheetParser.ParseFile(path);
+                int trackCount = cue.Files.Sum(f => f.Tracks.Count);
+                AppendLog($"Browsing CUE sheet '{Path.GetFileName(path)}': {cue.Files.Count} file(s), {trackCount} track(s).");
+                foreach (var file in cue.Files)
+                {
+                    foreach (var track in file.Tracks)
+                    {
+                        AppendLog($"  [TRACK {track.TrackNumber:D2}] {track.DataType} ({file.FileName})");
+                    }
+                }
+                StatusMessage = $"Browsing '{Path.GetFileName(path)}': {trackCount} track(s).";
+                return;
+            }
+            catch (Exception ex)
+            {
+                AppendLog($"Could not parse CUE sheet '{Path.GetFileName(path)}': {ex.Message}");
+            }
+        }
+        else if (LegacyDiscImageConverter.IsLegacyImageFile(path))
+        {
+            try
+            {
+                var info = LegacyDiscImageConverter.Inspect(path);
+                AppendLog($"Browsing {info.FormatName} '{Path.GetFileName(path)}': {info.TrackCount} track(s), {info.SectorCount:N0} sectors ({info.SectorSizeBytes} B/sector).");
+                StatusMessage = $"Browsing '{Path.GetFileName(path)}': {info.FormatName}, {info.TrackCount} track(s).";
+                return;
+            }
+            catch (Exception ex)
+            {
+                AppendLog($"Could not inspect image '{Path.GetFileName(path)}': {ex.Message}");
+            }
+        }
+
+        StatusMessage = $"Loaded image '{Path.GetFileName(path)}' ({DetectedImageFormat}).";
     }
 
     private void BrowseImage()

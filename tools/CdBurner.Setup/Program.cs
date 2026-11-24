@@ -3,6 +3,7 @@ using System.IO;
 using System.Windows;
 using System.Windows.Controls;
 using System.Windows.Media;
+using CdBurner.Core.Platform;
 using Microsoft.Win32;
 
 namespace CdBurner.Setup;
@@ -54,7 +55,8 @@ internal static class Program
         bool AddToPath,
         string InstallDir,
         string? ShortcutRoot,
-        string? Error);
+        string? Error,
+        bool EnableShellIntegration = false);
 
     internal static SetupOptions ParseArguments(string[] args, string defaultInstallDir)
     {
@@ -63,6 +65,7 @@ internal static class Program
         bool desktop = true;
         bool startMenu = true;
         bool addToPath = true;
+        bool enableShellIntegration = false;
         string installDir = defaultInstallDir;
         string? shortcutRoot = null;
         string? error = null;
@@ -90,6 +93,10 @@ internal static class Program
             {
                 addToPath = false;
             }
+            else if (string.Equals(arg, "--shell-integration", StringComparison.OrdinalIgnoreCase))
+            {
+                enableShellIntegration = true;
+            }
             else if (string.Equals(arg, "--install-dir", StringComparison.OrdinalIgnoreCase))
             {
                 if (i + 1 >= args.Length || string.IsNullOrWhiteSpace(args[i + 1]))
@@ -116,7 +123,7 @@ internal static class Program
             }
         }
 
-        return new SetupOptions(silent, uninstall, desktop, startMenu, addToPath, installDir, shortcutRoot, error);
+        return new SetupOptions(silent, uninstall, desktop, startMenu, addToPath, installDir, shortcutRoot, error, enableShellIntegration);
     }
 
     /// <summary>
@@ -151,10 +158,13 @@ internal static class Program
         ShortcutManager shortcuts = options.ShortcutRoot != null
             ? ShortcutManager.ForRoot(options.ShortcutRoot)
             : ShortcutManager.ForCurrentUser();
+        IShellIntegrationRegistry shellRegistry = options.ShortcutRoot != null
+            ? NullShellIntegrationRegistry.Instance
+            : WindowsShellIntegrationRegistry.Instance;
 
         if (options.Uninstall)
         {
-            return RunUninstall(installDir, silent, shortcuts);
+            return RunUninstall(installDir, silent, shortcuts, shellRegistry: shellRegistry);
         }
 
         if (silent)
@@ -168,7 +178,9 @@ internal static class Program
                     options.AddToPath,
                     registerUninstaller: ShouldRegisterUninstaller(options.ShortcutRoot),
                     progress: null,
-                    shortcuts: shortcuts);
+                    shortcuts: shortcuts,
+                    enableShellIntegration: options.EnableShellIntegration,
+                    shellRegistry: shellRegistry);
                 foreach (string warning in warnings) Console.Error.WriteLine($"Warning: {warning}");
                 return 0;
             }
@@ -180,7 +192,7 @@ internal static class Program
         }
 
         var app = new System.Windows.Application();
-        var window = new SetupWizardWindow(installDir, shortcuts, ShouldRegisterUninstaller(options.ShortcutRoot));
+        var window = new SetupWizardWindow(installDir, shortcuts, ShouldRegisterUninstaller(options.ShortcutRoot), shellRegistry);
         app.Run(window);
         return window.ExitCode;
     }
@@ -379,7 +391,9 @@ internal static class Program
         bool ensureClosed = true,
         ShortcutManager? shortcuts = null,
         string? payloadDirectory = null,
-        string userEnvironmentKeyPath = UserEnvironmentKeyPath)
+        string userEnvironmentKeyPath = UserEnvironmentKeyPath,
+        bool enableShellIntegration = false,
+        IShellIntegrationRegistry? shellRegistry = null)
     {
         installDir = Path.TrimEndingDirectorySeparator(Path.GetFullPath(installDir));
         string installDirWithSep = installDir + Path.DirectorySeparatorChar;
@@ -465,6 +479,16 @@ internal static class Program
                     $"ignisdisc-cli could not be added to your PATH: {pathProblem}"
                 };
                 warnings = withPathWarning;
+            }
+        }
+
+        if (enableShellIntegration)
+        {
+            progress?.Report((97, "Registering Windows Explorer shell integration..."));
+            string? shellWarning = InstallerEngine.ApplyShellIntegration(true, appExePath, shellRegistry);
+            if (shellWarning != null)
+            {
+                warnings = new List<string>(warnings) { shellWarning };
             }
         }
 
@@ -944,7 +968,8 @@ internal static class Program
         ShortcutManager shortcuts,
         Func<string, IReadOnlyCollection<string>, bool>? cleanupScheduler = null,
         string? currentExePath = null,
-        string userEnvironmentKeyPath = UserEnvironmentKeyPath)
+        string userEnvironmentKeyPath = UserEnvironmentKeyPath,
+        IShellIntegrationRegistry? shellRegistry = null)
     {
         cleanupScheduler ??= ScheduleDeferredCleanup;
         try
@@ -974,6 +999,7 @@ internal static class Program
             // IgnisDisc copies that no longer exist), so uninstalling one copy (or a test install in another folder)
             // never touches a different IgnisDisc installation.
             shortcuts.Uninstall(installDir);
+            InstallerEngine.RemoveShellIntegrationOnUninstall(installDir, shellRegistry);
 
             if (RegistryEntryBelongsTo(installDir))
             {
@@ -1050,6 +1076,7 @@ internal sealed class SetupWizardWindow : Window
     private readonly System.Windows.Controls.CheckBox _desktopShortcutCheck;
     private readonly System.Windows.Controls.CheckBox _startMenuShortcutCheck;
     private readonly System.Windows.Controls.CheckBox _addToPathCheck;
+    private readonly System.Windows.Controls.CheckBox _shellIntegrationCheck;
     private readonly System.Windows.Controls.ProgressBar _progressBar;
     private readonly TextBlock _statusText;
     private readonly System.Windows.Controls.Button _installButton;
@@ -1058,14 +1085,20 @@ internal sealed class SetupWizardWindow : Window
     private readonly bool _isUpgrade;
     private readonly ShortcutManager _shortcuts;
     private readonly bool _registerUninstaller;
+    private readonly IShellIntegrationRegistry _shellRegistry;
     private bool _isInstalled;
 
     public int ExitCode { get; private set; }
 
-    public SetupWizardWindow(string defaultInstallDir, ShortcutManager shortcuts, bool registerUninstaller = true)
+    public SetupWizardWindow(
+        string defaultInstallDir,
+        ShortcutManager shortcuts,
+        bool registerUninstaller = true,
+        IShellIntegrationRegistry? shellRegistry = null)
     {
         _shortcuts = shortcuts;
         _registerUninstaller = registerUninstaller;
+        _shellRegistry = shellRegistry ?? WindowsShellIntegrationRegistry.Instance;
         string? previousVer = Program.GetExistingInstallVersion(defaultInstallDir);
         _isUpgrade = !string.IsNullOrEmpty(previousVer);
 
@@ -1073,9 +1106,9 @@ internal sealed class SetupWizardWindow : Window
             ? $"{Program.AppTitle} — Upgrade to v{Program.AppVersion}"
             : $"{Program.AppTitle} v{Program.AppVersion} — Setup";
         Width = 640;
-        Height = 470;
+        Height = 505;
         MinWidth = 600;
-        MinHeight = 450;
+        MinHeight = 485;
         WindowStartupLocation = WindowStartupLocation.CenterScreen;
         Background = new SolidColorBrush(System.Windows.Media.Color.FromRgb(18, 22, 31));
         Foreground = new SolidColorBrush(System.Windows.Media.Color.FromRgb(240, 244, 248));
@@ -1200,9 +1233,18 @@ internal sealed class SetupWizardWindow : Window
             Content = "Add ignisdisc-cli.exe to User PATH for command-line automation",
             IsChecked = true,
             Foreground = new SolidColorBrush(System.Windows.Media.Color.FromRgb(226, 232, 240)),
-            Margin = new Thickness(0, 4, 0, 18)
+            Margin = new Thickness(0, 4, 0, 6)
         };
         bodyStack.Children.Add(_addToPathCheck);
+
+        _shellIntegrationCheck = new System.Windows.Controls.CheckBox
+        {
+            Content = "Add Windows Explorer context menus & disc image associations (opt-in, per-user)",
+            IsChecked = false,
+            Foreground = new SolidColorBrush(System.Windows.Media.Color.FromRgb(226, 232, 240)),
+            Margin = new Thickness(0, 4, 0, 16)
+        };
+        bodyStack.Children.Add(_shellIntegrationCheck);
 
         _progressBar = new System.Windows.Controls.ProgressBar
         {
@@ -1307,10 +1349,12 @@ internal sealed class SetupWizardWindow : Window
         _desktopShortcutCheck.IsEnabled = false;
         _startMenuShortcutCheck.IsEnabled = false;
         _addToPathCheck.IsEnabled = false;
+        _shellIntegrationCheck.IsEnabled = false;
 
         bool desktop = _desktopShortcutCheck.IsChecked == true;
         bool startMenu = _startMenuShortcutCheck.IsChecked == true;
         bool addPath = _addToPathCheck.IsChecked == true;
+        bool enableShellIntegration = _shellIntegrationCheck.IsChecked == true;
 
         var progress = new Progress<(double Percent, string Status)>(report =>
         {
@@ -1333,7 +1377,9 @@ internal sealed class SetupWizardWindow : Window
                     registerUninstaller: _registerUninstaller,
                     progress,
                     ensureClosed: false,
-                    shortcuts: _shortcuts);
+                    shortcuts: _shortcuts,
+                    enableShellIntegration: enableShellIntegration,
+                    shellRegistry: _shellRegistry);
             });
 
             _isInstalled = true;
@@ -1362,6 +1408,7 @@ internal sealed class SetupWizardWindow : Window
             _desktopShortcutCheck.IsEnabled = true;
             _startMenuShortcutCheck.IsEnabled = true;
             _addToPathCheck.IsEnabled = true;
+            _shellIntegrationCheck.IsEnabled = true;
             System.Windows.MessageBox.Show(
                 $"Failed to install {Program.AppTitle}:\n\n{ex.Message}",
                 Title,

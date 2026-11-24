@@ -1,12 +1,15 @@
 ﻿using CdBurner.App.Resources;
 using System.Collections.ObjectModel;
+using System.IO;
 using System.Net.Http;
+using System.Security;
 using CdBurner.App.Mvvm;
 using CdBurner.App.Themes;
 using CdBurner.Core.Abstractions;
 using CdBurner.Core.Archival;
 using CdBurner.Core.DvdVideo;
 using CdBurner.Core.Persistence;
+using CdBurner.Core.Platform;
 using CdBurner.Core.Primitives;
 using CdBurner.Core.Utilities;
 
@@ -20,6 +23,8 @@ public class SettingsViewModel : ObservableObject
 {
     private readonly AppSettingsService _settingsService;
     private readonly MainViewModel? _mainViewModel;
+    private readonly IShellIntegrationRegistry _shellIntegrationRegistry;
+    private readonly Func<string?> _appExecutablePathProvider;
 
     private int _defaultWriteSpeedMultiplier;
     private bool _verifyAfterBurnByDefault;
@@ -37,6 +42,7 @@ public class SettingsViewModel : ObservableObject
     private IDiscRecorderBackend? _selectedRecorder;
     private string _statusMessage = "Ready";
     private bool _checkForUpdatesOnStartup;
+    private bool _enableExplorerShellIntegration;
     private string _updateStatusMessage = Strings.StatusSettingsUpdateCheckHasNotBeenRun;
     private bool _isCheckingForUpdates;
     private bool _notifyWhenBurnFinishes = true;
@@ -53,7 +59,8 @@ public class SettingsViewModel : ObservableObject
         nameof(EjectAfterBurnByDefault), nameof(NotifyWhenBurnFinishes), nameof(EnableBurnFreeByDefault),
         nameof(TempStagingDirectory), nameof(ThemeMode), nameof(FfmpegExecutablePath), nameof(EnableVirtualDrive),
         nameof(LogRingBufferCapacity), nameof(LookupMusicBrainzByDefault), nameof(VerifyAccurateRipByDefault),
-        nameof(VerifyCtdbByDefault), nameof(CheckForUpdatesOnStartup), nameof(DirectWritingForDvdRw)
+        nameof(VerifyCtdbByDefault), nameof(CheckForUpdatesOnStartup), nameof(DirectWritingForDvdRw),
+        nameof(EnableExplorerShellIntegration)
     ];
 
     /// <summary>
@@ -306,6 +313,16 @@ public class SettingsViewModel : ObservableObject
     }
 
     /// <summary>
+    /// Whether per-user Windows Explorer context menus and disc image file associations are registered.
+    /// Strictly opt-in (default false).
+    /// </summary>
+    public bool EnableExplorerShellIntegration
+    {
+        get => _enableExplorerShellIntegration;
+        set => SetProperty(ref _enableExplorerShellIntegration, value);
+    }
+
+    /// <summary>
     /// Status message from the most recent GitHub update check.
     /// </summary>
     public string UpdateStatusMessage
@@ -383,10 +400,16 @@ public class SettingsViewModel : ObservableObject
     /// <summary>
     /// Initializes a new instance of <see cref="SettingsViewModel"/>.
     /// </summary>
-    public SettingsViewModel(AppSettingsService? settingsService = null, MainViewModel? mainViewModel = null)
+    public SettingsViewModel(
+        AppSettingsService? settingsService = null,
+        MainViewModel? mainViewModel = null,
+        IShellIntegrationRegistry? shellIntegrationRegistry = null,
+        Func<string?>? appExecutablePathProvider = null)
     {
         _settingsService = settingsService ?? new AppSettingsService();
         _mainViewModel = mainViewModel;
+        _shellIntegrationRegistry = shellIntegrationRegistry ?? WindowsShellIntegrationRegistry.Instance;
+        _appExecutablePathProvider = appExecutablePathProvider ?? ResolveDefaultAppExecutablePath;
 
         SaveSettingsCommand = new RelayCommand(SaveSettings);
         ResetSettingsCommand = new RelayCommand(ResetSettings);
@@ -477,6 +500,8 @@ public class SettingsViewModel : ObservableObject
         CheckForUpdatesOnStartup = settings.CheckForUpdatesOnStartup;
         NotifyWhenBurnFinishes = settings.NotifyWhenBurnFinishes;
         DirectWritingForDvdRw = settings.DirectWritingForDvdRw;
+        EnableExplorerShellIntegration = settings.EnableExplorerShellIntegration
+            || ShellIntegrationManager.IsRegistered(_shellIntegrationRegistry);
     }
 
     /// <summary>
@@ -504,9 +529,11 @@ public class SettingsViewModel : ObservableObject
         settings.VerifyCtdbByDefault = VerifyCtdbByDefault;
         settings.CheckForUpdatesOnStartup = CheckForUpdatesOnStartup;
         settings.NotifyWhenBurnFinishes = NotifyWhenBurnFinishes;
+        settings.EnableExplorerShellIntegration = EnableExplorerShellIntegration;
 
         _settingsService.CurrentSettings = settings;
         _settingsService.Save();
+        string? shellError = ApplyShellIntegration(EnableExplorerShellIntegration);
         ThemeManager.ApplyTheme(ThemeMode);
         if (_mainViewModel != null && SelectedRecorder != null)
         {
@@ -516,7 +543,7 @@ public class SettingsViewModel : ObservableObject
         {
             RefreshToolStatuses();
         }
-        StatusMessage = Strings.StatusSettingsSettingsSavedSuccessfully;
+        StatusMessage = shellError ?? Strings.StatusSettingsSettingsSavedSuccessfully;
         SettingsSaved?.Invoke(this, EventArgs.Empty);
     }
 
@@ -526,14 +553,64 @@ public class SettingsViewModel : ObservableObject
     public void ResetSettings()
     {
         _settingsService.ResetToDefaults();
+        string? shellError = ApplyShellIntegration(enabled: false);
         LoadSettings();
         if (_autoSave)
         {
             // Nothing else saves now that there is no Save button: write the defaults to the file too.
             _settingsService.Save();
         }
-        StatusMessage = Strings.StatusSettingsSettingsResetToDefaultValues;
+        StatusMessage = shellError ?? Strings.StatusSettingsSettingsResetToDefaultValues;
         SettingsSaved?.Invoke(this, EventArgs.Empty);
+    }
+
+    private string? ApplyShellIntegration(bool enabled)
+    {
+        try
+        {
+            if (enabled)
+            {
+                string? exePath = _appExecutablePathProvider();
+                if (string.IsNullOrWhiteSpace(exePath))
+                {
+                    return "Could not locate IgnisDisc.exe for Explorer shell integration.";
+                }
+
+                ShellIntegrationManager.Register(_shellIntegrationRegistry, exePath);
+            }
+            else if (ShellIntegrationManager.HasAnyRegisteredKeys(_shellIntegrationRegistry))
+            {
+                ShellIntegrationManager.Unregister(_shellIntegrationRegistry);
+            }
+
+            return null;
+        }
+        catch (Exception ex) when (ex is IOException or UnauthorizedAccessException or SecurityException)
+        {
+            return $"Could not update Explorer shell integration: {ex.Message}";
+        }
+    }
+
+    private static string? ResolveDefaultAppExecutablePath()
+    {
+        string baseCandidate = Path.Combine(AppContext.BaseDirectory, "IgnisDisc.exe");
+        if (File.Exists(baseCandidate))
+        {
+            return baseCandidate;
+        }
+
+        string? processPath = Environment.ProcessPath;
+        if (!string.IsNullOrWhiteSpace(processPath))
+        {
+            string fileName = Path.GetFileName(processPath);
+            if (string.Equals(fileName, "IgnisDisc.exe", StringComparison.OrdinalIgnoreCase) ||
+                string.Equals(fileName, "CdBurner.App.exe", StringComparison.OrdinalIgnoreCase))
+            {
+                return processPath;
+            }
+        }
+
+        return baseCandidate;
     }
 
     /// <summary>
