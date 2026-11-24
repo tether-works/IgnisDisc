@@ -106,8 +106,10 @@ public sealed class NativeAudioBurnEngine : IBurnEngineBackend, IAudioDiscVerifi
                 DiscMediaType.DvdPlusRDualLayer => NativeTaoDataWriter.ProfileDvdPlusRDualLayer,
                 DiscMediaType.DvdPlusRw => 0x001A,
                 DiscMediaType.DvdRam => 0x0012,
-                DiscMediaType.BdR => NativeTaoDataWriter.ProfileBdR,
-                DiscMediaType.BdRe => NativeTaoDataWriter.ProfileBdRe,
+                // A multi-layer BD-R reports profile 41h and a multi-layer BD-RE 43h, as the single-layer discs do.
+                DiscMediaType.BdR or DiscMediaType.BdRDualLayer or DiscMediaType.BdxlRTripleLayer or DiscMediaType.BdxlRQuadLayer
+                    => NativeTaoDataWriter.ProfileBdR,
+                DiscMediaType.BdRe or DiscMediaType.BdReDualLayer or DiscMediaType.BdxlReTripleLayer => NativeTaoDataWriter.ProfileBdRe,
                 _ => 0x0000
             };
             drive.DiscStatus = medium.IsBlank ? 0 : medium.IsFinalized ? 2 : 1;
@@ -147,12 +149,30 @@ public sealed class NativeAudioBurnEngine : IBurnEngineBackend, IAudioDiscVerifi
             {
                 drive.CapacitySectors = (int)Math.Min(int.MaxValue, medium.TotalCapacitySectors); // beyond CD MSF addresses
             }
-            if (medium.MediaType == DiscMediaType.BdRe)
+            if (medium.MediaType is DiscMediaType.BdRe or DiscMediaType.BdReDualLayer or DiscMediaType.BdxlReTripleLayer)
             {
                 // A blank virtual BD-RE is new and unformatted, offering format 00h; one with data has been formatted.
                 drive.BdReFormatted = !medium.IsBlank;
                 drive.FormatCapacitiesResponse = VirtualMmcDrive.BuildFormatCapacities(drive.CapacitySectors ?? 0, formatted: !medium.IsBlank,
                     (NativeWriteCommands.FormatTypeDefault, drive.CapacitySectors ?? 0));
+            }
+            if (medium.MediaType.IsBluRay())
+            {
+                // What the drive says about the layers (READ DISC STRUCTURE 00h), from the medium's own layer count.
+                drive.BdLayerCount = medium.MediaType.GetLayerCount();
+            }
+            if (medium.IsBlank && medium.MediaType is DiscMediaType.BdR or DiscMediaType.BdRDualLayer
+                    or DiscMediaType.BdxlRTripleLayer or DiscMediaType.BdxlRQuadLayer)
+            {
+                // A new BD-R is unformatted and offers type 00h (the drive's default, the whole data zone) and type 32h
+                // (with spare areas; here the 4,096 clusters of inner spare area 0 that MMC-6 Table 251 fixes on every
+                // disc, taken out of the data zone).
+                int whole = drive.CapacitySectors ?? 0;
+                drive.BdRFormatOffers = new[]
+                {
+                    (NativeWriteCommands.FormatTypeDefault, whole, 0x000800),
+                    (NativeWriteCommands.FormatTypeBdRSpareAreas, whole - 4096 * NativeTaoDataWriter.BdClusterSectors, 0)
+                };
             }
             if (medium.MediaType == DiscMediaType.DvdRam)
             {

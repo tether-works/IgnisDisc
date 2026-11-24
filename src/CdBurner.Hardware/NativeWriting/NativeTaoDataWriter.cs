@@ -45,6 +45,26 @@ public sealed record NativeDataWriteRequest(
     /// <summary>Overwritable BD-RE / DVD-RAM only: send WRITE (12) with the Streaming bit (byte 10 bit 7 = 0x80) to
     /// skip hardware defect-management read-after-write slowdown. Off by default.</summary>
     public bool StreamingWrite { get; init; }
+
+    /// <summary>Blu-ray only: how a blank BD-R, or an unformatted BD-RE, is formatted before writing. The default leaves it
+    /// to the drive (BD-R is formatted by the drive at the first write; BD-RE gets format type 00h).</summary>
+    public BdFormatMode BdFormat { get; init; }
+}
+
+/// <summary>Which FORMAT UNIT type a Blu-ray disc is formatted with (MMC-6 Table 242).</summary>
+public enum BdFormatMode
+{
+    /// <summary>BD-R: no FORMAT UNIT, the drive formats at the first write. BD-RE: type 00h, as before.</summary>
+    Automatic = 0,
+
+    /// <summary>BD-R: type 32h, full format with spare areas. BD-RE: type 30h, full format with spare areas.</summary>
+    SpareAreas = 1,
+
+    /// <summary>Type 00h: the drive's default size and allocations (the sparing is the drive's choice).</summary>
+    DriveDefault = 2,
+
+    /// <summary>BD-RE only: type 31h, full format without spare areas. MMC defines no such BD-R format.</summary>
+    NoSpareAreas = 3
 }
 
 /// <summary>Outcome of a native Track-at-Once data write.</summary>
@@ -104,6 +124,16 @@ public sealed record NativeDataWriteResult
 
     /// <summary>True when the track was written using WRITE (12) with the MMC-5 Streaming bit (0x80).</summary>
     public bool StreamingWriteUsed { get; init; }
+
+    /// <summary>Blu-ray: layers the drive's BD Disc Information reported (READ DISC STRUCTURE format 00h); null when it gave none.</summary>
+    public int? BdLayerCount { get; init; }
+
+    /// <summary>Blu-ray: sectors per layer, the disc's capacity split evenly across <see cref="BdLayerCount"/> layers
+    /// (64-bit: a 128 GB disc is 62.5 million sectors, 128 billion bytes); empty when the capacity was not read.</summary>
+    public IReadOnlyList<long> BdLayerSectors { get; init; } = Array.Empty<long>();
+
+    /// <summary>Blu-ray: the FORMAT UNIT type sent before writing; null when none was sent.</summary>
+    public byte? BdFormatTypeSent { get; init; }
 
     /// <summary>The drive's kB/s for 1x on this disc: 176.4 on CD (audio units, as drives count), 1,385 on DVD, 4,495.5 on
     /// Blu-ray.</summary>
@@ -1216,6 +1246,9 @@ public sealed partial class NativeTaoDataWriter
         public bool IsDvd;
         public bool IsBluRay;
         public int? Layer0Sectors;
+        public int? BdLayerCount;
+        public IReadOnlyList<long> BdLayerSectors = Array.Empty<long>();
+        public byte? BdFormatTypeSent;
         public string WriteMode = "track-at-once, mode 1";
         public bool StreamingWriteUsed;
         public bool StreamingWriteFallback;

@@ -180,6 +180,39 @@ public static class NativeWriteCommands
         return list;
     }
 
+    /// <summary>FORMAT UNIT format type 30h (MMC-6 Table 242): BD-RE full format with spare areas.</summary>
+    public const byte FormatTypeBdReSpareAreas = 0x30;
+
+    /// <summary>FORMAT UNIT format type 31h: BD-RE full format without spare areas (needs the RENoSA bit).</summary>
+    public const byte FormatTypeBdReNoSpareAreas = 0x31;
+
+    /// <summary>FORMAT UNIT format type 32h: BD-R full format with spare areas.</summary>
+    public const byte FormatTypeBdRSpareAreas = 0x32;
+
+    /// <summary>Format sub-type 00b: BD-RE types 30h and 31h, quick reformat / no certification (Table 247).</summary>
+    public const byte FormatSubTypeBdReNoCertification = 0x00;
+
+    /// <summary>Format sub-type 01b for BD-R types 00h and 32h: sequential recording mode without pseudo-overwrite (Tables 243 and 250).</summary>
+    public const byte FormatSubTypeBdRSrmNoPow = 0x01;
+
+    /// <summary>
+    /// FORMAT UNIT parameter list for a Blu-ray format descriptor (MMC-6 6.4): FOV | Immed (0x82), descriptor length 8,
+    /// number of blocks in bytes 4-7, format type in byte 8 bits 7-2 and sub-type in bits 1-0, and the 24-bit type-dependent
+    /// parameter in bytes 9-11 (block length 0x000800 for 00h and 31h, spare area size for 30h, sparing parameters for 32h).
+    /// </summary>
+    public static byte[] BuildBdFormatParameters(byte formatType, byte subType, uint blocks, uint typeParameter)
+    {
+        byte[] list = new byte[12];
+        list[1] = 0x82;
+        list[3] = 8;
+        BinaryPrimitives.WriteUInt32BigEndian(list.AsSpan(4, 4), blocks);
+        list[8] = (byte)((formatType << 2) | (subType & 0x03));
+        list[9] = (byte)(typeParameter >> 16);
+        list[10] = (byte)(typeParameter >> 8);
+        list[11] = (byte)typeParameter;
+        return list;
+    }
+
     /// <summary>Block length a DVD-RAM is formatted to, sent as the type-dependent parameter of format type 00h.</summary>
     public const int DvdRamBlockLength = 2048;
 

@@ -91,17 +91,18 @@ public sealed class DirectDataBurnViewModelTests : IDisposable
     }
 
     [Fact]
-    public async Task DataScreen_WithADualLayerBdR_UsesTheWindowsWriterAndSaysSo()
+    public async Task DataScreen_WithADualLayerBdR_WritesDirectly()
     {
-        Insert(new VirtualDiscMedium(DiscMediaType.BdRDualLayer, OpticalConstants.BdR50Sectors));
+        Insert(new VirtualDiscMedium(DiscMediaType.BdRDualLayer, OpticalConstants.BdR50Sectors, isBlank: true));
         var vm = DataScreen();
         vm.UseDirectDriveCommands = true;
 
         var result = await vm.StartDataBurnAsync("VDRV-01");
 
         Assert.True(result.Success, result.ErrorMessage);
-        Assert.Contains("Written with Windows' writer", vm.StatusMessage);
-        Assert.Null(vm.LastDirectBurnEngine!.LastLogPath);
+        Assert.DoesNotContain("Written with Windows' writer", vm.StatusMessage);
+        Assert.Null(vm.LastDirectBurnEngine!.LastFallbackReason);
+        Assert.NotNull(vm.LastDirectBurnEngine.LastLogPath);
     }
 
     [Fact]

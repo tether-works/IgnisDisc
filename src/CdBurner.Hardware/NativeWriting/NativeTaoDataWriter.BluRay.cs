@@ -17,7 +17,8 @@ namespace CdBurner.Hardware.NativeWriting;
 /// FORMAT CAPACITIES; 2 KiB alignment; no close command.</item>
 /// </list>
 /// Both need the drive's BD Write feature (0x0041) to be current: a drive that only reads Blu-ray still reports the
-/// disc's profile. Random recording mode (42h) and BD-ROM are refused.
+/// disc's profile. Random recording mode (42h) and BD-ROM are refused. Multi-layer discs (BD-R DL, BDXL, multi-layer BD-RE)
+/// report the same profiles and go the same way; the layer count comes from READ DISC STRUCTURE (BD Disc Information).
 /// </summary>
 public sealed partial class NativeTaoDataWriter
 {
@@ -51,9 +52,95 @@ public sealed partial class NativeTaoDataWriter
             state.UnsupportedDisc = true;
             throw Stop("The drive does not offer Blu-ray writing for this disc (feature 0x0041 is not current); it may only read Blu-ray.");
         }
+        ReadBdLayers(state);
         return profile == ProfileBdRe
             ? RunOverwritable(request, OverwritableKind.BdRe, progress, ct, clock, state)
             : RunBdR(request, progress, ct, clock, state);
+    }
+
+    /// <summary>Sectors in a disc's data area, rounded up to whole 64 KiB clusters, in 64-bit so no step overflows an int.</summary>
+    internal static long AlignToBdCluster(long sectors) => (sectors + BdClusterSectors - 1) / BdClusterSectors * BdClusterSectors;
+
+    /// <summary>
+    /// READ DISC STRUCTURE, media type 1, format 00h: the BD Disc Information. Read-only and advisory: a drive that does not
+    /// answer leaves the layer count unknown and the write goes on, because the capacity and free blocks come from
+    /// READ FORMAT CAPACITIES and READ TRACK INFORMATION.
+    /// </summary>
+    private void ReadBdLayers(RunState state)
+    {
+        byte[] reply = new byte[BdDiscInformation.FullReplyLength];
+        var r = _transport.ExecuteCommand(MmcCommandBuilder.BuildReadDiscStructureCdb(0x00, (ushort)reply.Length, mediaType: 1),
+            reply, ScsiPassThroughNative.SCSI_IOCTL_DATA_IN, ShortTimeout);
+        var info = r.IsSuccess
+            ? BdDiscInformation.Parse(reply.AsSpan(0, (int)Math.Min(r.DataTransferLength, (uint)reply.Length)))
+            : null;
+        if (info is null)
+        {
+            _note("The drive gave no BD Disc Information; the layer count is not known.");
+            return;
+        }
+        state.BdLayerCount = info.LayerCount > 0 ? info.LayerCount : null;
+        _note($"BD Disc Information: disc type {info.DiscType}, {(info.LayerCount > 0 ? info.LayerCount + " layer(s)" : "layer count not given")}, media ID {info.ManufacturerId}/{info.MediaTypeId}.");
+    }
+
+    /// <summary>Splits the disc's capacity (64-bit) into per-layer sectors and logs it; also checks it is a whole number of clusters.</summary>
+    private void PlanBdLayers(RunState state, long capacitySectors)
+    {
+        int layers = state.BdLayerCount ?? 1;
+        state.BdLayerSectors = BdDiscInformation.SplitCapacity(capacitySectors, layers, BdClusterSectors);
+        if (state.BdLayerSectors.Count == 0)
+        {
+            return;
+        }
+        _note($"Capacity {capacitySectors:N0} sectors ({capacitySectors * (long)SectorSize:N0} bytes) on {layers} layer(s): {string.Join(" + ", state.BdLayerSectors.Select(l => l.ToString("N0")))} sectors.");
+        if (capacitySectors % BdClusterSectors != 0)
+        {
+            _note("The capacity is not a whole number of 64 KiB clusters; the last partial cluster is not used.");
+        }
+    }
+
+    /// <summary>
+    /// Formats a blank BD-R when asked (MMC-6 6.4): type 32h (full format with spare areas) or type 00h (the drive's default),
+    /// sub-type 01b (sequential recording, no pseudo-overwrite), sent exactly as READ FORMAT CAPACITIES offered it. Nothing
+    /// is sent for <see cref="BdFormatMode.Automatic"/> or on a disc that is already formatted. After this the disc has
+    /// changed, so a later stop is reported as one that happened after writing began.
+    /// </summary>
+    private void FormatBdRIfAsked(NativeDataWriteRequest request, RunState state, ProgressReporter reporter, CancellationToken ct)
+    {
+        if (request.BdFormat == BdFormatMode.Automatic)
+        {
+            return;
+        }
+        if (request.BdFormat == BdFormatMode.NoSpareAreas)
+        {
+            throw Stop("MMC defines no BD-R format without spare areas (type 31h is for BD-RE only). Choose the spare-area or the drive default format.");
+        }
+        var formats = MmcMediaReport.Query(_transport, ShortTimeout).FormattedCapacity
+            ?? throw Stop("The drive did not report the formats it offers for this BD-R.");
+        if (formats.State != FormattedCapacityState.Unformatted)
+        {
+            _note("The BD-R is already formatted; no FORMAT UNIT sent.");
+            return;
+        }
+        byte type = request.BdFormat == BdFormatMode.SpareAreas ? NativeWriteCommands.FormatTypeBdRSpareAreas : NativeWriteCommands.FormatTypeDefault;
+        var offer = formats.Formats.Where(f => f.FormatType == type && f.Blocks > 0).OrderByDescending(f => f.Blocks).FirstOrDefault()
+            ?? throw Stop($"The drive offers no format type {type:X2}h for this BD-R.");
+        uint blocks = (uint)Math.Min(uint.MaxValue, offer.Blocks);
+        uint typeParameter = type == NativeWriteCommands.FormatTypeBdRSpareAreas ? (uint)offer.TypeParameter : 0x000800;
+        Check(ct, state);
+        var format = _transport.ExecuteCommand(NativeWriteCommands.BuildFormatUnit(),
+            NativeWriteCommands.BuildBdFormatParameters(type, NativeWriteCommands.FormatSubTypeBdRSrmNoPow, blocks, typeParameter),
+            ScsiPassThroughNative.SCSI_IOCTL_DATA_OUT, ShortTimeout);
+        if (!format.IsSuccess)
+        {
+            throw Stop($"The drive refused to format the BD-R: {Describe(format)}");
+        }
+        state.WritingStarted = true;
+        state.FormattingInProgress = true;
+        state.BdFormatTypeSent = type;
+        _note($"FORMAT UNIT type {type:X2}h, sub-type 01b, {offer.Blocks:N0} blocks sent.");
+        WaitForFormat(FlushTimeout, ct, state, reporter);
+        state.FormattingInProgress = false;
     }
 
     private NativeDataWriteResult RunBdR(NativeDataWriteRequest request, IProgress<BurnProgressSnapshot>? progress,
@@ -73,6 +160,14 @@ public sealed partial class NativeTaoDataWriter
         {
             throw Stop("The disc is not blank. Direct writing needs a blank BD-R.");
         }
+        long alignedSectors = AlignToBdCluster(state.ImageSectors);
+        if (alignedSectors > int.MaxValue)
+        {
+            throw Stop("The image is larger than the writer's 2,147,483,647-sector limit.");
+        }
+        int trackSectors = (int)alignedSectors;
+        var reporter = new ProgressReporter(this, progress, clock, trackSectors, BdSectorsPerSecondAt1x);
+        FormatBdRIfAsked(request, state, reporter, ct);
         if (ReadTrackInformation(1) is not { NextWritableAddressValid: true } track)
         {
             throw Stop("The drive did not report where writing starts on this disc.");
@@ -82,11 +177,11 @@ public sealed partial class NativeTaoDataWriter
             throw Stop($"The blank disc's first writable sector is {track.NextWritableAddress}, not 0; the image would not be readable.");
         }
         long freeSectors = track.FreeBlocks;
-        int trackSectors = (state.ImageSectors + BdClusterSectors - 1) / BdClusterSectors * BdClusterSectors;
         if (trackSectors > freeSectors)
         {
             throw Stop($"The image ({state.ImageSectors:N0} sectors) does not fit on this disc ({freeSectors:N0} sectors free).");
         }
+        PlanBdLayers(state, freeSectors);
         _note($"Disc blank; writing starts at LBA 0; {state.ImageSectors} image sectors" +
               (trackSectors > state.ImageSectors ? $" + {trackSectors - state.ImageSectors} padding to a whole 64 KiB cluster" : "") + $"; {freeSectors} free.");
 
@@ -97,9 +192,8 @@ public sealed partial class NativeTaoDataWriter
         // 3. The data, 64 KiB per WRITE.
         byte[]? alignedClosingAvdp = TryBuildAlignedClosingAvdp(request, state.ImageSectors, trackSectors, startLba: 0);
         request.Image.Position = request.StartPosition;
-        var reporter = new ProgressReporter(this, progress, clock, trackSectors, BdSectorsPerSecondAt1x);
         var writing = Stopwatch.StartNew();
-        WriteTrack(request, 0, trackSectors, DvdSectorsPerWrite, state, reporter, ct, DvdMinimumSectorsPerWrite,
+        WriteTrack(request, 0, trackSectors, DvdSectorsPerWrite, state, reporter, ct, BdClusterSectors,
             lastSectorOverride: alignedClosingAvdp);
         writing.Stop();
 

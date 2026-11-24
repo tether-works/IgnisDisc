@@ -329,7 +329,7 @@ public sealed class NativeBluRayWriterTests : IDisposable
     }
 
     [Fact]
-    public async Task MultiLayerBluRay_IsHandedToTheWindowsWriter_WithTheReason()
+    public async Task MultiLayerBluRay_IsNoLongerHandedToTheWindowsWriter()
     {
         var engine = Engine();
         using var medium = VirtualDiscMedium.CreateBlankBluRay(DiscMediaType.BdRDualLayer);
@@ -338,6 +338,7 @@ public sealed class NativeBluRayWriterTests : IDisposable
         var result = await new DataBurnService(engine).BurnStreamAsync(recorder, new MemoryStream(Image(320)), new DataBurnOptions());
 
         Assert.True(result.Success, result.ErrorMessage);
-        Assert.Contains("single-layer Blu-ray", engine.LastFallbackReason);
+        Assert.Null(engine.LastFallbackReason);
+        Assert.True(engine.LastResult!.DiscRecorded);
     }
 }

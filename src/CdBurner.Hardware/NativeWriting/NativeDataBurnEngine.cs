@@ -10,7 +10,8 @@ namespace CdBurner.Hardware.NativeWriting;
 /// Burns data images (ISO files, data discs) with IgnisDisc's own drive commands instead of Windows' burning service.
 /// Opt-in. Covers blank CD-R, CD-RW, DVD-R, DVD-RW and single-layer DVD+R, a new session on one of those left open,
 /// and the overwritable DVD+RW, DVD-RW in restricted overwrite mode and DVD-RAM (blank, or written over when the user
-/// allowed replacing their data), so far (<see cref="NativeTaoDataWriter"/>); any other disc is handed to the Windows
+/// allowed replacing their data), and blank BD-R and BD-RE of any layer count (single, dual, BDXL triple and quad layer),
+/// so far (<see cref="NativeTaoDataWriter"/>); any other disc is handed to the Windows
 /// writer (<see cref="LastFallbackReason"/> says so). Reading (the read-back check), erasing and audio go to the Windows
 /// engine. Every direct run saves a full SCSI command log.
 /// </summary>
@@ -33,6 +34,10 @@ public sealed class NativeDataBurnEngine : IBurnEngineBackend, IWriterMediaStatu
 
     /// <summary>Pauses while a reloaded disc spins up after a test write; tests replace it so they need not wait.</summary>
     public Action<TimeSpan> Wait { get; init; } = Thread.Sleep;
+
+    /// <summary>Blu-ray: which FORMAT UNIT type a blank BD-R or an unformatted BD-RE gets before writing. Automatic leaves
+    /// BD-R to the drive and formats BD-RE with type 00h.</summary>
+    public BdFormatMode BdFormat { get; init; }
 
     /// <summary>Lets a test adjust the simulated drive before a burn on a virtual recorder.</summary>
     public Action<VirtualMmcDrive>? ConfigureVirtualDrive { get; init; }
@@ -68,16 +73,13 @@ public sealed class NativeDataBurnEngine : IBurnEngineBackend, IWriterMediaStatu
         bool appending =!status.IsBlank && !status.IsOverwriteOnly && status.IsAppendable && status.NextWritableLba > 0;
         string? reason = !imageStream.CanSeek
             ? "the image is not a seekable file"
-            : status.MediaType is DiscMediaType.BdRDualLayer or DiscMediaType.BdReDualLayer or DiscMediaType.BdxlRTripleLayer
-                    or DiscMediaType.BdxlRQuadLayer or DiscMediaType.BdxlReTripleLayer
-                ? "direct writing covers single-layer Blu-ray discs so far"
-                : !IsCovered(status.MediaType)
-                    ? $"direct writing covers CD-R, CD-RW, DVD-R, DVD-RW, DVD+R, DVD+RW, DVD-RAM, BD-R and BD-RE so far, and this disc is {status.MediaType.GetDisplayName()}"
-                    : appending && !AddsSessionsTo(status.MediaType)
-                        ? $"direct writing adds sessions to CD-R, CD-RW, DVD-R, DVD-RW and DVD+R so far, and this disc is {status.MediaType.GetDisplayName()}"
-                    : !status.IsBlank && !appending && !(status.IsOverwriteOnly && options.OverwriteExistingData)
-                        ? "the disc already holds data that direct writing would not keep"
-                        : null;
+            : !IsCovered(status.MediaType)
+                ? $"direct writing covers CD-R, CD-RW, DVD-R, DVD-RW, DVD+R, DVD+RW, DVD-RAM, and BD-R and BD-RE of every layer count so far, and this disc is {status.MediaType.GetDisplayName()}"
+                : appending && !AddsSessionsTo(status.MediaType)
+                    ? $"direct writing adds sessions to CD-R, CD-RW, DVD-R, DVD-RW and DVD+R so far, and this disc is {status.MediaType.GetDisplayName()}"
+                : !status.IsBlank && !appending && !(status.IsOverwriteOnly && options.OverwriteExistingData)
+                    ? "the disc already holds data that direct writing would not keep"
+                    : null;
         if (options.CdRomXaMode2Form1 && reason == null && !status.MediaType.IsCd())
         {
             reason = "Mode 2 Form 1 (CD-ROM XA) is a CD format";
@@ -105,7 +107,8 @@ public sealed class NativeDataBurnEngine : IBurnEngineBackend, IWriterMediaStatu
         {
             DisableBufferUnderrunFree = options.DisableBufferUnderrunFree,
             Mode2Form1 = options.CdRomXaMode2Form1,
-            StreamingWrite = options.StreamingWrite
+            StreamingWrite = options.StreamingWrite,
+            BdFormat = BdFormat
         };
 
         var result = await Task.Run(() => Run(recorder, request, progress, cancellationToken), CancellationToken.None).ConfigureAwait(false);
@@ -357,7 +360,8 @@ public sealed class NativeDataBurnEngine : IBurnEngineBackend, IWriterMediaStatu
     private static bool IsCovered(DiscMediaType type) =>
         type is DiscMediaType.CdR or DiscMediaType.CdRw or DiscMediaType.DvdMinusR or DiscMediaType.DvdMinusRw or DiscMediaType.DvdPlusR
             or DiscMediaType.DvdPlusRw or DiscMediaType.DvdRam or DiscMediaType.BdR or DiscMediaType.BdRe or DiscMediaType.DvdPlusRDualLayer
-            or DiscMediaType.DvdMinusRDualLayer;
+            or DiscMediaType.DvdMinusRDualLayer or DiscMediaType.BdRDualLayer or DiscMediaType.BdReDualLayer
+            or DiscMediaType.BdxlRTripleLayer or DiscMediaType.BdxlRQuadLayer or DiscMediaType.BdxlReTripleLayer;
 
     private static NativeDataWriteResult Stopped(string message) =>
         new() { Success = false, StoppedBeforeWriting = true, Message = message };

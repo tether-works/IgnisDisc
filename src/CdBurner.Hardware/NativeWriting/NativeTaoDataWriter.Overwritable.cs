@@ -67,6 +67,8 @@ public sealed partial class NativeTaoDataWriter
         var formats = report.FormattedCapacity;
         byte? formatType = null;          // the format to start before writing, if any
         uint formatBlocks = 0;            // BD-RE and DVD-RAM: the blocks the drive offered for format 00h
+        uint bdReTypeParameter = 0x000800; // BD-RE: type-dependent parameter (block length, or the offered spare area size for 30h)
+        long? formatCapacity = null;       // BD-RE: user blocks the chosen format will leave, when it is not the default one
         bool dvdPlusRwRestart = false;    // DVD+RW background format status 1 (partly formatted): restart=true
         bool mayHoldData = true;
         switch (kind)
@@ -106,15 +108,27 @@ public sealed partial class NativeTaoDataWriter
                 // Cookbook: BD-RE is sold unformatted and must be formatted first; type 00h is the fast default.
                 if (formats is not { State: FormattedCapacityState.Formatted })
                 {
-                    var offer = formats?.Formats.FirstOrDefault(f => f.FormatType == NativeWriteCommands.FormatTypeDefault && f.Blocks > 0);
+                    // Automatic and DriveDefault: type 00h. SpareAreas: 30h. NoSpareAreas: 31h (only where READ FORMAT
+                    // CAPACITIES lists it, which is the RENoSA bit of the Formattable feature). Each is sent as offered.
+                    byte wanted = request.BdFormat switch
+                    {
+                        BdFormatMode.SpareAreas => NativeWriteCommands.FormatTypeBdReSpareAreas,
+                        BdFormatMode.NoSpareAreas => NativeWriteCommands.FormatTypeBdReNoSpareAreas,
+                        _ => NativeWriteCommands.FormatTypeDefault
+                    };
+                    var offer = formats?.Formats.Where(f => f.FormatType == wanted && f.Blocks > 0).OrderByDescending(f => f.Blocks).FirstOrDefault();
                     if (offer is null)
                     {
-                        throw Stop("This BD-RE is not formatted, and the drive offers no default format for it.");
+                        throw Stop(wanted == NativeWriteCommands.FormatTypeDefault
+                            ? "This BD-RE is not formatted, and the drive offers no default format for it."
+                            : $"This BD-RE is not formatted, and the drive offers no format type {wanted:X2}h for it.");
                     }
-                    formatType = NativeWriteCommands.FormatTypeDefault;
+                    formatType = wanted;
                     formatBlocks = (uint)Math.Min(uint.MaxValue, offer.Blocks);
+                    bdReTypeParameter = wanted == NativeWriteCommands.FormatTypeBdReSpareAreas ? (uint)offer.TypeParameter : 0x000800;
+                    formatCapacity = offer.Blocks;
                     mayHoldData = false;
-                    _note($"Not formatted; format 00h offered with {offer.Blocks} blocks.");
+                    _note($"Not formatted; format {wanted:X2}h offered with {offer.Blocks} blocks.");
                 }
                 else
                 {
@@ -166,6 +180,11 @@ public sealed partial class NativeTaoDataWriter
                 }
             }
         }
+        if (formatCapacity is long chosen)
+        {
+            // The format about to run decides the size (30h and 31h offer different block counts than 00h).
+            capacity = chosen;
+        }
         if (capacity <= 0)
         {
             // No format information (a DVD-RW in the intermediate state): the track size. Never the larger of the two,
@@ -175,6 +194,10 @@ public sealed partial class NativeTaoDataWriter
         if (capacity <= 0)
         {
             throw Stop($"The drive did not report the size of this {name}.");
+        }
+        if (state.IsBluRay)
+        {
+            PlanBdLayers(state, capacity);
         }
         int sectors = kind == OverwritableKind.DvdMinusRwRestricted
             ? (state.ImageSectors + WriteParametersPage.DvdPacketBlocks - 1) / WriteParametersPage.DvdPacketBlocks * WriteParametersPage.DvdPacketBlocks
@@ -197,7 +220,9 @@ public sealed partial class NativeTaoDataWriter
             byte[] parameters = kind switch
             {
                 OverwritableKind.DvdPlusRw => NativeWriteCommands.BuildDvdPlusRwFormatParameters(restart: dvdPlusRwRestart),
-                OverwritableKind.BdRe => NativeWriteCommands.BuildBdReDefaultFormatParameters(formatBlocks),
+                OverwritableKind.BdRe when type == NativeWriteCommands.FormatTypeDefault => NativeWriteCommands.BuildBdReDefaultFormatParameters(formatBlocks),
+                OverwritableKind.BdRe => NativeWriteCommands.BuildBdFormatParameters(type, NativeWriteCommands.FormatSubTypeBdReNoCertification,
+                    formatBlocks, bdReTypeParameter),
                 OverwritableKind.DvdRam => NativeWriteCommands.BuildDvdRamFormatParameters(formatBlocks),
                 _ => NativeWriteCommands.BuildDvdMinusRwExpandParameters()
             };
@@ -208,6 +233,10 @@ public sealed partial class NativeTaoDataWriter
             }
             state.WritingStarted = true;
             state.FormattingInProgress = true;
+            if (kind == OverwritableKind.BdRe)
+            {
+                state.BdFormatTypeSent = type;
+            }
             _note($"FORMAT UNIT type {type:X2}h{(dvdPlusRwRestart ? " (restart)" : "")} sent.");
             WaitForFormat(kind == OverwritableKind.DvdRam ? DvdRamFormatTimeout : FlushTimeout, ct, state, reporter);
             state.FormattingInProgress = false;

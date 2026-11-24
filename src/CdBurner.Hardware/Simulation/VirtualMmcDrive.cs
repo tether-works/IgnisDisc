@@ -144,6 +144,31 @@ public sealed class VirtualMmcDrive : IScsiTransport
     /// <summary>BD-RE: false makes it a new, unformatted disc that refuses writes until FORMAT UNIT type 00h.</summary>
     public bool BdReFormatted { get; set; } = true;
 
+    /// <summary>
+    /// Blu-ray: layers the disc has, as READ DISC STRUCTURE format 00h reports them in each DI unit's byte 3. A multi-layer
+    /// disc keeps profile 41h (BD-R) or 43h (BD-RE); only this and the capacity tell it apart from a single-layer one.
+    /// </summary>
+    public int BdLayerCount { get; set; } = 1;
+
+    /// <summary>Blu-ray: READ DISC STRUCTURE format 00h fails with 5/24/00, like a drive that does not give the BD Disc Information.</summary>
+    public bool RejectsBdDiscInformation { get; set; }
+
+    /// <summary>BD-R: false makes a new disc that READ FORMAT CAPACITIES reports as unformatted; FORMAT UNIT sets it true.</summary>
+    public bool BdRFormatted { get; private set; }
+
+    /// <summary>
+    /// BD-R: the format types READ FORMAT CAPACITIES offers a blank, unformatted disc as (type, blocks, type-dependent
+    /// parameter), for example 00h with the whole capacity and 32h with less for the spare areas. Null: READ FORMAT
+    /// CAPACITIES answers from <see cref="FormatCapacitiesResponse"/> only.
+    /// </summary>
+    public (byte Type, int Blocks, int TypeParameter)[]? BdRFormatOffers { get; set; }
+
+    /// <summary>Every WRITE (10) a BD-R accepted as (LBA, sectors), to check each one is whole 64 KiB clusters.</summary>
+    public List<(int Lba, int Sectors)> BdWrites { get; } = new();
+
+    /// <summary>The format type of the last FORMAT UNIT a Blu-ray disc accepted; null when none was.</summary>
+    public byte? LastBdFormatType { get; private set; }
+
     /// <summary>Refuse WRITE (12) (0xAA) with 5/20/00 (Invalid Command Operation Code).</summary>
     public bool RejectsWrite12 { get; set; }
 
@@ -499,7 +524,7 @@ public sealed class VirtualMmcDrive : IScsiTransport
     public byte[] ReadSessionData(DataSession session)
     {
         ArgumentNullException.ThrowIfNull(session);
-        byte[] data = new byte[session.TrackSectors * 2048];
+        byte[] data = new byte[checked((int)(session.TrackSectors * 2048L))];
         if (TryFindRecorded(session.TrackStartLba, session.TrackSectors, out byte[]? source, out int offset))
         {
             source.AsSpan(offset, data.Length).CopyTo(data);
@@ -643,6 +668,35 @@ public sealed class VirtualMmcDrive : IScsiTransport
         BinaryPrimitives.WriteInt32BigEndian(r.AsSpan(12), blocks);
         r[16] = NativeWriteCommands.FormatTypeDefault << 2;
         r[18] = 0x08; // type-dependent parameter: block length 2,048
+        return r;
+    }
+
+    /// <summary>
+    /// READ FORMAT CAPACITIES of a BD-R built from <see cref="BdRFormatOffers"/> (MMC-6 6.24.3): the current/maximum
+    /// descriptor (unformatted until FORMAT UNIT ran, then formatted) and, while unformatted, one formattable descriptor per
+    /// offer with its format type in byte 4 bits 7-2 and the 24-bit type-dependent parameter in bytes 5-7. Null when no
+    /// offers were configured.
+    /// </summary>
+    private byte[]? BuildBdRFormatCapacities()
+    {
+        if (!IsBdR || BdRFormatOffers is not { } offers)
+        {
+            return null;
+        }
+        int offered = BdRFormatted ? 0 : offers.Length;
+        byte[] r = new byte[4 + 8 + 8 * offered];
+        r[3] = (byte)(8 + 8 * offered);
+        BinaryPrimitives.WriteUInt32BigEndian(r.AsSpan(4), (uint)Capacity);
+        r[8] = (byte)(BdRFormatted ? 2 : 1);
+        r[10] = 0x08; // block length 2,048
+        for (int i = 0; i < offered; i++)
+        {
+            BinaryPrimitives.WriteUInt32BigEndian(r.AsSpan(12 + 8 * i), (uint)offers[i].Blocks);
+            r[16 + 8 * i] = (byte)(offers[i].Type << 2);
+            r[17 + 8 * i] = (byte)(offers[i].TypeParameter >> 16);
+            r[18 + 8 * i] = (byte)(offers[i].TypeParameter >> 8);
+            r[19 + 8 * i] = (byte)offers[i].TypeParameter;
+        }
         return r;
     }
 
@@ -898,7 +952,8 @@ public sealed class VirtualMmcDrive : IScsiTransport
             0x43 => ReadToc(cdb, dataBuffer),
             0x42 => ReadSubChannel(cdb, dataBuffer),
             MmcMediaReport.OpCodeReadFormatCapacities => CannedResponse(
-                FormatCapacitiesResponse ?? (Profile == NativeTaoDataWriter.ProfileDvdRam ? BuildDvdRamFormatCapacities(Capacity, RamFormatted) : null), dataBuffer),
+                FormatCapacitiesResponse ?? (Profile == NativeTaoDataWriter.ProfileDvdRam ? BuildDvdRamFormatCapacities(Capacity, RamFormatted) : null)
+                    ?? BuildBdRFormatCapacities(), dataBuffer),
             MmcMediaReport.OpCodeGetPerformance when cdb.Length >= 11 && cdb[10] == MmcMediaReport.PerformanceTypeWriteSpeed
                 => CannedResponse(WriteSpeedPerformanceResponse, dataBuffer),
             0xBB => SetCdSpeed(cdb),
@@ -2594,9 +2649,9 @@ public sealed class VirtualMmcDrive : IScsiTransport
     {
         int start = _taoStartLba;
         byte[] image = DataTrackWritten.ToArray();
-        if (image.Length < sectors * 2048)
+        if (image.Length < sectors * 2048L)
         {
-            Array.Resize(ref image, sectors * 2048);
+            Array.Resize(ref image, checked((int)(sectors * 2048L)));
         }
         if (start == 0)
         {
@@ -2646,13 +2701,23 @@ public sealed class VirtualMmcDrive : IScsiTransport
         {
             return Sense(0x05, 0x24, 0x00);
         }
+        // Blu-ray records whole 64 KiB clusters (32 sectors): a WRITE that starts or ends inside one is refused.
+        if (IsBluRay && (count % NativeTaoDataWriter.BdClusterSectors != 0 || lba % NativeTaoDataWriter.BdClusterSectors != 0))
+        {
+            return Sense(0x05, 0x24, 0x00);
+        }
         if (dao && lba + count > ReservedSectors)
         {
             return Sense(0x05, 0x21, 0x00);
         }
         if (!LayerJumpModeSet)
         {
-            return WriteTrackAtOnce(cdb, data);
+            var written = WriteTrackAtOnce(cdb, data);
+            if (IsBluRay && written.IsSuccess)
+            {
+                BdWrites.Add((lba, count));
+            }
+            return written;
         }
 
         // DVD-R DL layer jump: the address space is fixed (layer 0 is LBA 0 to C - 1, layer 1 C to 2C - 1 from the outer
@@ -2862,13 +2927,20 @@ public sealed class VirtualMmcDrive : IScsiTransport
 
         if (CaptureWrites)
         {
+            // 64-bit byte offsets: a BD-RE or BDXL address times 2,048 passes 2 GiB at sector 1,048,576. The simulator keeps
+            // the written part of the disc in one array, so a write that would need more than an array can hold fails
+            // as a medium error instead of wrapping to a negative offset.
             byte[] image = DataDiscImage ?? Array.Empty<byte>();
-            int end = (lba + count) * 2048;
+            long end = (lba + (long)count) * 2048;
+            if (end > Array.MaxLength)
+            {
+                return Sense(0x03, 0x0C, 0x00);
+            }
             if (image.Length < end)
             {
-                Array.Resize(ref image, end);
+                Array.Resize(ref image, (int)end);
             }
-            data.CopyTo(image.AsSpan(lba * 2048));
+            data.CopyTo(image.AsSpan((int)(lba * 2048L)));
             DataDiscImage = image;
         }
         Recorded = true;
@@ -2891,16 +2963,61 @@ public sealed class VirtualMmcDrive : IScsiTransport
         }
         if (Profile == NativeTaoDataWriter.ProfileBdRe)
         {
-            // Format 00h (the default) with the block length 2,048 in the type parameter, as libburn sends it.
+            // Format 00h (the default) with the block length 2,048 in the type parameter, as libburn sends it; 30h (spare
+            // areas, type parameter = spare area size) and 31h (no spare areas, type parameter = block length) as MMC-6
+            // Table 242 lists them. Blocks, as offered by READ FORMAT CAPACITIES, never exceed the disc.
             uint bdBlocks = BinaryPrimitives.ReadUInt32BigEndian(list.Slice(4, 4));
-            if (cdb[1] != 0x11 || list.Length < 12 || list[3] != 8 || (list[8] >> 2) != NativeWriteCommands.FormatTypeDefault ||
-                list[9] != 0 || list[10] != 0x08 || list[11] != 0 || bdBlocks == 0 || bdBlocks > (uint)Capacity)
+            byte bdType = list.Length >= 12 ? (byte)(list[8] >> 2) : (byte)0xFF;
+            bool typeOk = bdType switch
+            {
+                NativeWriteCommands.FormatTypeDefault or NativeWriteCommands.FormatTypeBdReNoSpareAreas
+                    => list[9] == 0 && list[10] == 0x08 && list[11] == 0,
+                NativeWriteCommands.FormatTypeBdReSpareAreas => true,
+                _ => false
+            };
+            if (cdb[1] != 0x11 || list.Length < 12 || list[3] != 8 || !typeOk || bdBlocks == 0 || bdBlocks > (uint)Capacity)
             {
                 return Sense(0x05, 0x26, 0x00);
             }
             FormatUnitCount++;
             LastFormatParameters = list[..12].ToArray();
+            LastBdFormatType = bdType;
             BdReFormatted = true;
+            if (bdType != NativeWriteCommands.FormatTypeDefault)
+            {
+                CapacitySectors = (int)bdBlocks; // the user blocks this format leaves
+            }
+            if ((list[1] & 0x02) != 0)
+            {
+                NotReadyResponses += 1;
+            }
+            return Good(0);
+        }
+        if (Profile == NativeTaoDataWriter.ProfileBdR)
+        {
+            // MMC-6 6.4: a blank BD-R takes type 00h (the drive's default; blocks and type parameter ignored) or 32h (full
+            // format with spare areas; blocks = the minimum to format), sub-type 01b (SRM without POW) or 00b (SRM+POW).
+            byte bdType = list.Length >= 12 ? (byte)(list[8] >> 2) : (byte)0xFF;
+            int subType = list.Length >= 12 ? list[8] & 0x03 : 0;
+            uint bdBlocks = BinaryPrimitives.ReadUInt32BigEndian(list.Slice(4, 4));
+            bool typeOk = bdType == NativeWriteCommands.FormatTypeDefault ||
+                          (bdType == NativeWriteCommands.FormatTypeBdRSpareAreas && bdBlocks > 0 && bdBlocks <= (uint)Capacity);
+            if (cdb[1] != 0x11 || list.Length < 12 || list[3] != 8 || !typeOk || subType > 1)
+            {
+                return Sense(0x05, 0x26, 0x00);
+            }
+            if (BdRFormatted || DiscStatus != 0 || _taoNextLba != 0)
+            {
+                return Sense(0x05, 0x2C, 0x00); // only a blank, unformatted disc can be formatted
+            }
+            FormatUnitCount++;
+            LastFormatParameters = list[..12].ToArray();
+            LastBdFormatType = bdType;
+            BdRFormatted = true;
+            if (bdType == NativeWriteCommands.FormatTypeBdRSpareAreas)
+            {
+                CapacitySectors = (int)bdBlocks; // spare areas are taken out of the user data zone
+            }
             if ((list[1] & 0x02) != 0)
             {
                 NotReadyResponses += 1;
@@ -3015,6 +3132,33 @@ public sealed class VirtualMmcDrive : IScsiTransport
     /// <summary>READ DISC STRUCTURE: only format 20h (DVD+R DL layer boundary) is simulated, the growisofs layout.</summary>
     private ScsiExecutionResult ReadDiscStructure(ReadOnlySpan<byte> cdb, Span<byte> data)
     {
+        if (IsBluRay && (cdb[1] & 0x0F) == 1 && cdb[7] == 0x00)
+        {
+            // MMC-6 Table 441: 4-byte header (data length 4,098), then the DI units of the PIC zone, 112 bytes each. A unit
+            // carries "DI", the DI format, the layer count in byte 3, the disc type at 8-10 ("BDR" / "BDW"), the media ID
+            // (manufacturer at 100-105, media type at 106-108) and a product revision at 111.
+            if (RejectsBdDiscInformation)
+            {
+                return Sense(0x05, 0x24, 0x00);
+            }
+            byte[] di = new byte[BdDiscInformation.FullReplyLength];
+            BinaryPrimitives.WriteUInt16BigEndian(di, BdDiscInformation.FullReplyLength - 2);
+            int units = Math.Clamp(BdLayerCount, 1, BdDiscInformation.MaxLayers);
+            for (int i = 0; i < units; i++)
+            {
+                var unit = di.AsSpan(BdDiscInformation.HeaderLength + i * BdDiscInformation.UnitLength, BdDiscInformation.UnitLength);
+                unit[0] = (byte)'D';
+                unit[1] = (byte)'I';
+                unit[2] = 0x01;
+                unit[3] = (byte)Math.Clamp(BdLayerCount, 1, BdDiscInformation.MaxLayers);
+                unit[4] = (byte)i;
+                unit[5] = BdDiscInformation.UnitLength;
+                System.Text.Encoding.ASCII.GetBytes(Profile == NativeTaoDataWriter.ProfileBdRe ? "BDW" : "BDR").CopyTo(unit[8..]);
+                System.Text.Encoding.ASCII.GetBytes("SIMDSC").CopyTo(unit[100..]);
+                System.Text.Encoding.ASCII.GetBytes("000").CopyTo(unit[106..]);
+            }
+            return CopyOut(di, data);
+        }
         if (cdb[7] == NativeWriteCommands.FormatManualLayerJump && IsDvdMinusRDualLayer && OffersLayerJump)
         {
             // Format 23h: header, 4 reserved bytes, the jump address (ntddcdvd.h DVD_DUAL_LAYER_MANUAL_LAYER_JUMP). With

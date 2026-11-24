@@ -1858,10 +1858,10 @@ public sealed class CliIntegrationTests : IDisposable
     }
 
     [Fact]
-    public async Task ArchiveBurn_Native_HandsADualLayerBdRToTheWindowsWriter_AndSaysWhy()
+    public async Task ArchiveBurn_Native_WritesADualLayerBdRDirectly()
     {
         var (discFolder, _) = await StageOneArchiveDiscAsync("archive_fallback");
-        using var medium = new VirtualDiscMedium(DiscMediaType.BdRDualLayer, OpticalConstants.BdR50Sectors);
+        using var medium = new VirtualDiscMedium(DiscMediaType.BdRDualLayer, OpticalConstants.BdR50Sectors, isBlank: true);
         _recorder.InsertMedia(medium);
 
         var (outText, errText) = CreateStringWriters();
@@ -1871,11 +1871,11 @@ public sealed class CliIntegrationTests : IDisposable
 
         Assert.True(code == 0, errText.ToString());
         string text = outText.ToString();
-        Assert.Contains("Writer:         Written with Windows' writer:", text);
-        Assert.Contains("single-layer Blu-ray", text);
+        Assert.Contains("Writer:         direct drive commands", text);
+        Assert.DoesNotContain("Written with Windows' writer", text);
         Assert.Contains("Verified:       Passed", text);
         Assert.False(medium.IsBlank);
-        Assert.False(Directory.Exists(Path.Combine(_tempDir, "fallback-logs"))); // no drive commands were sent
+        Assert.True(Directory.Exists(Path.Combine(_tempDir, "fallback-logs"))); // the drive commands were logged
     }
 
     [Fact]

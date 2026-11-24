@@ -207,24 +207,21 @@ public sealed class ArchiveViewModelTests : IDisposable
     }
 
     [Fact]
-    public async Task Burn_WithDirectDriveCommands_HandsADualLayerBdRToTheWindowsWriterAndSaysWhy()
+    public async Task Burn_WithDirectDriveCommands_WritesADualLayerBdRDirectly()
     {
-        var (vm, vrec) = await StageOneDiscWithDirectWritingAsync("Fallback");
-        var medium = new VirtualDiscMedium(DiscMediaType.BdRDualLayer, OpticalConstants.BdR50Sectors);
+        var (vm, vrec) = await StageOneDiscWithDirectWritingAsync("DualLayer");
+        var medium = new VirtualDiscMedium(DiscMediaType.BdRDualLayer, OpticalConstants.BdR50Sectors, isBlank: true);
         vrec.InsertMedia(medium);
 
         var result = await vm.BurnDiscAsync(vm.Discs[0]);
 
         Assert.True(result.Success, result.ErrorMessage);
         Assert.True(result.Verified);
-        string? reason = vm.LastDirectBurnEngine!.LastFallbackReason;
-        Assert.NotNull(reason);
-        Assert.StartsWith("Written with Windows' writer:", reason);
-        Assert.Contains("single-layer Blu-ray", reason);
-        Assert.Contains(reason, vm.StatusMessage);
-        Assert.Null(vm.LastDirectBurnEngine.LastResult); // the direct writer sent no command to the drive
-        Assert.Null(vm.LastDirectBurnEngine.LastLogPath);
-        Assert.False(medium.IsBlank); // the Windows writer burned it instead
+        Assert.Null(vm.LastDirectBurnEngine!.LastFallbackReason);
+        Assert.True(vm.LastDirectBurnEngine.LastResult!.IsBluRay);
+        Assert.Equal(2, vm.LastDirectBurnEngine.LastResult.BdLayerCount);
+        Assert.NotNull(vm.LastDirectBurnEngine.LastLogPath); // the direct writer sent drive commands and logged them
+        Assert.False(medium.IsBlank);
     }
 
     [Fact]

@@ -408,7 +408,10 @@ public sealed partial class NativeTaoDataWriter
         IsBluRay = state.IsBluRay,
         Layer0Sectors = state.Layer0Sectors,
         WriteMode = state.WriteMode,
-        StreamingWriteUsed = state.StreamingWriteUsed
+        StreamingWriteUsed = state.StreamingWriteUsed,
+        BdLayerCount = state.BdLayerCount,
+        BdLayerSectors = state.BdLayerSectors,
+        BdFormatTypeSent = state.BdFormatTypeSent
     };
 
     /// <summary>

@@ -273,7 +273,22 @@ speed in kB over 1,000 ms), then `SET CD SPEED` if the drive refuses that.
   (DVD+R uses 101b), falling back to 010b if refused. BD-RE (43h) is in the overwritable path: an unformatted disc
   gets `FORMAT UNIT` type 00h with the block count the drive offered for it in `READ FORMAT CAPACITIES` and the
   block length 2,048 in bytes 9–11 (libburn's `mmc_format_unit`); 2 KiB alignment; no close command. Random
-  recording BD-R (42h) and BD-ROM are refused; multi-layer Blu-ray goes to the Windows writer.
+  recording BD-R (42h) and BD-ROM are refused.
+- *Multi-layer Blu-ray* (built 2026-11-24, simulator only, never tried on a real disc). BD-R DL (50 GB), BDXL triple
+  and quad layer (100 and 128 GB) and multi-layer BD-RE report the same profiles as single-layer discs (41h and 43h), so
+  the writer path is the same; what is new: (1) `READ DISC STRUCTURE` media type 1, format 00h (BD Disc Information,
+  MMC-6 Tables 441 to 443: 4-byte header, 112-byte DI units, byte 3 = layers the unit applies to, disc type "BDR" or
+  "BDW" at bytes 8 to 10) gives the layer count; it is advisory, and a drive that does not answer leaves the count
+  unknown. Per-layer capacities are the READ FORMAT CAPACITIES / READ TRACK INFORMATION capacity split evenly in whole
+  64 KiB clusters (the BD specifications give equal layers: 2 x 12,219,392, 3 x 16,292,864, 4 x 15,625,216 sectors).
+  The byte-3 reading is an assumption from the table's wording, to be checked on a real disc. (2) Formatting on request
+  (`NativeDataWriteRequest.BdFormat`, `NativeDataBurnEngine.BdFormat`): BD-R type 32h (full format with spare areas) or
+  00h (the drive's default), sub-type 01b (SRM without POW), sent as `READ FORMAT CAPACITIES` offered it, only to a blank
+  unformatted disc; BD-RE type 00h (default, as before), 30h (spare areas, sub-type 00b) or 31h (no spare areas, only
+  where offered; MMC defines no BD-R format without spares). Left on automatic, a BD-R is not formatted by the host.
+  (3) Sector counts and capacities that can pass 2^31 bytes (a 128 GB disc is 128,001,769,472 bytes) are 64-bit;
+  addresses stay 32-bit, as the 62.5 million sectors of the largest disc fit. The simulator refuses a BD-R `WRITE`
+  that does not start and end on a 32-sector cluster.
 - *DVD+R DL layer break* (built 2026-11-11; first real disc 2026-11-14, results table). The first WRITE after the break
   is set waits for the drive's calibration of both layers: 61.3 s on the GP60NB50 with a Verbatim DVD+R DL (23 s on a
   DVD+R), so the first WRITE of every run of writes gets a 4-minute timeout and the others 60 s. Written like DVD+R, with the layer break set first, as
