@@ -404,4 +404,12 @@ public sealed class NativeDataBurnEngine : IBurnEngineBackend, IWriterMediaStatu
         Func<int, ReadOnlyMemory<byte>, ValueTask> sectorConsumer, IProgress<BurnProgressSnapshot>? progress, CancellationToken cancellationToken,
         bool strict = false, SectorRange? writtenRange = null) =>
         _fallback.ReadSectorsForVerifyAsync(recorder, startLba, sectorCount, sectorConsumer, progress, cancellationToken, strict, writtenRange);
+
+    public ISectorReadSession? OpenReadSession(
+        IDiscRecorderBackend recorder,
+        bool raw2352Mode,
+        bool readFromDisc = false,
+        bool strict = false,
+        SectorRange? writtenRange = null) =>
+        _fallback.OpenReadSession(recorder, raw2352Mode, readFromDisc, strict, writtenRange);
 }

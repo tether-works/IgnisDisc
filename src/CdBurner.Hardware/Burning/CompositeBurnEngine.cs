@@ -106,6 +106,18 @@ public class CompositeBurnEngine : IBurnEngineBackend, ISecureAudioReader
     }
 
     /// <inheritdoc/>
+    public ISectorReadSession? OpenReadSession(
+        IDiscRecorderBackend recorder,
+        bool raw2352Mode,
+        bool readFromDisc = false,
+        bool strict = false,
+        SectorRange? writtenRange = null)
+    {
+        ArgumentNullException.ThrowIfNull(recorder);
+        return SelectBackend(recorder).OpenReadSession(recorder, raw2352Mode, readFromDisc, strict, writtenRange);
+    }
+
+    /// <inheritdoc/>
     public bool SupportsC2ErrorPointers(IDiscRecorderBackend recorder, int probeLba)
     {
         ArgumentNullException.ThrowIfNull(recorder);

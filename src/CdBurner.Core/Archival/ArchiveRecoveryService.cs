@@ -22,7 +22,9 @@ public sealed record ArchiveRecoveryReport(
     int FilesChecked,
     IReadOnlyList<string> StillMissing,
     IReadOnlyList<string> StillCorrupt,
-    string? Problem)
+    string? Problem,
+    IReadOnlyList<string>? RejectedPaths = null,
+    IReadOnlyList<string>? UdfSkippedEntries = null)
 {
     /// <summary>Every file the manifest lists is present and matches its checksum.</summary>
     public bool FullyRecovered => Problem == null && FilesChecked > 0 && StillMissing.Count == 0 && StillCorrupt.Count == 0;
@@ -37,7 +39,10 @@ public sealed record ArchiveRecoveryReport(
 
     /// <summary>Damaged files that now match their checksum (empty when the checksum lists cannot be trusted).</summary>
     public IReadOnlyList<string> RepairedFiles => ChecksumListsIntact
-        ? DamagedFiles.Where(f => !StillMissing.Contains(f) && !StillCorrupt.Contains(f)).ToList()
+        ? DamagedFiles.Where(f =>
+            !StillMissing.Contains(f) &&
+            !StillCorrupt.Contains(f) &&
+            (RejectedPaths == null || !RejectedPaths.Contains(f))).ToList()
         : Array.Empty<string>();
 
     /// <summary>A short report for people, one fact per line.</summary>
@@ -96,12 +101,18 @@ public static class ArchiveRecoveryService
 
         var bad = new SortedSet<int>(unreadableSectors);
         var damaged = new List<string>();
+        var rejectedPaths = new List<string>();
+        IReadOnlyList<string> udfSkipped = Array.Empty<string>();
         ArchiveRecoveryReport Fail(string problem) => new(outputFolder, bad.ToList(), damaged, false, false, 0,
-            Array.Empty<string>(), Array.Empty<string>(), problem);
+            Array.Empty<string>(), Array.Empty<string>(), problem, rejectedPaths, udfSkipped);
 
         await using (var image = new FileStream(imagePath, FileMode.Open, FileAccess.Read, FileShare.Read, 1 << 16, useAsync: false))
         {
-            var files = ReadFileList(image, out string? listProblem, out int? descriptorCopyLba);
+            var files = ReadFileList(image, out string? listProblem, out int? descriptorCopyLba, out udfSkipped);
+            foreach (string skippedEntry in udfSkipped)
+            {
+                progress?.Report($"Skipped unreadable UDF entry: {skippedEntry}");
+            }
             if (descriptorCopyLba is int copyLba)
             {
                 progress?.Report($"The volume descriptor at sector 16 is unreadable; using its copy at sector {copyLba:N0}.");
@@ -118,14 +129,23 @@ public static class ArchiveRecoveryService
                 string? destination = ArchiveManifest.ResolveInsideRoot(outputFolder, relative);
                 if (destination == null)
                 {
+                    rejectedPaths.Add(relative);
+                    damaged.Add(relative);
+                    progress?.Report($"Rejected unsafe path in disc file list: {relative}");
                     continue; // a name that would land outside the folder is never written
                 }
 
                 progress?.Report($"Copying {relative}");
                 Directory.CreateDirectory(Path.GetDirectoryName(destination)!);
-                long sectors = (file.SizeBytes + OpticalConstants.DataSectorSize - 1) / OpticalConstants.DataSectorSize;
-                bool hitBadSector = bad.GetViewBetween(file.StartLba, (int)Math.Min(int.MaxValue, file.StartLba + Math.Max(0, sectors - 1))).Count > 0
-                                    && sectors > 0;
+                long sectors = file.SizeBytes > 0
+                    ? (file.SizeBytes + OpticalConstants.DataSectorSize - 1) / OpticalConstants.DataSectorSize
+                    : 0;
+                bool hitBadSector = false;
+                if (file.StartLba >= 0 && sectors > 0)
+                {
+                    int endLba = (int)Math.Min(int.MaxValue, (long)file.StartLba + sectors - 1);
+                    hitBadSector = bad.GetViewBetween(file.StartLba, endLba).Count > 0;
+                }
                 bool copiedWhole = await CopyFileAsync(image, file, destination, cancellationToken).ConfigureAwait(false);
                 if (hitBadSector || !copiedWhole)
                 {
@@ -178,13 +198,26 @@ public static class ArchiveRecoveryService
         {
             return new ArchiveRecoveryReport(outputFolder, bad.ToList(), damaged, hasRecovery, repairAttempted, 0,
                 Array.Empty<string>(), Array.Empty<string>(),
-                "the disc has no IgnisDisc archive manifest, so the files cannot be checked.");
+                "the disc has no IgnisDisc archive manifest, so the files cannot be checked.",
+                rejectedPaths, udfSkipped);
+        }
+
+        var stillCorrupt = verification.Corrupt.ToList();
+        foreach (string rejected in rejectedPaths)
+        {
+            if (!stillCorrupt.Any(c => c.StartsWith(rejected, StringComparison.OrdinalIgnoreCase)) &&
+                !verification.Missing.Contains(rejected, StringComparer.OrdinalIgnoreCase))
+            {
+                stillCorrupt.Add($"{rejected} (rejected: path points outside the disc)");
+            }
         }
 
         string? problem = null;
-        if (!verification.IsIntact)
+        if (!verification.IsIntact || stillCorrupt.Count > 0)
         {
-            problem = !hasRecovery
+            problem = rejectedPaths.Count > 0 && verification.IsIntact
+                ? "the disc's file list contains an unsafe path that points outside the output folder."
+                : !hasRecovery
                 ? "the disc has no recovery data, so damaged files cannot be rebuilt."
                 : par2Path == null
                     ? "par2 is not installed (Settings > optional tools, or par2.exe on PATH), so damaged files were not rebuilt."
@@ -202,8 +235,11 @@ public static class ArchiveRecoveryService
         }
 
         return new ArchiveRecoveryReport(outputFolder, bad.ToList(), damaged, hasRecovery, repairAttempted,
-            verification.FilesChecked, verification.Missing, verification.Corrupt, problem);
+            verification.FilesChecked, verification.Missing, stillCorrupt, problem, rejectedPaths, udfSkipped);
     }
+
+    internal static IReadOnlyList<IsoFileEntry>? ReadFileList(Stream image, out string? problem, out int? descriptorCopyLba) =>
+        ReadFileList(image, out problem, out descriptorCopyLba, out _);
 
     /// <summary>
     /// The disc's files with their full names. The UDF tree has them all (ISO 9660 has 8.3 names and Joliet stops at
@@ -212,12 +248,15 @@ public static class ArchiveRecoveryService
     /// a copy of its volume descriptor (archive discs carry one per recovery zone); <paramref name="descriptorCopyLba"/>
     /// then says which copy was used.
     /// </summary>
-    internal static IReadOnlyList<IsoFileEntry>? ReadFileList(Stream image, out string? problem, out int? descriptorCopyLba)
+    internal static IReadOnlyList<IsoFileEntry>? ReadFileList(
+        Stream image, out string? problem, out int? descriptorCopyLba, out IReadOnlyList<string> udfSkipped)
     {
         problem = null;
         descriptorCopyLba = null;
+        var skipped = new List<string>();
         image.Position = 0;
-        var udfRoot = UdfTreeReader.TryRead(image);
+        var udfRoot = UdfTreeReader.TryRead(image, skipped);
+        udfSkipped = skipped;
         List<IsoFileEntry>? udfFiles = udfRoot == null ? null : Flatten(udfRoot).ToList();
 
         List<IsoFileEntry>? isoFiles = null;
@@ -250,6 +289,15 @@ public static class ArchiveRecoveryService
     private static async Task<bool> CopyFileAsync(Stream image, IsoFileEntry file, string destination, CancellationToken ct)
     {
         await using var output = new FileStream(destination, FileMode.Create, FileAccess.Write, FileShare.None, 1 << 16, useAsync: true);
+        if (file.StartLba < 0 || file.SizeBytes < 0)
+        {
+            if (file.SizeBytes > 0)
+            {
+                output.SetLength(file.SizeBytes);
+            }
+            return false;
+        }
+
         long start = (long)file.StartLba * OpticalConstants.DataSectorSize;
         long available = Math.Clamp(image.Length - start, 0, file.SizeBytes);
         byte[] buffer = new byte[1 << 20];

@@ -93,9 +93,14 @@ public static class ArchiveManifest
     }
 
     /// <summary>
+    /// Maximum size accepted for manifest and index metadata files (64 MiB).
+    /// </summary>
+    public const long MaxMetadataFileSizeBytes = 64L * 1024 * 1024;
+
+    /// <summary>
     /// Parses one manifest line in sha256sum format: 64 hex digits, a space, then either a second space (text
-    /// mode) or '*' (binary mode), then the path. The path is taken verbatim, so a name that starts with a
-    /// space survives. Returns false for anything else, including lines damaged on the disc.
+    /// mode) or '*' (binary mode), then the path. Supports GNU coreutils backslash-escaped lines starting with
+    /// '\'. Returns false for anything else, including lines damaged on the disc.
     /// </summary>
     public static bool TryParseManifestLine(string line, out string sha256Hex, out string relativePath)
     {
@@ -103,27 +108,59 @@ public static class ArchiveManifest
         relativePath = string.Empty;
 
         const int HashLength = 64;
-        if (line is null || line.Length < HashLength + 2 || line[HashLength] != ' ')
+        if (line is null)
+        {
+            return false;
+        }
+
+        bool escaped = line.StartsWith('\\');
+        ReadOnlySpan<char> effective = escaped ? line.AsSpan(1) : line.AsSpan();
+        if (effective.Length < HashLength + 2 || effective[HashLength] != ' ')
         {
             return false;
         }
 
         for (int i = 0; i < HashLength; i++)
         {
-            if (!char.IsAsciiHexDigit(line[i]))
+            if (!char.IsAsciiHexDigit(effective[i]))
             {
                 return false;
             }
         }
 
         int pathStart = HashLength + 1;
-        if (line.Length > pathStart + 1 && (line[pathStart] == ' ' || line[pathStart] == '*'))
+        if (effective.Length > pathStart + 1 && (effective[pathStart] == ' ' || effective[pathStart] == '*'))
         {
             pathStart++;
         }
 
-        sha256Hex = line[..HashLength];
-        relativePath = line[pathStart..];
+        sha256Hex = new string(effective[..HashLength]);
+        ReadOnlySpan<char> rawPath = effective[pathStart..];
+        if (!escaped)
+        {
+            relativePath = new string(rawPath);
+            return true;
+        }
+
+        var sb = new StringBuilder(rawPath.Length);
+        for (int i = 0; i < rawPath.Length; i++)
+        {
+            if (rawPath[i] == '\\' && i + 1 < rawPath.Length)
+            {
+                i++;
+                sb.Append(rawPath[i] switch
+                {
+                    'n' => '\n',
+                    'r' => '\r',
+                    _ => rawPath[i]
+                });
+            }
+            else
+            {
+                sb.Append(rawPath[i]);
+            }
+        }
+        relativePath = sb.ToString();
         return true;
     }
 
@@ -193,9 +230,30 @@ public static class ArchiveManifest
             var entry = new ArchiveManifestEntry(normalizedRelative, file.SizeBytes, hashHex);
             entries.Add(entry);
 
+            bool needsEscape = normalizedRelative.IndexOfAny(['\\', '\n', '\r']) >= 0;
+            if (needsEscape)
+            {
+                manifestBuilder.Append('\\');
+            }
             manifestBuilder.Append(hashHex);
             manifestBuilder.Append("  ");
-            manifestBuilder.Append(normalizedRelative);
+            if (!needsEscape)
+            {
+                manifestBuilder.Append(normalizedRelative);
+            }
+            else
+            {
+                foreach (char c in normalizedRelative)
+                {
+                    switch (c)
+                    {
+                        case '\\': manifestBuilder.Append("\\\\"); break;
+                        case '\n': manifestBuilder.Append("\\n"); break;
+                        case '\r': manifestBuilder.Append("\\r"); break;
+                        default: manifestBuilder.Append(c); break;
+                    }
+                }
+            }
             manifestBuilder.Append('\n');
         }
 
@@ -239,25 +297,48 @@ public static class ArchiveManifest
                     Write-Error "Manifest file not found: $manifest"
                     exit 2
                 }
+                $rootFull = [IO.Path]::GetFullPath($PSScriptRoot)
+                if (-not $rootFull.EndsWith([IO.Path]::DirectorySeparatorChar)) {
+                    $rootFull += [IO.Path]::DirectorySeparatorChar
+                }
                 $checked = 0
                 $failed = 0
                 foreach ($line in Get-Content -LiteralPath $manifest -Encoding UTF8) {
                     if ([string]::IsNullOrWhiteSpace($line)) { continue }
-                    if ($line -notmatch '^([0-9A-Fa-f]{64}) [ *]?(.+)$') {
+                    $isEscaped = $line.StartsWith('\')
+                    $rawLine = if ($isEscaped) { $line.Substring(1) } else { $line }
+                    if ($rawLine -notmatch '^([0-9A-Fa-f]{64}) [ *]?(.+)$') {
                         Write-Host "[UNREADABLE] a line of IGNISDISC-MANIFEST.sha256" -ForegroundColor Red
                         $failed++
                         continue
                     }
                     $expected = $Matches[1].ToLowerInvariant()
                     $listedPath = $Matches[2]
+                    if ($isEscaped) {
+                        $listedPath = [regex]::Replace($listedPath, '\\(.)', {
+                            param($m)
+                            switch ($m.Groups[1].Value) {
+                                'n' { "`n" }
+                                'r' { "`r" }
+                                default { $m.Groups[1].Value }
+                            }
+                        })
+                    }
                     $checked++
-                    if ([IO.Path]::IsPathRooted($listedPath) -or $listedPath -match '(^|[\\/])\.\.([\\/]|$)') {
+                    if ([IO.Path]::IsPathRooted($listedPath) -or $listedPath.Contains(':') -or $listedPath.StartsWith('\') -or $listedPath.StartsWith('/') -or $listedPath -match '(^|[\\/])\.\.([\\/]|$)') {
                         Write-Host "[REJECTED] $listedPath (points outside the disc)" -ForegroundColor Red
                         $failed++
                         continue
                     }
                     $relPath = $listedPath -replace '/', [IO.Path]::DirectorySeparatorChar
                     $fullPath = Join-Path $PSScriptRoot $relPath
+                    $resolvedFull = $null
+                    try { $resolvedFull = [IO.Path]::GetFullPath($fullPath) } catch { $resolvedFull = $null }
+                    if ($null -eq $resolvedFull -or -not $resolvedFull.StartsWith($rootFull, [StringComparison]::OrdinalIgnoreCase)) {
+                        Write-Host "[REJECTED] $listedPath (points outside the disc)" -ForegroundColor Red
+                        $failed++
+                        continue
+                    }
                     if (-not (Test-Path -LiteralPath $fullPath)) {
                         Write-Host "[MISSING] $relPath" -ForegroundColor Red
                         $failed++
@@ -401,24 +482,34 @@ public static class ArchiveManifest
         {
             try
             {
-                string json = await File.ReadAllTextAsync(indexPath, cancellationToken).ConfigureAwait(false);
-                var index = JsonSerializer.Deserialize<ArchiveIndex>(json, new JsonSerializerOptions
-                {
-                    PropertyNameCaseInsensitive = true
-                });
-                if (index?.Files != null)
-                {
-                    setId = index.SetId;
-                    discNumber = index.DiscNumber;
-                    discCount = index.DiscCount;
-                    indexFiles = index.Files;
-                }
-                else
+                var indexInfo = new FileInfo(indexPath);
+                if (indexInfo.Length > MaxMetadataFileSizeBytes)
                 {
                     corrupt.Add($"{IndexFileName} (unreadable)");
                 }
+                else
+                {
+                    await using var indexStream = new FileStream(
+                        indexPath, FileMode.Open, FileAccess.Read, FileShare.Read,
+                        bufferSize: 4096, FileOptions.SequentialScan | FileOptions.Asynchronous);
+                    var index = await JsonSerializer.DeserializeAsync<ArchiveIndex>(indexStream, new JsonSerializerOptions
+                    {
+                        PropertyNameCaseInsensitive = true
+                    }, cancellationToken).ConfigureAwait(false);
+                    if (index?.Files != null)
+                    {
+                        setId = index.SetId;
+                        discNumber = index.DiscNumber;
+                        discCount = index.DiscCount;
+                        indexFiles = index.Files;
+                    }
+                    else
+                    {
+                        corrupt.Add($"{IndexFileName} (unreadable)");
+                    }
+                }
             }
-            catch (Exception ex) when (ex is JsonException or IOException or NotSupportedException)
+            catch (Exception ex) when (ex is JsonException or IOException or NotSupportedException or UnauthorizedAccessException)
             {
                 corrupt.Add($"{IndexFileName} (unreadable)");
             }
@@ -431,20 +522,32 @@ public static class ArchiveManifest
         var entries = new List<(string Hash, string RelativePath)>();
         int unreadableLines = 0;
 
-        foreach (string line in await File.ReadAllLinesAsync(manifestPath, cancellationToken).ConfigureAwait(false))
+        var manifestInfo = new FileInfo(manifestPath);
+        if (manifestInfo.Length > MaxMetadataFileSizeBytes)
         {
-            if (string.IsNullOrWhiteSpace(line))
+            corrupt.Add($"{ManifestFileName} (exceeds maximum readable size)");
+        }
+        else
+        {
+            await using var manifestStream = new FileStream(
+                manifestPath, FileMode.Open, FileAccess.Read, FileShare.Read,
+                bufferSize: 65536, FileOptions.SequentialScan | FileOptions.Asynchronous);
+            using var manifestReader = new StreamReader(manifestStream, Encoding.UTF8, detectEncodingFromByteOrderMarks: true);
+            while (await manifestReader.ReadLineAsync(cancellationToken).ConfigureAwait(false) is { } line)
             {
-                continue;
-            }
+                if (string.IsNullOrWhiteSpace(line))
+                {
+                    continue;
+                }
 
-            if (TryParseManifestLine(line, out string lineHash, out string linePath))
-            {
-                entries.Add((lineHash, linePath));
-            }
-            else
-            {
-                unreadableLines++;
+                if (TryParseManifestLine(line, out string lineHash, out string linePath))
+                {
+                    entries.Add((lineHash, linePath));
+                }
+                else
+                {
+                    unreadableLines++;
+                }
             }
         }
 
@@ -521,10 +624,16 @@ public static class ArchiveManifest
             }
 
             string actualHash;
-            using (var stream = OpenForHashing(diskFilePath))
+            try
             {
+                using var stream = OpenForHashing(diskFilePath);
                 byte[] hashBytes = await SHA256.HashDataAsync(stream, cancellationToken).ConfigureAwait(false);
                 actualHash = Convert.ToHexStringLower(hashBytes);
+            }
+            catch (Exception ex) when (ex is IOException or UnauthorizedAccessException)
+            {
+                corrupt.Add(relativePath);
+                continue;
             }
 
             if (!string.Equals(actualHash, expectedHash, StringComparison.OrdinalIgnoreCase))

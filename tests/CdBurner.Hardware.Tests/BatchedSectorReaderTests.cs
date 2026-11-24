@@ -1,6 +1,7 @@
 using CdBurner.Core.Abstractions;
 using CdBurner.Core.Images;
 using CdBurner.Core.Primitives;
+using CdBurner.Hardware.Scsi;
 using CdBurner.Hardware.Simulation;
 using Xunit;
 
@@ -535,6 +536,242 @@ public class BatchedSectorReaderTests
                 onSector: (_, _) => ValueTask.CompletedTask,
                 onUnreadable: _ => ValueTask.FromResult(true),
                 batchSectors: batchSectors));
+    }
+
+    #endregion
+
+    #region Test 9: Overflow Guard
+
+    [Fact]
+    public async Task ReadRange_StartLbaPlusSectorCountOverflow_ThrowsArgumentOutOfRangeException()
+    {
+        using var recorder = new VirtualDiscRecorder();
+        using var medium = VirtualDiscMedium.CreateBlankCdR700();
+        recorder.InsertMedia(medium);
+        var engine = new VirtualBurnEngine();
+
+        await Assert.ThrowsAsync<ArgumentOutOfRangeException>(() =>
+            BatchedSectorReader.ReadRangeAsync(
+                engine,
+                recorder,
+                startLba: int.MaxValue - 10,
+                sectorCount: 20,
+                raw2352Mode: false,
+                maxRetriesPerSector: 1,
+                onSector: (_, _) => ValueTask.CompletedTask,
+                onUnreadable: _ => ValueTask.FromResult(true)));
+    }
+
+    #endregion
+
+    #region Test 10: Adaptive Salvage & Single-Handle Session Reuse
+
+    private sealed class SessionCountingEngine : IBurnEngineBackend
+    {
+        private readonly Func<IScsiTransport?> _openTransport;
+        public int OpenSessionCalls { get; private set; }
+
+        public SessionCountingEngine(Func<IScsiTransport?> openTransport) => _openTransport = openTransport;
+
+        public Task<BurnOperationResult> BurnDataStreamAsync(IDiscRecorderBackend recorder, Stream imageStream, DataBurnOptions options, IProgress<BurnProgressSnapshot>? progress, CancellationToken cancellationToken)
+            => throw new NotSupportedException();
+        public Task<BurnOperationResult> BurnAudioTracksAsync(IDiscRecorderBackend recorder, IReadOnlyList<AudioTrackSource> tracks, AudioBurnOptions options, IProgress<BurnProgressSnapshot>? progress, CancellationToken cancellationToken)
+            => throw new NotSupportedException();
+        public Task<BurnOperationResult> EraseMediaAsync(IDiscRecorderBackend recorder, bool fullErase, IProgress<BurnProgressSnapshot>? progress, CancellationToken cancellationToken)
+            => throw new NotSupportedException();
+        public Task<RipOperationResult> ReadSectorsAsync(IDiscRecorderBackend recorder, int startLba, int sectorCount, bool raw2352Mode, Func<int, ReadOnlyMemory<byte>, ValueTask> sectorConsumer, IProgress<BurnProgressSnapshot>? progress, CancellationToken cancellationToken)
+            => throw new NotSupportedException("Expected BatchedSectorReader to use OpenReadSession.");
+
+        public ISectorReadSession? OpenReadSession(
+            IDiscRecorderBackend recorder,
+            bool raw2352Mode,
+            bool readFromDisc = false,
+            bool strict = false,
+            SectorRange? writtenRange = null)
+        {
+            OpenSessionCalls++;
+            return PhysicalSectorReader.OpenSession(
+                _openTransport,
+                raw2352Mode,
+                readFromDisc ? (strict ? DriveCacheBypass.EveryRead : DriveCacheBypass.RecentlyWritten) : DriveCacheBypass.None,
+                writtenRange?.Start,
+                writtenRange?.Count);
+        }
+    }
+
+    private sealed class ProbeAndBurstTransport : IScsiTransport
+    {
+        private readonly byte[] _image;
+        private readonly HashSet<int> _badLbas;
+        public int ProbeCount { get; private set; }
+        public int Read10Count { get; private set; }
+        public bool Disposed { get; private set; }
+
+        public ProbeAndBurstTransport(byte[] image, IEnumerable<int> badLbas)
+        {
+            _image = image;
+            _badLbas = new HashSet<int>(badLbas);
+        }
+
+        public ScsiExecutionResult ExecuteCommand(ReadOnlySpan<byte> cdb, Span<byte> data, byte direction, TimeSpan timeout)
+        {
+            if (cdb[0] == 0x00) // TEST UNIT READY
+            {
+                ProbeCount++;
+                return ScsiExecutionResult.Success(0);
+            }
+            if (cdb[0] == 0x28) // READ (10)
+            {
+                Read10Count++;
+                int lba = (cdb[2] << 24) | (cdb[3] << 16) | (cdb[4] << 8) | cdb[5];
+                int count = (cdb[7] << 8) | cdb[8];
+                for (int i = 0; i < count; i++)
+                {
+                    if (_badLbas.Contains(lba + i))
+                    {
+                        byte[] sense = new byte[18];
+                        sense[0] = 0x70;
+                        sense[2] = 0x03; // Medium Error
+                        sense[12] = 0x11;
+                        return ScsiExecutionResult.Failed(1, "Unrecovered read error", sense);
+                    }
+                }
+                int bytes = count * OpticalConstants.DataSectorSize;
+                _image.AsSpan(lba * OpticalConstants.DataSectorSize, bytes).CopyTo(data);
+                return ScsiExecutionResult.Success((uint)bytes);
+            }
+            return ScsiExecutionResult.Failed(5, "Unsupported command");
+        }
+
+        public void Dispose() => Disposed = true;
+    }
+
+    [Fact]
+    public async Task ReadRange_AdaptiveSalvage_RecoversAllReadableSectorsAroundBursts_AndReadsHealthyZonesFirst()
+    {
+        const int totalSectors = 256;
+        var badBurst = Enumerable.Range(20, 25).Concat(new[] { 180, 181 }).ToHashSet();
+
+        using var recorder = new VirtualDiscRecorder();
+        using var medium = VirtualDiscMedium.CreateBlankCdR700();
+        recorder.InsertMedia(medium);
+
+        byte[] buffer = new byte[OpticalConstants.DataSectorSize];
+        for (int lba = 0; lba < totalSectors; lba++)
+        {
+            Array.Fill(buffer, (byte)(lba % 251 + 1));
+            medium.WriteSector(lba, buffer);
+        }
+        foreach (int bad in badBurst)
+        {
+            medium.SimulatedBadLbas.Add(bad);
+        }
+
+        var countingEngine = new CallCountingEngine(new VirtualBurnEngine());
+        var delivered = new Dictionary<int, byte[]>();
+        var deliveryOrder = new List<int>();
+        var unreadable = new HashSet<int>();
+        var progress = new List<int>();
+
+        var outcome = await BatchedSectorReader.ReadRangeAsync(
+            countingEngine,
+            recorder,
+            startLba: 0,
+            sectorCount: totalSectors,
+            raw2352Mode: false,
+            maxRetriesPerSector: 1,
+            onSector: (lba, data) =>
+            {
+                Assert.False(delivered.ContainsKey(lba), $"Duplicate delivery of LBA {lba}");
+                delivered[lba] = data.ToArray();
+                deliveryOrder.Add(lba);
+                return ValueTask.CompletedTask;
+            },
+            onUnreadable: lba =>
+            {
+                Assert.True(unreadable.Add(lba), $"Duplicate unreadable report for LBA {lba}");
+                return ValueTask.FromResult(true);
+            },
+            onProgress: p => progress.Add(p),
+            batchSectors: 16,
+            cancellationToken: CancellationToken.None,
+            adaptiveSalvage: true);
+
+        Assert.True(outcome.Completed);
+        Assert.Null(outcome.StoppedAtLba);
+        Assert.Equal(badBurst, unreadable);
+        Assert.Equal(totalSectors - badBurst.Count, delivered.Count);
+        foreach (var (lba, data) in delivered)
+        {
+            byte expectedByte = (byte)(lba % 251 + 1);
+            Assert.All(data, b => Assert.Equal(expectedByte, b));
+        }
+
+        // Healthy outer half (>= 138) was salvaged before zooming back to the edge of the burst (45).
+        int firstOuterIndex = deliveryOrder.FindIndex(lba => lba >= 200);
+        int nearBurstEndIndex = deliveryOrder.FindIndex(lba => lba == 45);
+        Assert.True(firstOuterIndex >= 0 && nearBurstEndIndex >= 0 && firstOuterIndex < nearBurstEndIndex,
+            $"Expected outer zone (>=200) to be read before zooming to LBA 45 (outer idx={firstOuterIndex}, nearBurst idx={nearBurstEndIndex}).");
+        Assert.Equal(totalSectors, progress.Last());
+    }
+
+    [Fact]
+    public async Task ReadRange_WithPhysicalSession_ReusesSingleOpenHandleAcrossBatchesAndAdaptiveSalvage()
+    {
+        const int totalSectors = 1300; // > 2 batches of 512 sectors
+        var badBurst = Enumerable.Range(100, 12).Concat(new[] { 900 }).ToHashSet();
+        byte[] image = new byte[totalSectors * OpticalConstants.DataSectorSize];
+        for (int lba = 0; lba < totalSectors; lba++)
+        {
+            Array.Fill(image, (byte)(lba % 251 + 1), lba * OpticalConstants.DataSectorSize, OpticalConstants.DataSectorSize);
+        }
+
+        int transportOpened = 0;
+        ProbeAndBurstTransport? createdTransport = null;
+        var engine = new SessionCountingEngine(() =>
+        {
+            transportOpened++;
+            createdTransport = new ProbeAndBurstTransport(image, badBurst);
+            return createdTransport;
+        });
+
+        using var recorder = new VirtualDiscRecorder();
+        var delivered = new Dictionary<int, byte>();
+        var unreadable = new HashSet<int>();
+
+        var outcome = await BatchedSectorReader.ReadRangeAsync(
+            engine,
+            recorder,
+            startLba: 0,
+            sectorCount: totalSectors,
+            raw2352Mode: false,
+            maxRetriesPerSector: 2,
+            onSector: (lba, data) =>
+            {
+                delivered[lba] = data.Span[0];
+                return ValueTask.CompletedTask;
+            },
+            onUnreadable: lba =>
+            {
+                unreadable.Add(lba);
+                return ValueTask.FromResult(true);
+            },
+            batchSectors: 512,
+            cancellationToken: CancellationToken.None,
+            adaptiveSalvage: true);
+
+        Assert.True(outcome.Completed);
+        Assert.Equal(1, engine.OpenSessionCalls);
+        Assert.Equal(1, transportOpened);
+        Assert.NotNull(createdTransport);
+        Assert.Equal(1, createdTransport!.ProbeCount);
+        Assert.True(createdTransport.Disposed);
+        Assert.Equal(badBurst, unreadable);
+        Assert.Equal(totalSectors - badBurst.Count, delivered.Count);
+        foreach (var (lba, firstByte) in delivered)
+        {
+            Assert.Equal((byte)(lba % 251 + 1), firstByte);
+        }
     }
 
     #endregion

@@ -68,118 +68,180 @@ public static class ArchiveStager
         var catalog = await ArchiveCatalog.BuildEntriesAsync(plan, progress, cancellationToken).ConfigureAwait(false);
 
         var stagedDiscs = new List<ArchiveStagedDisc>(plan.Discs.Count);
-
-        for (int d = 0; d < plan.Discs.Count; d++)
-        {
-            cancellationToken.ThrowIfCancellationRequested();
-            var disc = plan.Discs[d];
-            string discFolderName = $"disc{disc.DiscNumber:D2}";
-            string discRoot = Path.Combine(stagingRoot, discFolderName);
-
-            Directory.CreateDirectory(discRoot);
-
-            for (int f = 0; f < disc.Files.Count; f++)
-            {
-                cancellationToken.ThrowIfCancellationRequested();
-                var file = disc.Files[f];
-                string destFilePath = ArchiveManifest.ResolveInsideRoot(discRoot, file.RelativePath)
-                    ?? throw new InvalidOperationException($"Refusing to stage '{file.RelativePath}': the path points outside the disc folder.");
-
-                string? destDir = Path.GetDirectoryName(destFilePath);
-                if (!string.IsNullOrEmpty(destDir))
-                {
-                    Directory.CreateDirectory(destDir);
-                }
-
-                progress?.Report($"Staging disc {disc.DiscNumber}/{plan.Discs.Count}: copying {file.RelativePath}");
-                File.Copy(file.FullPath, destFilePath, overwrite: false);
-
-                DateTime lastWriteUtc = File.GetLastWriteTimeUtc(file.FullPath);
-                File.SetLastWriteTimeUtc(destFilePath, lastWriteUtc);
-            }
-
-            progress?.Report($"Staging disc {disc.DiscNumber}/{plan.Discs.Count}: writing manifest...");
-            var index = await ArchiveManifest.WriteAsync(discRoot, plan, disc, cancellationToken, catalog).ConfigureAwait(false);
-
-            // The catalog hashed the sources, the manifest hashed the copies: a difference means a source file
-            // changed while it was being staged, and the catalog on every disc would then be wrong.
-            var cataloged = catalog.Where(e => e.DiscNumber == disc.DiscNumber).ToDictionary(e => e.Path, e => e.Sha256, StringComparer.Ordinal);
-            foreach (var entry in index.Files)
-            {
-                if (cataloged.TryGetValue(entry.RelativePath, out string? catalogHash) &&
-                    !string.Equals(catalogHash, entry.Sha256, StringComparison.OrdinalIgnoreCase))
-                {
-                    throw new InvalidOperationException(
-                        $"'{entry.RelativePath}' changed while it was being staged (its copy does not match the catalog). Stage again once nothing writes to the source folder.");
-                }
-            }
-
-            Par2RecoveryLayout? layout = null;
-            long budget = 0;
-            if (plan.RedundancyPercent > 0)
-            {
-                string scratchDir = Path.Combine(stagingRoot, ".par2-scratch", discFolderName);
-                try
-                {
-                    var sources = ListSourceFiles(discRoot);
-                    long freeSectors = RecoveryBudgetSectors(plan.EffectiveCeilingSectors, discRoot);
-                    int dataSectors = SectorsUnder(discRoot);
-                    budget = plan.FillFreeSpace
-                        ? freeSectors
-                        : Math.Min(freeSectors, (long)Math.Round(dataSectors * (plan.RedundancyPercent / 100.0)));
-                    layout = Par2RecoverySizer.Plan(sources, budget);
-                    if (layout == null && !plan.FillFreeSpace)
-                    {
-                        long oneBlock = Par2RecoverySizer.MinimumBudgetSectors(sources);
-                        if (freeSectors >= oneBlock)
-                        {
-                            budget = oneBlock;
-                            layout = Par2RecoverySizer.Plan(sources, budget);
-                        }
-                    }
-
-                    if (layout != null)
-                    {
-                        string fillDetail = plan.FillFreeSpace ? "to fill the disc " : string.Empty;
-                        progress?.Report($"Staging disc {disc.DiscNumber}/{plan.Discs.Count}: generating PAR2 recovery data " +
-                                         $"{fillDetail}({layout.RecoveryBlocks:N0} blocks of {layout.BlockSize / 1024.0:N0} KB, " +
-                                         $"{layout.RedundancyPercent:N0} %)...");
-                        layout = await CreateFittingAsync(par2Path!, discRoot, layout, plan.EffectiveCeilingSectors, scratchDir, cancellationToken)
-                            .ConfigureAwait(false);
-                    }
-                }
-                finally
-                {
-                    try
-                    {
-                        if (Directory.Exists(scratchDir))
-                        {
-                            Directory.Delete(scratchDir, recursive: true);
-                        }
-                    }
-                    catch
-                    {
-                    }
-                }
-            }
-
-            int recoverySectors = SectorsUnder(Path.Combine(discRoot, ArchiveManifest.RecoveryFolderName));
-            stagedDiscs.Add(new ArchiveStagedDisc(discRoot, layout, recoverySectors, SectorsUnder(discRoot), layout != null ? budget : 0));
-        }
+        var createdDiscDirs = new List<string>(plan.Discs.Count);
+        string parentScratch = Path.Combine(stagingRoot, ".par2-scratch");
 
         try
         {
-            string parentScratch = Path.Combine(stagingRoot, ".par2-scratch");
-            if (Directory.Exists(parentScratch) && !Directory.EnumerateFileSystemEntries(parentScratch).Any())
+            for (int d = 0; d < plan.Discs.Count; d++)
             {
-                Directory.Delete(parentScratch, recursive: false);
+                cancellationToken.ThrowIfCancellationRequested();
+                var disc = plan.Discs[d];
+                string discFolderName = $"disc{disc.DiscNumber:D2}";
+                string discRoot = Path.Combine(stagingRoot, discFolderName);
+
+                ValidateNoPathCollisions(disc);
+
+                Directory.CreateDirectory(discRoot);
+                createdDiscDirs.Add(discRoot);
+
+                for (int f = 0; f < disc.Files.Count; f++)
+                {
+                    cancellationToken.ThrowIfCancellationRequested();
+                    var file = disc.Files[f];
+                    string destFilePath = ArchiveManifest.ResolveInsideRoot(discRoot, file.RelativePath)
+                        ?? throw new InvalidOperationException($"Refusing to stage '{file.RelativePath}': the path points outside the disc folder.");
+
+                    string? destDir = Path.GetDirectoryName(destFilePath);
+                    if (!string.IsNullOrEmpty(destDir))
+                    {
+                        if (File.Exists(destDir))
+                        {
+                            throw new InvalidOperationException(
+                                $"Cannot stage '{file.RelativePath}' on disc {disc.DiscNumber}: a file already exists at directory path '{destDir}'.");
+                        }
+                        Directory.CreateDirectory(destDir);
+                    }
+
+                    if (File.Exists(destFilePath) || Directory.Exists(destFilePath))
+                    {
+                        throw new InvalidOperationException(
+                            $"Cannot stage '{file.RelativePath}' on disc {disc.DiscNumber}: another entry collides with its path on a case-insensitive filesystem.");
+                    }
+
+                    progress?.Report($"Staging disc {disc.DiscNumber}/{plan.Discs.Count}: copying {file.RelativePath}");
+                    File.Copy(file.FullPath, destFilePath, overwrite: false);
+
+                    DateTime lastWriteUtc = File.GetLastWriteTimeUtc(file.FullPath);
+                    File.SetLastWriteTimeUtc(destFilePath, lastWriteUtc);
+                }
+
+                progress?.Report($"Staging disc {disc.DiscNumber}/{plan.Discs.Count}: writing manifest...");
+                var index = await ArchiveManifest.WriteAsync(discRoot, plan, disc, cancellationToken, catalog).ConfigureAwait(false);
+
+                // The catalog hashed the sources, the manifest hashed the copies: a difference means a source file
+                // changed while it was being staged, and the catalog on every disc would then be wrong.
+                var cataloged = catalog.Where(e => e.DiscNumber == disc.DiscNumber).ToDictionary(e => e.Path, e => e.Sha256, StringComparer.Ordinal);
+                foreach (var entry in index.Files)
+                {
+                    if (cataloged.TryGetValue(entry.RelativePath, out string? catalogHash) &&
+                        !string.Equals(catalogHash, entry.Sha256, StringComparison.OrdinalIgnoreCase))
+                    {
+                        throw new InvalidOperationException(
+                            $"'{entry.RelativePath}' changed while it was being staged (its copy does not match the catalog). Stage again once nothing writes to the source folder.");
+                    }
+                }
+
+                Par2RecoveryLayout? layout = null;
+                long budget = 0;
+                if (plan.RedundancyPercent > 0)
+                {
+                    string scratchDir = Path.Combine(parentScratch, discFolderName);
+                    try
+                    {
+                        var sources = ListSourceFiles(discRoot);
+                        long freeSectors = RecoveryBudgetSectors(plan.EffectiveCeilingSectors, discRoot);
+                        int dataSectors = SectorsUnder(discRoot);
+                        budget = plan.FillFreeSpace
+                            ? freeSectors
+                            : Math.Min(freeSectors, (long)Math.Round(dataSectors * (plan.RedundancyPercent / 100.0)));
+                        layout = Par2RecoverySizer.Plan(sources, budget);
+                        if (layout == null && !plan.FillFreeSpace)
+                        {
+                            long oneBlock = Par2RecoverySizer.MinimumBudgetSectors(sources);
+                            if (freeSectors >= oneBlock)
+                            {
+                                budget = oneBlock;
+                                layout = Par2RecoverySizer.Plan(sources, budget);
+                            }
+                        }
+
+                        if (layout != null)
+                        {
+                            string fillDetail = plan.FillFreeSpace ? "to fill the disc " : string.Empty;
+                            progress?.Report($"Staging disc {disc.DiscNumber}/{plan.Discs.Count}: generating PAR2 recovery data " +
+                                             $"{fillDetail}({layout.RecoveryBlocks:N0} blocks of {layout.BlockSize / 1024.0:N0} KB, " +
+                                             $"{layout.RedundancyPercent:N0} %)...");
+                            layout = await CreateFittingAsync(par2Path!, discRoot, layout, plan.EffectiveCeilingSectors, scratchDir, cancellationToken)
+                                .ConfigureAwait(false);
+                        }
+                    }
+                    finally
+                    {
+                        try
+                        {
+                            if (Directory.Exists(scratchDir))
+                            {
+                                Directory.Delete(scratchDir, recursive: true);
+                            }
+                        }
+                        catch
+                        {
+                        }
+                    }
+                }
+
+                int recoverySectors = SectorsUnder(Path.Combine(discRoot, ArchiveManifest.RecoveryFolderName));
+                stagedDiscs.Add(new ArchiveStagedDisc(discRoot, layout, recoverySectors, SectorsUnder(discRoot), layout != null ? budget : 0));
             }
         }
         catch
         {
+            foreach (string dir in createdDiscDirs)
+            {
+                try
+                {
+                    if (Directory.Exists(dir))
+                    {
+                        Directory.Delete(dir, recursive: true);
+                    }
+                }
+                catch
+                {
+                }
+            }
+            throw;
+        }
+        finally
+        {
+            try
+            {
+                if (Directory.Exists(parentScratch) && !Directory.EnumerateFileSystemEntries(parentScratch).Any())
+                {
+                    Directory.Delete(parentScratch, recursive: false);
+                }
+            }
+            catch
+            {
+            }
         }
 
         return stagedDiscs;
+    }
+
+    private static void ValidateNoPathCollisions(ArchiveDiscPlan disc)
+    {
+        var seen = new HashSet<string>(StringComparer.OrdinalIgnoreCase)
+        {
+            ArchiveManifest.ManifestFileName,
+            ArchiveManifest.IndexFileName,
+            ArchiveManifest.VerifyPowerShellFileName,
+            ArchiveManifest.VerifyBatchFileName,
+            ArchiveManifest.RecoveryReadmeFileName,
+            ArchiveCatalog.CatalogFileName,
+            ArchiveCatalog.HtmlIndexFileName,
+            ArchiveManifest.RecoveryFolderName
+        };
+
+        foreach (var file in disc.Files)
+        {
+            string normalized = file.RelativePath.Replace('\\', '/').TrimStart('/');
+            if (!seen.Add(normalized))
+            {
+                throw new InvalidOperationException(
+                    $"Cannot stage '{file.RelativePath}' on disc {disc.DiscNumber}: its path collides (ignoring letter case) with another file or reserved disc entry.");
+            }
+        }
     }
 
     /// <summary>Files par2 will protect: everything on the disc so far (data and manifests).</summary>
@@ -216,7 +278,7 @@ public static class ArchiveStager
     public static int ImageSectors(string discRoot, IReadOnlyList<(string Name, long Size)>? extraRecoveryFiles = null)
     {
         var root = CompilationDirectory.CreateRoot();
-        CompilationFolderImporter.Import(root, discRoot, strict: false);
+        CompilationFolderImporter.Import(root, discRoot, strict: true);
         if (extraRecoveryFiles != null)
         {
             var recovery = root.AddDirectory(ArchiveManifest.RecoveryFolderName);

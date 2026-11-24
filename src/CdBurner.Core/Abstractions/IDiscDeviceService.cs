@@ -104,6 +104,30 @@ public interface IBurnEngineBackend
         bool strict = false,
         SectorRange? writtenRange = null) =>
         ReadSectorsAsync(recorder, startLba, sectorCount, raw2352Mode: false, sectorConsumer, progress, cancellationToken);
+
+    /// <summary>
+    /// Opens a reusable read session for <paramref name="recorder"/> so multi-batch readers keep a single
+    /// device handle open across batches and retries. Returns <c>null</c> when the backend does not use a session.
+    /// </summary>
+    ISectorReadSession? OpenReadSession(
+        IDiscRecorderBackend recorder,
+        bool raw2352Mode,
+        bool readFromDisc = false,
+        bool strict = false,
+        SectorRange? writtenRange = null) => null;
+}
+
+/// <summary>
+/// A reusable read handle over an optical drive across multiple sector batches and retries.
+/// </summary>
+public interface ISectorReadSession : IDisposable
+{
+    Task<RipOperationResult> ReadSectorsAsync(
+        int startLba,
+        int sectorCount,
+        Func<int, ReadOnlyMemory<byte>, ValueTask> sectorConsumer,
+        IProgress<BurnProgressSnapshot>? progress,
+        CancellationToken cancellationToken);
 }
 
 /// <summary>

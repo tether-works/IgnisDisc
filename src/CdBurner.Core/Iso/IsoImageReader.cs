@@ -48,6 +48,10 @@ public sealed class IsoImageReader : IDisposable
     private readonly Stream _stream;
     private readonly bool _leaveOpen;
     private bool _disposed;
+    private bool _udfLoaded;
+    private Dictionary<string, IsoFileEntry>? _udfFilesExact;
+    private Dictionary<string, IsoFileEntry>? _udfFilesIgnoreCase;
+    private List<string> _udfSkipped = new();
 
     /// <summary>
     /// Gets the starting LBA on the optical medium of the session being read.
@@ -358,6 +362,69 @@ public sealed class IsoImageReader : IDisposable
         }
 
         return null;
+    }
+
+    internal IsoFileEntry? TryFindUdfFile(string virtualPath, out bool udfReadable, out IReadOnlyList<string> udfSkipped)
+    {
+        if (string.IsNullOrWhiteSpace(virtualPath) || !HasUdf || _disposed)
+        {
+            udfReadable = false;
+            udfSkipped = _udfSkipped;
+            return null;
+        }
+
+        if (!_udfLoaded)
+        {
+            _udfLoaded = true;
+            long savedPos = _stream.CanSeek ? _stream.Position : 0;
+            try
+            {
+                var skipped = new List<string>();
+                var udfRoot = UdfTreeReader.TryRead(_stream, skipped, SessionStartLba);
+                _udfSkipped = skipped;
+                if (udfRoot != null)
+                {
+                    var exact = new Dictionary<string, IsoFileEntry>(StringComparer.Ordinal);
+                    var ignoreCase = new Dictionary<string, IsoFileEntry>(StringComparer.OrdinalIgnoreCase);
+                    void Collect(IsoDirectoryEntry dir)
+                    {
+                        foreach (var entry in dir.Files)
+                        {
+                            exact.TryAdd(entry.VirtualPath, entry);
+                            ignoreCase.TryAdd(entry.VirtualPath, entry);
+                        }
+                        foreach (var sub in dir.SubDirectories)
+                        {
+                            Collect(sub);
+                        }
+                    }
+                    Collect(udfRoot);
+                    _udfFilesExact = exact;
+                    _udfFilesIgnoreCase = ignoreCase;
+                }
+            }
+            finally
+            {
+                if (_stream.CanSeek)
+                {
+                    _stream.Position = savedPos;
+                }
+            }
+        }
+
+        udfReadable = _udfFilesExact != null;
+        udfSkipped = _udfSkipped;
+        if (_udfFilesExact == null)
+        {
+            return null;
+        }
+
+        string normalized = NormalizeVirtualPath(virtualPath);
+        if (_udfFilesExact.TryGetValue(normalized, out var hit))
+        {
+            return hit;
+        }
+        return _udfFilesIgnoreCase != null && _udfFilesIgnoreCase.TryGetValue(normalized, out var ciHit) ? ciHit : null;
     }
 
     /// <summary>

@@ -136,6 +136,15 @@ public static class ArchiveSpanPlanner
                 FillFreeSpace: fillFreeSpace);
         }
 
+        // Every disc also carries CATALOG.JSON and INDEX.HTML, which list the whole set: keep room for them.
+        long catalogSectors = ArchiveCatalog.EstimateSectors(orderedFiles);
+        long packCapacity = usableSectors - catalogSectors;
+        if (packCapacity <= 0)
+        {
+            throw new InvalidOperationException(
+                $"Usable disc capacity ({usableSectors} sectors) leaves no room for the archive catalog ({catalogSectors} sectors).");
+        }
+
         foreach (var file in orderedFiles)
         {
             string leaf = file.RelativePath.Replace('\\', '/');
@@ -148,18 +157,16 @@ public static class ArchiveSpanPlanner
             }
 
             int fileSectors = CompilationCapacityCalculator.CalculateFileSectors(file.SizeBytes);
-            if (fileSectors > usableSectors)
+            if (fileSectors > packCapacity)
             {
                 // Report the true count: fileSectors is capped at int.MaxValue for sizes of 4 TiB and more.
                 long requiredSectors = file.SizeBytes / OpticalConstants.DataSectorSize +
                                        (file.SizeBytes % OpticalConstants.DataSectorSize != 0 ? 1 : 0);
                 throw new InvalidOperationException(
-                    $"File '{file.RelativePath}' requires {requiredSectors} sectors, which is larger than one disc usable capacity ({usableSectors} sectors).");
+                    $"File '{file.RelativePath}' requires {requiredSectors} sectors, which is larger than one disc's available capacity ({packCapacity} sectors after reserving {catalogSectors} for the catalog).");
             }
         }
 
-        // Every disc also carries CATALOG.JSON and INDEX.HTML, which list the whole set: keep room for them.
-        long packCapacity = usableSectors - ArchiveCatalog.EstimateSectors(orderedFiles);
         int fileLimit = redundancyPercent > 0 ? MaxNonEmptyFilesPerDisc : int.MaxValue;
 
         List<Bin> bins = packing switch
@@ -202,9 +209,8 @@ public static class ArchiveSpanPlanner
         public long Sectors { get; private set; }
         public int NonEmpty { get; private set; }
 
-        /// <summary>An empty disc takes anything (a lone file always fits, the caller checked it against the disc).</summary>
         public bool Fits(PackUnit unit, long capacity, int fileLimit) =>
-            Files.Count == 0 || (Sectors + unit.Sectors <= capacity && NonEmpty + unit.NonEmpty <= fileLimit);
+            Sectors + unit.Sectors <= capacity && NonEmpty + unit.NonEmpty <= fileLimit;
 
         public void Add(PackUnit unit)
         {

@@ -22,12 +22,12 @@ public sealed class ManifestCheckResult
     public IReadOnlyList<string> MissingFiles { get; init; } = Array.Empty<string>();
 
     /// <summary>
-    /// Listed files that could not be looked up because their name exists only in the disc's UDF file system (for
-    /// example a name longer than Joliet allows). They are covered by the sector compare, not by this check.
+    /// Listed files that could not be looked up in the disc's file system (for example when UDF parsing failed or
+    /// skipped a damaged or fragmented entry).
     /// </summary>
     public int FilesNotLookedUp { get; init; }
 
-    public bool Passed => MismatchedFiles.Count == 0 && MissingFiles.Count == 0;
+    public bool Passed => MismatchedFiles.Count == 0 && MissingFiles.Count == 0 && FilesNotLookedUp == 0;
 }
 
 /// <summary>
@@ -36,8 +36,11 @@ public sealed class ManifestCheckResult
 /// (no drive letter needed); then each sector passed to <see cref="AddSector"/> goes into the hash of the file that
 /// owns it.
 /// </summary>
-public sealed class DiscManifestCheck
+public sealed class DiscManifestCheck : IDisposable
 {
+    /// <summary>Maximum manifest size accepted from an untrusted disc (64 MiB).</summary>
+    public const long MaxManifestSizeBytes = 64L * 1024 * 1024;
+
     private sealed class FileState
     {
         public required string Path { get; init; }
@@ -55,17 +58,22 @@ public sealed class DiscManifestCheck
     private readonly List<FileState> _all = new();
     private readonly List<FileState> _active = new();
     private readonly List<string> _missing;
+    private readonly List<IncrementalHash> _hashers;
     private readonly int _notLookedUp;
     private int? _nextLba;
+    private bool _disposed;
 
     /// <summary>The hash lists in use.</summary>
     public IReadOnlyList<string> ManifestNames { get; }
 
-    private DiscManifestCheck(IReadOnlyList<string> names, List<string> missing, int notLookedUp)
+    internal IReadOnlyList<IncrementalHash> HashersForTesting => _hashers;
+
+    private DiscManifestCheck(IReadOnlyList<string> names, List<string> missing, int notLookedUp, List<IncrementalHash> hashers)
     {
         ManifestNames = names;
         _missing = missing;
         _notLookedUp = notLookedUp;
+        _hashers = hashers;
     }
 
     /// <summary>
@@ -82,7 +90,8 @@ public sealed class DiscManifestCheck
             // ISO 9660-only discs show 8.3 names ("SHA256SU"); the list is still the right file.
             var entry = reader.FindFile("/" + name)
                 ?? reader.RootDirectory.Files.FirstOrDefault(f => !reader.HasJoliet &&
-                    f.Name.Equals(name[..8], StringComparison.OrdinalIgnoreCase));
+                    f.Name.Equals(name[..8], StringComparison.OrdinalIgnoreCase))
+                ?? (reader.HasUdf ? reader.TryFindUdfFile("/" + name, out _, out _) : null);
             if (entry != null)
             {
                 lists.Add((name, entry));
@@ -95,49 +104,74 @@ public sealed class DiscManifestCheck
 
         var states = new Dictionary<string, FileState>(StringComparer.Ordinal);
         var missing = new List<string>();
+        var hashers = new List<IncrementalHash>();
         int notLookedUp = 0;
         var listEntries = new HashSet<IsoFileEntry>(lists.Select(l => l.Entry), ReferenceEqualityComparer.Instance);
 
-        foreach (var (name, entry) in lists)
+        try
         {
-            bool blake3 = name == IsoUdfImageBuilder.Blake3ManifestFileName;
-            foreach (var (hash, path) in ParseList(reader.ReadFileBytes(entry), name))
+            foreach (var (name, entry) in lists)
             {
-                if (!states.TryGetValue(path, out var state))
+                if (entry.SizeBytes < 0 || entry.SizeBytes > MaxManifestSizeBytes)
                 {
-                    var file = reader.FindFile("/" + path);
-                    if (file == null || listEntries.Contains(file))
-                    {
-                        // A name too long for Joliet exists only in UDF, which this reader does not walk.
-                        if (reader.HasUdf && file == null)
-                        {
-                            notLookedUp++;
-                        }
-                        else if (!missing.Contains(path))
-                        {
-                            missing.Add(path);
-                        }
-                        continue;
-                    }
-                    state = new FileState { Path = path, StartLba = file.StartLba, Remaining = file.SizeBytes };
-                    states.Add(path, state);
+                    throw new InvalidDataException(
+                        $"{name} is too large to read as a hash list ({entry.SizeBytes:N0} bytes; maximum {MaxManifestSizeBytes:N0}).");
                 }
 
-                if (blake3)
+                bool blake3 = name == IsoUdfImageBuilder.Blake3ManifestFileName;
+                foreach (var (hash, path) in ParseList(reader.ReadFileBytes(entry), name))
                 {
-                    var hasher = new Blake3Hasher();
-                    state.Hashes.Add((hash, hasher.GetHashAndReset, data => hasher.Append(data)));
-                }
-                else
-                {
-                    var hasher = IncrementalHash.CreateHash(HashAlgorithmName.SHA256);
-                    state.Hashes.Add((hash, () => { byte[] h = hasher.GetHashAndReset(); hasher.Dispose(); return h; },
-                        data => hasher.AppendData(data)));
+                    if (!states.TryGetValue(path, out var state))
+                    {
+                        var file = reader.FindFile("/" + path);
+                        bool udfReadable = false;
+                        IReadOnlyList<string> udfSkipped = Array.Empty<string>();
+                        if (file == null && reader.HasUdf)
+                        {
+                            file = reader.TryFindUdfFile("/" + path, out udfReadable, out udfSkipped);
+                        }
+
+                        if (file == null || listEntries.Contains(file))
+                        {
+                            if (file == null && reader.HasUdf && (!udfReadable || udfSkipped.Count > 0))
+                            {
+                                notLookedUp++;
+                            }
+                            else if (!missing.Contains(path))
+                            {
+                                missing.Add(path);
+                            }
+                            continue;
+                        }
+                        state = new FileState { Path = path, StartLba = file.StartLba, Remaining = file.SizeBytes };
+                        states.Add(path, state);
+                    }
+
+                    if (blake3)
+                    {
+                        var hasher = new Blake3Hasher();
+                        state.Hashes.Add((hash, hasher.GetHashAndReset, data => hasher.Append(data)));
+                    }
+                    else
+                    {
+                        var hasher = IncrementalHash.CreateHash(HashAlgorithmName.SHA256);
+                        hashers.Add(hasher);
+                        state.Hashes.Add((hash, () => { byte[] h = hasher.GetHashAndReset(); hasher.Dispose(); return h; },
+                            data => hasher.AppendData(data)));
+                    }
                 }
             }
         }
+        catch
+        {
+            foreach (var h in hashers)
+            {
+                h.Dispose();
+            }
+            throw;
+        }
 
-        var check = new DiscManifestCheck(lists.Select(l => l.Name).ToList(), missing, notLookedUp);
+        var check = new DiscManifestCheck(lists.Select(l => l.Name).ToList(), missing, notLookedUp, hashers);
         foreach (var state in states.Values)
         {
             check._all.Add(state);
@@ -158,6 +192,7 @@ public sealed class DiscManifestCheck
     /// <summary>Feeds the next sector of the disc. Sectors must arrive in LBA order without gaps.</summary>
     public void AddSector(int lba, ReadOnlySpan<byte> sector)
     {
+        ObjectDisposedException.ThrowIf(_disposed, this);
         Advance(lba);
         foreach (var file in _active)
         {
@@ -177,6 +212,7 @@ public sealed class DiscManifestCheck
     /// <summary>The sector at <paramref name="lba"/> could not be read: any file that owns it fails.</summary>
     public void MarkUnreadable(int lba)
     {
+        ObjectDisposedException.ThrowIf(_disposed, this);
         Advance(lba);
         foreach (var file in _active)
         {
@@ -220,21 +256,30 @@ public sealed class DiscManifestCheck
     /// <summary>Compares the hashes. Files whose sectors were never (fully) read count as mismatched.</summary>
     public ManifestCheckResult Finish()
     {
+        ObjectDisposedException.ThrowIf(_disposed, this);
+
         var mismatched = new List<string>();
         int checkedCount = 0;
-        foreach (var file in _all)
+        try
         {
-            bool ok = file.Done && !file.Unreadable;
-            foreach (var hash in file.Hashes)
+            foreach (var file in _all)
             {
-                string actual = Convert.ToHexString(hash.Finish()).ToLowerInvariant();
-                ok &= actual == hash.Expected;
+                bool ok = file.Done && !file.Unreadable;
+                foreach (var hash in file.Hashes)
+                {
+                    string actual = Convert.ToHexString(hash.Finish()).ToLowerInvariant();
+                    ok &= actual == hash.Expected;
+                }
+                checkedCount++;
+                if (!ok)
+                {
+                    mismatched.Add("/" + file.Path);
+                }
             }
-            checkedCount++;
-            if (!ok)
-            {
-                mismatched.Add("/" + file.Path);
-            }
+        }
+        finally
+        {
+            Dispose();
         }
 
         return new ManifestCheckResult
@@ -245,6 +290,21 @@ public sealed class DiscManifestCheck
             MissingFiles = _missing.Select(p => "/" + p).ToList(),
             FilesNotLookedUp = _notLookedUp
         };
+    }
+
+    /// <summary>Releases any <see cref="IncrementalHash"/> instances held for an incomplete verification.</summary>
+    public void Dispose()
+    {
+        if (_disposed)
+        {
+            return;
+        }
+        _disposed = true;
+        foreach (var hasher in _hashers)
+        {
+            hasher.Dispose();
+        }
+        _hashers.Clear();
     }
 
     /// <summary>Parses GNU coreutils <c>sha256sum</c>/<c>b3sum</c> text-mode lines, including escaped names.</summary>

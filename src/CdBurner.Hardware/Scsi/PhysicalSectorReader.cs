@@ -83,7 +83,7 @@ public static partial class PhysicalSectorReader
             return Task.FromResult(RipOperationResult.Failed("The drive has no drive letter assigned, so it cannot be read."));
         }
 
-        if ((!raw2352Mode && startLba < 0) || (raw2352Mode && startLba < -150) || sectorCount < 0)
+        if ((!raw2352Mode && startLba < 0) || (raw2352Mode && startLba < -150) || sectorCount < 0 || (long)startLba + sectorCount > int.MaxValue)
         {
             return Task.FromResult(RipOperationResult.Failed($"Invalid sector range (start {startLba}, count {sectorCount})."));
         }
@@ -109,6 +109,188 @@ public static partial class PhysicalSectorReader
             }
             return result;
         }, cancellationToken);
+    }
+
+    /// <summary>
+    /// Opens a reusable read session over <paramref name="volumePath"/> so multi-batch readers keep a single
+    /// device handle open across batches and retries.
+    /// </summary>
+    public static ISectorReadSession OpenSession(
+        string volumePath,
+        bool raw2352Mode,
+        DriveCacheBypass cacheBypass = DriveCacheBypass.None,
+        int? bypassRangeStart = null,
+        int? bypassRangeCount = null) =>
+        new PhysicalSectorReadSession(volumePath, raw2352Mode, cacheBypass, bypassRangeStart, bypassRangeCount);
+
+    internal static ISectorReadSession OpenSession(
+        Func<IScsiTransport?> openTransport,
+        bool raw2352Mode,
+        DriveCacheBypass cacheBypass = DriveCacheBypass.None,
+        int? bypassRangeStart = null,
+        int? bypassRangeCount = null,
+        Action<TimeSpan>? sleep = null)
+    {
+        ArgumentNullException.ThrowIfNull(openTransport);
+        return new PhysicalSectorReadSession(openTransport, raw2352Mode, cacheBypass, bypassRangeStart, bypassRangeCount, sleep);
+    }
+
+    private sealed class PhysicalSectorReadSession : ISectorReadSession
+    {
+        private readonly string? _volumePath;
+        private readonly Func<IScsiTransport?>? _openTransport;
+        private readonly Action<TimeSpan>? _sleep;
+        private readonly bool _raw2352Mode;
+        private readonly DriveCacheBypass _cacheBypass;
+        private readonly int? _bypassRangeStart;
+        private readonly int? _bypassRangeCount;
+        private readonly SemaphoreSlim _gate = new(1, 1);
+        private IScsiTransport? _ownedTransport;
+        private ISectorSource? _source;
+        private bool _disposed;
+
+        public PhysicalSectorReadSession(
+            string volumePath,
+            bool raw2352Mode,
+            DriveCacheBypass cacheBypass,
+            int? bypassRangeStart,
+            int? bypassRangeCount)
+        {
+            _volumePath = volumePath;
+            _raw2352Mode = raw2352Mode;
+            _cacheBypass = cacheBypass;
+            _bypassRangeStart = bypassRangeStart;
+            _bypassRangeCount = bypassRangeCount;
+        }
+
+        public PhysicalSectorReadSession(
+            Func<IScsiTransport?> openTransport,
+            bool raw2352Mode,
+            DriveCacheBypass cacheBypass,
+            int? bypassRangeStart,
+            int? bypassRangeCount,
+            Action<TimeSpan>? sleep)
+        {
+            _openTransport = openTransport;
+            _raw2352Mode = raw2352Mode;
+            _cacheBypass = cacheBypass;
+            _bypassRangeStart = bypassRangeStart;
+            _bypassRangeCount = bypassRangeCount;
+            _sleep = sleep;
+        }
+
+        public Task<RipOperationResult> ReadSectorsAsync(
+            int startLba,
+            int sectorCount,
+            Func<int, ReadOnlyMemory<byte>, ValueTask> sectorConsumer,
+            IProgress<BurnProgressSnapshot>? progress,
+            CancellationToken cancellationToken)
+        {
+            ObjectDisposedException.ThrowIf(_disposed, this);
+            ArgumentNullException.ThrowIfNull(sectorConsumer);
+
+            if (_openTransport == null)
+            {
+                if (!OperatingSystem.IsWindows())
+                {
+                    return Task.FromResult(RipOperationResult.Failed("Reading from physical drives is only supported on Windows."));
+                }
+
+                if (string.IsNullOrWhiteSpace(_volumePath))
+                {
+                    return Task.FromResult(RipOperationResult.Failed("The drive has no drive letter assigned, so it cannot be read."));
+                }
+            }
+
+            if ((!_raw2352Mode && startLba < 0) || (_raw2352Mode && startLba < -150) || sectorCount < 0 || (long)startLba + sectorCount > int.MaxValue)
+            {
+                return Task.FromResult(RipOperationResult.Failed($"Invalid sector range (start {startLba}, count {sectorCount})."));
+            }
+
+            bool forceUnitAccess = _cacheBypass != DriveCacheBypass.None;
+
+            return Task.Run(async () =>
+            {
+                await _gate.WaitAsync(cancellationToken).ConfigureAwait(false);
+                try
+                {
+                    ObjectDisposedException.ThrowIf(_disposed, this);
+                    if (_source == null)
+                    {
+                        string? openError = null;
+                        if (_openTransport != null)
+                        {
+                            var transport = _openTransport();
+                            if (transport == null)
+                            {
+                                return RipOperationResult.Failed("Unable to open SCSI transport for reading.");
+                            }
+                            var spti = new SptiSource(transport, ownedHandle: null, _raw2352Mode, sleep: _sleep);
+                            if (!spti.Probe())
+                            {
+                                spti.Dispose();
+                                transport.Dispose();
+                                return RipOperationResult.Failed("SCSI transport probe failed.");
+                            }
+                            _ownedTransport = transport;
+                            _source = spti;
+                        }
+                        else
+                        {
+                            _source = OpenBestSource(_volumePath!, _raw2352Mode, out openError);
+                        }
+
+                        if (_source == null)
+                        {
+                            return RipOperationResult.Failed(openError ?? $"Unable to open drive {_volumePath} for reading.");
+                        }
+
+                        if (forceUnitAccess && !_raw2352Mode && _source is SptiSource sptiSource)
+                        {
+                            sptiSource.EnableForceUnitAccess(_bypassRangeStart ?? startLba, _bypassRangeCount ?? sectorCount,
+                                _cacheBypass == DriveCacheBypass.EveryRead);
+                        }
+                    }
+
+                    var result = await ReadCoreAsync(_source, startLba, sectorCount, _raw2352Mode, sectorConsumer, progress, cancellationToken).ConfigureAwait(false);
+                    if (forceUnitAccess && !_raw2352Mode && _source is not SptiSource)
+                    {
+                        return WithNote(result, "The drive could only be read through Windows, which cannot tell it to skip its own cache.");
+                    }
+                    return result;
+                }
+                finally
+                {
+                    _gate.Release();
+                }
+            }, cancellationToken);
+        }
+
+        public void Dispose()
+        {
+            if (_disposed)
+            {
+                return;
+            }
+            _gate.Wait();
+            try
+            {
+                if (_disposed)
+                {
+                    return;
+                }
+                _disposed = true;
+                _source?.Dispose();
+                _source = null;
+                _ownedTransport?.Dispose();
+                _ownedTransport = null;
+            }
+            finally
+            {
+                _gate.Release();
+                _gate.Dispose();
+            }
+        }
     }
 
     /// <summary>
@@ -143,7 +325,7 @@ public static partial class PhysicalSectorReader
     {
         ArgumentNullException.ThrowIfNull(transport);
         ArgumentNullException.ThrowIfNull(sectorConsumer);
-        if (startLba < 0 || sectorCount < 0)
+        if (startLba < 0 || sectorCount < 0 || (long)startLba + sectorCount > int.MaxValue)
         {
             return Task.FromResult(RipOperationResult.Failed($"Invalid sector range (start {startLba}, count {sectorCount})."));
         }
@@ -1794,7 +1976,7 @@ public static partial class PhysicalSectorReader
         public void EnableForceUnitAccess(int rangeStart, int rangeCount, bool everyRead = true)
         {
             _rangeStart = rangeStart;
-            _rangeEnd = rangeStart + rangeCount;
+            _rangeEnd = (int)Math.Min(int.MaxValue, (long)rangeStart + rangeCount);
             _fuaEveryRead = everyRead || rangeCount <= 2 * MinGuardSectors;
             if (FuaRefusedDrives.TryGetValue(_driveKey, out string? note))
             {

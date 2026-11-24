@@ -181,6 +181,9 @@ public class DiscHealthCertificateTests
         Report(500, 8);
         Report(1000, 10);
         Report(600, 0);     // no speed reported: not a writing phase
+        Report(700, double.PositiveInfinity);
+        Report(750, double.NegativeInfinity);
+        Report(800, double.NaN);
         recorder.Report(new BurnProgressSnapshot { CurrentLba = 5, TotalLba = 0, CurrentSpeedMultiplier = 9 }); // no size
 
         Assert.Equal([new TransferCurvePoint(0, 4.5), new TransferCurvePoint(50, 8), new TransferCurvePoint(100, 10)], recorder.Curve);

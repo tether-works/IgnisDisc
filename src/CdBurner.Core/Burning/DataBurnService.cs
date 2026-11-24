@@ -563,6 +563,7 @@ public class DataBurnService
         // 1. The file system and hash lists, read from the disc's own sectors (small random reads, off this thread).
         var (fileMap, manifestCheck, manifestError) = await Task.Run(
             () => ReadDiscLayout(recorder, startLba, sectorCount, strict, cancellationToken), cancellationToken).ConfigureAwait(false);
+        using var _ = manifestCheck;
         if (manifestError != null)
         {
             return (false, manifestError, null);
@@ -622,12 +623,18 @@ public class DataBurnService
             if (!check.Passed)
             {
                 var bad = check.MismatchedFiles.Concat(check.MissingFiles.Select(p => p + " (missing)")).ToList();
+                if (bad.Count == 0 && check.FilesNotLookedUp > 0)
+                {
+                    return (false,
+                        $"Verification failed: {check.FilesNotLookedUp} file(s) listed in {lists} could not be looked up in the disc's UDF file system.",
+                        null);
+                }
                 return (false,
                     $"Verification failed: {bad.Count} file(s) on the disc do not match its {lists}: " +
-                    string.Join(", ", bad.Take(10)) + (bad.Count > 10 ? ", ..." : "") + ".", null);
+                    string.Join(", ", bad.Take(10)) + (bad.Count > 10 ? ", ..." : "") +
+                    (check.FilesNotLookedUp > 0 ? $" ({check.FilesNotLookedUp} additional file(s) could not be looked up)" : "") + ".", null);
             }
-            notes.Add($"All {check.FilesChecked} file(s) match the disc's {lists}." +
-                (check.FilesNotLookedUp > 0 ? $" {check.FilesNotLookedUp} file(s) with UDF-only names were checked by sector compare only." : ""));
+            notes.Add($"All {check.FilesChecked} file(s) match the disc's {lists}.");
         }
 
         return (true, null, notes.Count > 0 ? string.Join(" ", notes) : null);
@@ -652,6 +659,7 @@ public class DataBurnService
         var notes = new List<string>();
         var (fileMap, manifestCheck, manifestError) = await Task.Run(
             () => ReadDiscLayout(recorder, startLba, sectorCount, strict, cancellationToken), cancellationToken).ConfigureAwait(false);
+        using var _ = manifestCheck;
         if (manifestError != null)
         {
             return (false, manifestError, null);
@@ -726,12 +734,18 @@ public class DataBurnService
             if (!check.Passed)
             {
                 var bad = check.MismatchedFiles.Concat(check.MissingFiles.Select(p => p + " (missing)")).ToList();
+                if (bad.Count == 0 && check.FilesNotLookedUp > 0)
+                {
+                    return (false,
+                        $"Verification failed: {check.FilesNotLookedUp} file(s) listed in {lists} could not be looked up in the disc's UDF file system.",
+                        null);
+                }
                 return (false,
                     $"Verification failed: {bad.Count} file(s) on the disc do not match its {lists}: " +
-                    string.Join(", ", bad.Take(10)) + (bad.Count > 10 ? ", ..." : "") + ".", null);
+                    string.Join(", ", bad.Take(10)) + (bad.Count > 10 ? ", ..." : "") +
+                    (check.FilesNotLookedUp > 0 ? $" ({check.FilesNotLookedUp} additional file(s) could not be looked up)" : "") + ".", null);
             }
-            notes.Add($"All {check.FilesChecked} file(s) match the disc's {lists}." +
-                (check.FilesNotLookedUp > 0 ? $" {check.FilesNotLookedUp} file(s) with UDF-only names were checked by sector compare only." : ""));
+            notes.Add($"All {check.FilesChecked} file(s) match the disc's {lists}.");
         }
 
         return (true, null, notes.Count > 0 ? string.Join(" ", notes) : null);

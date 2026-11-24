@@ -1071,6 +1071,26 @@ public class Imapi2BurnEngine : IBurnEngineBackend, ISecureAudioReader
     }
 
     /// <inheritdoc/>
+    public ISectorReadSession? OpenReadSession(
+        IDiscRecorderBackend recorder,
+        bool raw2352Mode,
+        bool readFromDisc = false,
+        bool strict = false,
+        SectorRange? writtenRange = null)
+    {
+        ArgumentNullException.ThrowIfNull(recorder);
+        DriveCacheBypass bypass = readFromDisc && !raw2352Mode
+            ? (strict ? DriveCacheBypass.EveryRead : DriveCacheBypass.RecentlyWritten)
+            : DriveCacheBypass.None;
+        return PhysicalSectorReader.OpenSession(
+            recorder.VolumePath,
+            raw2352Mode,
+            bypass,
+            writtenRange?.Start,
+            writtenRange?.Count);
+    }
+
+    /// <inheritdoc/>
     public bool SupportsC2ErrorPointers(IDiscRecorderBackend recorder, int probeLba)
     {
         ArgumentNullException.ThrowIfNull(recorder);

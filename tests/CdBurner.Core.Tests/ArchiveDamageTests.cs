@@ -3,6 +3,7 @@ using System.Diagnostics;
 using System.Text;
 using CdBurner.Core.Archival;
 using CdBurner.Core.Compilation;
+using CdBurner.Core.Iso;
 using CdBurner.Core.Primitives;
 using Xunit;
 
@@ -276,6 +277,157 @@ public sealed class ArchiveDamageTests : IDisposable
         Assert.Equal(1, exitCode);
         Assert.Contains("[CORRUPT] alpha.txt", output);
         Assert.Contains("[OK]      beta.txt", output);
+    }
+
+    [Fact]
+    public async Task VerifyAsync_UnreadableLockedFile_ReportsItAndContinuesCheckingRemainingFiles()
+    {
+        string disc = await StageThreeFilesAsync();
+        await File.WriteAllTextAsync(Path.Combine(disc, "docs", "gamma.txt"), "tampered");
+
+        ArchiveVerificationResult result;
+        using (new FileStream(Path.Combine(disc, "alpha.txt"), FileMode.Open, FileAccess.ReadWrite, FileShare.None))
+        {
+            result = await ArchiveManifest.VerifyAsync(disc);
+        }
+
+        Assert.False(result.IsIntact);
+        Assert.Equal(3 + CatalogFiles, result.FilesChecked);
+        Assert.Contains("alpha.txt", result.Corrupt);
+        Assert.Contains("docs/gamma.txt", result.Corrupt);
+    }
+
+    [Fact]
+    public async Task VerifyScript_RejectsColonDriveRelativeOrStreamPath()
+    {
+        string disc = await StageThreeFilesAsync();
+        string manifestPath = ManifestPath(disc);
+        string fakeHash = new('a', 64);
+        await File.AppendAllTextAsync(manifestPath, $"{fakeHash}  C:escape.txt\n");
+
+        var (exitCode, output) = RunVerifyScript(disc);
+
+        Assert.NotEqual(0, exitCode);
+        Assert.Contains("[REJECTED] C:escape.txt", output);
+    }
+
+    [Fact]
+    public void TryParseManifestLine_HandlesEscapedBackslashAndNewline()
+    {
+        string hash = new('b', 64);
+        string line = $@"\{hash}  dir/sub\\name\nline.txt";
+
+        Assert.True(ArchiveManifest.TryParseManifestLine(line, out string parsedHash, out string parsedPath));
+        Assert.Equal(hash, parsedHash);
+        Assert.Equal("dir/sub\\name\nline.txt", parsedPath);
+    }
+
+    [Fact]
+    public async Task ArchiveRecoveryService_RecordsRejectedTraversalPathsAndNegativeStartLba()
+    {
+        var root = CompilationDirectory.CreateRoot();
+        root.AddFile("1234567890.txt", "payload"u8.ToArray());
+        byte[] image = IsoUdfImageBuilder.BuildToMemoryStream(
+            root,
+            new IsoBuildOptions(IncludeIso9660: true, IncludeJoliet: false, IncludeUdf: false, FixedTimestampUtc: new DateTime(2026, 1, 1, 0, 0, 0, DateTimeKind.Utc), WriteSha256Manifest: true)).ToArray();
+
+        // Patch the ISO 9660 directory record to a drive-relative traversal name ("C:evil.txt") and negative StartLba (0xFFFFFFFF).
+        using (var probe = IsoImageReader.FromStream(new MemoryStream(image, writable: false)))
+        {
+            uint rootLba = BinaryPrimitives.ReadUInt32LittleEndian(image.AsSpan(16 * 2048 + 156 + 2, 4));
+            int dirOff = (int)rootLba * 2048;
+            int pos = 0;
+            bool patched = false;
+            while (pos < 2048)
+            {
+                int len = image[dirOff + pos];
+                if (len == 0) break;
+                int idLen = image[dirOff + pos + 32];
+                string id = Encoding.ASCII.GetString(image, dirOff + pos + 33, idLen);
+                if (id.StartsWith("12345678", StringComparison.Ordinal))
+                {
+                    BinaryPrimitives.WriteUInt32LittleEndian(image.AsSpan(dirOff + pos + 2, 4), 0xFFFFFFFF);
+                    BinaryPrimitives.WriteUInt32BigEndian(image.AsSpan(dirOff + pos + 6, 4), 0xFFFFFFFF);
+                    byte[] evil = Encoding.ASCII.GetBytes("C:evil.txt");
+                    evil.CopyTo(image, dirOff + pos + 33);
+                    image[dirOff + pos + 32] = (byte)evil.Length;
+                    patched = true;
+                    break;
+                }
+                pos += len;
+            }
+            Assert.True(patched);
+        }
+
+        string imagePath = Path.Combine(_root, "traversal.iso");
+        await File.WriteAllBytesAsync(imagePath, image);
+        string outDir = Path.Combine(_root, "rec-out");
+        var progressMessages = new List<string>();
+        var progress = new Progress<string>(m => progressMessages.Add(m));
+
+        var report = await ArchiveRecoveryService.RecoverFromImageAsync(imagePath, Array.Empty<int>(), outDir, par2Path: null, progress);
+
+        Assert.False(report.FullyRecovered);
+        Assert.NotNull(report.RejectedPaths);
+        Assert.Contains("C:evil.txt", report.RejectedPaths!);
+        Assert.Contains("C:evil.txt", report.DamagedFiles);
+        Assert.DoesNotContain("C:evil.txt", report.RepairedFiles);
+        Assert.False(File.Exists(Path.Combine(_root, "evil.txt")));
+    }
+
+    [Fact]
+    public async Task ArchiveRecoveryService_HandlesNegativeStartLbaWithoutCrashing_AndCapturesUdfSkipped()
+    {
+        var root = CompilationDirectory.CreateRoot();
+        root.AddFile("good.txt", "safe"u8.ToArray());
+        root.AddFile("bad_lba.txt", new byte[2048]);
+        byte[] image = IsoUdfImageBuilder.BuildToMemoryStream(
+            root,
+            new IsoBuildOptions(IncludeIso9660: true, IncludeJoliet: true, IncludeUdf: true, UdfRevision: 0x0102, FixedTimestampUtc: new DateTime(2026, 1, 1, 0, 0, 0, DateTimeKind.Utc), WriteSha256Manifest: true)).ToArray();
+
+        // Damage one UDF file entry right before the first file's data so UdfTreeReader records a skipped entry.
+        using (var udfStream = new MemoryStream(image, writable: false))
+        {
+            var udfRoot = UdfTreeReader.TryRead(udfStream)!;
+            int firstData = udfRoot.Files.Where(f => f.SizeBytes > 0).Min(f => f.StartLba);
+            Array.Clear(image, (firstData - 1) * 2048, 2048);
+        }
+
+        // Patch bad_lba.txt in Joliet root directory to negative StartLba (0xFFFFFFFF).
+        uint jolietRootLba = BinaryPrimitives.ReadUInt32LittleEndian(image.AsSpan(17 * 2048 + 156 + 2, 4));
+        int dirOff = (int)jolietRootLba * 2048;
+        int pos = 0;
+        bool patched = false;
+        while (pos < 2048)
+        {
+            int len = image[dirOff + pos];
+            if (len == 0) break;
+            int idLen = image[dirOff + pos + 32];
+            if (idLen > 2)
+            {
+                string id = Encoding.BigEndianUnicode.GetString(image, dirOff + pos + 33, idLen);
+                if (id.StartsWith("bad_lba.txt", StringComparison.Ordinal))
+                {
+                    BinaryPrimitives.WriteUInt32LittleEndian(image.AsSpan(dirOff + pos + 2, 4), 0xFFFFFFFF);
+                    BinaryPrimitives.WriteUInt32BigEndian(image.AsSpan(dirOff + pos + 6, 4), 0xFFFFFFFF);
+                    patched = true;
+                    break;
+                }
+            }
+            pos += len;
+        }
+        Assert.True(patched);
+
+        string imagePath = Path.Combine(_root, "neglba.iso");
+        await File.WriteAllBytesAsync(imagePath, image);
+        string outDir = Path.Combine(_root, "neglba-out");
+
+        var report = await ArchiveRecoveryService.RecoverFromImageAsync(imagePath, Array.Empty<int>(), outDir, par2Path: null);
+
+        Assert.Contains("bad_lba.txt", report.DamagedFiles);
+        Assert.NotNull(report.UdfSkippedEntries);
+        Assert.NotEmpty(report.UdfSkippedEntries!);
+        Assert.Equal("safe", await File.ReadAllTextAsync(Path.Combine(outDir, "good.txt")));
     }
 
     [Theory]

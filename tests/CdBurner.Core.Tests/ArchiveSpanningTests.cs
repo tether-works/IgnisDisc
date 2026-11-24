@@ -170,13 +170,122 @@ public sealed class ArchiveSpanningTests : IDisposable
     [Fact]
     public void Plan_KeepsRoomForTheCatalogOnEveryDisc()
     {
-        // One file that fills the disc to within a sector of the usable space leaves nothing for the catalog files;
-        // the planner must not pair it with anything else, and a lone file still fits (it is placed on its own disc).
-        var files = new[] { File_("a", 995), File_("b", 4) };
+        // With Ceiling = 1000 and 2 small files, catalog estimate is 13 sectors (packCapacity = 987).
+        // A 985-sector file fits with the catalog, so it must not be paired with a 4-sector file (985 + 4 > 987)
+        // even though 985 + 4 <= 1000 usable sectors.
+        var files = new[] { File_("a", 985), File_("b", 4) };
 
         var plan = Plan(files, ArchivePackingMode.FirstFitDecreasing);
 
         Assert.Equal(2, plan.Discs.Count);
+    }
+
+    [Fact]
+    public void Plan_RejectsSingleFileExceedingPackCapacity()
+    {
+        // 995 <= 1000 usable sectors, yet 995 > 987 packCapacity after reserving room for CATALOG.JSON and INDEX.HTML.
+        var files = new[] { File_("a", 995), File_("b", 4) };
+
+        var ex = Assert.Throws<InvalidOperationException>(() => Plan(files, ArchivePackingMode.FirstFitDecreasing));
+        Assert.Contains("a", ex.Message);
+    }
+
+    [Fact]
+    public void Plan_RejectsNonPositivePackCapacity()
+    {
+        var files = new[] { File_("tiny.txt", 1) };
+
+        Assert.Throws<InvalidOperationException>(() => Plan(files, ArchivePackingMode.FirstFitDecreasing, ceiling: 5));
+    }
+
+    [Fact]
+    public async Task StageAsync_RejectsNtfsCaseCollisionCleanly_AndCleansPartialDiscDirectories()
+    {
+        string source = TempDir();
+        string staging = TempDir();
+        string srcA = Path.Combine(source, "a.bin");
+        string srcB = Path.Combine(source, "b.bin");
+        await File.WriteAllBytesAsync(srcA, new byte[1024]);
+        await File.WriteAllBytesAsync(srcB, new byte[1024]);
+
+        // Disc 1 succeeds in planning; Disc 2 has two files differing only by case.
+        var plan = new ArchivePlan(
+            SetId: "casecoll",
+            MediaType: DiscMediaType.CdR,
+            RedundancyPercent: 0,
+            UsableSectorsPerDisc: 1000,
+            Discs:
+            [
+                new ArchiveDiscPlan(1, [new ArchiveSourceFile(srcA, "first.bin", 1024)], 1024, 1),
+                new ArchiveDiscPlan(2,
+                [
+                    new ArchiveSourceFile(srcA, "docs/Notes.txt", 1024),
+                    new ArchiveSourceFile(srcB, "docs/notes.txt", 1024)
+                ], 2048, 2)
+            ],
+            TotalBytes: 3072,
+            CeilingSectorsPerDisc: 1000,
+            FillFreeSpace: false);
+
+        var ex = await Assert.ThrowsAsync<InvalidOperationException>(() =>
+            ArchiveStager.StageAsync(plan, staging, par2Path: null));
+
+        Assert.Contains("collides", ex.Message, StringComparison.OrdinalIgnoreCase);
+        Assert.Empty(Directory.EnumerateFileSystemEntries(staging));
+    }
+
+    [Fact]
+    public async Task StageAsync_CleansPartialDiscDirectories_OnError()
+    {
+        string source = TempDir();
+        string staging = TempDir();
+        string existing = Path.Combine(source, "ok.bin");
+        await File.WriteAllBytesAsync(existing, new byte[1024]);
+
+        var plan = new ArchivePlan(
+            SetId: "errclean",
+            MediaType: DiscMediaType.CdR,
+            RedundancyPercent: 0,
+            UsableSectorsPerDisc: 1000,
+            Discs:
+            [
+                new ArchiveDiscPlan(1, [new ArchiveSourceFile(existing, "ok.bin", 1024)], 1024, 1),
+                new ArchiveDiscPlan(2, [new ArchiveSourceFile(Path.Combine(source, "missing.bin"), "missing.bin", 1024)], 1024, 1)
+            ],
+            TotalBytes: 2048,
+            CeilingSectorsPerDisc: 1000,
+            FillFreeSpace: false);
+
+        await Assert.ThrowsAnyAsync<IOException>(() => ArchiveStager.StageAsync(plan, staging, par2Path: null));
+        Assert.Empty(Directory.EnumerateFileSystemEntries(staging));
+    }
+
+    [Fact]
+    public async Task StageAsync_CleansPartialDiscDirectories_OnCancellation()
+    {
+        string source = TempDir();
+        string staging = TempDir();
+        string srcA = Path.Combine(source, "a.bin");
+        string srcB = Path.Combine(source, "b.bin");
+        await File.WriteAllBytesAsync(srcA, new byte[2048]);
+        await File.WriteAllBytesAsync(srcB, new byte[2048]);
+
+        var plan = ArchiveSpanPlanner.Plan(
+            [new ArchiveSourceFile(srcA, "a.bin", 2048), new ArchiveSourceFile(srcB, "b.bin", 2048)],
+            DiscMediaType.CdR, 0, "cancelset", ceilingSectorsOverride: 20);
+
+        using var cts = new CancellationTokenSource();
+        var progress = new Progress<string>(msg =>
+        {
+            if (msg.Contains("copying b.bin", StringComparison.Ordinal))
+            {
+                cts.Cancel();
+            }
+        });
+
+        await Assert.ThrowsAnyAsync<OperationCanceledException>(() =>
+            ArchiveStager.StageAsync(plan, staging, par2Path: null, progress, cts.Token));
+        Assert.Empty(Directory.EnumerateFileSystemEntries(staging));
     }
 
     // ---- CATALOG.JSON and INDEX.HTML on staged discs ----

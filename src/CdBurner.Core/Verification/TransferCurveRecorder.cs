@@ -17,7 +17,7 @@ public sealed class TransferCurveRecorder : IProgress<BurnProgressSnapshot>
 
     public void Report(BurnProgressSnapshot value)
     {
-        if (value.TotalLba > 0 && value.CurrentLba >= 0 && value.CurrentSpeedMultiplier > 0 && !double.IsNaN(value.CurrentSpeedMultiplier))
+        if (value.TotalLba > 0 && value.CurrentLba >= 0 && value.CurrentSpeedMultiplier > 0 && double.IsFinite(value.CurrentSpeedMultiplier))
         {
             int percent = (int)Math.Clamp(Math.Round(100.0 * value.CurrentLba / value.TotalLba), 0, 100);
             lock (_lock) { _byPercent[percent] = Math.Round(value.CurrentSpeedMultiplier, 2); }
