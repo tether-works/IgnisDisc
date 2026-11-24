@@ -1,5 +1,6 @@
 using System;
 using System.IO;
+using System.IO.Compression;
 using System.Linq;
 using System.Threading.Tasks;
 using CdBurner.App.ViewModels;
@@ -13,7 +14,6 @@ namespace CdBurner.Integration.Tests;
 /// the hole are marked and the photo is rectified without a click. A picture with no disc leaves the click workflow
 /// untouched.
 /// </summary>
-[Collection(WpfApplicationCollection.Name)]
 public sealed class CalibrationAutoDetectViewTests
 {
     private static readonly string FixtureDir = Path.Combine(AppContext.BaseDirectory, "Fixtures", "UpstreamCalibration");
@@ -21,9 +21,12 @@ public sealed class CalibrationAutoDetectViewTests
 
     private const int Width = 1500;
     private const int Height = 1700;
+    private static readonly byte[] SharedDiscPhotoPng = BuildDiscPhotoPng();
+
+    private static byte[] DiscPhotoPng() => SharedDiscPhotoPng;
 
     /// <summary>A bright disc with a centre hole and a few bands on a dark, grainy surface, off-centre in a tall photo.</summary>
-    private static byte[] DiscPhotoPng()
+    private static byte[] BuildDiscPhotoPng()
     {
         byte[] pixels = new byte[Width * Height * 4];
         var random = new Random(99);
@@ -45,7 +48,7 @@ public sealed class CalibrationAutoDetectViewTests
             }
 
         using var stream = new MemoryStream();
-        PngRaster.Write(stream, new BgraRaster(Width, Height, pixels));
+        PngRaster.Write(stream, new BgraRaster(Width, Height, pixels), CompressionLevel.Fastest);
         return stream.ToArray();
     }
 

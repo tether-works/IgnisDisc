@@ -150,6 +150,20 @@ public static class FastDispersionImageWriter
         return WriteSampledStream(sampler, output, options, progress, cancellationToken);
     }
 
+    public static FastDvdStreamSummary WriteStream(
+        BgraRaster imageRaster,
+        Stream output,
+        MultiBlockSolveOptions options,
+        Action<FastDvdStreamProgress>? progress = null,
+        CancellationToken cancellationToken = default,
+        IPictureOverlay? overlay = null)
+    {
+        ValidateStream(output, options);
+        RasterImage image = RasterImage.FromRaster(imageRaster);
+        PayloadImageSampler sampler = new(image, options.ImageMapping, overlay);
+        return WriteSampledStream(sampler, output, options, progress, cancellationToken);
+    }
+
     /// <summary>Uses the frozen reference image with its original bilinear sampling
     /// and drawing-annulus clipping, including targets loaded from older sessions.</summary>
     public static FastDvdStreamSummary WriteCalibrationReferenceStream(

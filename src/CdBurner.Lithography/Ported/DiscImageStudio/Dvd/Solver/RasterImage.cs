@@ -32,6 +32,13 @@ internal sealed class RasterImage
         return new RasterImage(raster.Width, raster.Height, raster.Pixels);
     }
 
+    internal static RasterImage FromRaster(BgraRaster raster)
+    {
+        ArgumentNullException.ThrowIfNull(raster);
+        raster.Validate();
+        return new RasterImage(raster.Width, raster.Height, raster.Pixels);
+    }
+
     internal static RasterImage CreateForTest(int width, int height, byte blue, byte green, byte red, byte alpha)
     {
         byte[] pixels = new byte[checked(width * height * 4)];

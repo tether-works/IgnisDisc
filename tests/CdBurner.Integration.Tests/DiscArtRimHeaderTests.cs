@@ -23,8 +23,58 @@ namespace CdBurner.Integration.Tests;
 /// would return: the CD and DVD read-back previews, and for BD the image's own bytes descrambled and placed at their
 /// physical positions. The text is then read glyph by glyph against the font, without using the encoder's ink test.
 /// </summary>
-public sealed class DiscArtRimHeaderTests : IDisposable
+public sealed class DiscArtRimHeaderTests : IClassFixture<DiscArtRimHeaderTests.SharedFixtures>, IDisposable
 {
+    public sealed class SharedFixtures : IDisposable
+    {
+        public string Dir { get; } = Path.Combine(Path.GetTempPath(), "ignisdisc-rimheader-shared-" + Guid.NewGuid().ToString("N"));
+        public string PicturePath { get; }
+        public string PictureSha16 { get; }
+        public string PresetsPath { get; }
+
+        public SharedFixtures()
+        {
+            Directory.CreateDirectory(Dir);
+
+            PicturePath = Path.Combine(Dir, "picture.png");
+            const int size = 64;
+            byte[] pixels = new byte[size * size * 4];
+            for (int y = 0; y < size; y++)
+                for (int x = 0; x < size; x++)
+                {
+                    int o = (y * size + x) * 4;
+                    pixels[o] = pixels[o + 1] = pixels[o + 2] = (byte)(x < size / 2 ? 0 : 255);
+                    pixels[o + 3] = 255;
+                }
+            PngRaster.SaveBgra32(PicturePath, new BgraRaster(size, size, pixels));
+            PictureSha16 = Convert.ToHexString(SHA256.HashData(File.ReadAllBytes(PicturePath)))[..16];
+
+            PresetsPath = Path.Combine(Dir, "presets.json");
+            File.WriteAllText(PresetsPath, """
+                {
+                  "schemaVersion": 4,
+                  "cdPresets": [
+                    { "id": "narrow-cd", "displayName": "Narrow CD", "description": "test", "sectors": 1422,
+                      "innerRadiusMm": 57.9, "outerRadiusMm": 58, "linearVelocityMmPerSecond": 1200 }
+                  ],
+                  "dvdPresets": [
+                    { "id": "tiny-dvd", "displayName": "Tiny DVD", "description": "test", "totalSectors": 4096,
+                      "innerRadiusMm": 24, "outerRadiusMm": 58, "channelBitLengthNm": 133.3 }
+                  ],
+                  "bluRayPresets": [
+                    { "id": "tiny-bd", "displayName": "Tiny BD", "description": "test", "totalSectors": 4096,
+                      "innerRadiusMm": 24, "outerRadiusMm": 58 }
+                  ]
+                }
+                """);
+        }
+
+        public void Dispose()
+        {
+            try { Directory.Delete(Dir, recursive: true); } catch (IOException) { } catch (UnauthorizedAccessException) { }
+        }
+    }
+
     private const string Title = "Family Photos";
     private static readonly DateOnly Date = new(2026, 11, 18);
 
@@ -35,8 +85,13 @@ public sealed class DiscArtRimHeaderTests : IDisposable
         CalibrationParameters.BluRayChannelBitLengthNm);
 
     private readonly string _dir = Path.Combine(Path.GetTempPath(), "ignisdisc-rimheader-" + Guid.NewGuid().ToString("N"));
+    private readonly SharedFixtures _shared;
 
-    public DiscArtRimHeaderTests() => Directory.CreateDirectory(_dir);
+    public DiscArtRimHeaderTests(SharedFixtures shared)
+    {
+        _shared = shared;
+        Directory.CreateDirectory(_dir);
+    }
 
     public void Dispose()
     {
@@ -46,25 +101,9 @@ public sealed class DiscArtRimHeaderTests : IDisposable
     private string P(string name) => Path.Combine(_dir, name);
 
     /// <summary>64 x 64 picture, left half black, right half white.</summary>
-    private string WritePicture()
-    {
-        string path = P("picture.png");
-        if (File.Exists(path)) return path;
-        const int size = 64;
-        byte[] pixels = new byte[size * size * 4];
-        for (int y = 0; y < size; y++)
-            for (int x = 0; x < size; x++)
-            {
-                int o = (y * size + x) * 4;
-                pixels[o] = pixels[o + 1] = pixels[o + 2] = (byte)(x < size / 2 ? 0 : 255);
-                pixels[o + 3] = 255;
-            }
+    private string WritePicture() => _shared.PicturePath;
 
-        PngRaster.SaveBgra32(path, new BgraRaster(size, size, pixels));
-        return path;
-    }
-
-    private string PictureSha16() => Convert.ToHexString(SHA256.HashData(File.ReadAllBytes(WritePicture())))[..16];
+    private string PictureSha16() => _shared.PictureSha16;
 
     private DiscArtRequest Request(DiscArtMedium medium, CalibrationParameters disc, string output, bool header = true)
         => new(medium, WritePicture(), disc, output, RimHeader: header ? new DiscArtRimHeader(Title, Date) : null);
@@ -361,28 +400,7 @@ public sealed class DiscArtRimHeaderTests : IDisposable
         return (code, stdout.ToString(), stderr.ToString());
     }
 
-    private string WritePresets()
-    {
-        string path = P("presets.json");
-        File.WriteAllText(path, """
-            {
-              "schemaVersion": 4,
-              "cdPresets": [
-                { "id": "narrow-cd", "displayName": "Narrow CD", "description": "test", "sectors": 1422,
-                  "innerRadiusMm": 57.9, "outerRadiusMm": 58, "linearVelocityMmPerSecond": 1200 }
-              ],
-              "dvdPresets": [
-                { "id": "tiny-dvd", "displayName": "Tiny DVD", "description": "test", "totalSectors": 4096,
-                  "innerRadiusMm": 24, "outerRadiusMm": 58, "channelBitLengthNm": 133.3 }
-              ],
-              "bluRayPresets": [
-                { "id": "tiny-bd", "displayName": "Tiny BD", "description": "test", "totalSectors": 4096,
-                  "innerRadiusMm": 24, "outerRadiusMm": 58 }
-              ]
-            }
-            """);
-        return path;
-    }
+    private string WritePresets() => _shared.PresetsPath;
 
     [Fact]
     public async Task Cli_RimHeader_Switch_PlansTheHeader_OnABuiltInCd()

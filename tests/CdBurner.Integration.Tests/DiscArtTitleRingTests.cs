@@ -24,8 +24,49 @@ namespace CdBurner.Integration.Tests;
 /// the text centred on the top of the disc (270 degrees clockwise from the right, seen from the read side), top towards
 /// the rim, reading clockwise.
 /// </summary>
-public sealed class DiscArtTitleRingTests : IDisposable
+public sealed class DiscArtTitleRingTests : IClassFixture<DiscArtTitleRingTests.SharedFixtures>, IDisposable
 {
+    public sealed class SharedFixtures : IDisposable
+    {
+        public string Dir { get; } = Path.Combine(Path.GetTempPath(), "ignisdisc-title-ring-shared-" + Guid.NewGuid().ToString("N"));
+        public string BlackPicturePath { get; }
+        public string FilesFolderPath { get; }
+        public string PresetsPath { get; }
+
+        public SharedFixtures()
+        {
+            Directory.CreateDirectory(Dir);
+
+            BlackPicturePath = Path.Combine(Dir, "black.png");
+            const int size = 64;
+            byte[] pixels = new byte[size * size * 4];
+            for (int i = 3; i < pixels.Length; i += 4) pixels[i] = 255;
+            PngRaster.SaveBgra32(BlackPicturePath, new BgraRaster(size, size, pixels));
+
+            FilesFolderPath = Path.Combine(Dir, "files");
+            Directory.CreateDirectory(FilesFolderPath);
+            File.WriteAllText(Path.Combine(FilesFolderPath, "README.TXT"), "files inside, title ring outside");
+
+            PresetsPath = Path.Combine(Dir, "presets.json");
+            File.WriteAllText(PresetsPath, $$"""
+                {
+                  "schemaVersion": 4,
+                  "cdPresets": [],
+                  "dvdPresets": [
+                    { "id": "short-dvd", "displayName": "Short DVD", "description": "test", "totalSectors": {{N}},
+                      "innerRadiusMm": {{R0}}, "outerRadiusMm": {{R1}}, "channelBitLengthNm": 133.3 }
+                  ],
+                  "bluRayPresets": []
+                }
+                """);
+        }
+
+        public void Dispose()
+        {
+            try { Directory.Delete(Dir, recursive: true); } catch (IOException) { } catch (UnauthorizedAccessException) { }
+        }
+    }
+
     private const int Sector = 2048;
     private const double DegreesToRadians = Math.PI / 180.0;
 
@@ -38,10 +79,12 @@ public sealed class DiscArtTitleRingTests : IDisposable
     private static readonly DateOnly Date = new(2026, 11, 17);
 
     private readonly string _dir = Path.Combine(Path.GetTempPath(), "ignisdisc-title-ring-" + Guid.NewGuid().ToString("N"));
+    private readonly SharedFixtures _shared;
     private readonly ITestOutputHelper _output;
 
-    public DiscArtTitleRingTests(ITestOutputHelper output)
+    public DiscArtTitleRingTests(SharedFixtures shared, ITestOutputHelper output)
     {
+        _shared = shared;
         _output = output;
         Directory.CreateDirectory(_dir);
     }
@@ -54,25 +97,9 @@ public sealed class DiscArtTitleRingTests : IDisposable
     private string P(string name) => Path.Combine(_dir, name);
 
     /// <summary>An all-black picture: everywhere it is drawn, the read-back is dark.</summary>
-    private string WriteBlackPicture()
-    {
-        string path = P("black.png");
-        if (File.Exists(path)) return path;
-        const int size = 64;
-        byte[] pixels = new byte[size * size * 4];
-        for (int i = 3; i < pixels.Length; i += 4) pixels[i] = 255;
-        PngRaster.SaveBgra32(path, new BgraRaster(size, size, pixels));
-        return path;
-    }
+    private string WriteBlackPicture() => _shared.BlackPicturePath;
 
-    private string WriteFiles()
-    {
-        string folder = P("files");
-        if (Directory.Exists(folder)) return folder;
-        Directory.CreateDirectory(folder);
-        File.WriteAllText(Path.Combine(folder, "README.TXT"), "files inside, title ring outside");
-        return folder;
-    }
+    private string WriteFiles() => _shared.FilesFolderPath;
 
     private static double SectorAtRadius(double r) => N * (r * r - R0 * R0) / (R1 * R1 - R0 * R0);
 
@@ -336,22 +363,7 @@ public sealed class DiscArtTitleRingTests : IDisposable
 
     // Command line ------------------------------------------------------------------------------------------------
 
-    private string WritePresets()
-    {
-        string path = P("presets.json");
-        File.WriteAllText(path, $$"""
-            {
-              "schemaVersion": 4,
-              "cdPresets": [],
-              "dvdPresets": [
-                { "id": "short-dvd", "displayName": "Short DVD", "description": "test", "totalSectors": {{N}},
-                  "innerRadiusMm": {{R0}}, "outerRadiusMm": {{R1}}, "channelBitLengthNm": 133.3 }
-              ],
-              "bluRayPresets": []
-            }
-            """);
-        return path;
-    }
+    private string WritePresets() => _shared.PresetsPath;
 
     private static async Task<(int Code, string Out, string Err)> RunAsync(params string[] args)
     {

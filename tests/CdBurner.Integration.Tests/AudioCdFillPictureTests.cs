@@ -23,12 +23,13 @@ namespace CdBurner.Integration.Tests;
 /// ISO 9660 volume and Mode 1 picture sectors to the end of the disc, burned on the simulated drive through
 /// <c>burn-audio --native</c>, checked with <c>verify --cue</c>, and read back.
 /// </summary>
-[Collection(WpfApplicationCollection.Name)]
 public sealed class AudioCdFillPictureTests : IDisposable
 {
     // A small CD-R keeps the simulated disc in memory; the picture is drawn where these sectors lie on a real 80-min disc.
     private const int DiscSectors = 20_000;
     private const int Size = 64;
+    private static readonly byte[] SharedHalfPng64 = BuildHalfPng(Size);
+    private static readonly (byte[] Track1Pcm, byte[] Track2Pcm) SharedAlbumPcm = BuildAlbumPcm();
 
     private readonly string _tempDir = Path.Combine(Path.GetTempPath(), "CdBurner_cdfill_" + Guid.NewGuid().ToString("N"));
     private readonly VirtualDiscRecorder _recorder = new("VDRV-01", "IGNIS", "VIRTUAL DVD/CD-RW", @"V:\");
@@ -51,7 +52,9 @@ public sealed class AudioCdFillPictureTests : IDisposable
     /// <summary>Left half black, right half white.</summary>
     private static int Level(int x) => x < Size / 2 ? 0 : 255;
 
-    private static byte[] HalfPng(int size = Size)
+    private static byte[] HalfPng(int size = Size) => size == Size ? SharedHalfPng64 : BuildHalfPng(size);
+
+    private static byte[] BuildHalfPng(int size)
     {
         byte[] pixels = new byte[size * size * 4];
         for (int y = 0; y < size; y++)
@@ -62,16 +65,18 @@ public sealed class AudioCdFillPictureTests : IDisposable
                 pixels[o + 3] = 255;
             }
         using var ms = new MemoryStream();
-        string tmp = Path.Combine(Path.GetTempPath(), $"cdfill_{Guid.NewGuid():N}.png");
-        try
-        {
-            PngRaster.SaveBgra32(tmp, new BgraRaster(size, size, pixels));
-            return File.ReadAllBytes(tmp);
-        }
-        finally
-        {
-            File.Delete(tmp);
-        }
+        PngRaster.Write(ms, new BgraRaster(size, size, pixels), System.IO.Compression.CompressionLevel.Fastest);
+        return ms.ToArray();
+    }
+
+    private static (byte[] Track1Pcm, byte[] Track2Pcm) BuildAlbumPcm()
+    {
+        var random = new Random(7);
+        byte[] pcm1 = new byte[300 * OpticalConstants.RawSectorSize];
+        byte[] pcm2 = new byte[320 * OpticalConstants.RawSectorSize];
+        random.NextBytes(pcm1);
+        random.NextBytes(pcm2);
+        return (pcm1, pcm2);
     }
 
     private string WritePicture(string name, byte[] bytes)
@@ -87,13 +92,8 @@ public sealed class AudioCdFillPictureTests : IDisposable
     {
         string dir = Path.Combine(_tempDir, folder);
         Directory.CreateDirectory(dir);
-        var random = new Random(7);
-        foreach (var (name, sectors) in new[] { ("01.wav", 300), ("02.wav", 320) })
-        {
-            byte[] pcm = new byte[sectors * OpticalConstants.RawSectorSize];
-            random.NextBytes(pcm);
-            WavFileCodec.WriteWavFile(Path.Combine(dir, name), pcm);
-        }
+        WavFileCodec.WriteWavFile(Path.Combine(dir, "01.wav"), SharedAlbumPcm.Track1Pcm);
+        WavFileCodec.WriteWavFile(Path.Combine(dir, "02.wav"), SharedAlbumPcm.Track2Pcm);
         string cue = Path.Combine(dir, "album.cue");
         File.WriteAllLines(cue, new[]
         {

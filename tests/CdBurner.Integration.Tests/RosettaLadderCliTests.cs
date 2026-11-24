@@ -61,6 +61,8 @@ public sealed class RosettaLadderCliTests : IDisposable
             Assert.True(root.GetProperty("success").GetBoolean());
             Assert.True(root.GetProperty("planOnly").GetBoolean());
             Assert.Equal("DVD-R", root.GetProperty("media").GetString());
+            Assert.Equal("dvd-5-120mm", root.GetProperty("discPresetId").GetString());
+            Assert.Equal(2_295_104u, root.GetProperty("totalSectors").GetUInt32());
             Assert.Equal(24, root.GetProperty("rungCount").GetInt32());
             Assert.Equal(3, root.GetProperty("zoneCount").GetInt32());
         }
@@ -86,6 +88,7 @@ public sealed class RosettaLadderCliTests : IDisposable
             Assert.True(root.GetProperty("planOnly").GetBoolean());
             Assert.Equal("CD-R", root.GetProperty("media").GetString());
             Assert.Equal("cd-80", root.GetProperty("discPresetId").GetString());
+            Assert.Equal(359_673u, root.GetProperty("totalSectors").GetUInt32());
             Assert.Equal(15, root.GetProperty("rungCount").GetInt32());
             Assert.Equal(3, root.GetProperty("zoneCount").GetInt32());
             foreach (JsonElement rung in root.GetProperty("rungs").EnumerateArray())
@@ -115,9 +118,45 @@ public sealed class RosettaLadderCliTests : IDisposable
         }
     }
 
+    private string WriteLadderPresetsFile()
+    {
+        string presetsPath = Path.Combine(_tempDir, "ladder-presets.json");
+        File.WriteAllText(presetsPath, """
+            {
+              "schemaVersion": 4,
+              "cdPresets": [
+                {
+                  "id": "ladder-sao-test",
+                  "displayName": "CD Ladder SAO Test",
+                  "description": "Test preset for VirtualMmcDrive SAO ladder burn",
+                  "sectors": 100000,
+                  "innerRadiusMm": 24.825,
+                  "outerRadiusMm": 46.5,
+                  "linearVelocityMmPerSecond": 1200
+                }
+              ],
+              "dvdPresets": [
+                {
+                  "id": "ladder-dvd-test",
+                  "displayName": "DVD Ladder Test",
+                  "description": "Representative smaller DVD preset covering all 24 rungs in CLI readback tests",
+                  "totalSectors": 512000,
+                  "usableSectors": 512000,
+                  "innerRadiusMm": 12.0,
+                  "outerRadiusMm": 32.5,
+                  "channelBitLengthNm": 133.3
+                }
+              ],
+              "bluRayPresets": []
+            }
+            """);
+        return presetsPath;
+    }
+
     [Fact]
     public async Task RosettaLadder_GeneratesFullDvdImageAndManifest_AndPassesSimulatedReadback()
     {
+        string presetsPath = WriteLadderPresetsFile();
         string isoPath = Path.Combine(_tempDir, "ladder-full.iso");
         string jsonPath = isoPath + ".json";
 
@@ -126,21 +165,22 @@ public sealed class RosettaLadderCliTests : IDisposable
             var stdout = new StringWriter();
             var stderr = new StringWriter();
             int code = await CliCommandRunner.RunAsync(
-                ["rosetta", "ladder", "--media", "dvd", "--output", isoPath, "--json"],
+                ["rosetta", "ladder", "--media", "dvd", "--disc-presets-file", presetsPath, "--disc-preset", "ladder-dvd-test", "--output", isoPath, "--json"],
                 stdout,
                 stderr);
 
-            Assert.Equal(0, code);
+            Assert.True(code == 0, stderr.ToString() + stdout.ToString());
             Assert.True(File.Exists(isoPath));
             Assert.True(File.Exists(jsonPath));
-            Assert.Equal(2_295_104L * 2048L, new FileInfo(isoPath).Length);
+            Assert.Equal(512_000L * 2048L, new FileInfo(isoPath).Length);
 
             using (JsonDocument doc = JsonDocument.Parse(stdout.ToString()))
             {
                 JsonElement root = doc.RootElement;
                 Assert.True(root.GetProperty("success").GetBoolean());
                 Assert.False(root.GetProperty("planOnly").GetBoolean());
-                Assert.Equal(2_295_104u, root.GetProperty("sectorsWritten").GetUInt32());
+                Assert.Equal("ladder-dvd-test", root.GetProperty("discPresetId").GetString());
+                Assert.Equal(512_000u, root.GetProperty("sectorsWritten").GetUInt32());
                 Assert.Equal(24, root.GetProperty("rungCount").GetInt32());
             }
 
@@ -160,6 +200,7 @@ public sealed class RosettaLadderCliTests : IDisposable
     [Fact]
     public async Task RosettaLadder_GeneratesFullCd80WavCueAndManifest_AndPassesSimulatedReadback()
     {
+        string presetsPath = WriteLadderPresetsFile();
         string wavPath = Path.Combine(_tempDir, "cd-ladder-80.wav");
         string cuePath = Path.ChangeExtension(wavPath, ".cue");
         string jsonPath = wavPath + ".json";
@@ -169,7 +210,7 @@ public sealed class RosettaLadderCliTests : IDisposable
             var stdout = new StringWriter();
             var stderr = new StringWriter();
             int code = await CliCommandRunner.RunAsync(
-                ["rosetta", "ladder", "--media", "cd-r", "--output", wavPath, "--json"],
+                ["rosetta", "ladder", "--media", "cd-r", "--disc-presets-file", presetsPath, "--disc-preset", "ladder-sao-test", "--output", wavPath, "--json"],
                 stdout,
                 stderr);
 
@@ -177,7 +218,7 @@ public sealed class RosettaLadderCliTests : IDisposable
             Assert.True(File.Exists(wavPath));
             Assert.True(File.Exists(cuePath));
             Assert.True(File.Exists(jsonPath));
-            Assert.Equal(44L + (359_673L * 2352L), new FileInfo(wavPath).Length);
+            Assert.Equal(44L + (100_000L * 2352L), new FileInfo(wavPath).Length);
             Assert.Contains(Path.GetFileName(wavPath), File.ReadAllText(cuePath), StringComparison.Ordinal);
 
             using (JsonDocument doc = JsonDocument.Parse(stdout.ToString()))
@@ -186,14 +227,14 @@ public sealed class RosettaLadderCliTests : IDisposable
                 Assert.True(root.GetProperty("success").GetBoolean());
                 Assert.False(root.GetProperty("planOnly").GetBoolean());
                 Assert.Equal("CD-R", root.GetProperty("media").GetString());
-                Assert.Equal("cd-80", root.GetProperty("discPresetId").GetString());
+                Assert.Equal("ladder-sao-test", root.GetProperty("discPresetId").GetString());
                 Assert.Equal(cuePath, root.GetProperty("cueSheetPath").GetString());
-                Assert.Equal(359_673u, root.GetProperty("sectorsWritten").GetUInt32());
+                Assert.Equal(100_000u, root.GetProperty("sectorsWritten").GetUInt32());
                 Assert.Equal(15, root.GetProperty("rungCount").GetInt32());
             }
 
             RosettaLadderVerificationReport report = RosettaLadderReadback.VerifyCdTrack(wavPath, jsonPath);
-            Assert.True(report.AllRungsMatch, $"CD-80 readback matched {report.PassedRungs}/{report.TotalRungs} rungs.");
+            Assert.True(report.AllRungsMatch, $"CD readback matched {report.PassedRungs}/{report.TotalRungs} rungs.");
             Assert.Equal(15, report.PassedRungs);
         }
         finally
@@ -208,25 +249,7 @@ public sealed class RosettaLadderCliTests : IDisposable
     [Fact]
     public async Task RosettaLadder_CdR_BurnsThroughVirtualMmcDriveSao_VerifiesAndDecodesAll15Rungs()
     {
-        string presetsPath = Path.Combine(_tempDir, "cd-presets.json");
-        File.WriteAllText(presetsPath, """
-            {
-              "schemaVersion": 4,
-              "cdPresets": [
-                {
-                  "id": "ladder-sao-test",
-                  "displayName": "CD Ladder SAO Test",
-                  "description": "Test preset for VirtualMmcDrive SAO ladder burn",
-                  "sectors": 100000,
-                  "innerRadiusMm": 24.825,
-                  "outerRadiusMm": 46.5,
-                  "linearVelocityMmPerSecond": 1200
-                }
-              ],
-              "dvdPresets": [],
-              "bluRayPresets": []
-            }
-            """);
+        string presetsPath = WriteLadderPresetsFile();
 
         string wavPath = Path.Combine(_tempDir, "sao-ladder.wav");
         string cuePath = Path.ChangeExtension(wavPath, ".cue");

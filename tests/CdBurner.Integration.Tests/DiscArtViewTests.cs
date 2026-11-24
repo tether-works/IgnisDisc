@@ -34,11 +34,139 @@ namespace CdBurner.Integration.Tests;
 /// verifies on the simulated drive. Tiny discs (a few thousand sectors) keep each test to seconds. No physical drive.
 /// </summary>
 [Collection(WpfApplicationCollection.Name)]
-public sealed class DiscArtViewTests : IDisposable
+public sealed class DiscArtViewTests : IClassFixture<DiscArtViewTests.SharedFixtures>, IDisposable
 {
-    private readonly string _dir = Path.Combine(Path.GetTempPath(), "ignisdisc-discart-view-" + Guid.NewGuid().ToString("N"));
+    public sealed class SharedFixtures : IDisposable
+    {
+        public string Dir { get; } = Path.Combine(Path.GetTempPath(), "ignisdisc-discart-view-shared-" + Guid.NewGuid().ToString("N"));
+        public string PresetsPath { get; }
+        public string RimPresetsPath { get; }
+        public string PicturePath { get; }
+        public string SampleFilesDir { get; }
+        public string AlbumCuePath { get; }
 
-    public DiscArtViewTests() => Directory.CreateDirectory(_dir);
+        public SharedFixtures()
+        {
+            Directory.CreateDirectory(Dir);
+
+            PresetsPath = Path.Combine(Dir, "presets.json");
+            File.WriteAllText(PresetsPath, """
+                {
+                  "schemaVersion": 4,
+                  "cdPresets": [
+                    { "id": "tiny-cd", "displayName": "Tiny CD", "description": "test", "sectors": 6000,
+                      "innerRadiusMm": 24.5, "outerRadiusMm": 56.8, "linearVelocityMmPerSecond": 1200 }
+                  ],
+                  "dvdPresets": [
+                    { "id": "tiny-dvd", "displayName": "Tiny DVD", "description": "test", "totalSectors": 4096,
+                      "innerRadiusMm": 24, "outerRadiusMm": 58, "channelBitLengthNm": 133.3 },
+                    { "id": "small-dvd", "displayName": "Small DVD", "description": "test", "totalSectors": 32768,
+                      "innerRadiusMm": 24, "outerRadiusMm": 58, "channelBitLengthNm": 133.3 },
+                    { "id": "medium-dvd", "displayName": "Medium DVD", "description": "test", "totalSectors": 96000,
+                      "innerRadiusMm": 24, "outerRadiusMm": 58, "channelBitLengthNm": 133.3 }
+                  ],
+                  "bluRayPresets": [
+                    { "id": "tiny-bd", "displayName": "Tiny BD", "description": "test", "totalSectors": 4096,
+                      "innerRadiusMm": 24, "outerRadiusMm": 58 },
+                    { "id": "small-bd", "displayName": "Small BD", "description": "test", "totalSectors": 32768,
+                      "innerRadiusMm": 24, "outerRadiusMm": 58 }
+                  ]
+                }
+                """);
+
+            RimPresetsPath = Path.Combine(Dir, "rim-presets.json");
+            File.WriteAllText(RimPresetsPath, """
+                {
+                  "schemaVersion": 4,
+                  "cdPresets": [
+                    { "id": "ring-cd", "displayName": "Ring CD", "description": "test", "sectors": 10900,
+                      "innerRadiusMm": 53, "outerRadiusMm": 58, "linearVelocityMmPerSecond": 1200 },
+                    { "id": "narrow-cd", "displayName": "Narrow CD", "description": "test", "sectors": 1422,
+                      "innerRadiusMm": 57.9, "outerRadiusMm": 58, "linearVelocityMmPerSecond": 1200 }
+                  ],
+                  "dvdPresets": [
+                    { "id": "ring-dvd", "displayName": "Ring DVD", "description": "test", "totalSectors": 16896,
+                      "innerRadiusMm": 53, "outerRadiusMm": 58, "channelBitLengthNm": 133.3 },
+                    { "id": "narrow-dvd", "displayName": "Narrow DVD", "description": "test", "totalSectors": 2048,
+                      "innerRadiusMm": 57.96, "outerRadiusMm": 58, "channelBitLengthNm": 133.3 }
+                  ],
+                  "bluRayPresets": [
+                    { "id": "ring-bd", "displayName": "Ring BD", "description": "test", "totalSectors": 17600,
+                      "innerRadiusMm": 53.5, "outerRadiusMm": 58 },
+                    { "id": "narrow-bd", "displayName": "Narrow BD", "description": "test", "totalSectors": 10176,
+                      "innerRadiusMm": 57.98, "outerRadiusMm": 58 }
+                  ]
+                }
+                """);
+
+            PicturePath = Path.Combine(Dir, "picture.png");
+            const int size = 64;
+            byte[] pixels = new byte[size * size * 4];
+            for (int y = 0; y < size; y++)
+                for (int x = 0; x < size; x++)
+                {
+                    int o = (y * size + x) * 4;
+                    pixels[o] = pixels[o + 1] = pixels[o + 2] = (byte)(x < size / 2 ? 0 : 255);
+                    pixels[o + 3] = 255;
+                }
+            PngRaster.SaveBgra32(PicturePath, new BgraRaster(size, size, pixels));
+
+            SampleFilesDir = Path.Combine(Dir, "files");
+            Directory.CreateDirectory(SampleFilesDir);
+            File.WriteAllText(Path.Combine(SampleFilesDir, "README.TXT"), "picture disc with outer files");
+            File.WriteAllBytes(Path.Combine(SampleFilesDir, "DATA.BIN"), Enumerable.Range(0, 8192).Select(i => (byte)(i * 31 + 7)).ToArray());
+
+            string albumDir = Path.Combine(Dir, "album");
+            Directory.CreateDirectory(albumDir);
+            byte[] pcm = new byte[700 * OpticalConstants.RawSectorSize];
+            new Random(21).NextBytes(pcm);
+            using (var wav = new FileStream(Path.Combine(albumDir, "album.wav"), FileMode.Create))
+            {
+                var w = new BinaryWriter(wav);
+                w.Write("RIFF"u8);
+                w.Write(36 + pcm.Length);
+                w.Write("WAVEfmt "u8);
+                w.Write(16);
+                w.Write((short)1);
+                w.Write((short)2);
+                w.Write(44100);
+                w.Write(176400);
+                w.Write((short)4);
+                w.Write((short)16);
+                w.Write("data"u8);
+                w.Write(pcm.Length);
+                w.Write(pcm);
+            }
+
+            AlbumCuePath = Path.Combine(albumDir, "album.cue");
+            File.WriteAllLines(AlbumCuePath, new[]
+            {
+                "TITLE \"Album\"",
+                "PERFORMER \"Artist\"",
+                "FILE \"album.wav\" WAVE",
+                "  TRACK 01 AUDIO",
+                "    TITLE \"One\"",
+                "    INDEX 01 00:00:00",
+                "  TRACK 02 AUDIO",
+                "    TITLE \"Two\"",
+                "    INDEX 01 00:05:00",
+            });
+        }
+
+        public void Dispose()
+        {
+            try { Directory.Delete(Dir, recursive: true); } catch (IOException) { } catch (UnauthorizedAccessException) { }
+        }
+    }
+
+    private readonly string _dir = Path.Combine(Path.GetTempPath(), "ignisdisc-discart-view-" + Guid.NewGuid().ToString("N"));
+    private readonly SharedFixtures _shared;
+
+    public DiscArtViewTests(SharedFixtures shared)
+    {
+        _shared = shared;
+        Directory.CreateDirectory(_dir);
+    }
 
     public void Dispose()
     {
@@ -48,53 +176,10 @@ public sealed class DiscArtViewTests : IDisposable
     private string P(string name) => Path.Combine(_dir, name);
 
     /// <summary>One tiny disc of each type (the same sizes the command-line tests use).</summary>
-    private string WritePresets()
-    {
-        string path = P("presets.json");
-        File.WriteAllText(path, """
-            {
-              "schemaVersion": 4,
-              "cdPresets": [
-                { "id": "tiny-cd", "displayName": "Tiny CD", "description": "test", "sectors": 6000,
-                  "innerRadiusMm": 24.5, "outerRadiusMm": 56.8, "linearVelocityMmPerSecond": 1200 }
-              ],
-              "dvdPresets": [
-                { "id": "tiny-dvd", "displayName": "Tiny DVD", "description": "test", "totalSectors": 4096,
-                  "innerRadiusMm": 24, "outerRadiusMm": 58, "channelBitLengthNm": 133.3 },
-                { "id": "small-dvd", "displayName": "Small DVD", "description": "test", "totalSectors": 32768,
-                  "innerRadiusMm": 24, "outerRadiusMm": 58, "channelBitLengthNm": 133.3 },
-                { "id": "medium-dvd", "displayName": "Medium DVD", "description": "test", "totalSectors": 96000,
-                  "innerRadiusMm": 24, "outerRadiusMm": 58, "channelBitLengthNm": 133.3 }
-              ],
-              "bluRayPresets": [
-                { "id": "tiny-bd", "displayName": "Tiny BD", "description": "test", "totalSectors": 4096,
-                  "innerRadiusMm": 24, "outerRadiusMm": 58 },
-                { "id": "small-bd", "displayName": "Small BD", "description": "test", "totalSectors": 32768,
-                  "innerRadiusMm": 24, "outerRadiusMm": 58 }
-              ]
-            }
-            """);
-        return path;
-    }
+    private string WritePresets() => _shared.PresetsPath;
 
     /// <summary>64 x 64: left half black, right half white.</summary>
-    private string WritePicture()
-    {
-        string path = P("picture.png");
-        if (File.Exists(path)) return path;
-        const int size = 64;
-        byte[] pixels = new byte[size * size * 4];
-        for (int y = 0; y < size; y++)
-            for (int x = 0; x < size; x++)
-            {
-                int o = (y * size + x) * 4;
-                pixels[o] = pixels[o + 1] = pixels[o + 2] = (byte)(x < size / 2 ? 0 : 255);
-                pixels[o + 3] = 255;
-            }
-
-        PngRaster.SaveBgra32(path, new BgraRaster(size, size, pixels));
-        return path;
-    }
+    private string WritePicture() => _shared.PicturePath;
 
     private DiscArtViewModel NewPage(Func<string, Task<BurnOperationResult>>? burn = null, string? store = null)
         => new(burn, WritePresets(), store ?? P("no-calibrations.json"));
@@ -258,15 +343,7 @@ public sealed class DiscArtViewTests : IDisposable
         Assert.Null(burned);
     }
 
-    private string WriteSampleFiles()
-    {
-        string files = P("files");
-        if (Directory.Exists(files)) return files;
-        Directory.CreateDirectory(files);
-        File.WriteAllText(Path.Combine(files, "README.TXT"), "picture disc with outer files");
-        File.WriteAllBytes(Path.Combine(files, "DATA.BIN"), Enumerable.Range(0, 8192).Select(i => (byte)(i * 31 + 7)).ToArray());
-        return files;
-    }
+    private string WriteSampleFiles() => _shared.SampleFilesDir;
 
     private DiscArtViewModel NewPageWithDrive(DiscDeviceManager devices, IBurnEngineBackend engine)
         => new(null, WritePresets(), P("no-calibrations.json"),
@@ -622,45 +699,7 @@ public sealed class DiscArtViewTests : IDisposable
         if (failure is not null) throw new InvalidOperationException("Navigation failed: " + failure, failure);
     }
 
-    private string WriteAlbumCue()
-    {
-        string albumDir = P("album");
-        Directory.CreateDirectory(albumDir);
-        byte[] pcm = new byte[700 * OpticalConstants.RawSectorSize];
-        new Random(21).NextBytes(pcm);
-        using (var wav = new FileStream(Path.Combine(albumDir, "album.wav"), FileMode.Create))
-        {
-            var w = new BinaryWriter(wav);
-            w.Write("RIFF"u8);
-            w.Write(36 + pcm.Length);
-            w.Write("WAVEfmt "u8);
-            w.Write(16);
-            w.Write((short)1);
-            w.Write((short)2);
-            w.Write(44100);
-            w.Write(176400);
-            w.Write((short)4);
-            w.Write((short)16);
-            w.Write("data"u8);
-            w.Write(pcm.Length);
-            w.Write(pcm);
-        }
-
-        string cue = Path.Combine(albumDir, "album.cue");
-        File.WriteAllLines(cue, new[]
-        {
-            "TITLE \"Album\"",
-            "PERFORMER \"Artist\"",
-            "FILE \"album.wav\" WAVE",
-            "  TRACK 01 AUDIO",
-            "    TITLE \"One\"",
-            "    INDEX 01 00:00:00",
-            "  TRACK 02 AUDIO",
-            "    TITLE \"Two\"",
-            "    INDEX 01 00:05:00",
-        });
-        return cue;
-    }
+    private string WriteAlbumCue() => _shared.AlbumCuePath;
 
     [Fact]
     public async Task Dvd_title_ring_from_page_equals_the_cli_bytes()
@@ -844,34 +883,7 @@ public sealed class DiscArtViewTests : IDisposable
         if (failure is not null) throw new InvalidOperationException("Title ring view check failed: " + failure, failure);
     }
 
-    private string WriteRimHeaderPresets()
-    {
-        string path = P("rim-presets.json");
-        File.WriteAllText(path, """
-            {
-              "schemaVersion": 4,
-              "cdPresets": [
-                { "id": "ring-cd", "displayName": "Ring CD", "description": "test", "sectors": 10900,
-                  "innerRadiusMm": 53, "outerRadiusMm": 58, "linearVelocityMmPerSecond": 1200 },
-                { "id": "narrow-cd", "displayName": "Narrow CD", "description": "test", "sectors": 1422,
-                  "innerRadiusMm": 57.9, "outerRadiusMm": 58, "linearVelocityMmPerSecond": 1200 }
-              ],
-              "dvdPresets": [
-                { "id": "ring-dvd", "displayName": "Ring DVD", "description": "test", "totalSectors": 16896,
-                  "innerRadiusMm": 53, "outerRadiusMm": 58, "channelBitLengthNm": 133.3 },
-                { "id": "narrow-dvd", "displayName": "Narrow DVD", "description": "test", "totalSectors": 2048,
-                  "innerRadiusMm": 57.96, "outerRadiusMm": 58, "channelBitLengthNm": 133.3 }
-              ],
-              "bluRayPresets": [
-                { "id": "ring-bd", "displayName": "Ring BD", "description": "test", "totalSectors": 17600,
-                  "innerRadiusMm": 53.5, "outerRadiusMm": 58 },
-                { "id": "narrow-bd", "displayName": "Narrow BD", "description": "test", "totalSectors": 10176,
-                  "innerRadiusMm": 57.98, "outerRadiusMm": 58 }
-              ]
-            }
-            """);
-        return path;
-    }
+    private string WriteRimHeaderPresets() => _shared.RimPresetsPath;
 
     [Fact]
     public void Rim_header_checkbox_is_off_by_default_and_available_on_cd_dvd_and_bd()

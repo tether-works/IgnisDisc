@@ -215,15 +215,15 @@ public static class PngRaster
     }
 
     /// <summary>Writes an 8-bit RGBA PNG (filter 0 on every row).</summary>
-    public static void SaveBgra32(string path, BgraRaster raster)
+    public static void SaveBgra32(string path, BgraRaster raster, CompressionLevel compressionLevel = CompressionLevel.Optimal)
     {
         ArgumentNullException.ThrowIfNull(raster);
         raster.Validate();
         using FileStream output = new(Path.GetFullPath(path), FileMode.Create, FileAccess.Write, FileShare.None);
-        Write(output, raster);
+        Write(output, raster, compressionLevel);
     }
 
-    public static void Write(Stream output, BgraRaster raster)
+    public static void Write(Stream output, BgraRaster raster, CompressionLevel compressionLevel = CompressionLevel.Optimal)
     {
         ArgumentNullException.ThrowIfNull(output);
         ArgumentNullException.ThrowIfNull(raster);
@@ -236,7 +236,7 @@ public static class PngRaster
         header[9] = 6; // RGBA
         WriteChunk(output, "IHDR", header);
         using MemoryStream compressed = new();
-        using (ZLibStream deflater = new(compressed, CompressionLevel.Optimal, leaveOpen: true))
+        using (ZLibStream deflater = new(compressed, compressionLevel, leaveOpen: true))
         {
             byte[] row = new byte[checked(1 + raster.Width * 4)];
             for (int y = 0; y < raster.Height; y++)

@@ -219,7 +219,6 @@ public static class DiscArtImageBuilder
         Stopwatch stopwatch = Stopwatch.StartNew();
         string partial = p.OutputPath + ".partial";
         string temp = p.OutputPath + ".picture.tmp";
-        string canvasPath = p.OutputPath + ".canvas.png";
         string sidecarPath = DiscArtSidecar.PathFor(p.OutputPath);
         var created = new List<string>();
         string? cuePath = null;
@@ -227,17 +226,11 @@ public static class DiscArtImageBuilder
         {
             Directory.CreateDirectory(Path.GetDirectoryName(p.OutputPath)!);
             Report(progress, stopwatch, "prepare", "Preparing the picture disc image…", 0);
-            string encoderPicture = p.PicturePath;
             if (picture is not null && !p.Transform.IsIdentity)
             {
                 // The encoders have no placement of their own: draw the placed picture on a disc-sized canvas first.
                 picture = DiscArtCanvas.Render(picture, p.Transform, p.PictureRadiusMm, p.Plan.PictureOuterRadiusMm,
                     cancellationToken: cancellationToken);
-                if (request.Medium == DiscArtMedium.Dvd)
-                {
-                    PngRaster.SaveBgra32(canvasPath, picture);
-                    encoderPicture = canvasPath;
-                }
             }
 
             switch (request.Medium)
@@ -246,7 +239,7 @@ public static class DiscArtImageBuilder
                     WriteCdImage(p, picture!, partial, progress, stopwatch, cancellationToken);
                     break;
                 default:
-                    WriteIsoImage(p, picture, encoderPicture, partial, temp, progress, stopwatch, cancellationToken);
+                    WriteIsoImage(p, picture, partial, temp, progress, stopwatch, cancellationToken);
                     break;
             }
 
@@ -283,14 +276,13 @@ public static class DiscArtImageBuilder
             created.Add(sidecarPath);
 
             long bytes = new FileInfo(p.OutputPath).Length;
-            TryDelete(canvasPath);
             Report(progress, stopwatch, "complete", "Picture disc image completed.", 1);
             return new DiscArtResult(p.Plan, p.OutputPath, cuePath, sidecarPath, bytes, stopwatch.Elapsed);
         }
         catch
         {
             // A half-written image must never sit under the final name, and a leftover temp file wastes gigabytes.
-            foreach (string leftover in new[] { partial, temp, canvasPath }.Concat(created))
+            foreach (string leftover in new[] { partial, temp }.Concat(created))
             {
                 TryDelete(leftover);
             }
@@ -1137,12 +1129,12 @@ public static class DiscArtImageBuilder
 
     private delegate void PictureWriter(Stream output, long startLba, long sectorCount, Action<double> fraction, CancellationToken ct);
 
-    private static void WriteIsoImage(Prepared p, BgraRaster? picture, string encoderPicture, string partial, string temp,
+    private static void WriteIsoImage(Prepared p, BgraRaster? picture, string partial, string temp,
         IProgress<DiscJobProgress>? progress, Stopwatch stopwatch, CancellationToken ct)
     {
         DiscArtRequest r = p.Request;
         PictureWriter? writer = picture is null ? null
-            : r.Medium == DiscArtMedium.Dvd ? DvdPictureWriter(p, encoderPicture)
+            : r.Medium == DiscArtMedium.Dvd ? DvdPictureWriter(p, picture)
             : BdPictureWriter(p, picture);
         long start = p.Plan.PictureStartLba;
         long end = p.Plan.PictureEndLba;
@@ -1216,7 +1208,7 @@ public static class DiscArtImageBuilder
         output.Flush();
     }
 
-    private static PictureWriter DvdPictureWriter(Prepared p, string picturePath) => (output, startLba, sectorCount, fraction, ct) =>
+    private static PictureWriter DvdPictureWriter(Prepared p, BgraRaster picture) => (output, startLba, sectorCount, fraction, ct) =>
     {
         DiscArtRequest r = p.Request;
         DvdStreamingOptions options = DvdOptions(r.Disc, p.Tone, r.StartAngleDegrees, p.DvdReadCompat);
@@ -1227,7 +1219,7 @@ public static class DiscArtImageBuilder
         {
             RandomSeed = unchecked(solve.RandomSeed + (int)(startLba / DvdEccBlockEncoder.SectorCount) * 1_000_003),
         };
-        FastDispersionImageWriter.WriteStream(picturePath, output, solve, value =>
+        FastDispersionImageWriter.WriteStream(picture, output, solve, value =>
         {
             if (value.CompletedBlocks == 1 || value.CompletedBlocks % 64 == 0 || value.CompletedBlocks == value.TotalBlocks)
             {
