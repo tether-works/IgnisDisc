@@ -1,0 +1,157 @@
+<?xml version="1.0" encoding="utf-8"?>
+<root>
+  <resheader name="resmimetype"><value>text/microsoft-resx</value></resheader>
+  <resheader name="version"><value>2.0</value></resheader>
+  <resheader name="reader"><value>System.Resources.ResXResourceReader, System.Windows.Forms, Version=4.0.0.0, Culture=neutral, PublicKeyToken=b77a5c561934e089</value></resheader>
+  <resheader name="writer"><value>System.Resources.ResXResourceWriter, System.Windows.Forms, Version=4.0.0.0, Culture=neutral, PublicKeyToken=b77a5c561934e089</value></resheader>
+  <data name="UiShellOpticalMasteringWorkspace" xml:space="preserve"><value>光ディスクマスタリング ワークスペース</value></data>
+  <data name="UiShellBurnToDrive" xml:space="preserve"><value>書き込み先ドライブ:</value></data>
+  <data name="UiShellBurnToOpticalDrive" xml:space="preserve"><value>光学ドライブへ書き込み</value></data>
+  <data name="UiShellRefresh" xml:space="preserve"><value>↻ 更新</value></data>
+  <data name="UiShellScanAndReEnumerateOpticalRecorders" xml:space="preserve"><value>光学ドライブを再検索して一覧を更新します</value></data>
+  <data name="UiShellEject" xml:space="preserve"><value>⏏ 取り出し</value></data>
+  <data name="UiShellEjectDriveTrayOrUnmountMedia" xml:space="preserve"><value>ドライブトレイを出す、またはメディアをマウント解除します</value></data>
+  <data name="UiShellOpenDriveTrayOrUnmountMedia" xml:space="preserve"><value>ドライブトレイを開く、またはメディアをマウント解除します</value></data>
+  <data name="UiShellClose" xml:space="preserve"><value>📥 閉じる</value></data>
+  <data name="UiShellCloseDriveTrayAndLoadMedia" xml:space="preserve"><value>ドライブトレイを閉じてメディアを読み込みます</value></data>
+  <data name="UiShellSpeed" xml:space="preserve"><value>速度:</value></data>
+  <data name="UiShellOpticalWriteSpeed" xml:space="preserve"><value>光学書き込み速度</value></data>
+  <data name="UiShellWhyTheDefaultWriteSpeedIs" xml:space="preserve"><value>既定の書き込み速度が低い理由</value></data>
+  <data name="UiShellMountVirtual" xml:space="preserve"><value>仮想マウント:</value></data>
+  <data name="UiShellMountBlank700MBCDR" xml:space="preserve"><value>空の700 MB CD-Rを仮想ドライブにマウントします</value></data>
+  <data name="UiShellMountBlank700MBCDRW" xml:space="preserve"><value>空の書き換え可能な700 MB CD-RWを仮想ドライブにマウントします</value></data>
+  <data name="UiShellMountBlank47GBDVD" xml:space="preserve"><value>空の4.7 GB DVD-Rを仮想ドライブにマウントします</value></data>
+  <data name="UiShellNavigationRail" xml:space="preserve"><value>ナビゲーションレール</value></data>
+  <data name="UiShellOPTICALMASTERING" xml:space="preserve"><value>光ディスクマスタリング</value></data>
+  <data name="UiShellDataDiscWorkspace" xml:space="preserve"><value>データディスク ワークスペース</value></data>
+  <data name="UiShellDataDisc" xml:space="preserve"><value>データディスク</value></data>
+  <data name="UiShellAudioCDWorkspace" xml:space="preserve"><value>オーディオCD ワークスペース</value></data>
+  <data name="UiShellAudioCD" xml:space="preserve"><value>オーディオCD</value></data>
+  <data name="UiShellDVDVideoWorkspace" xml:space="preserve"><value>DVD-Video ワークスペース</value></data>
+  <data name="UiShellDVDVideo" xml:space="preserve"><value>DVD-Video</value></data>
+  <data name="UiShellDiscImageStudioWorkspace" xml:space="preserve"><value>ディスクイメージスタジオ ワークスペース</value></data>
+  <data name="UiShellDiscImageStudio" xml:space="preserve"><value>ディスクイメージスタジオ</value></data>
+  <data name="UiShellArchiveStudioWorkspace" xml:space="preserve"><value>アーカイブスタジオ ワークスペース</value></data>
+  <data name="UiShellArchive" xml:space="preserve"><value>アーカイブ</value></data>
+  <data name="UiShellTOOLSSETTINGS" xml:space="preserve"><value>ツールと設定</value></data>
+  <data name="UiShellDriveUtilitiesWorkspace" xml:space="preserve"><value>ドライブユーティリティ ワークスペース</value></data>
+  <data name="UiShellDriveUtilities" xml:space="preserve"><value>ドライブユーティリティ</value></data>
+  <data name="UiShellVirtualDriveWorkspace" xml:space="preserve"><value>仮想ドライブ ワークスペース</value></data>
+  <data name="UiShellVirtualDrive" xml:space="preserve"><value>仮想ドライブ</value></data>
+  <data name="UiShellCalibrationWorkspace" xml:space="preserve"><value>キャリブレーション ワークスペース</value></data>
+  <data name="UiShellCalibration" xml:space="preserve"><value>キャリブレーション</value></data>
+  <data name="UiShellDiscArtWorkspace" xml:space="preserve"><value>ディスクアート ワークスペース</value></data>
+  <data name="UiShellDiscArt" xml:space="preserve"><value>ディスクアート</value></data>
+  <data name="UiShellSettingsWorkspace" xml:space="preserve"><value>設定 ワークスペース</value></data>
+  <data name="UiShellSettings" xml:space="preserve"><value>設定</value></data>
+  <data name="UiShellUsed" xml:space="preserve"><value>使用量: </value></data>
+  <data name="UiShellDiscCapacityUsageMeter" xml:space="preserve"><value>ディスク容量使用メーター</value></data>
+  <data name="UiShellAboutIgnisDiscOpticalStudioAndLegal" xml:space="preserve"><value>IgnisDisc Optical Studio について・法的通知</value></data>
+  <data name="UiSettingsOpticalBurningDefaults" xml:space="preserve"><value>🔥 書き込みの既定値</value></data>
+  <data name="UiSettingsDefaultTargetOpticalDrive" xml:space="preserve"><value>既定の書き込み先ドライブ:</value></data>
+  <data name="UiSettingsDefaultTargetOpticalDrive2" xml:space="preserve"><value>既定の書き込み先ドライブ</value></data>
+  <data name="UiSettingsDefaultWriteSpeed" xml:space="preserve"><value>既定の書き込み速度:</value></data>
+  <data name="UiSettingsDefaultWriteSpeed2" xml:space="preserve"><value>既定の書き込み速度</value></data>
+  <data name="UiSettingsRecommendedUsesTheFastestSpeedThe" xml:space="preserve"><value>「推奨」は、挿入されたディスクに対してドライブが線速度一定で書き込める最高速度（CDは最大16倍速、DVDは最大8倍速）を使用します。ドライブが対応していない速度は、最も近い速度に置き換えられます。</value></data>
+  <data name="UiSettingsAutomaticallyVerifyMediaAfterBurnCompletion" xml:space="preserve"><value>書き込み完了後にメディアを自動的に検証する</value></data>
+  <data name="UiSettingsStrictVerifyForceEveryReadFrom" xml:space="preserve"><value>厳密な検証: すべての読み取りをディスクから強制する（数倍遅くなります）</value></data>
+  <data name="UiSettingsOffTheCheckForcesTheDrive" xml:space="preserve"><value>オフ: ドライブのメモリに書き込みデータが残っている可能性がある部分（先頭と最後に書き込んだ部分）だけディスクから強制的に読み取り、残りは通常速度で読み取ります。オン: すべての読み取りを強制します。</value></data>
+  <data name="UiSettingsUseDirectDriveCommandsForDVD" xml:space="preserve"><value>DVD-RWにドライブ直接コマンドを使用する（追加セッション用に開いたままにします）</value></data>
+  <data name="UiSettingsUseDirectDriveCommandsForDVD2" xml:space="preserve"><value>DVD-RWにドライブ直接コマンドを使用する</value></data>
+  <data name="UiSettingsOnTheBurnScreensTickDirect" xml:space="preserve"><value>オン: DVD-RWがドライブに入っている間、書き込み画面が「ドライブ直接コマンド」を自動でオンにします。Windows標準のライターはDVD-RWを上書き用にフォーマットするため、セッションを追加できません。各画面で自分で設定した内容が常に優先されます。</value></data>
+  <data name="UiSettingsEjectOpticalDriveTrayWhenBurn" xml:space="preserve"><value>書き込み完了時に光学ドライブのトレイを取り出す</value></data>
+  <data name="UiSettingsTellMeWhenABurnFinishes" xml:space="preserve"><value>書き込みが終わったら通知する（サウンド、タスクバーボタンの点滅、メッセージ）</value></data>
+  <data name="UiSettingsTellMeWhenABurnFinishes2" xml:space="preserve"><value>書き込みが終わったら通知する</value></data>
+  <data name="UiSettingsEnableBufferUnderrunProtectionBURNProof" xml:space="preserve"><value>バッファアンダーラン防止を有効にする（BURN-Proof / Burn-Free）</value></data>
+  <data name="UiSettingsStagingDirectoriesOptionalExternalTools" xml:space="preserve"><value>📁 作業フォルダーとオプションの外部ツール</value></data>
+  <data name="UiSettingsTemporaryScratchISOStagingDirectory" xml:space="preserve"><value>一時作業／ISO準備フォルダー:</value></data>
+  <data name="UiSettingsTemporaryScratchISOStagingDirectory2" xml:space="preserve"><value>一時作業／ISO準備フォルダー</value></data>
+  <data name="UiSettingsFFmpegTranscoderExecutablePathDVDVideo" xml:space="preserve"><value>FFmpegトランスコーダーの実行ファイルのパス（DVD-Video）:</value></data>
+  <data name="UiSettingsFFmpegTranscoderExecutablePath" xml:space="preserve"><value>FFmpegトランスコーダーの実行ファイルのパス</value></data>
+  <data name="UiSettingsInstallFFmpeg1ClickLGPL" xml:space="preserve"><value>⬇ FFmpegをインストール（ワンクリック・LGPL）</value></data>
+  <data name="UiSettingsInstallFFmpeg1ClickLGPL2" xml:space="preserve"><value>FFmpegをインストール（ワンクリック・LGPL）</value></data>
+  <data name="UiSettingsDownloadsTheOfficialLGPLWindowsBuild" xml:space="preserve"><value>FFmpegの公式LGPL版Windowsビルドとそのライセンスを %LOCALAPPDATA%\Programs\ffmpeg にダウンロードします</value></data>
+  <data name="UiSettingsPAR2ArchiveRecoveryToolPar2cmdline" xml:space="preserve"><value>PAR2アーカイブ回復ツール（par2cmdline）:</value></data>
+  <data name="UiSettingsInstallPar21Click" xml:space="preserve"><value>⬇ par2をインストール（ワンクリック）</value></data>
+  <data name="UiSettingsInstallPar21Click2" xml:space="preserve"><value>par2をインストール（ワンクリック）</value></data>
+  <data name="UiSettingsDownloadsPar2cmdlineTurboPar2ExeSHA" xml:space="preserve"><value>アーカイブ回復データ用に par2cmdline-turbo（par2.exe、SHA-256検証済み）を %LOCALAPPDATA%\Programs\par2cmdline にダウンロードします。そこにある古い par2cmdline は置き換えられます</value></data>
+  <data name="UiSettingsAppearanceDiagnostics" xml:space="preserve"><value>🎨 外観と診断</value></data>
+  <data name="UiSettingsVisualThemeMode" xml:space="preserve"><value>テーマ:</value></data>
+  <data name="UiSettingsVisualThemeMode2" xml:space="preserve"><value>テーマ</value></data>
+  <data name="UiSettingsEnableSoftwareDefinedVirtualOpticalDrive" xml:space="preserve"><value>ソフトウェア定義の仮想光学ドライブエミュレーターを有効にする</value></data>
+  <data name="UiSettingsIntegrateWithWindowsExplorerContextMenus" xml:space="preserve"><value>Windowsエクスプローラーのコンテキストメニューとディスクイメージの関連付けに統合する（.iso、.cue、.img、.nrg、.mds、.ccd、.cdi）</value></data>
+  <data name="UiSettingsWindowsExplorerShellIntegration" xml:space="preserve"><value>Windowsエクスプローラーとの統合</value></data>
+  <data name="UiSettingsOptInPerUserRegistrationUnder" xml:space="preserve"><value>HKCU\Software\Classes にユーザー単位で登録します（管理者権限は不要）。イメージ、フォルダー、ドライブの右クリック操作に使用します。オプトイン方式です。</value></data>
+  <data name="UiSettingsDiagnosticRingBufferCapacity" xml:space="preserve"><value>診断リングバッファーの容量:</value></data>
+  <data name="UiSettingsDiagnosticRingBufferCapacity2" xml:space="preserve"><value>診断リングバッファーの容量</value></data>
+  <data name="UiSettingsOnlineServicesUpdates" xml:space="preserve"><value>🌐 オンラインサービスと更新</value></data>
+  <data name="UiSettingsLookUpAudioCDAlbumTrack" xml:space="preserve"><value>オーディオCDのアルバム名・トラック名を既定でMusicBrainzから検索する</value></data>
+  <data name="UiSettingsLookUpAudioCDAlbumAnd" xml:space="preserve"><value>オーディオCDのアルバム名・トラック名を既定でMusicBrainzから検索する</value></data>
+  <data name="UiSettingsSendsOnlyTheDiscSTable" xml:space="preserve"><value>ディスクの目次のDiscIDのみをmusicbrainz.orgに送信します。音声や個人情報は一切送信しません。</value></data>
+  <data name="UiSettingsVerifyRippedAudioCDTracksAgainst" xml:space="preserve"><value>リッピングしたオーディオCDのトラックを既定でAccurateRipと照合する</value></data>
+  <data name="UiSettingsChecksExtractedTrackCRCsAgainstThe" xml:space="preserve"><value>抽出したトラックのCRCをAccurateRipのプレス盤データベースと照合します。</value></data>
+  <data name="UiSettingsVerifyRippedAudioCDTracksAgainst2" xml:space="preserve"><value>リッピングしたオーディオCDのトラックを既定でCUETools Database（CTDB）と照合する（明示的に有効にした場合のみ）</value></data>
+  <data name="UiSettingsVerifyRippedAudioCDTracksAgainst3" xml:space="preserve"><value>リッピングしたオーディオCDのトラックを既定でCUETools Databaseと照合する</value></data>
+  <data name="UiSettingsOptInSendsTheDiscS" xml:space="preserve"><value>オプトイン: ディスクの目次をdb.cuetools.netに送信し、抽出したトラックとディスクのCRCを検証します。差異のあるリップはデータベースの修復データで修復され、AccurateRipで確認されます。</value></data>
+  <data name="UiSettingsAccurateRipDriveOffsets" xml:space="preserve"><value>AccurateRipのドライブオフセット:</value></data>
+  <data name="UiSettingsRefreshOffsetDatabase" xml:space="preserve"><value>オフセットデータベースを更新</value></data>
+  <data name="UiSettingsDownloadOrRefreshAccurateRipSDriveOffsets" xml:space="preserve"><value>AccurateRipのDriveOffsets.binキャッシュをローカルのアプリデータにダウンロードまたは更新します（30日ごとに自動更新されます）</value></data>
+  <data name="UiSettingsOffsetDatabaseStatus" xml:space="preserve"><value>オフセットデータベースの状態</value></data>
+  <data name="UiSettingsReadOffsetMode" xml:space="preserve"><value>読み取りオフセットモード:</value></data>
+  <data name="UiSettingsAudioReadOffsetMode" xml:space="preserve"><value>オーディオ読み取りオフセットモード</value></data>
+  <data name="UiSettingsUseAutomatic" xml:space="preserve"><value>自動を使用</value></data>
+  <data name="UiSettingsUseAutomaticReadOffset" xml:space="preserve"><value>自動の読み取りオフセットを使用</value></data>
+  <data name="UiSettingsCheckForNewerVersionsAutomaticallyOn" xml:space="preserve"><value>起動時に新しいバージョンを自動的に確認する（明示的に有効にした場合のみ）</value></data>
+  <data name="UiSettingsCheckForNewerVersionsAutomaticallyOn2" xml:space="preserve"><value>起動時に新しいバージョンを自動的に確認する</value></data>
+  <data name="UiSettingsCheckForUpdatesNow" xml:space="preserve"><value>今すぐ更新を確認</value></data>
+  <data name="UiSettingsChangesAreSavedAutomatically" xml:space="preserve"><value>変更は自動的に保存されます。</value></data>
+  <data name="UiSettingsResetToDefaults" xml:space="preserve"><value>既定値に戻す</value></data>
+  <data name="UiBurnProgressPercentComplete" xml:space="preserve"><value>進捗率</value></data>
+  <data name="UiBurnProgressWRITESPEED" xml:space="preserve"><value>書き込み速度</value></data>
+  <data name="UiBurnProgressDRIVEBUFFER" xml:space="preserve"><value>ドライブバッファー</value></data>
+  <data name="UiBurnProgressDriveBuffer2" xml:space="preserve"><value>ドライブバッファー</value></data>
+  <data name="UiBurnProgressLBASECTORS" xml:space="preserve"><value>LBAセクター</value></data>
+  <data name="UiBurnProgressELAPSEDTIME" xml:space="preserve"><value>経過時間</value></data>
+  <data name="UiBurnProgressESTIMATEDREMAINING" xml:space="preserve"><value>推定残り時間</value></data>
+  <data name="UiBurnProgressSTATUS" xml:space="preserve"><value>状態</value></data>
+  <data name="UiBurnProgressLiveMasteringTelemetryLog" xml:space="preserve"><value>マスタリングのライブテレメトリログ</value></data>
+  <data name="UiBurnProgressLiveLogLines" xml:space="preserve"><value>ライブログの行</value></data>
+  <data name="UiBurnProgressCancelOperation" xml:space="preserve"><value>操作をキャンセル</value></data>
+  <data name="UiVirtualDriveVirtualRecorder" xml:space="preserve"><value>仮想ライター:</value></data>
+  <data name="UiVirtualDriveVirtualRecorder2" xml:space="preserve"><value>仮想ライター</value></data>
+  <data name="UiVirtualDriveEjectTray" xml:space="preserve"><value>⏏ トレイを出す</value></data>
+  <data name="UiVirtualDriveEjectTray2" xml:space="preserve"><value>トレイを出す</value></data>
+  <data name="UiVirtualDriveCloseTray" xml:space="preserve"><value>📥 トレイを閉じる</value></data>
+  <data name="UiVirtualDriveCloseTray2" xml:space="preserve"><value>トレイを閉じる</value></data>
+  <data name="UiVirtualDriveMountedVirtualDiscMedium" xml:space="preserve"><value>💿 マウント中の仮想ディスクメディア</value></data>
+  <data name="UiVirtualDriveMEDIATYPE" xml:space="preserve"><value>メディアの種類</value></data>
+  <data name="UiVirtualDriveTOTALCAPACITY" xml:space="preserve"><value>総容量</value></data>
+  <data name="UiVirtualDriveRECORDEDSECTORS" xml:space="preserve"><value>書き込み済みセクター</value></data>
+  <data name="UiVirtualDriveSTATUSPROPERTIES" xml:space="preserve"><value>状態／プロパティ</value></data>
+  <data name="UiVirtualDriveMountVirtualOpticalMediaPresets" xml:space="preserve"><value>📦 仮想光学メディアのプリセットをマウント</value></data>
+  <data name="UiVirtualDriveQuicklyInsertBlankVirtualOpticalDisc" xml:space="preserve"><value>空の仮想光学メディアをドライブエミュレーターにすばやく挿入します。</value></data>
+  <data name="UiVirtualDriveCDR700MB" xml:space="preserve"><value>💿 CD-R（700 MB）</value></data>
+  <data name="UiVirtualDriveMountCDR700MB" xml:space="preserve"><value>CD-R（700 MB）をマウント</value></data>
+  <data name="UiVirtualDriveCDRW700MB" xml:space="preserve"><value>💿 CD-RW（700 MB）</value></data>
+  <data name="UiVirtualDriveMountCDRW700MB" xml:space="preserve"><value>CD-RW（700 MB）をマウント</value></data>
+  <data name="UiVirtualDriveDVDR47GB" xml:space="preserve"><value>📀 DVD-R（4.7 GB）</value></data>
+  <data name="UiVirtualDriveMountDVDR47GB" xml:space="preserve"><value>DVD-R（4.7 GB）をマウント</value></data>
+  <data name="UiVirtualDriveDVDRW47GB" xml:space="preserve"><value>📀 DVD-RW（4.7 GB）</value></data>
+  <data name="UiVirtualDriveMountDVDRW47GB" xml:space="preserve"><value>DVD-RW（4.7 GB）をマウント</value></data>
+  <data name="UiVirtualDriveDVDRDL85GB" xml:space="preserve"><value>📀 DVD+R DL（8.5 GB）</value></data>
+  <data name="UiVirtualDriveMountDVDRDL85" xml:space="preserve"><value>DVD+R DL（8.5 GB）をマウント</value></data>
+  <data name="UiVirtualDriveMountCustomImageFileIsoBin" xml:space="preserve"><value>任意のイメージファイルをマウント（.iso、.bin）</value></data>
+  <data name="UiVirtualDriveCustomImageFilePath" xml:space="preserve"><value>イメージファイルのパス</value></data>
+  <data name="UiVirtualDriveMountImageFile" xml:space="preserve"><value>イメージファイルをマウント</value></data>
+  <data name="UiVirtualDriveSimulatedBadSectorLBAInjectionWorkbench" xml:space="preserve"><value>⚡ 疑似不良セクター（LBA）挿入ワークベンチ</value></data>
+  <data name="UiVirtualDriveInjectArtificialReadErrorsAtSpecific" xml:space="preserve"><value>特定のLBAセクターアドレスに人工的な読み取りエラーを注入し、リッピング、検証、表面スキャナーのエラー処理をテストします。</value></data>
+  <data name="UiVirtualDriveTargetSectorLBA" xml:space="preserve"><value>対象セクター（LBA）:</value></data>
+  <data name="UiVirtualDriveTargetSectorLBA2" xml:space="preserve"><value>対象セクター（LBA）</value></data>
+  <data name="UiVirtualDriveInjectBadSector" xml:space="preserve"><value>不良セクターを挿入</value></data>
+  <data name="UiVirtualDriveClearAllBadLBAs" xml:space="preserve"><value>すべての不良LBAを消去</value></data>
+  <data name="UiVirtualDriveSimulatedBadLBAs" xml:space="preserve"><value>疑似不良LBA</value></data>
+  <data name="UiSettingsUiLanguage" xml:space="preserve"><value>言語:</value></data>
+  <data name="UiSettingsUiLanguageName" xml:space="preserve"><value>アプリの言語</value></data>
+  <data name="UiSettingsUiLanguageHint" xml:space="preserve"><value>すぐに反映されます。「システムの既定」はWindowsの表示言語に従います。</value></data>
+  <data name="UiLanguageSystemDefault" xml:space="preserve"><value>システムの既定</value></data>
+</root>

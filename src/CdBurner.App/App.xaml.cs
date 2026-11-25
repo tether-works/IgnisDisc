@@ -1,4 +1,4 @@
-﻿using CdBurner.App.Resources;
+using CdBurner.App.Resources;
 using System.Windows;
 using CdBurner.App.Themes;
 using CdBurner.App.ViewModels;
@@ -60,6 +60,7 @@ public partial class App : Application
         {
             var settingsService = new AppSettingsService();
             settingsService.Load();
+            LocalizationManager.Apply(settingsService.CurrentSettings.UiLanguage);
             ThemeManager.Initialize(settingsService.CurrentSettings.ThemeMode);
         }
         catch (Exception ex)

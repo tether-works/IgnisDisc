@@ -1,4 +1,4 @@
-﻿using System.Collections.Concurrent;
+using System.Collections.Concurrent;
 using System.Diagnostics;
 using System.Text;
 using System.Text.Json;
@@ -70,6 +70,12 @@ public class AppSettings
     /// Visual theme selection (Dark, Light, or follow Windows System preference).
     /// </summary>
     public ThemeMode ThemeMode { get; set; } = ThemeMode.System;
+
+    /// <summary>
+    /// Language of the app's own text as a culture name (<c>en</c>, <c>de</c>, <c>zh-Hans</c> ...).
+    /// Empty follows the Windows display language.
+    /// </summary>
+    public string UiLanguage { get; set; } = string.Empty;
 
     /// <summary>
     /// Full file path or command name for the FFmpeg transcoder executable used in DVD-Video authoring.
@@ -213,6 +219,7 @@ public class AppSettings
             DirectWritingForDvdRw = DirectWritingForDvdRw,
             TempStagingDirectory = TempStagingDirectory,
             ThemeMode = ThemeMode,
+            UiLanguage = UiLanguage,
             FfmpegExecutablePath = FfmpegExecutablePath,
             EnableVirtualDrive = EnableVirtualDrive,
             LogRingBufferCapacity = LogRingBufferCapacity,

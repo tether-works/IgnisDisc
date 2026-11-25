@@ -15,7 +15,7 @@ public static class Strings
     public static string Get(string key)
     {
         // The .resx may be checked out with CRLF line endings; the original literals used LF, so normalise.
-        var text = Manager.GetString(key, CultureInfo.CurrentUICulture)
+        var text = LocalizationManager.GetText(Manager, key, CultureInfo.CurrentUICulture)
             ?? throw new MissingManifestResourceException($"Missing UI string: {key}");
         return text.Replace("\r\n", "\n");
     }

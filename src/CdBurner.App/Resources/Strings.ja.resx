@@ -1,0 +1,138 @@
+<?xml version="1.0" encoding="utf-8"?>
+<root>
+  <resheader name="resmimetype"><value>text/microsoft-resx</value></resheader>
+  <resheader name="version"><value>2.0</value></resheader>
+  <resheader name="reader"><value>System.Resources.ResXResourceReader, System.Windows.Forms, Version=4.0.0.0, Culture=neutral, PublicKeyToken=b77a5c561934e089</value></resheader>
+  <resheader name="writer"><value>System.Resources.ResXResourceWriter, System.Windows.Forms, Version=4.0.0.0, Culture=neutral, PublicKeyToken=b77a5c561934e089</value></resheader>
+  <data name="DialogAboutBody" xml:space="preserve"><value>公式サイト: https://ignisdisc.tetherworks.dev
+ソースコード: https://github.com/tether-works/IgnisDisc
+
+IgnisDisc Optical Studioは、GNU General Public License バージョン3以降の下で公開されている、無料のオープンソースソフトウェアです。</value></data>
+  <data name="DialogAboutTitle" xml:space="preserve"><value>IgnisDisc Optical Studioについて</value></data>
+  <data name="DialogAppTitle" xml:space="preserve"><value>IgnisDisc Optical Studio</value></data>
+  <data name="DialogBurnErrorBody" xml:space="preserve"><value>オーディオCDの書き込み中にエラーが発生しました:
+
+{0}</value></data>
+  <data name="DialogBurnErrorTitle" xml:space="preserve"><value>書き込みエラー — IgnisDisc</value></data>
+  <data name="DialogBurnFailedBody" xml:space="preserve"><value>オーディオCDの書き込みを完了できませんでした:
+
+{0}</value></data>
+  <data name="DialogBurnFailedTitle" xml:space="preserve"><value>書き込みに失敗しました — IgnisDisc</value></data>
+  <data name="DialogCopySuspectAudioQuestion" xml:space="preserve"><value>それでもコピーしますか？コピーにはこれらのエラーが含まれます。中止するには［いいえ］を選んでください。まだ何も書き込まれていません。</value></data>
+  <data name="DialogDamagedAudioBody" xml:space="preserve"><value>{0}
+
+それでも書き込みますか？破損した部分はディスク上で無音になるか、欠落します。</value></data>
+  <data name="DialogDamagedAudioTitle" xml:space="preserve"><value>破損したオーディオファイル — IgnisDisc</value></data>
+  <data name="DialogDiscCopyTitle" xml:space="preserve"><value>ディスクコピー — IgnisDisc</value></data>
+  <data name="DialogDrmSkippedBody" xml:space="preserve"><value>次の{0}個のファイルはApple FairPlay DRM（.m4p）で暗号化されているため、オーディオCDに追加したり書き込んだりできません:
+
+{1}
+
+理由: Apple Musicのサブスクリプションでダウンロードした曲は、物理メディアへのコピーを防ぐためにAppleによって暗号化されています。
+
+オーディオCDを作成するには、WAV、MP3、FLAC、M4A、OGG、WMAなどのDRMフリーの形式（iTunes StoreでのDRMフリーの購入曲を含む）をお使いください。</value></data>
+  <data name="DialogDrmSkippedTitle" xml:space="preserve"><value>DRM保護されたオーディオファイルをスキップしました — IgnisDisc</value></data>
+  <data name="DialogExitDuringBurnBody" xml:space="preserve"><value>光ディスクの処理が実行中です。
+
+書き込みを中止して終了しますか？ドライブのモーターはただちに停止されます。</value></data>
+  <data name="DialogHardToReadBody" xml:space="preserve"><value>ディスクには正しい音声が書き込まれていますが、一部は読み戻しにくい状態でした。
+
+{0}</value></data>
+  <data name="DialogHardToReadTitle" xml:space="preserve"><value>書き込み完了（一部読み取りにくい箇所あり） — IgnisDisc</value></data>
+  <data name="DialogInsertBlankForCopyBody" xml:space="preserve"><value>{0}
+
+{3}枚中{2}枚目のコピー用に、空のディスクを{1}に挿入し、トレイを閉じて［OK］をクリックしてください。</value></data>
+  <data name="DialogNoBlankDetectedBody" xml:space="preserve"><value>{0}に空のディスクが見つかりませんでした。
+
+{2}枚中{1}枚目のコピー用に、空の（または書き換え可能な）ディスクを挿入して［OK］をクリックしてください。バッチを中止するには［キャンセル］をクリックします。</value></data>
+  <data name="DialogQueueInsertDiscBody" xml:space="preserve"><value>書き込みキュー: {1}枚中{0}枚目。
+
+「{2}」用の空のディスクを挿入して［OK］をクリックしてください。</value></data>
+  <data name="DialogReplaceDiscBody" xml:space="preserve"><value>{1}の{0}にはすでにファイルが入っています。
+
+書き込むとディスク上のすべての内容が置き換えられます。続行しますか？</value></data>
+  <data name="DialogReplaceDiscTitle" xml:space="preserve"><value>このディスクのファイルを置き換えますか？</value></data>
+  <data name="DialogUnexpectedErrorBody" xml:space="preserve"><value>予期しないエラーが発生しました:
+
+{0}</value></data>
+  <data name="DialogUnsupportedFilesBody" xml:space="preserve"><value>{0}次の{1}個のファイルは読み込めないか、サポートされていません:
+
+{2}</value></data>
+  <data name="DialogUnsupportedFilesTitle" xml:space="preserve"><value>サポートされていないオーディオファイル — IgnisDisc</value></data>
+  <data name="StatusArchiveBurnCancelled" xml:space="preserve"><value>書き込みをキャンセルしました。</value></data>
+  <data name="StatusArchiveCancellingArchiveOperation" xml:space="preserve"><value>アーカイブ処理をキャンセルしています...</value></data>
+  <data name="StatusArchiveDownloadingPar2cmdlinePar2Exe" xml:space="preserve"><value>par2cmdline（par2.exe）をダウンロードしています...</value></data>
+  <data name="StatusArchiveNoOpticalRecorderSelected" xml:space="preserve"><value>光学ライターが選択されていません。</value></data>
+  <data name="StatusArchivePar2ExecutableNotFound" xml:space="preserve"><value>par2の実行ファイルが見つかりません。</value></data>
+  <data name="StatusArchivePar2RecoveryDataRequiresPar2cmdlinePar2" xml:space="preserve"><value>PAR2回復データにはpar2cmdline（par2.exe）が必要です。インストールするか、冗長度を0に設定してください。</value></data>
+  <data name="StatusArchivePlanningArchiveSpanning" xml:space="preserve"><value>アーカイブの分割を計画しています...</value></data>
+  <data name="StatusArchiveRepairCancelled" xml:space="preserve"><value>修復をキャンセルしました。</value></data>
+  <data name="StatusArchiveRepairIsNotAvailableForThe" xml:space="preserve"><value>現在の検証では修復を利用できません。</value></data>
+  <data name="StatusArchiveSourceFolderIsNotSpecified" xml:space="preserve"><value>ソースフォルダーが指定されていません。</value></data>
+  <data name="StatusArchiveStagingCancelled" xml:space="preserve"><value>準備をキャンセルしました。</value></data>
+  <data name="StatusArchiveStagingFolderIsNotSpecified" xml:space="preserve"><value>準備用フォルダーが指定されていません。</value></data>
+  <data name="StatusArchiveVerificationCancelled" xml:space="preserve"><value>検証をキャンセルしました。</value></data>
+  <data name="StatusArchiveVerifyPathIsEmpty" xml:space="preserve"><value>検証するパスが空です。</value></data>
+  <data name="StatusAudioBurnAddAtLeastOneTrackBefore" xml:space="preserve"><value>印刷用CDカバーを書き出す前に、トラックを1つ以上追加してください。</value></data>
+  <data name="StatusAudioBurnAudioCdBurnCancelledByUser" xml:space="preserve"><value>オーディオCDの書き込みがユーザーによってキャンセルされました。</value></data>
+  <data name="StatusAudioBurnAudioCdRipCancelledByUser" xml:space="preserve"><value>オーディオCDのリッピングがユーザーによってキャンセルされました。</value></data>
+  <data name="StatusAudioBurnAudioPreviewStopped" xml:space="preserve"><value>オーディオのプレビューを停止しました。</value></data>
+  <data name="StatusAudioBurnCancellingAudioCdBurn" xml:space="preserve"><value>オーディオCDの書き込みをキャンセルしています...</value></data>
+  <data name="StatusAudioBurnClearedAllTracksFromCompilation" xml:space="preserve"><value>コンピレーションからすべてのトラックを削除しました。</value></data>
+  <data name="StatusAudioBurnDiscNotFoundInAccurateripDatabase" xml:space="preserve"><value>ディスクがAccurateRipデータベースに見つかりません。</value></data>
+  <data name="StatusAudioBurnNoAudioTracksFoundOnInserted" xml:space="preserve"><value>挿入されたディスクにオーディオトラックが見つかりません。</value></data>
+  <data name="StatusAudioBurnNoAudioTracksInCompilationTo" xml:space="preserve"><value>コンピレーションに書き込むオーディオトラックがありません。</value></data>
+  <data name="StatusAudioBurnNoOpticalRecorderSelectedOrAvailable" xml:space="preserve"><value>光学ライターが選択されていないか、利用できません。</value></data>
+  <data name="StatusAudioBurnOffsetDetectionCancelled" xml:space="preserve"><value>オフセットの検出をキャンセルしました。</value></data>
+  <data name="StatusBurnFailedNoSessionAtOnce" xml:space="preserve"><value>書き込みに失敗しました: このドライブはSession-at-Once書き込みに対応していると報告していないため、ドライブ直接コマンドは使用できません。Windows標準のライターで書き込むには、「ドライブ直接コマンド」をオフにしてください。</value></data>
+  <data name="StatusDataBurnCancellingDataDiscBurn" xml:space="preserve"><value>データディスクの書き込みをキャンセルしています...</value></data>
+  <data name="StatusDataBurnCompilingOpticalDiscImage" xml:space="preserve"><value>光ディスクイメージを作成しています...</value></data>
+  <data name="StatusDataBurnDataDiscBurnCancelled" xml:space="preserve"><value>データディスクの書き込みをキャンセルしました。</value></data>
+  <data name="StatusDataBurnDataDiscBurnCancelledByUser" xml:space="preserve"><value>データディスクの書き込みがユーザーによってキャンセルされました。</value></data>
+  <data name="StatusDataBurnIsoExportCancelled" xml:space="preserve"><value>ISOの書き出しをキャンセルしました。</value></data>
+  <data name="StatusDataBurnPreviousSessionImportedSuccessfully" xml:space="preserve"><value>前のセッションを正常にインポートしました。</value></data>
+  <data name="StatusDataBurnSessionImportCancelled" xml:space="preserve"><value>セッションのインポートをキャンセルしました。</value></data>
+  <data name="StatusDiscUnchangedSwitchOffDirect" xml:space="preserve"><value> ディスクは変更されていません。Windows標準のライターで書き込むには、「ドライブ直接コマンド」をオフにしてください。</value></data>
+  <data name="StatusDriveUtilitiesCancellingHardwareOperation" xml:space="preserve"><value>ハードウェア操作をキャンセルしています...</value></data>
+  <data name="StatusDriveUtilitiesCheckingTheDiscReadingEverySector" xml:space="preserve"><value>ディスクをチェックしています: プレーヤーと同じように、すべてのセクターを1回ずつ読み取ります...</value></data>
+  <data name="StatusDriveUtilitiesDiscCheckCancelled" xml:space="preserve"><value>ディスクのチェックをキャンセルしました。</value></data>
+  <data name="StatusDriveUtilitiesDriveCompatibilityReportGeneratedAndReady" xml:space="preserve"><value>ドライブ互換性レポートを作成しました。コピーできます。</value></data>
+  <data name="StatusDriveUtilitiesEraseOperationCancelledByUser" xml:space="preserve"><value>消去操作がユーザーによってキャンセルされました。</value></data>
+  <data name="StatusDriveUtilitiesNoDriveSelectedForTheDisc" xml:space="preserve"><value>ディスクチェック用のドライブが選択されていません。</value></data>
+  <data name="StatusDriveUtilitiesNoOpticalRecorderDriveSelected" xml:space="preserve"><value>光学ライタードライブが選択されていません。</value></data>
+  <data name="StatusDriveUtilitiesNoOpticalRecorderSelectedForBitsetting" xml:space="preserve"><value>ビットセッティング用の光学ライターが選択されていません。</value></data>
+  <data name="StatusDriveUtilitiesNoOpticalRecorderSelectedForErase" xml:space="preserve"><value>消去用の光学ライターが選択されていません。</value></data>
+  <data name="StatusDriveUtilitiesNoOpticalRecorderSelectedForSurface" xml:space="preserve"><value>表面スキャン用の光学ライターが選択されていません。</value></data>
+  <data name="StatusDriveUtilitiesRunASurfaceScanBeforeExporting" xml:space="preserve"><value>CSVデータを書き出す前に、表面スキャンを実行してください。</value></data>
+  <data name="StatusDriveUtilitiesSurfaceScanCancelledByUser" xml:space="preserve"><value>表面スキャンがユーザーによってキャンセルされました。</value></data>
+  <data name="StatusDvdVideoAuthoringDvdVideoIsoImage" xml:space="preserve"><value>DVD-Video ISOイメージをオーサリングしています...</value></data>
+  <data name="StatusDvdVideoBuildingTheDiscImageToPlace" xml:space="preserve"><value>層切り替え位置を設定するためにディスクイメージを作成しています...</value></data>
+  <data name="StatusDvdVideoCancellingDvdVideoOperation" xml:space="preserve"><value>DVD-Video処理をキャンセルしています...</value></data>
+  <data name="StatusDvdVideoDownloadingFfmpegLgpl" xml:space="preserve"><value>FFmpeg（LGPL）をダウンロードしています...</value></data>
+  <data name="StatusDvdVideoDvdVideoBurnCancelled" xml:space="preserve"><value>DVD-Videoの書き込みをキャンセルしました。</value></data>
+  <data name="StatusDvdVideoDvdVideoBurnCancelledByUser" xml:space="preserve"><value>DVD-Videoの書き込みがユーザーによってキャンセルされました。</value></data>
+  <data name="StatusDvdVideoDvdVideoIsoBuildCancelled" xml:space="preserve"><value>DVD-Video ISOの作成をキャンセルしました。</value></data>
+  <data name="StatusDvdVideoPreparingDvdVideoAuthoringPipeline" xml:space="preserve"><value>DVD-Videoオーサリングの処理を準備しています...</value></data>
+  <data name="StatusDvdVideoTranscodingAuthoringDvdVideoStructure" xml:space="preserve"><value>DVD-Videoの構造をトランスコードしてオーサリングしています...</value></data>
+  <data name="StatusImageStudioBurnCompleteVerifyingDiscBitFor" xml:space="preserve"><value>書き込みが完了しました。ディスクをイメージとビット単位で検証しています...</value></data>
+  <data name="StatusImageStudioBurnQueueCancelledByUser" xml:space="preserve"><value>書き込みキューがユーザーによってキャンセルされました。</value></data>
+  <data name="StatusImageStudioBurnQueueIsEmpty" xml:space="preserve"><value>書き込みキューが空です。</value></data>
+  <data name="StatusImageStudioCancellingOperation" xml:space="preserve"><value>操作をキャンセルしています...</value></data>
+  <data name="StatusImageStudioDiscCopyCancelledByUser" xml:space="preserve"><value>ディスクコピーがユーザーによってキャンセルされました。</value></data>
+  <data name="StatusImageStudioDiscRipCancelledByUser" xml:space="preserve"><value>ディスクのリッピングがユーザーによってキャンセルされました。</value></data>
+  <data name="StatusImageStudioImageBurnCancelledByUser" xml:space="preserve"><value>イメージの書き込みがユーザーによってキャンセルされました。</value></data>
+  <data name="StatusImageStudioNoOpticalRecorderDriveSelectedOr" xml:space="preserve"><value>光学ライタードライブが選択されていないか、利用できません。</value></data>
+  <data name="StatusImageStudioSourceDiscImageFileDoesNot" xml:space="preserve"><value>ソースのディスクイメージファイルが存在しません。</value></data>
+  <data name="StatusImageStudioSourceOrTargetOpticalDriveIs" xml:space="preserve"><value>ソースまたは書き込み先の光学ドライブを利用できません。</value></data>
+  <data name="StatusSettingsCheckingGithubReleasesForUpdates" xml:space="preserve"><value>GitHub Releasesで更新を確認しています...</value></data>
+  <data name="StatusSettingsSettingsLoaded" xml:space="preserve"><value>設定を読み込みました。</value></data>
+  <data name="StatusSettingsSettingsResetToDefaultValues" xml:space="preserve"><value>設定を既定値に戻しました。</value></data>
+  <data name="StatusSettingsSettingsSavedSuccessfully" xml:space="preserve"><value>設定を保存しました。</value></data>
+  <data name="StatusSettingsUpdateCheckHasNotBeenRun" xml:space="preserve"><value>更新の確認はまだ実行されていません。</value></data>
+  <data name="StatusVirtualDriveCannotInjectBadLbaNoMedia" xml:space="preserve"><value>不良LBAを挿入できません: 仮想ドライブにメディアがマウントされていません。</value></data>
+  <data name="StatusVirtualDriveClearedAllSimulatedBadLbas" xml:space="preserve"><value>疑似不良LBAをすべて消去しました。</value></data>
+  <data name="StatusVirtualDriveNoVirtualOpticalDriveIsAvailable" xml:space="preserve"><value>利用できる仮想光学ドライブがありません。</value></data>
+  <data name="StatusVirtualDriveNoVirtualOpticalDriveIsCurrently" xml:space="preserve"><value>現在、利用できる仮想光学ドライブがありません。</value></data>
+  <data name="StatusVirtualDriveVirtualDriveTrayClosed" xml:space="preserve"><value>仮想ドライブのトレイを閉じました。</value></data>
+  <data name="StatusVirtualDriveVirtualDriveTrayOpened" xml:space="preserve"><value>仮想ドライブのトレイを開きました。</value></data>
+</root>

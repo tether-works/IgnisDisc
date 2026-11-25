@@ -1,0 +1,157 @@
+<?xml version="1.0" encoding="utf-8"?>
+<root>
+  <resheader name="resmimetype"><value>text/microsoft-resx</value></resheader>
+  <resheader name="version"><value>2.0</value></resheader>
+  <resheader name="reader"><value>System.Resources.ResXResourceReader, System.Windows.Forms, Version=4.0.0.0, Culture=neutral, PublicKeyToken=b77a5c561934e089</value></resheader>
+  <resheader name="writer"><value>System.Resources.ResXResourceWriter, System.Windows.Forms, Version=4.0.0.0, Culture=neutral, PublicKeyToken=b77a5c561934e089</value></resheader>
+  <data name="UiShellOpticalMasteringWorkspace" xml:space="preserve"><value>光盘母盘制作工作区</value></data>
+  <data name="UiShellBurnToDrive" xml:space="preserve"><value>刻录到驱动器：</value></data>
+  <data name="UiShellBurnToOpticalDrive" xml:space="preserve"><value>刻录到光驱</value></data>
+  <data name="UiShellRefresh" xml:space="preserve"><value>↻ 刷新</value></data>
+  <data name="UiShellScanAndReEnumerateOpticalRecorders" xml:space="preserve"><value>重新扫描并枚举光盘刻录机</value></data>
+  <data name="UiShellEject" xml:space="preserve"><value>⏏ 弹出</value></data>
+  <data name="UiShellEjectDriveTrayOrUnmountMedia" xml:space="preserve"><value>弹出光驱托盘或卸载介质</value></data>
+  <data name="UiShellOpenDriveTrayOrUnmountMedia" xml:space="preserve"><value>打开光驱托盘或卸载介质</value></data>
+  <data name="UiShellClose" xml:space="preserve"><value>📥 关闭</value></data>
+  <data name="UiShellCloseDriveTrayAndLoadMedia" xml:space="preserve"><value>关闭光驱托盘并加载介质</value></data>
+  <data name="UiShellSpeed" xml:space="preserve"><value>速度：</value></data>
+  <data name="UiShellOpticalWriteSpeed" xml:space="preserve"><value>光盘写入速度</value></data>
+  <data name="UiShellWhyTheDefaultWriteSpeedIs" xml:space="preserve"><value>为什么默认写入速度较低</value></data>
+  <data name="UiShellMountVirtual" xml:space="preserve"><value>挂载虚拟盘：</value></data>
+  <data name="UiShellMountBlank700MBCDR" xml:space="preserve"><value>将空白 700 MB CD-R 挂载到虚拟驱动器</value></data>
+  <data name="UiShellMountBlank700MBCDRW" xml:space="preserve"><value>将空白可擦写 700 MB CD-RW 挂载到虚拟驱动器</value></data>
+  <data name="UiShellMountBlank47GBDVD" xml:space="preserve"><value>将空白 4.7 GB DVD-R 挂载到虚拟驱动器</value></data>
+  <data name="UiShellNavigationRail" xml:space="preserve"><value>导航栏</value></data>
+  <data name="UiShellOPTICALMASTERING" xml:space="preserve"><value>光盘母盘制作</value></data>
+  <data name="UiShellDataDiscWorkspace" xml:space="preserve"><value>数据光盘工作区</value></data>
+  <data name="UiShellDataDisc" xml:space="preserve"><value>数据光盘</value></data>
+  <data name="UiShellAudioCDWorkspace" xml:space="preserve"><value>音频 CD 工作区</value></data>
+  <data name="UiShellAudioCD" xml:space="preserve"><value>音频 CD</value></data>
+  <data name="UiShellDVDVideoWorkspace" xml:space="preserve"><value>DVD-Video 工作区</value></data>
+  <data name="UiShellDVDVideo" xml:space="preserve"><value>DVD-Video</value></data>
+  <data name="UiShellDiscImageStudioWorkspace" xml:space="preserve"><value>光盘映像工作室工作区</value></data>
+  <data name="UiShellDiscImageStudio" xml:space="preserve"><value>光盘映像工作室</value></data>
+  <data name="UiShellArchiveStudioWorkspace" xml:space="preserve"><value>归档工作室工作区</value></data>
+  <data name="UiShellArchive" xml:space="preserve"><value>归档</value></data>
+  <data name="UiShellTOOLSSETTINGS" xml:space="preserve"><value>工具与设置</value></data>
+  <data name="UiShellDriveUtilitiesWorkspace" xml:space="preserve"><value>驱动器实用工具工作区</value></data>
+  <data name="UiShellDriveUtilities" xml:space="preserve"><value>驱动器实用工具</value></data>
+  <data name="UiShellVirtualDriveWorkspace" xml:space="preserve"><value>虚拟驱动器工作区</value></data>
+  <data name="UiShellVirtualDrive" xml:space="preserve"><value>虚拟驱动器</value></data>
+  <data name="UiShellCalibrationWorkspace" xml:space="preserve"><value>校准工作区</value></data>
+  <data name="UiShellCalibration" xml:space="preserve"><value>校准</value></data>
+  <data name="UiShellDiscArtWorkspace" xml:space="preserve"><value>光盘盘面设计工作区</value></data>
+  <data name="UiShellDiscArt" xml:space="preserve"><value>光盘盘面设计</value></data>
+  <data name="UiShellSettingsWorkspace" xml:space="preserve"><value>设置工作区</value></data>
+  <data name="UiShellSettings" xml:space="preserve"><value>设置</value></data>
+  <data name="UiShellUsed" xml:space="preserve"><value>已用：</value></data>
+  <data name="UiShellDiscCapacityUsageMeter" xml:space="preserve"><value>光盘容量使用量指示</value></data>
+  <data name="UiShellAboutIgnisDiscOpticalStudioAndLegal" xml:space="preserve"><value>关于 IgnisDisc Optical Studio 与法律声明</value></data>
+  <data name="UiSettingsOpticalBurningDefaults" xml:space="preserve"><value>🔥 刻录默认设置</value></data>
+  <data name="UiSettingsDefaultTargetOpticalDrive" xml:space="preserve"><value>默认目标光驱：</value></data>
+  <data name="UiSettingsDefaultTargetOpticalDrive2" xml:space="preserve"><value>默认目标光驱</value></data>
+  <data name="UiSettingsDefaultWriteSpeed" xml:space="preserve"><value>默认写入速度：</value></data>
+  <data name="UiSettingsDefaultWriteSpeed2" xml:space="preserve"><value>默认写入速度</value></data>
+  <data name="UiSettingsRecommendedUsesTheFastestSpeedThe" xml:space="preserve"><value>“推荐”会使用驱动器对当前光盘以恒定线速度写入的最高速度（CD 最高 16x，DVD 最高 8x）。驱动器不支持的速度会改用最接近的速度。</value></data>
+  <data name="UiSettingsAutomaticallyVerifyMediaAfterBurnCompletion" xml:space="preserve"><value>刻录完成后自动校验介质</value></data>
+  <data name="UiSettingsStrictVerifyForceEveryReadFrom" xml:space="preserve"><value>严格校验：强制每次都从光盘读取（慢数倍）</value></data>
+  <data name="UiSettingsOffTheCheckForcesTheDrive" xml:space="preserve"><value>关闭：仅在驱动器缓存中可能仍保留刻录数据的位置（开头和最后写入的部分）强制从光盘读取，其余部分按正常速度读取。开启：每次读取都强制从光盘读取。</value></data>
+  <data name="UiSettingsUseDirectDriveCommandsForDVD" xml:space="preserve"><value>对 DVD-RW 使用驱动器直接命令（保持开放以便追加会话）</value></data>
+  <data name="UiSettingsUseDirectDriveCommandsForDVD2" xml:space="preserve"><value>对 DVD-RW 使用驱动器直接命令</value></data>
+  <data name="UiSettingsOnTheBurnScreensTickDirect" xml:space="preserve"><value>开启：只要驱动器中有 DVD-RW，刻录界面会自动勾选“驱动器直接命令”。Windows 自带的刻录程序会把 DVD-RW 格式化为可覆写格式，无法追加会话。您在某个界面上的手动选择始终优先。</value></data>
+  <data name="UiSettingsEjectOpticalDriveTrayWhenBurn" xml:space="preserve"><value>刻录完成后弹出光驱托盘</value></data>
+  <data name="UiSettingsTellMeWhenABurnFinishes" xml:space="preserve"><value>刻录结束时通知我（提示音、任务栏按钮闪烁和消息）</value></data>
+  <data name="UiSettingsTellMeWhenABurnFinishes2" xml:space="preserve"><value>刻录结束时通知我</value></data>
+  <data name="UiSettingsEnableBufferUnderrunProtectionBURNProof" xml:space="preserve"><value>启用缓冲区欠载保护（BURN-Proof / Burn-Free）</value></data>
+  <data name="UiSettingsStagingDirectoriesOptionalExternalTools" xml:space="preserve"><value>📁 临时目录与可选外部工具</value></data>
+  <data name="UiSettingsTemporaryScratchISOStagingDirectory" xml:space="preserve"><value>临时工作 / ISO 暂存目录：</value></data>
+  <data name="UiSettingsTemporaryScratchISOStagingDirectory2" xml:space="preserve"><value>临时工作 / ISO 暂存目录</value></data>
+  <data name="UiSettingsFFmpegTranscoderExecutablePathDVDVideo" xml:space="preserve"><value>FFmpeg 转码器可执行文件路径（DVD-Video）：</value></data>
+  <data name="UiSettingsFFmpegTranscoderExecutablePath" xml:space="preserve"><value>FFmpeg 转码器可执行文件路径</value></data>
+  <data name="UiSettingsInstallFFmpeg1ClickLGPL" xml:space="preserve"><value>⬇ 安装 FFmpeg（一键，LGPL）</value></data>
+  <data name="UiSettingsInstallFFmpeg1ClickLGPL2" xml:space="preserve"><value>安装 FFmpeg（一键，LGPL）</value></data>
+  <data name="UiSettingsDownloadsTheOfficialLGPLWindowsBuild" xml:space="preserve"><value>将 FFmpeg 官方 LGPL Windows 版及其许可证下载到 %LOCALAPPDATA%\Programs\ffmpeg</value></data>
+  <data name="UiSettingsPAR2ArchiveRecoveryToolPar2cmdline" xml:space="preserve"><value>PAR2 归档恢复工具（par2cmdline）：</value></data>
+  <data name="UiSettingsInstallPar21Click" xml:space="preserve"><value>⬇ 安装 par2（一键）</value></data>
+  <data name="UiSettingsInstallPar21Click2" xml:space="preserve"><value>安装 par2（一键）</value></data>
+  <data name="UiSettingsDownloadsPar2cmdlineTurboPar2ExeSHA" xml:space="preserve"><value>将 par2cmdline-turbo（par2.exe，已校验 SHA-256）下载到 %LOCALAPPDATA%\Programs\par2cmdline，用于归档恢复数据；会替换该处较旧的 par2cmdline</value></data>
+  <data name="UiSettingsAppearanceDiagnostics" xml:space="preserve"><value>🎨 外观与诊断</value></data>
+  <data name="UiSettingsVisualThemeMode" xml:space="preserve"><value>主题模式：</value></data>
+  <data name="UiSettingsVisualThemeMode2" xml:space="preserve"><value>主题模式</value></data>
+  <data name="UiSettingsEnableSoftwareDefinedVirtualOpticalDrive" xml:space="preserve"><value>启用软件定义的虚拟光驱模拟器</value></data>
+  <data name="UiSettingsIntegrateWithWindowsExplorerContextMenus" xml:space="preserve"><value>集成到 Windows 资源管理器右键菜单和光盘映像文件关联（.iso、.cue、.img、.nrg、.mds、.ccd、.cdi）</value></data>
+  <data name="UiSettingsWindowsExplorerShellIntegration" xml:space="preserve"><value>Windows 资源管理器集成</value></data>
+  <data name="UiSettingsOptInPerUserRegistrationUnder" xml:space="preserve"><value>可选的按用户注册（位于 HKCU\Software\Classes，无需管理员权限），用于映像、文件夹和驱动器的右键操作。</value></data>
+  <data name="UiSettingsDiagnosticRingBufferCapacity" xml:space="preserve"><value>诊断环形缓冲区容量：</value></data>
+  <data name="UiSettingsDiagnosticRingBufferCapacity2" xml:space="preserve"><value>诊断环形缓冲区容量</value></data>
+  <data name="UiSettingsOnlineServicesUpdates" xml:space="preserve"><value>🌐 在线服务与更新</value></data>
+  <data name="UiSettingsLookUpAudioCDAlbumTrack" xml:space="preserve"><value>默认从 MusicBrainz 查询音频 CD 的专辑和曲目名称</value></data>
+  <data name="UiSettingsLookUpAudioCDAlbumAnd" xml:space="preserve"><value>默认从 MusicBrainz 查询音频 CD 的专辑和曲目名称</value></data>
+  <data name="UiSettingsSendsOnlyTheDiscSTable" xml:space="preserve"><value>仅将光盘目录的 DiscID 发送到 musicbrainz.org；绝不发送音频或个人数据。</value></data>
+  <data name="UiSettingsVerifyRippedAudioCDTracksAgainst" xml:space="preserve"><value>默认使用 AccurateRip 校验抓取的音频 CD 曲目</value></data>
+  <data name="UiSettingsChecksExtractedTrackCRCsAgainstThe" xml:space="preserve"><value>将抓取曲目的 CRC 与 AccurateRip 压盘数据库进行比对。</value></data>
+  <data name="UiSettingsVerifyRippedAudioCDTracksAgainst2" xml:space="preserve"><value>默认使用 CUETools 数据库（CTDB）校验抓取的音频 CD 曲目（仅在主动开启时）</value></data>
+  <data name="UiSettingsVerifyRippedAudioCDTracksAgainst3" xml:space="preserve"><value>默认使用 CUETools 数据库校验抓取的音频 CD 曲目</value></data>
+  <data name="UiSettingsOptInSendsTheDiscS" xml:space="preserve"><value>可选开启：将光盘目录发送到 db.cuetools.net，以校验抓取的曲目和光盘 CRC。若抓取结果不一致，将使用数据库的修复数据进行修复，并通过 AccurateRip 确认。</value></data>
+  <data name="UiSettingsAccurateRipDriveOffsets" xml:space="preserve"><value>AccurateRip 驱动器偏移：</value></data>
+  <data name="UiSettingsRefreshOffsetDatabase" xml:space="preserve"><value>刷新偏移数据库</value></data>
+  <data name="UiSettingsDownloadOrRefreshAccurateRipSDriveOffsets" xml:space="preserve"><value>在本地应用数据中下载或刷新 AccurateRip 的 DriveOffsets.bin 缓存（每 30 天自动刷新）</value></data>
+  <data name="UiSettingsOffsetDatabaseStatus" xml:space="preserve"><value>偏移数据库状态</value></data>
+  <data name="UiSettingsReadOffsetMode" xml:space="preserve"><value>读取偏移模式：</value></data>
+  <data name="UiSettingsAudioReadOffsetMode" xml:space="preserve"><value>音频读取偏移模式</value></data>
+  <data name="UiSettingsUseAutomatic" xml:space="preserve"><value>使用自动</value></data>
+  <data name="UiSettingsUseAutomaticReadOffset" xml:space="preserve"><value>使用自动读取偏移</value></data>
+  <data name="UiSettingsCheckForNewerVersionsAutomaticallyOn" xml:space="preserve"><value>启动时自动检查新版本（仅在主动开启时）</value></data>
+  <data name="UiSettingsCheckForNewerVersionsAutomaticallyOn2" xml:space="preserve"><value>启动时自动检查新版本</value></data>
+  <data name="UiSettingsCheckForUpdatesNow" xml:space="preserve"><value>立即检查更新</value></data>
+  <data name="UiSettingsChangesAreSavedAutomatically" xml:space="preserve"><value>更改会自动保存。</value></data>
+  <data name="UiSettingsResetToDefaults" xml:space="preserve"><value>恢复默认设置</value></data>
+  <data name="UiBurnProgressPercentComplete" xml:space="preserve"><value>完成百分比</value></data>
+  <data name="UiBurnProgressWRITESPEED" xml:space="preserve"><value>写入速度</value></data>
+  <data name="UiBurnProgressDRIVEBUFFER" xml:space="preserve"><value>驱动器缓冲区</value></data>
+  <data name="UiBurnProgressDriveBuffer2" xml:space="preserve"><value>驱动器缓冲区</value></data>
+  <data name="UiBurnProgressLBASECTORS" xml:space="preserve"><value>LBA 扇区</value></data>
+  <data name="UiBurnProgressELAPSEDTIME" xml:space="preserve"><value>已用时间</value></data>
+  <data name="UiBurnProgressESTIMATEDREMAINING" xml:space="preserve"><value>预计剩余时间</value></data>
+  <data name="UiBurnProgressSTATUS" xml:space="preserve"><value>状态</value></data>
+  <data name="UiBurnProgressLiveMasteringTelemetryLog" xml:space="preserve"><value>母盘制作实时遥测日志</value></data>
+  <data name="UiBurnProgressLiveLogLines" xml:space="preserve"><value>实时日志行</value></data>
+  <data name="UiBurnProgressCancelOperation" xml:space="preserve"><value>取消操作</value></data>
+  <data name="UiVirtualDriveVirtualRecorder" xml:space="preserve"><value>虚拟刻录机：</value></data>
+  <data name="UiVirtualDriveVirtualRecorder2" xml:space="preserve"><value>虚拟刻录机</value></data>
+  <data name="UiVirtualDriveEjectTray" xml:space="preserve"><value>⏏ 弹出托盘</value></data>
+  <data name="UiVirtualDriveEjectTray2" xml:space="preserve"><value>弹出托盘</value></data>
+  <data name="UiVirtualDriveCloseTray" xml:space="preserve"><value>📥 关闭托盘</value></data>
+  <data name="UiVirtualDriveCloseTray2" xml:space="preserve"><value>关闭托盘</value></data>
+  <data name="UiVirtualDriveMountedVirtualDiscMedium" xml:space="preserve"><value>💿 已挂载的虚拟光盘介质</value></data>
+  <data name="UiVirtualDriveMEDIATYPE" xml:space="preserve"><value>介质类型</value></data>
+  <data name="UiVirtualDriveTOTALCAPACITY" xml:space="preserve"><value>总容量</value></data>
+  <data name="UiVirtualDriveRECORDEDSECTORS" xml:space="preserve"><value>已写入扇区</value></data>
+  <data name="UiVirtualDriveSTATUSPROPERTIES" xml:space="preserve"><value>状态 / 属性</value></data>
+  <data name="UiVirtualDriveMountVirtualOpticalMediaPresets" xml:space="preserve"><value>📦 挂载虚拟光盘介质预设</value></data>
+  <data name="UiVirtualDriveQuicklyInsertBlankVirtualOpticalDisc" xml:space="preserve"><value>快速将空白虚拟光盘介质放入驱动器模拟器。</value></data>
+  <data name="UiVirtualDriveCDR700MB" xml:space="preserve"><value>💿 CD-R（700 MB）</value></data>
+  <data name="UiVirtualDriveMountCDR700MB" xml:space="preserve"><value>挂载 CD-R（700 MB）</value></data>
+  <data name="UiVirtualDriveCDRW700MB" xml:space="preserve"><value>💿 CD-RW（700 MB）</value></data>
+  <data name="UiVirtualDriveMountCDRW700MB" xml:space="preserve"><value>挂载 CD-RW（700 MB）</value></data>
+  <data name="UiVirtualDriveDVDR47GB" xml:space="preserve"><value>📀 DVD-R（4.7 GB）</value></data>
+  <data name="UiVirtualDriveMountDVDR47GB" xml:space="preserve"><value>挂载 DVD-R（4.7 GB）</value></data>
+  <data name="UiVirtualDriveDVDRW47GB" xml:space="preserve"><value>📀 DVD-RW（4.7 GB）</value></data>
+  <data name="UiVirtualDriveMountDVDRW47GB" xml:space="preserve"><value>挂载 DVD-RW（4.7 GB）</value></data>
+  <data name="UiVirtualDriveDVDRDL85GB" xml:space="preserve"><value>📀 DVD+R DL（8.5 GB）</value></data>
+  <data name="UiVirtualDriveMountDVDRDL85" xml:space="preserve"><value>挂载 DVD+R DL（8.5 GB）</value></data>
+  <data name="UiVirtualDriveMountCustomImageFileIsoBin" xml:space="preserve"><value>挂载自定义映像文件（.iso、.bin）</value></data>
+  <data name="UiVirtualDriveCustomImageFilePath" xml:space="preserve"><value>自定义映像文件路径</value></data>
+  <data name="UiVirtualDriveMountImageFile" xml:space="preserve"><value>挂载映像文件</value></data>
+  <data name="UiVirtualDriveSimulatedBadSectorLBAInjectionWorkbench" xml:space="preserve"><value>⚡ 模拟坏扇区（LBA）注入工作台</value></data>
+  <data name="UiVirtualDriveInjectArtificialReadErrorsAtSpecific" xml:space="preserve"><value>在指定的 LBA 扇区地址注入人为读取错误，用于测试抓取、校验和表面扫描器的错误处理。</value></data>
+  <data name="UiVirtualDriveTargetSectorLBA" xml:space="preserve"><value>目标扇区 LBA：</value></data>
+  <data name="UiVirtualDriveTargetSectorLBA2" xml:space="preserve"><value>目标扇区 LBA</value></data>
+  <data name="UiVirtualDriveInjectBadSector" xml:space="preserve"><value>注入坏扇区</value></data>
+  <data name="UiVirtualDriveClearAllBadLBAs" xml:space="preserve"><value>清除所有坏 LBA</value></data>
+  <data name="UiVirtualDriveSimulatedBadLBAs" xml:space="preserve"><value>模拟坏 LBA</value></data>
+  <data name="UiSettingsUiLanguage" xml:space="preserve"><value>语言：</value></data>
+  <data name="UiSettingsUiLanguageName" xml:space="preserve"><value>应用语言</value></data>
+  <data name="UiSettingsUiLanguageHint" xml:space="preserve"><value>立即生效。“系统默认”将跟随 Windows 显示语言。</value></data>
+  <data name="UiLanguageSystemDefault" xml:space="preserve"><value>系统默认</value></data>
+</root>

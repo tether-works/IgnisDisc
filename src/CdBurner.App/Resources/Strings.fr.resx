@@ -1,0 +1,138 @@
+<?xml version="1.0" encoding="utf-8"?>
+<root>
+  <resheader name="resmimetype"><value>text/microsoft-resx</value></resheader>
+  <resheader name="version"><value>2.0</value></resheader>
+  <resheader name="reader"><value>System.Resources.ResXResourceReader, System.Windows.Forms, Version=4.0.0.0, Culture=neutral, PublicKeyToken=b77a5c561934e089</value></resheader>
+  <resheader name="writer"><value>System.Resources.ResXResourceWriter, System.Windows.Forms, Version=4.0.0.0, Culture=neutral, PublicKeyToken=b77a5c561934e089</value></resheader>
+  <data name="DialogAboutBody" xml:space="preserve"><value>Site officiel : https://ignisdisc.tetherworks.dev
+Code source : https://github.com/tether-works/IgnisDisc
+
+IgnisDisc Optical Studio est un logiciel libre et open source distribué sous la licence GNU General Public License version 3 ou ultérieure.</value></data>
+  <data name="DialogAboutTitle" xml:space="preserve"><value>À propos d'IgnisDisc Optical Studio</value></data>
+  <data name="DialogAppTitle" xml:space="preserve"><value>IgnisDisc Optical Studio</value></data>
+  <data name="DialogBurnErrorBody" xml:space="preserve"><value>Une erreur s'est produite pendant la gravure du CD audio :
+
+{0}</value></data>
+  <data name="DialogBurnErrorTitle" xml:space="preserve"><value>Erreur de gravure — IgnisDisc</value></data>
+  <data name="DialogBurnFailedBody" xml:space="preserve"><value>La gravure du CD audio n'a pas pu être menée à terme :
+
+{0}</value></data>
+  <data name="DialogBurnFailedTitle" xml:space="preserve"><value>Échec de la gravure — IgnisDisc</value></data>
+  <data name="DialogCopySuspectAudioQuestion" xml:space="preserve"><value>Copier quand même ? La copie contiendra ces erreurs. Choisissez Non pour arrêter : rien n'a encore été écrit.</value></data>
+  <data name="DialogDamagedAudioBody" xml:space="preserve"><value>{0}
+
+Graver quand même ? Les parties endommagées seront silencieuses ou absentes sur le disque.</value></data>
+  <data name="DialogDamagedAudioTitle" xml:space="preserve"><value>Fichier audio endommagé — IgnisDisc</value></data>
+  <data name="DialogDiscCopyTitle" xml:space="preserve"><value>Copie de disque — IgnisDisc</value></data>
+  <data name="DialogDrmSkippedBody" xml:space="preserve"><value>Les {0} fichier(s) suivant(s) sont chiffrés avec Apple FairPlay DRM (.m4p) et ne peuvent pas être ajoutés ni gravés sur un CD audio :
+
+{1}
+
+Pourquoi : les téléchargements de l'abonnement Apple Music sont chiffrés par Apple pour empêcher la copie sur des supports physiques.
+
+Pour graver un CD audio, utilisez des formats audio sans DRM tels que WAV, MP3, FLAC, M4A, OGG ou WMA (y compris les achats sans DRM sur l'iTunes Store).</value></data>
+  <data name="DialogDrmSkippedTitle" xml:space="preserve"><value>Fichiers audio protégés par DRM ignorés — IgnisDisc</value></data>
+  <data name="DialogExitDuringBurnBody" xml:space="preserve"><value>Une opération sur disque optique est en cours.
+
+Voulez-vous vraiment interrompre la gravure et quitter ? Le moteur du lecteur sera arrêté immédiatement.</value></data>
+  <data name="DialogHardToReadBody" xml:space="preserve"><value>Le disque contient le bon audio, mais une partie a été difficile à relire.
+
+{0}</value></data>
+  <data name="DialogHardToReadTitle" xml:space="preserve"><value>Gravé, difficile à lire par endroits — IgnisDisc</value></data>
+  <data name="DialogInsertBlankForCopyBody" xml:space="preserve"><value>{0}
+
+Insérez un disque vierge dans {1} pour la copie {2} sur {3}, fermez le tiroir, puis cliquez sur OK.</value></data>
+  <data name="DialogNoBlankDetectedBody" xml:space="preserve"><value>Aucun disque vierge n'a été détecté dans {0}.
+
+Insérez un disque vierge (ou réinscriptible) pour la copie {1} sur {2}, puis cliquez sur OK — ou sur Annuler pour arrêter le lot.</value></data>
+  <data name="DialogQueueInsertDiscBody" xml:space="preserve"><value>File de gravure : disque {0} sur {1}.
+
+Insérez un disque vierge pour « {2} » et cliquez sur OK.</value></data>
+  <data name="DialogReplaceDiscBody" xml:space="preserve"><value>Le {0} dans {1} contient déjà des fichiers.
+
+La gravure remplacera tout le contenu du disque. Continuer ?</value></data>
+  <data name="DialogReplaceDiscTitle" xml:space="preserve"><value>Remplacer les fichiers de ce disque ?</value></data>
+  <data name="DialogUnexpectedErrorBody" xml:space="preserve"><value>Une erreur inattendue s'est produite :
+
+{0}</value></data>
+  <data name="DialogUnsupportedFilesBody" xml:space="preserve"><value>{0}Les {1} fichier(s) suivant(s) n'ont pas pu être lus ou ne sont pas pris en charge :
+
+{2}</value></data>
+  <data name="DialogUnsupportedFilesTitle" xml:space="preserve"><value>Fichiers audio non pris en charge — IgnisDisc</value></data>
+  <data name="StatusArchiveBurnCancelled" xml:space="preserve"><value>Gravure annulée.</value></data>
+  <data name="StatusArchiveCancellingArchiveOperation" xml:space="preserve"><value>Annulation de l'opération d'archivage...</value></data>
+  <data name="StatusArchiveDownloadingPar2cmdlinePar2Exe" xml:space="preserve"><value>Téléchargement de par2cmdline (par2.exe)...</value></data>
+  <data name="StatusArchiveNoOpticalRecorderSelected" xml:space="preserve"><value>Aucun graveur optique sélectionné.</value></data>
+  <data name="StatusArchivePar2ExecutableNotFound" xml:space="preserve"><value>Exécutable par2 introuvable.</value></data>
+  <data name="StatusArchivePar2RecoveryDataRequiresPar2cmdlinePar2" xml:space="preserve"><value>Les données de récupération PAR2 nécessitent par2cmdline (par2.exe). Installez-le ou réglez la redondance sur 0.</value></data>
+  <data name="StatusArchivePlanningArchiveSpanning" xml:space="preserve"><value>Planification de la répartition de l'archive...</value></data>
+  <data name="StatusArchiveRepairCancelled" xml:space="preserve"><value>Réparation annulée.</value></data>
+  <data name="StatusArchiveRepairIsNotAvailableForThe" xml:space="preserve"><value>La réparation n'est pas disponible pour la vérification en cours.</value></data>
+  <data name="StatusArchiveSourceFolderIsNotSpecified" xml:space="preserve"><value>Le dossier source n'est pas spécifié.</value></data>
+  <data name="StatusArchiveStagingCancelled" xml:space="preserve"><value>Préparation annulée.</value></data>
+  <data name="StatusArchiveStagingFolderIsNotSpecified" xml:space="preserve"><value>Le dossier de préparation n'est pas spécifié.</value></data>
+  <data name="StatusArchiveVerificationCancelled" xml:space="preserve"><value>Vérification annulée.</value></data>
+  <data name="StatusArchiveVerifyPathIsEmpty" xml:space="preserve"><value>Le chemin à vérifier est vide.</value></data>
+  <data name="StatusAudioBurnAddAtLeastOneTrackBefore" xml:space="preserve"><value>Ajoutez au moins une piste avant d'exporter une pochette de CD imprimable.</value></data>
+  <data name="StatusAudioBurnAudioCdBurnCancelledByUser" xml:space="preserve"><value>Gravure du CD audio annulée par l'utilisateur.</value></data>
+  <data name="StatusAudioBurnAudioCdRipCancelledByUser" xml:space="preserve"><value>Extraction du CD audio annulée par l'utilisateur.</value></data>
+  <data name="StatusAudioBurnAudioPreviewStopped" xml:space="preserve"><value>Aperçu audio arrêté.</value></data>
+  <data name="StatusAudioBurnCancellingAudioCdBurn" xml:space="preserve"><value>Annulation de la gravure du CD audio...</value></data>
+  <data name="StatusAudioBurnClearedAllTracksFromCompilation" xml:space="preserve"><value>Toutes les pistes ont été retirées de la compilation.</value></data>
+  <data name="StatusAudioBurnDiscNotFoundInAccurateripDatabase" xml:space="preserve"><value>Disque introuvable dans la base de données AccurateRip.</value></data>
+  <data name="StatusAudioBurnNoAudioTracksFoundOnInserted" xml:space="preserve"><value>Aucune piste audio trouvée sur le disque inséré.</value></data>
+  <data name="StatusAudioBurnNoAudioTracksInCompilationTo" xml:space="preserve"><value>Aucune piste audio à graver dans la compilation.</value></data>
+  <data name="StatusAudioBurnNoOpticalRecorderSelectedOrAvailable" xml:space="preserve"><value>Aucun graveur optique sélectionné ou disponible.</value></data>
+  <data name="StatusAudioBurnOffsetDetectionCancelled" xml:space="preserve"><value>Détection du décalage annulée.</value></data>
+  <data name="StatusBurnFailedNoSessionAtOnce" xml:space="preserve"><value>Échec de la gravure : ce lecteur ne signale pas l'écriture Session-at-Once, les commandes directes du lecteur ne peuvent donc pas être utilisées. Désactivez « Commandes directes du lecteur » pour graver avec le graveur de Windows.</value></data>
+  <data name="StatusDataBurnCancellingDataDiscBurn" xml:space="preserve"><value>Annulation de la gravure du disque de données...</value></data>
+  <data name="StatusDataBurnCompilingOpticalDiscImage" xml:space="preserve"><value>Compilation de l'image de disque optique...</value></data>
+  <data name="StatusDataBurnDataDiscBurnCancelled" xml:space="preserve"><value>Gravure du disque de données annulée.</value></data>
+  <data name="StatusDataBurnDataDiscBurnCancelledByUser" xml:space="preserve"><value>Gravure du disque de données annulée par l'utilisateur.</value></data>
+  <data name="StatusDataBurnIsoExportCancelled" xml:space="preserve"><value>Exportation ISO annulée.</value></data>
+  <data name="StatusDataBurnPreviousSessionImportedSuccessfully" xml:space="preserve"><value>Session précédente importée avec succès.</value></data>
+  <data name="StatusDataBurnSessionImportCancelled" xml:space="preserve"><value>Importation de la session annulée.</value></data>
+  <data name="StatusDiscUnchangedSwitchOffDirect" xml:space="preserve"><value> Le disque est inchangé ; désactivez « Commandes directes du lecteur » pour le graver avec le graveur de Windows.</value></data>
+  <data name="StatusDriveUtilitiesCancellingHardwareOperation" xml:space="preserve"><value>Annulation de l'opération matérielle...</value></data>
+  <data name="StatusDriveUtilitiesCheckingTheDiscReadingEverySector" xml:space="preserve"><value>Vérification du disque : lecture de chaque secteur une fois, comme le ferait un lecteur...</value></data>
+  <data name="StatusDriveUtilitiesDiscCheckCancelled" xml:space="preserve"><value>Vérification du disque annulée.</value></data>
+  <data name="StatusDriveUtilitiesDriveCompatibilityReportGeneratedAndReady" xml:space="preserve"><value>Rapport de compatibilité du lecteur généré et prêt à être copié.</value></data>
+  <data name="StatusDriveUtilitiesEraseOperationCancelledByUser" xml:space="preserve"><value>Opération d'effacement annulée par l'utilisateur.</value></data>
+  <data name="StatusDriveUtilitiesNoDriveSelectedForTheDisc" xml:space="preserve"><value>Aucun lecteur sélectionné pour la vérification du disque.</value></data>
+  <data name="StatusDriveUtilitiesNoOpticalRecorderDriveSelected" xml:space="preserve"><value>Aucun lecteur graveur optique sélectionné.</value></data>
+  <data name="StatusDriveUtilitiesNoOpticalRecorderSelectedForBitsetting" xml:space="preserve"><value>Aucun graveur optique sélectionné pour le bitsetting.</value></data>
+  <data name="StatusDriveUtilitiesNoOpticalRecorderSelectedForErase" xml:space="preserve"><value>Aucun graveur optique sélectionné pour l'effacement.</value></data>
+  <data name="StatusDriveUtilitiesNoOpticalRecorderSelectedForSurface" xml:space="preserve"><value>Aucun graveur optique sélectionné pour l'analyse de surface.</value></data>
+  <data name="StatusDriveUtilitiesRunASurfaceScanBeforeExporting" xml:space="preserve"><value>Lancez une analyse de surface avant d'exporter les données CSV.</value></data>
+  <data name="StatusDriveUtilitiesSurfaceScanCancelledByUser" xml:space="preserve"><value>Analyse de surface annulée par l'utilisateur.</value></data>
+  <data name="StatusDvdVideoAuthoringDvdVideoIsoImage" xml:space="preserve"><value>Création de l'image ISO DVD-Vidéo...</value></data>
+  <data name="StatusDvdVideoBuildingTheDiscImageToPlace" xml:space="preserve"><value>Création de l'image de disque pour placer le changement de couche...</value></data>
+  <data name="StatusDvdVideoCancellingDvdVideoOperation" xml:space="preserve"><value>Annulation de l'opération DVD-Vidéo...</value></data>
+  <data name="StatusDvdVideoDownloadingFfmpegLgpl" xml:space="preserve"><value>Téléchargement de FFmpeg (LGPL)...</value></data>
+  <data name="StatusDvdVideoDvdVideoBurnCancelled" xml:space="preserve"><value>Gravure du DVD-Vidéo annulée.</value></data>
+  <data name="StatusDvdVideoDvdVideoBurnCancelledByUser" xml:space="preserve"><value>Gravure du DVD-Vidéo annulée par l'utilisateur.</value></data>
+  <data name="StatusDvdVideoDvdVideoIsoBuildCancelled" xml:space="preserve"><value>Création de l'ISO DVD-Vidéo annulée.</value></data>
+  <data name="StatusDvdVideoPreparingDvdVideoAuthoringPipeline" xml:space="preserve"><value>Préparation du processus de création DVD-Vidéo...</value></data>
+  <data name="StatusDvdVideoTranscodingAuthoringDvdVideoStructure" xml:space="preserve"><value>Transcodage et création de la structure DVD-Vidéo...</value></data>
+  <data name="StatusImageStudioBurnCompleteVerifyingDiscBitFor" xml:space="preserve"><value>Gravure terminée. Vérification du disque bit à bit par rapport à l'image...</value></data>
+  <data name="StatusImageStudioBurnQueueCancelledByUser" xml:space="preserve"><value>File de gravure annulée par l'utilisateur.</value></data>
+  <data name="StatusImageStudioBurnQueueIsEmpty" xml:space="preserve"><value>La file de gravure est vide.</value></data>
+  <data name="StatusImageStudioCancellingOperation" xml:space="preserve"><value>Annulation de l'opération...</value></data>
+  <data name="StatusImageStudioDiscCopyCancelledByUser" xml:space="preserve"><value>Copie de disque annulée par l'utilisateur.</value></data>
+  <data name="StatusImageStudioDiscRipCancelledByUser" xml:space="preserve"><value>Extraction du disque annulée par l'utilisateur.</value></data>
+  <data name="StatusImageStudioImageBurnCancelledByUser" xml:space="preserve"><value>Gravure de l'image annulée par l'utilisateur.</value></data>
+  <data name="StatusImageStudioNoOpticalRecorderDriveSelectedOr" xml:space="preserve"><value>Aucun lecteur graveur optique sélectionné ou disponible.</value></data>
+  <data name="StatusImageStudioSourceDiscImageFileDoesNot" xml:space="preserve"><value>Le fichier image source n'existe pas.</value></data>
+  <data name="StatusImageStudioSourceOrTargetOpticalDriveIs" xml:space="preserve"><value>Le lecteur optique source ou cible n'est pas disponible.</value></data>
+  <data name="StatusSettingsCheckingGithubReleasesForUpdates" xml:space="preserve"><value>Recherche de mises à jour sur GitHub Releases...</value></data>
+  <data name="StatusSettingsSettingsLoaded" xml:space="preserve"><value>Paramètres chargés.</value></data>
+  <data name="StatusSettingsSettingsResetToDefaultValues" xml:space="preserve"><value>Paramètres rétablis aux valeurs par défaut.</value></data>
+  <data name="StatusSettingsSettingsSavedSuccessfully" xml:space="preserve"><value>Paramètres enregistrés avec succès.</value></data>
+  <data name="StatusSettingsUpdateCheckHasNotBeenRun" xml:space="preserve"><value>La recherche de mises à jour n'a pas été lancée.</value></data>
+  <data name="StatusVirtualDriveCannotInjectBadLbaNoMedia" xml:space="preserve"><value>Impossible d'injecter un LBA défectueux : aucun support n'est monté dans le lecteur virtuel.</value></data>
+  <data name="StatusVirtualDriveClearedAllSimulatedBadLbas" xml:space="preserve"><value>Tous les LBA défectueux simulés ont été effacés.</value></data>
+  <data name="StatusVirtualDriveNoVirtualOpticalDriveIsAvailable" xml:space="preserve"><value>Aucun lecteur optique virtuel n'est disponible.</value></data>
+  <data name="StatusVirtualDriveNoVirtualOpticalDriveIsCurrently" xml:space="preserve"><value>Aucun lecteur optique virtuel n'est disponible actuellement.</value></data>
+  <data name="StatusVirtualDriveVirtualDriveTrayClosed" xml:space="preserve"><value>Tiroir du lecteur virtuel fermé.</value></data>
+  <data name="StatusVirtualDriveVirtualDriveTrayOpened" xml:space="preserve"><value>Tiroir du lecteur virtuel ouvert.</value></data>
+</root>

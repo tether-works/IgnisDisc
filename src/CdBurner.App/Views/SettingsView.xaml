@@ -1,6 +1,7 @@
 ﻿<UserControl x:Class="CdBurner.App.Views.SettingsView"
              xmlns="http://schemas.microsoft.com/winfx/2006/xaml/presentation"
              xmlns:x="http://schemas.microsoft.com/winfx/2006/xaml"
+             xmlns:loc="clr-namespace:CdBurner.App.Resources"
              xmlns:d="http://schemas.microsoft.com/expression/blend/2008"
              xmlns:mc="http://schemas.openxmlformats.org/markup-compatibility/2006"
              xmlns:vm="clr-namespace:CdBurner.App.ViewModels"
@@ -41,7 +42,7 @@
                     Padding="16"
                     Margin="0,0,0,12">
                 <StackPanel>
-                    <TextBlock Text="🔥 Optical Burning Defaults"
+                    <TextBlock Text="{loc:Loc UiSettingsOpticalBurningDefaults}"
                                FontSize="15"
                                FontWeight="SemiBold"
                                Foreground="{DynamicResource TextPrimaryBrush}"
@@ -55,12 +56,12 @@
                             <ColumnDefinition Width="*" />
                         </Grid.ColumnDefinitions>
                         <TextBlock Grid.Column="0"
-                                   Text="Default Target Optical Drive:"
+                                   Text="{loc:Loc UiSettingsDefaultTargetOpticalDrive}"
                                    VerticalAlignment="Center"
                                    FontWeight="SemiBold"
                                    Foreground="{DynamicResource TextSecondaryBrush}" />
                         <ComboBox Grid.Column="1"
-                                  AutomationProperties.Name="Default Target Optical Drive"
+                                  AutomationProperties.Name="{loc:Loc UiSettingsDefaultTargetOpticalDrive2}"
                                   ItemsSource="{Binding AvailableRecorders}"
                                   SelectedItem="{Binding SelectedRecorder}"
                                   VerticalAlignment="Center">
@@ -84,18 +85,18 @@
                             <ColumnDefinition Width="*" />
                         </Grid.ColumnDefinitions>
                         <TextBlock Grid.Column="0"
-                                   Text="Default write speed:"
+                                   Text="{loc:Loc UiSettingsDefaultWriteSpeed}"
                                    VerticalAlignment="Center"
                                    Foreground="{DynamicResource TextSecondaryBrush}" />
                         <ComboBox Grid.Column="1"
-                                  AutomationProperties.Name="Default write speed"
+                                  AutomationProperties.Name="{loc:Loc UiSettingsDefaultWriteSpeed2}"
                                   ItemsSource="{Binding AvailableSpeeds}"
                                   DisplayMemberPath="Label"
                                   SelectedValuePath="Value"
                                   SelectedValue="{Binding DefaultWriteSpeedMultiplier}"
                                   VerticalAlignment="Center" />
                         <TextBlock Grid.Column="2"
-                                   Text="Recommended uses the fastest speed the drive writes at a constant linear velocity for the inserted disc, up to 16x for CD and 8x for DVD. A speed the drive does not offer becomes the nearest one it does."
+                                   Text="{loc:Loc UiSettingsRecommendedUsesTheFastestSpeedThe}"
                                    TextWrapping="Wrap"
                                    VerticalAlignment="Center"
                                    Foreground="{DynamicResource TextMutedBrush}"
@@ -103,40 +104,40 @@
                     </Grid>
 
                     <!-- Verify After Burn -->
-                    <CheckBox Content="Automatically verify media after burn completion"
-                              AutomationProperties.Name="Automatically verify media after burn completion"
+                    <CheckBox Content="{loc:Loc UiSettingsAutomaticallyVerifyMediaAfterBurnCompletion}"
+                              AutomationProperties.Name="{loc:Loc UiSettingsAutomaticallyVerifyMediaAfterBurnCompletion}"
                               IsChecked="{Binding VerifyAfterBurnByDefault}"
                               Margin="0,0,0,8" />
 
                     <!-- Strict verify -->
-                    <CheckBox Content="Strict verify: force every read from the disc (several times slower)"
-                              AutomationProperties.Name="Strict verify: force every read from the disc (several times slower)"
-                              ToolTip="Off: the check forces the drive to read the disc itself only where its memory could still hold burn data (the start and the last part written) and reads the rest at normal speed. On: every read is forced."
+                    <CheckBox Content="{loc:Loc UiSettingsStrictVerifyForceEveryReadFrom}"
+                              AutomationProperties.Name="{loc:Loc UiSettingsStrictVerifyForceEveryReadFrom}"
+                              ToolTip="{loc:Loc UiSettingsOffTheCheckForcesTheDrive}"
                               IsChecked="{Binding StrictVerify}"
                               Margin="0,0,0,8" />
 
                     <!-- Direct drive commands for DVD-RW -->
-                    <CheckBox Content="Use direct drive commands for DVD-RW (keeps it open for more sessions)"
-                              AutomationProperties.Name="Use direct drive commands for DVD-RW"
-                              ToolTip="On: the burn screens tick Direct drive commands by themselves while a DVD-RW is in the drive. Windows' own writer formats every DVD-RW for overwriting and cannot add a session to it. Your own tick on a screen always wins."
+                    <CheckBox Content="{loc:Loc UiSettingsUseDirectDriveCommandsForDVD}"
+                              AutomationProperties.Name="{loc:Loc UiSettingsUseDirectDriveCommandsForDVD2}"
+                              ToolTip="{loc:Loc UiSettingsOnTheBurnScreensTickDirect}"
                               IsChecked="{Binding DirectWritingForDvdRw}"
                               Margin="0,0,0,8" />
 
                     <!-- Eject After Burn -->
-                    <CheckBox Content="Eject optical drive tray when burn completes"
-                              AutomationProperties.Name="Eject optical drive tray when burn completes"
+                    <CheckBox Content="{loc:Loc UiSettingsEjectOpticalDriveTrayWhenBurn}"
+                              AutomationProperties.Name="{loc:Loc UiSettingsEjectOpticalDriveTrayWhenBurn}"
                               IsChecked="{Binding EjectAfterBurnByDefault}"
                               Margin="0,0,0,8" />
 
                     <!-- Completion notice -->
-                    <CheckBox Content="Tell me when a burn finishes (sound, flashing taskbar button and a message)"
-                              AutomationProperties.Name="Tell me when a burn finishes"
+                    <CheckBox Content="{loc:Loc UiSettingsTellMeWhenABurnFinishes}"
+                              AutomationProperties.Name="{loc:Loc UiSettingsTellMeWhenABurnFinishes2}"
                               IsChecked="{Binding NotifyWhenBurnFinishes}"
                               Margin="0,0,0,8" />
 
                     <!-- Buffer Underrun Protection -->
-                    <CheckBox Content="Enable buffer underrun protection (BURN-Proof / Burn-Free)"
-                              AutomationProperties.Name="Enable buffer underrun protection (BURN-Proof / Burn-Free)"
+                    <CheckBox Content="{loc:Loc UiSettingsEnableBufferUnderrunProtectionBURNProof}"
+                              AutomationProperties.Name="{loc:Loc UiSettingsEnableBufferUnderrunProtectionBURNProof}"
                               IsChecked="{Binding EnableBurnFreeByDefault}" />
                 </StackPanel>
             </Border>
@@ -152,17 +153,17 @@
                     Padding="16"
                     Margin="0,0,0,12">
                 <StackPanel>
-                    <TextBlock Text="📁 Staging Directories &amp; Optional External Tools"
+                    <TextBlock Text="{loc:Loc UiSettingsStagingDirectoriesOptionalExternalTools}"
                                FontSize="15"
                                FontWeight="SemiBold"
                                Foreground="{DynamicResource TextPrimaryBrush}"
                                Margin="0,0,0,12" />
 
                     <!-- Temp Staging Directory -->
-                    <TextBlock Text="Temporary Scratch / ISO Staging Directory:"
+                    <TextBlock Text="{loc:Loc UiSettingsTemporaryScratchISOStagingDirectory}"
                                Foreground="{DynamicResource TextSecondaryBrush}"
                                Margin="0,0,0,4" />
-                    <TextBox AutomationProperties.Name="Temporary Scratch / ISO Staging Directory"
+                    <TextBox AutomationProperties.Name="{loc:Loc UiSettingsTemporaryScratchISOStagingDirectory2}"
                              Text="{Binding TempStagingDirectory, UpdateSourceTrigger=LostFocus}"
                              Padding="8,5"
                              Background="{DynamicResource ControlBackgroundBrush}"
@@ -171,7 +172,7 @@
                              Margin="0,0,0,12" />
 
                     <!-- FFmpeg Path + 1-Click Install -->
-                    <TextBlock Text="FFmpeg Transcoder Executable Path (DVD-Video):"
+                    <TextBlock Text="{loc:Loc UiSettingsFFmpegTranscoderExecutablePathDVDVideo}"
                                Foreground="{DynamicResource TextSecondaryBrush}"
                                Margin="0,0,0,4" />
                     <Grid Margin="0,0,0,4">
@@ -180,7 +181,7 @@
                             <ColumnDefinition Width="Auto" />
                         </Grid.ColumnDefinitions>
                         <TextBox Grid.Column="0"
-                                 AutomationProperties.Name="FFmpeg Transcoder Executable Path"
+                                 AutomationProperties.Name="{loc:Loc UiSettingsFFmpegTranscoderExecutablePath}"
                                  Text="{Binding FfmpegExecutablePath, UpdateSourceTrigger=LostFocus}"
                                  Padding="8,5"
                                  VerticalAlignment="Center"
@@ -188,10 +189,10 @@
                                  Foreground="{DynamicResource TextPrimaryBrush}"
                                  BorderBrush="{DynamicResource ControlBorderBrush}" />
                         <Button Grid.Column="1"
-                                Content="⬇ Install FFmpeg (1-Click LGPL)"
-                                AutomationProperties.Name="Install FFmpeg (1-Click LGPL)"
+                                Content="{loc:Loc UiSettingsInstallFFmpeg1ClickLGPL}"
+                                AutomationProperties.Name="{loc:Loc UiSettingsInstallFFmpeg1ClickLGPL2}"
                                 Command="{Binding InstallFfmpegCommand}"
-                                ToolTip="Downloads the official LGPL Windows build of FFmpeg and its license into %LOCALAPPDATA%\Programs\ffmpeg"
+                                ToolTip="{loc:Loc UiSettingsDownloadsTheOfficialLGPLWindowsBuild}"
                                 Padding="12,5"
                                 Margin="8,0,0,0" />
                     </Grid>
@@ -202,7 +203,7 @@
                                Margin="0,0,0,12" />
 
                     <!-- par2cmdline + 1-Click Install -->
-                    <TextBlock Text="PAR2 Archive Recovery Tool (par2cmdline):"
+                    <TextBlock Text="{loc:Loc UiSettingsPAR2ArchiveRecoveryToolPar2cmdline}"
                                Foreground="{DynamicResource TextSecondaryBrush}"
                                Margin="0,0,0,4" />
                     <Grid>
@@ -217,10 +218,10 @@
                                    FontSize="12"
                                    TextWrapping="Wrap" />
                         <Button Grid.Column="1"
-                                Content="⬇ Install par2 (1-Click)"
-                                AutomationProperties.Name="Install par2 (1-Click)"
+                                Content="{loc:Loc UiSettingsInstallPar21Click}"
+                                AutomationProperties.Name="{loc:Loc UiSettingsInstallPar21Click2}"
                                 Command="{Binding InstallPar2Command}"
-                                ToolTip="Downloads par2cmdline-turbo (par2.exe, SHA-256 checked) into %LOCALAPPDATA%\Programs\par2cmdline for archive recovery data; replaces an older par2cmdline there"
+                                ToolTip="{loc:Loc UiSettingsDownloadsPar2cmdlineTurboPar2ExeSHA}"
                                 Padding="12,5"
                                 Margin="8,0,0,0" />
                     </Grid>
@@ -238,7 +239,7 @@
                     Padding="16"
                     Margin="0,0,0,16">
                 <StackPanel>
-                    <TextBlock Text="🎨 Appearance &amp; Diagnostics"
+                    <TextBlock Text="{loc:Loc UiSettingsAppearanceDiagnostics}"
                                FontSize="15"
                                FontWeight="SemiBold"
                                Foreground="{DynamicResource TextPrimaryBrush}"
@@ -251,26 +252,50 @@
                             <ColumnDefinition Width="140" />
                         </Grid.ColumnDefinitions>
                         <TextBlock Grid.Column="0"
-                                   Text="Visual Theme Mode:"
+                                   Text="{loc:Loc UiSettingsVisualThemeMode}"
                                    VerticalAlignment="Center"
                                    Foreground="{DynamicResource TextSecondaryBrush}" />
                         <ComboBox Grid.Column="1"
-                                  AutomationProperties.Name="Visual Theme Mode"
+                                  AutomationProperties.Name="{loc:Loc UiSettingsVisualThemeMode2}"
                                   ItemsSource="{Binding AvailableThemes}"
                                   SelectedItem="{Binding ThemeMode}"
                                   VerticalAlignment="Center" />
                     </Grid>
 
+                    <!-- UI language selection -->
+                    <Grid Margin="0,0,0,4">
+                        <Grid.ColumnDefinitions>
+                            <ColumnDefinition Width="240" />
+                            <ColumnDefinition Width="140" />
+                        </Grid.ColumnDefinitions>
+                        <TextBlock Grid.Column="0"
+                                   Text="{loc:Loc UiSettingsUiLanguage}"
+                                   VerticalAlignment="Center"
+                                   Foreground="{DynamicResource TextSecondaryBrush}" />
+                        <ComboBox Grid.Column="1"
+                                  AutomationProperties.Name="{loc:Loc UiSettingsUiLanguageName}"
+                                  ItemsSource="{Binding AvailableLanguages}"
+                                  DisplayMemberPath="DisplayName"
+                                  SelectedValuePath="Code"
+                                  SelectedValue="{Binding UiLanguage}"
+                                  VerticalAlignment="Center" />
+                    </Grid>
+                    <TextBlock Text="{loc:Loc UiSettingsUiLanguageHint}"
+                               TextWrapping="Wrap"
+                               FontSize="12"
+                               Foreground="{DynamicResource TextSecondaryBrush}"
+                               Margin="0,0,0,12" />
+
                     <!-- Virtual Drive Simulator Toggle -->
-                    <CheckBox Content="Enable software-defined virtual optical drive emulator"
-                              AutomationProperties.Name="Enable software-defined virtual optical drive emulator"
+                    <CheckBox Content="{loc:Loc UiSettingsEnableSoftwareDefinedVirtualOpticalDrive}"
+                              AutomationProperties.Name="{loc:Loc UiSettingsEnableSoftwareDefinedVirtualOpticalDrive}"
                               IsChecked="{Binding EnableVirtualDrive}"
                               Margin="0,0,0,12" />
 
                     <!-- Windows Explorer Shell Integration Toggle (Opt-in, HKCU) -->
-                    <CheckBox Content="Integrate with Windows Explorer context menus and disc image associations (.iso, .cue, .img, .nrg, .mds, .ccd, .cdi)"
-                              AutomationProperties.Name="Windows Explorer shell integration"
-                              ToolTip="Opt-in per-user registration under HKCU\Software\Classes (no administrator rights required) for right-click image, folder, and drive actions."
+                    <CheckBox Content="{loc:Loc UiSettingsIntegrateWithWindowsExplorerContextMenus}"
+                              AutomationProperties.Name="{loc:Loc UiSettingsWindowsExplorerShellIntegration}"
+                              ToolTip="{loc:Loc UiSettingsOptInPerUserRegistrationUnder}"
                               IsChecked="{Binding EnableExplorerShellIntegration}"
                               Margin="0,0,0,12" />
 
@@ -281,11 +306,11 @@
                             <ColumnDefinition Width="140" />
                         </Grid.ColumnDefinitions>
                         <TextBlock Grid.Column="0"
-                                   Text="Diagnostic Ring Buffer Capacity:"
+                                   Text="{loc:Loc UiSettingsDiagnosticRingBufferCapacity}"
                                    VerticalAlignment="Center"
                                    Foreground="{DynamicResource TextSecondaryBrush}" />
                         <TextBox Grid.Column="1"
-                                 AutomationProperties.Name="Diagnostic Ring Buffer Capacity"
+                                 AutomationProperties.Name="{loc:Loc UiSettingsDiagnosticRingBufferCapacity2}"
                                  Text="{Binding LogRingBufferCapacity, UpdateSourceTrigger=LostFocus}"
                                  Padding="8,5"
                                  Background="{DynamicResource ControlBackgroundBrush}"
@@ -306,64 +331,64 @@
                     Padding="16"
                     Margin="0,0,0,16">
                 <StackPanel>
-                    <TextBlock Text="🌐 Online Services &amp; Updates"
+                    <TextBlock Text="{loc:Loc UiSettingsOnlineServicesUpdates}"
                                FontSize="15"
                                FontWeight="SemiBold"
                                Foreground="{DynamicResource TextPrimaryBrush}"
                                Margin="0,0,0,12" />
 
-                    <CheckBox Content="Look up Audio CD album &amp; track names from MusicBrainz by default"
-                              AutomationProperties.Name="Look up Audio CD album and track names from MusicBrainz by default"
+                    <CheckBox Content="{loc:Loc UiSettingsLookUpAudioCDAlbumTrack}"
+                              AutomationProperties.Name="{loc:Loc UiSettingsLookUpAudioCDAlbumAnd}"
                               IsChecked="{Binding LookupMusicBrainzByDefault}"
-                              ToolTip="Sends only the disc's table-of-contents DiscID to musicbrainz.org; never sends audio or personal data."
+                              ToolTip="{loc:Loc UiSettingsSendsOnlyTheDiscSTable}"
                               Margin="0,0,0,8" />
 
-                    <CheckBox Content="Verify ripped Audio CD tracks against AccurateRip by default"
-                              AutomationProperties.Name="Verify ripped Audio CD tracks against AccurateRip by default"
+                    <CheckBox Content="{loc:Loc UiSettingsVerifyRippedAudioCDTracksAgainst}"
+                              AutomationProperties.Name="{loc:Loc UiSettingsVerifyRippedAudioCDTracksAgainst}"
                               IsChecked="{Binding VerifyAccurateRipByDefault}"
-                              ToolTip="Checks extracted track CRCs against the AccurateRip pressing database."
+                              ToolTip="{loc:Loc UiSettingsChecksExtractedTrackCRCsAgainstThe}"
                               Margin="0,0,0,8" />
 
-                    <CheckBox Content="Verify ripped Audio CD tracks against CUETools Database (CTDB) by default (strictly opt-in)"
-                              AutomationProperties.Name="Verify ripped Audio CD tracks against CUETools Database by default"
+                    <CheckBox Content="{loc:Loc UiSettingsVerifyRippedAudioCDTracksAgainst2}"
+                              AutomationProperties.Name="{loc:Loc UiSettingsVerifyRippedAudioCDTracksAgainst3}"
                               IsChecked="{Binding VerifyCtdbByDefault}"
-                              ToolTip="Opt-in: sends the disc's table of contents to db.cuetools.net to verify extracted track and disc CRCs. A rip that differs is repaired from the database's repair data and confirmed with AccurateRip."
+                              ToolTip="{loc:Loc UiSettingsOptInSendsTheDiscS}"
                               Margin="0,0,0,12" />
 
                     <!-- AccurateRip Drive Read-Offset Database -->
                     <StackPanel Margin="0,0,0,12">
                         <WrapPanel Orientation="Horizontal" VerticalAlignment="Center" Margin="0,0,0,4">
-                            <TextBlock Text="AccurateRip Drive Offsets:"
+                            <TextBlock Text="{loc:Loc UiSettingsAccurateRipDriveOffsets}"
                                        FontWeight="SemiBold"
                                        VerticalAlignment="Center"
                                        Foreground="{DynamicResource TextSecondaryBrush}"
                                        Margin="0,2,10,2" />
-                            <Button Content="Refresh Offset Database"
-                                    AutomationProperties.Name="Refresh Offset Database"
+                            <Button Content="{loc:Loc UiSettingsRefreshOffsetDatabase}"
+                                    AutomationProperties.Name="{loc:Loc UiSettingsRefreshOffsetDatabase}"
                                     Command="{Binding RefreshOffsetDatabaseCommand}"
                                     Padding="12,5"
                                     Margin="0,2,10,2"
-                                    ToolTip="Download or refresh AccurateRip's DriveOffsets.bin cache in local app data (refreshed automatically every 30 days)" />
+                                    ToolTip="{loc:Loc UiSettingsDownloadOrRefreshAccurateRipSDriveOffsets}" />
                             <TextBlock Text="{Binding OffsetDatabaseStatusText}"
-                                       AutomationProperties.Name="Offset Database Status"
+                                       AutomationProperties.Name="{loc:Loc UiSettingsOffsetDatabaseStatus}"
                                        VerticalAlignment="Center"
                                        Foreground="{DynamicResource TextMutedBrush}"
                                        FontSize="12" />
                         </WrapPanel>
                         <WrapPanel Orientation="Horizontal" VerticalAlignment="Center">
-                            <TextBlock Text="Read-offset mode:"
+                            <TextBlock Text="{loc:Loc UiSettingsReadOffsetMode}"
                                        VerticalAlignment="Center"
                                        Foreground="{DynamicResource TextSecondaryBrush}"
                                        FontSize="12"
                                        Margin="0,2,8,2" />
                             <TextBlock Text="{Binding AudioReadOffsetSummaryText}"
-                                       AutomationProperties.Name="Audio Read Offset Mode"
+                                       AutomationProperties.Name="{loc:Loc UiSettingsAudioReadOffsetMode}"
                                        VerticalAlignment="Center"
                                        Foreground="{DynamicResource TextPrimaryBrush}"
                                        FontSize="12"
                                        Margin="0,2,10,2" />
-                            <Button Content="Use Automatic"
-                                    AutomationProperties.Name="Use Automatic Read Offset"
+                            <Button Content="{loc:Loc UiSettingsUseAutomatic}"
+                                    AutomationProperties.Name="{loc:Loc UiSettingsUseAutomaticReadOffset}"
                                     Command="{Binding ClearAudioReadOffsetOverrideCommand}"
                                     Visibility="{Binding HasManualAudioReadOffsetOverride, Converter={StaticResource BoolToVis}}"
                                     Padding="10,3"
@@ -372,15 +397,15 @@
                     </StackPanel>
 
                     <!-- Opt-in Checkbox -->
-                    <CheckBox Content="Check for newer versions automatically on startup (strictly opt-in)"
-                              AutomationProperties.Name="Check for newer versions automatically on startup"
+                    <CheckBox Content="{loc:Loc UiSettingsCheckForNewerVersionsAutomaticallyOn}"
+                              AutomationProperties.Name="{loc:Loc UiSettingsCheckForNewerVersionsAutomaticallyOn2}"
                               IsChecked="{Binding CheckForUpdatesOnStartup}"
                               Margin="0,0,0,12" />
 
                     <!-- Manual check button and status -->
                     <StackPanel Orientation="Horizontal" VerticalAlignment="Center">
-                        <Button Content="Check for Updates Now"
-                                AutomationProperties.Name="Check for Updates Now"
+                        <Button Content="{loc:Loc UiSettingsCheckForUpdatesNow}"
+                                AutomationProperties.Name="{loc:Loc UiSettingsCheckForUpdatesNow}"
                                 Command="{Binding CheckForUpdatesCommand}"
                                 Padding="16,6"
                                 Margin="0,0,12,0" />
@@ -419,14 +444,14 @@
             <!-- ROW 4: ACTION BUTTONS FOOTER                                              -->
             <!-- ========================================================================= -->
             <DockPanel Grid.Row="4" LastChildFill="False">
-                <TextBlock Text="Changes are saved automatically."
+                <TextBlock Text="{loc:Loc UiSettingsChangesAreSavedAutomatically}"
                            VerticalAlignment="Center"
                            Foreground="{DynamicResource TextSecondaryBrush}"
                            FontSize="12"
                            Margin="0,0,16,0" />
 
-                <Button Content="Reset to Defaults"
-                        AutomationProperties.Name="Reset to Defaults"
+                <Button Content="{loc:Loc UiSettingsResetToDefaults}"
+                        AutomationProperties.Name="{loc:Loc UiSettingsResetToDefaults}"
                         Command="{Binding ResetSettingsCommand}"
                         Padding="16,8"
                         Margin="0,0,16,0" />

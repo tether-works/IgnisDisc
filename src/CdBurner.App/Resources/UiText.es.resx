@@ -1,0 +1,157 @@
+<?xml version="1.0" encoding="utf-8"?>
+<root>
+  <resheader name="resmimetype"><value>text/microsoft-resx</value></resheader>
+  <resheader name="version"><value>2.0</value></resheader>
+  <resheader name="reader"><value>System.Resources.ResXResourceReader, System.Windows.Forms, Version=4.0.0.0, Culture=neutral, PublicKeyToken=b77a5c561934e089</value></resheader>
+  <resheader name="writer"><value>System.Resources.ResXResourceWriter, System.Windows.Forms, Version=4.0.0.0, Culture=neutral, PublicKeyToken=b77a5c561934e089</value></resheader>
+  <data name="UiShellOpticalMasteringWorkspace" xml:space="preserve"><value>Espacio de masterización óptica</value></data>
+  <data name="UiShellBurnToDrive" xml:space="preserve"><value>Grabar en la unidad:</value></data>
+  <data name="UiShellBurnToOpticalDrive" xml:space="preserve"><value>Grabar en la unidad óptica</value></data>
+  <data name="UiShellRefresh" xml:space="preserve"><value>↻ Actualizar</value></data>
+  <data name="UiShellScanAndReEnumerateOpticalRecorders" xml:space="preserve"><value>Buscar de nuevo las grabadoras ópticas</value></data>
+  <data name="UiShellEject" xml:space="preserve"><value>⏏ Expulsar</value></data>
+  <data name="UiShellEjectDriveTrayOrUnmountMedia" xml:space="preserve"><value>Expulsar la bandeja o desmontar el medio</value></data>
+  <data name="UiShellOpenDriveTrayOrUnmountMedia" xml:space="preserve"><value>Abrir la bandeja o desmontar el medio</value></data>
+  <data name="UiShellClose" xml:space="preserve"><value>📥 Cerrar</value></data>
+  <data name="UiShellCloseDriveTrayAndLoadMedia" xml:space="preserve"><value>Cerrar la bandeja y cargar el medio</value></data>
+  <data name="UiShellSpeed" xml:space="preserve"><value>Velocidad:</value></data>
+  <data name="UiShellOpticalWriteSpeed" xml:space="preserve"><value>Velocidad de grabación óptica</value></data>
+  <data name="UiShellWhyTheDefaultWriteSpeedIs" xml:space="preserve"><value>Por qué la velocidad de grabación predeterminada es baja</value></data>
+  <data name="UiShellMountVirtual" xml:space="preserve"><value>Montar virtual:</value></data>
+  <data name="UiShellMountBlank700MBCDR" xml:space="preserve"><value>Montar un CD-R virgen de 700 MB en la unidad virtual</value></data>
+  <data name="UiShellMountBlank700MBCDRW" xml:space="preserve"><value>Montar un CD-RW regrabable virgen de 700 MB en la unidad virtual</value></data>
+  <data name="UiShellMountBlank47GBDVD" xml:space="preserve"><value>Montar un DVD-R virgen de 4,7 GB en la unidad virtual</value></data>
+  <data name="UiShellNavigationRail" xml:space="preserve"><value>Barra de navegación</value></data>
+  <data name="UiShellOPTICALMASTERING" xml:space="preserve"><value>MASTERIZACIÓN ÓPTICA</value></data>
+  <data name="UiShellDataDiscWorkspace" xml:space="preserve"><value>Espacio de disco de datos</value></data>
+  <data name="UiShellDataDisc" xml:space="preserve"><value>Disco de datos</value></data>
+  <data name="UiShellAudioCDWorkspace" xml:space="preserve"><value>Espacio de CD de audio</value></data>
+  <data name="UiShellAudioCD" xml:space="preserve"><value>CD de audio</value></data>
+  <data name="UiShellDVDVideoWorkspace" xml:space="preserve"><value>Espacio de DVD-Video</value></data>
+  <data name="UiShellDVDVideo" xml:space="preserve"><value>DVD-Video</value></data>
+  <data name="UiShellDiscImageStudioWorkspace" xml:space="preserve"><value>Espacio de Disc Image Studio</value></data>
+  <data name="UiShellDiscImageStudio" xml:space="preserve"><value>Disc Image Studio</value></data>
+  <data name="UiShellArchiveStudioWorkspace" xml:space="preserve"><value>Espacio de Archive Studio</value></data>
+  <data name="UiShellArchive" xml:space="preserve"><value>Archivo</value></data>
+  <data name="UiShellTOOLSSETTINGS" xml:space="preserve"><value>HERRAMIENTAS Y AJUSTES</value></data>
+  <data name="UiShellDriveUtilitiesWorkspace" xml:space="preserve"><value>Espacio de utilidades de unidad</value></data>
+  <data name="UiShellDriveUtilities" xml:space="preserve"><value>Utilidades de unidad</value></data>
+  <data name="UiShellVirtualDriveWorkspace" xml:space="preserve"><value>Espacio de unidad virtual</value></data>
+  <data name="UiShellVirtualDrive" xml:space="preserve"><value>Unidad virtual</value></data>
+  <data name="UiShellCalibrationWorkspace" xml:space="preserve"><value>Espacio de calibración</value></data>
+  <data name="UiShellCalibration" xml:space="preserve"><value>Calibración</value></data>
+  <data name="UiShellDiscArtWorkspace" xml:space="preserve"><value>Espacio de arte de disco</value></data>
+  <data name="UiShellDiscArt" xml:space="preserve"><value>Arte de disco</value></data>
+  <data name="UiShellSettingsWorkspace" xml:space="preserve"><value>Espacio de ajustes</value></data>
+  <data name="UiShellSettings" xml:space="preserve"><value>Ajustes</value></data>
+  <data name="UiShellUsed" xml:space="preserve"><value>Usado: </value></data>
+  <data name="UiShellDiscCapacityUsageMeter" xml:space="preserve"><value>Medidor de uso de la capacidad del disco</value></data>
+  <data name="UiShellAboutIgnisDiscOpticalStudioAndLegal" xml:space="preserve"><value>Acerca de IgnisDisc Optical Studio y aviso legal</value></data>
+  <data name="UiSettingsOpticalBurningDefaults" xml:space="preserve"><value>🔥 Valores predeterminados de grabación</value></data>
+  <data name="UiSettingsDefaultTargetOpticalDrive" xml:space="preserve"><value>Unidad óptica de destino predeterminada:</value></data>
+  <data name="UiSettingsDefaultTargetOpticalDrive2" xml:space="preserve"><value>Unidad óptica de destino predeterminada</value></data>
+  <data name="UiSettingsDefaultWriteSpeed" xml:space="preserve"><value>Velocidad de grabación predeterminada:</value></data>
+  <data name="UiSettingsDefaultWriteSpeed2" xml:space="preserve"><value>Velocidad de grabación predeterminada</value></data>
+  <data name="UiSettingsRecommendedUsesTheFastestSpeedThe" xml:space="preserve"><value>«Recomendada» usa la velocidad más alta a la que la unidad graba con velocidad lineal constante para el disco insertado, hasta 16x en CD y 8x en DVD. Una velocidad que la unidad no ofrece se sustituye por la más cercana.</value></data>
+  <data name="UiSettingsAutomaticallyVerifyMediaAfterBurnCompletion" xml:space="preserve"><value>Verificar automáticamente el medio al terminar la grabación</value></data>
+  <data name="UiSettingsStrictVerifyForceEveryReadFrom" xml:space="preserve"><value>Verificación estricta: forzar cada lectura desde el disco (varias veces más lenta)</value></data>
+  <data name="UiSettingsOffTheCheckForcesTheDrive" xml:space="preserve"><value>Desactivado: la comprobación obliga a la unidad a leer el disco solo donde su memoria aún podría contener datos grabados (el inicio y la última parte escrita) y lee el resto a velocidad normal. Activado: se fuerza cada lectura.</value></data>
+  <data name="UiSettingsUseDirectDriveCommandsForDVD" xml:space="preserve"><value>Usar comandos directos de la unidad para DVD-RW (la mantiene abierta para más sesiones)</value></data>
+  <data name="UiSettingsUseDirectDriveCommandsForDVD2" xml:space="preserve"><value>Usar comandos directos de la unidad para DVD-RW</value></data>
+  <data name="UiSettingsOnTheBurnScreensTickDirect" xml:space="preserve"><value>Activado: las pantallas de grabación marcan por sí solas «Comandos directos de la unidad» mientras haya un DVD-RW en la unidad. El grabador de Windows formatea cada DVD-RW para sobrescribirlo y no puede añadirle una sesión. Su propia marca en una pantalla siempre prevalece.</value></data>
+  <data name="UiSettingsEjectOpticalDriveTrayWhenBurn" xml:space="preserve"><value>Expulsar la bandeja de la unidad óptica al terminar la grabación</value></data>
+  <data name="UiSettingsTellMeWhenABurnFinishes" xml:space="preserve"><value>Avisarme cuando termine una grabación (sonido, botón parpadeante de la barra de tareas y un mensaje)</value></data>
+  <data name="UiSettingsTellMeWhenABurnFinishes2" xml:space="preserve"><value>Avisarme cuando termine una grabación</value></data>
+  <data name="UiSettingsEnableBufferUnderrunProtectionBURNProof" xml:space="preserve"><value>Activar la protección contra vaciado del búfer (BURN-Proof / Burn-Free)</value></data>
+  <data name="UiSettingsStagingDirectoriesOptionalExternalTools" xml:space="preserve"><value>📁 Carpetas temporales y herramientas externas opcionales</value></data>
+  <data name="UiSettingsTemporaryScratchISOStagingDirectory" xml:space="preserve"><value>Carpeta temporal de trabajo / preparación de ISO:</value></data>
+  <data name="UiSettingsTemporaryScratchISOStagingDirectory2" xml:space="preserve"><value>Carpeta temporal de trabajo / preparación de ISO</value></data>
+  <data name="UiSettingsFFmpegTranscoderExecutablePathDVDVideo" xml:space="preserve"><value>Ruta del ejecutable del transcodificador FFmpeg (DVD-Video):</value></data>
+  <data name="UiSettingsFFmpegTranscoderExecutablePath" xml:space="preserve"><value>Ruta del ejecutable del transcodificador FFmpeg</value></data>
+  <data name="UiSettingsInstallFFmpeg1ClickLGPL" xml:space="preserve"><value>⬇ Instalar FFmpeg (1 clic, LGPL)</value></data>
+  <data name="UiSettingsInstallFFmpeg1ClickLGPL2" xml:space="preserve"><value>Instalar FFmpeg (1 clic, LGPL)</value></data>
+  <data name="UiSettingsDownloadsTheOfficialLGPLWindowsBuild" xml:space="preserve"><value>Descarga la compilación oficial LGPL de FFmpeg para Windows y su licencia en %LOCALAPPDATA%\Programs\ffmpeg</value></data>
+  <data name="UiSettingsPAR2ArchiveRecoveryToolPar2cmdline" xml:space="preserve"><value>Herramienta de recuperación de archivos PAR2 (par2cmdline):</value></data>
+  <data name="UiSettingsInstallPar21Click" xml:space="preserve"><value>⬇ Instalar par2 (1 clic)</value></data>
+  <data name="UiSettingsInstallPar21Click2" xml:space="preserve"><value>Instalar par2 (1 clic)</value></data>
+  <data name="UiSettingsDownloadsPar2cmdlineTurboPar2ExeSHA" xml:space="preserve"><value>Descarga par2cmdline-turbo (par2.exe, SHA-256 comprobado) en %LOCALAPPDATA%\Programs\par2cmdline para los datos de recuperación de archivos; sustituye una versión anterior de par2cmdline allí</value></data>
+  <data name="UiSettingsAppearanceDiagnostics" xml:space="preserve"><value>🎨 Apariencia y diagnóstico</value></data>
+  <data name="UiSettingsVisualThemeMode" xml:space="preserve"><value>Tema visual:</value></data>
+  <data name="UiSettingsVisualThemeMode2" xml:space="preserve"><value>Tema visual</value></data>
+  <data name="UiSettingsEnableSoftwareDefinedVirtualOpticalDrive" xml:space="preserve"><value>Activar el emulador de unidad óptica virtual por software</value></data>
+  <data name="UiSettingsIntegrateWithWindowsExplorerContextMenus" xml:space="preserve"><value>Integrar con los menús contextuales del Explorador de Windows y las asociaciones de imágenes de disco (.iso, .cue, .img, .nrg, .mds, .ccd, .cdi)</value></data>
+  <data name="UiSettingsWindowsExplorerShellIntegration" xml:space="preserve"><value>Integración con el Explorador de Windows</value></data>
+  <data name="UiSettingsOptInPerUserRegistrationUnder" xml:space="preserve"><value>Registro opcional por usuario en HKCU\Software\Classes (no requiere derechos de administrador) para las acciones del botón derecho sobre imágenes, carpetas y unidades.</value></data>
+  <data name="UiSettingsDiagnosticRingBufferCapacity" xml:space="preserve"><value>Capacidad del búfer circular de diagnóstico:</value></data>
+  <data name="UiSettingsDiagnosticRingBufferCapacity2" xml:space="preserve"><value>Capacidad del búfer circular de diagnóstico</value></data>
+  <data name="UiSettingsOnlineServicesUpdates" xml:space="preserve"><value>🌐 Servicios en línea y actualizaciones</value></data>
+  <data name="UiSettingsLookUpAudioCDAlbumTrack" xml:space="preserve"><value>Buscar de forma predeterminada los nombres de álbum y pistas de los CD de audio en MusicBrainz</value></data>
+  <data name="UiSettingsLookUpAudioCDAlbumAnd" xml:space="preserve"><value>Buscar de forma predeterminada los nombres de álbum y pistas de los CD de audio en MusicBrainz</value></data>
+  <data name="UiSettingsSendsOnlyTheDiscSTable" xml:space="preserve"><value>Envía solo el DiscID de la tabla de contenidos del disco a musicbrainz.org; nunca envía audio ni datos personales.</value></data>
+  <data name="UiSettingsVerifyRippedAudioCDTracksAgainst" xml:space="preserve"><value>Verificar de forma predeterminada las pistas de CD de audio extraídas con AccurateRip</value></data>
+  <data name="UiSettingsChecksExtractedTrackCRCsAgainstThe" xml:space="preserve"><value>Compara los CRC de las pistas extraídas con la base de datos de prensados de AccurateRip.</value></data>
+  <data name="UiSettingsVerifyRippedAudioCDTracksAgainst2" xml:space="preserve"><value>Verificar de forma predeterminada las pistas de CD de audio extraídas con la base de datos CUETools (CTDB) (solo si se activa)</value></data>
+  <data name="UiSettingsVerifyRippedAudioCDTracksAgainst3" xml:space="preserve"><value>Verificar de forma predeterminada las pistas de CD de audio extraídas con la base de datos CUETools</value></data>
+  <data name="UiSettingsOptInSendsTheDiscS" xml:space="preserve"><value>Opcional: envía la tabla de contenidos del disco a db.cuetools.net para verificar los CRC de las pistas y del disco extraídos. Una extracción distinta se repara con los datos de reparación de la base de datos y se confirma con AccurateRip.</value></data>
+  <data name="UiSettingsAccurateRipDriveOffsets" xml:space="preserve"><value>Desfases de unidad de AccurateRip:</value></data>
+  <data name="UiSettingsRefreshOffsetDatabase" xml:space="preserve"><value>Actualizar la base de datos de desfases</value></data>
+  <data name="UiSettingsDownloadOrRefreshAccurateRipSDriveOffsets" xml:space="preserve"><value>Descarga o actualiza la caché DriveOffsets.bin de AccurateRip en los datos locales de la aplicación (se actualiza automáticamente cada 30 días)</value></data>
+  <data name="UiSettingsOffsetDatabaseStatus" xml:space="preserve"><value>Estado de la base de datos de desfases</value></data>
+  <data name="UiSettingsReadOffsetMode" xml:space="preserve"><value>Modo de desfase de lectura:</value></data>
+  <data name="UiSettingsAudioReadOffsetMode" xml:space="preserve"><value>Modo de desfase de lectura de audio</value></data>
+  <data name="UiSettingsUseAutomatic" xml:space="preserve"><value>Usar automático</value></data>
+  <data name="UiSettingsUseAutomaticReadOffset" xml:space="preserve"><value>Usar el desfase de lectura automático</value></data>
+  <data name="UiSettingsCheckForNewerVersionsAutomaticallyOn" xml:space="preserve"><value>Buscar automáticamente versiones más recientes al iniciar (solo si se activa)</value></data>
+  <data name="UiSettingsCheckForNewerVersionsAutomaticallyOn2" xml:space="preserve"><value>Buscar automáticamente versiones más recientes al iniciar</value></data>
+  <data name="UiSettingsCheckForUpdatesNow" xml:space="preserve"><value>Buscar actualizaciones ahora</value></data>
+  <data name="UiSettingsChangesAreSavedAutomatically" xml:space="preserve"><value>Los cambios se guardan automáticamente.</value></data>
+  <data name="UiSettingsResetToDefaults" xml:space="preserve"><value>Restablecer valores predeterminados</value></data>
+  <data name="UiBurnProgressPercentComplete" xml:space="preserve"><value>Porcentaje completado</value></data>
+  <data name="UiBurnProgressWRITESPEED" xml:space="preserve"><value>VELOCIDAD DE GRABACIÓN</value></data>
+  <data name="UiBurnProgressDRIVEBUFFER" xml:space="preserve"><value>BÚFER DE LA UNIDAD</value></data>
+  <data name="UiBurnProgressDriveBuffer2" xml:space="preserve"><value>Búfer de la unidad</value></data>
+  <data name="UiBurnProgressLBASECTORS" xml:space="preserve"><value>SECTORES LBA</value></data>
+  <data name="UiBurnProgressELAPSEDTIME" xml:space="preserve"><value>TIEMPO TRANSCURRIDO</value></data>
+  <data name="UiBurnProgressESTIMATEDREMAINING" xml:space="preserve"><value>TIEMPO RESTANTE ESTIMADO</value></data>
+  <data name="UiBurnProgressSTATUS" xml:space="preserve"><value>ESTADO</value></data>
+  <data name="UiBurnProgressLiveMasteringTelemetryLog" xml:space="preserve"><value>Registro de telemetría de masterización en vivo</value></data>
+  <data name="UiBurnProgressLiveLogLines" xml:space="preserve"><value>Líneas de registro en vivo</value></data>
+  <data name="UiBurnProgressCancelOperation" xml:space="preserve"><value>Cancelar la operación</value></data>
+  <data name="UiVirtualDriveVirtualRecorder" xml:space="preserve"><value>Grabadora virtual:</value></data>
+  <data name="UiVirtualDriveVirtualRecorder2" xml:space="preserve"><value>Grabadora virtual</value></data>
+  <data name="UiVirtualDriveEjectTray" xml:space="preserve"><value>⏏ Expulsar bandeja</value></data>
+  <data name="UiVirtualDriveEjectTray2" xml:space="preserve"><value>Expulsar bandeja</value></data>
+  <data name="UiVirtualDriveCloseTray" xml:space="preserve"><value>📥 Cerrar bandeja</value></data>
+  <data name="UiVirtualDriveCloseTray2" xml:space="preserve"><value>Cerrar bandeja</value></data>
+  <data name="UiVirtualDriveMountedVirtualDiscMedium" xml:space="preserve"><value>💿 Medio de disco virtual montado</value></data>
+  <data name="UiVirtualDriveMEDIATYPE" xml:space="preserve"><value>TIPO DE MEDIO</value></data>
+  <data name="UiVirtualDriveTOTALCAPACITY" xml:space="preserve"><value>CAPACIDAD TOTAL</value></data>
+  <data name="UiVirtualDriveRECORDEDSECTORS" xml:space="preserve"><value>SECTORES GRABADOS</value></data>
+  <data name="UiVirtualDriveSTATUSPROPERTIES" xml:space="preserve"><value>ESTADO / PROPIEDADES</value></data>
+  <data name="UiVirtualDriveMountVirtualOpticalMediaPresets" xml:space="preserve"><value>📦 Montar medios ópticos virtuales predefinidos</value></data>
+  <data name="UiVirtualDriveQuicklyInsertBlankVirtualOpticalDisc" xml:space="preserve"><value>Inserta rápidamente medios ópticos virtuales vacíos en el emulador de unidad.</value></data>
+  <data name="UiVirtualDriveCDR700MB" xml:space="preserve"><value>💿 CD-R (700 MB)</value></data>
+  <data name="UiVirtualDriveMountCDR700MB" xml:space="preserve"><value>Montar CD-R (700 MB)</value></data>
+  <data name="UiVirtualDriveCDRW700MB" xml:space="preserve"><value>💿 CD-RW (700 MB)</value></data>
+  <data name="UiVirtualDriveMountCDRW700MB" xml:space="preserve"><value>Montar CD-RW (700 MB)</value></data>
+  <data name="UiVirtualDriveDVDR47GB" xml:space="preserve"><value>📀 DVD-R (4,7 GB)</value></data>
+  <data name="UiVirtualDriveMountDVDR47GB" xml:space="preserve"><value>Montar DVD-R (4,7 GB)</value></data>
+  <data name="UiVirtualDriveDVDRW47GB" xml:space="preserve"><value>📀 DVD-RW (4,7 GB)</value></data>
+  <data name="UiVirtualDriveMountDVDRW47GB" xml:space="preserve"><value>Montar DVD-RW (4,7 GB)</value></data>
+  <data name="UiVirtualDriveDVDRDL85GB" xml:space="preserve"><value>📀 DVD+R DL (8,5 GB)</value></data>
+  <data name="UiVirtualDriveMountDVDRDL85" xml:space="preserve"><value>Montar DVD+R DL (8,5 GB)</value></data>
+  <data name="UiVirtualDriveMountCustomImageFileIsoBin" xml:space="preserve"><value>Montar un archivo de imagen personalizado (.iso, .bin)</value></data>
+  <data name="UiVirtualDriveCustomImageFilePath" xml:space="preserve"><value>Ruta del archivo de imagen personalizado</value></data>
+  <data name="UiVirtualDriveMountImageFile" xml:space="preserve"><value>Montar archivo de imagen</value></data>
+  <data name="UiVirtualDriveSimulatedBadSectorLBAInjectionWorkbench" xml:space="preserve"><value>⚡ Banco de inyección de sectores defectuosos simulados (LBA)</value></data>
+  <data name="UiVirtualDriveInjectArtificialReadErrorsAtSpecific" xml:space="preserve"><value>Inyecta errores de lectura artificiales en direcciones de sector LBA concretas para probar la extracción, la verificación y el tratamiento de errores del analizador de superficie.</value></data>
+  <data name="UiVirtualDriveTargetSectorLBA" xml:space="preserve"><value>Sector LBA de destino:</value></data>
+  <data name="UiVirtualDriveTargetSectorLBA2" xml:space="preserve"><value>Sector LBA de destino</value></data>
+  <data name="UiVirtualDriveInjectBadSector" xml:space="preserve"><value>Inyectar sector defectuoso</value></data>
+  <data name="UiVirtualDriveClearAllBadLBAs" xml:space="preserve"><value>Borrar todos los LBA defectuosos</value></data>
+  <data name="UiVirtualDriveSimulatedBadLBAs" xml:space="preserve"><value>LBA defectuosos simulados</value></data>
+  <data name="UiSettingsUiLanguage" xml:space="preserve"><value>Idioma:</value></data>
+  <data name="UiSettingsUiLanguageName" xml:space="preserve"><value>Idioma de la aplicación</value></data>
+  <data name="UiSettingsUiLanguageHint" xml:space="preserve"><value>Se aplica al instante. «Predeterminado del sistema» sigue el idioma de visualización de Windows.</value></data>
+  <data name="UiLanguageSystemDefault" xml:space="preserve"><value>Predeterminado del sistema</value></data>
+</root>

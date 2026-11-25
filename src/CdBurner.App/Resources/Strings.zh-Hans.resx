@@ -1,0 +1,138 @@
+<?xml version="1.0" encoding="utf-8"?>
+<root>
+  <resheader name="resmimetype"><value>text/microsoft-resx</value></resheader>
+  <resheader name="version"><value>2.0</value></resheader>
+  <resheader name="reader"><value>System.Resources.ResXResourceReader, System.Windows.Forms, Version=4.0.0.0, Culture=neutral, PublicKeyToken=b77a5c561934e089</value></resheader>
+  <resheader name="writer"><value>System.Resources.ResXResourceWriter, System.Windows.Forms, Version=4.0.0.0, Culture=neutral, PublicKeyToken=b77a5c561934e089</value></resheader>
+  <data name="DialogAboutBody" xml:space="preserve"><value>官方网站：https://ignisdisc.tetherworks.dev
+源代码：https://github.com/tether-works/IgnisDisc
+
+IgnisDisc Optical Studio 是依据 GNU 通用公共许可证第 3 版或更高版本发布的免费开源软件。</value></data>
+  <data name="DialogAboutTitle" xml:space="preserve"><value>关于 IgnisDisc Optical Studio</value></data>
+  <data name="DialogAppTitle" xml:space="preserve"><value>IgnisDisc Optical Studio</value></data>
+  <data name="DialogBurnErrorBody" xml:space="preserve"><value>刻录音频 CD 时发生错误：
+
+{0}</value></data>
+  <data name="DialogBurnErrorTitle" xml:space="preserve"><value>刻录错误 — IgnisDisc</value></data>
+  <data name="DialogBurnFailedBody" xml:space="preserve"><value>无法完成音频 CD 的刻录：
+
+{0}</value></data>
+  <data name="DialogBurnFailedTitle" xml:space="preserve"><value>刻录失败 — IgnisDisc</value></data>
+  <data name="DialogCopySuspectAudioQuestion" xml:space="preserve"><value>仍要复制吗？副本将包含这些错误。选择“否”可停止：目前尚未写入任何内容。</value></data>
+  <data name="DialogDamagedAudioBody" xml:space="preserve"><value>{0}
+
+仍要刻录吗？受损部分在光盘上将为静音或缺失。</value></data>
+  <data name="DialogDamagedAudioTitle" xml:space="preserve"><value>音频文件已损坏 — IgnisDisc</value></data>
+  <data name="DialogDiscCopyTitle" xml:space="preserve"><value>光盘复制 — IgnisDisc</value></data>
+  <data name="DialogDrmSkippedBody" xml:space="preserve"><value>以下 {0} 个文件使用 Apple FairPlay DRM（.m4p）加密，无法添加到音频 CD 或刻录：
+
+{1}
+
+原因：Apple Music 订阅下载的内容由 Apple 加密，以防止复制到实体介质。
+
+要刻录音频 CD，请使用无 DRM 的音频格式，如 WAV、MP3、FLAC、M4A、OGG 或 WMA（包括从 iTunes Store 购买的无 DRM 内容）。</value></data>
+  <data name="DialogDrmSkippedTitle" xml:space="preserve"><value>已跳过受 DRM 保护的音频文件 — IgnisDisc</value></data>
+  <data name="DialogExitDuringBurnBody" xml:space="preserve"><value>当前正在进行光盘操作。
+
+确定要中止刻录并退出吗？驱动器电机将立即停止。</value></data>
+  <data name="DialogHardToReadBody" xml:space="preserve"><value>光盘上的音频正确，但其中一部分回读困难。
+
+{0}</value></data>
+  <data name="DialogHardToReadTitle" xml:space="preserve"><value>已刻录，部分位置难以读取 — IgnisDisc</value></data>
+  <data name="DialogInsertBlankForCopyBody" xml:space="preserve"><value>{0}
+
+请为第 {2} 份（共 {3} 份）副本在 {1} 中放入空白光盘，关闭托盘，然后单击“确定”。</value></data>
+  <data name="DialogNoBlankDetectedBody" xml:space="preserve"><value>在 {0} 中未检测到空白光盘。
+
+请为第 {1} 份（共 {2} 份）副本放入空白（或可擦写）光盘，然后单击“确定”；或单击“取消”以停止批处理。</value></data>
+  <data name="DialogQueueInsertDiscBody" xml:space="preserve"><value>刻录队列：第 {0} 张（共 {1} 张）。
+
+请为“{2}”放入空白光盘，然后单击“确定”。</value></data>
+  <data name="DialogReplaceDiscBody" xml:space="preserve"><value>{1} 中的 {0} 上已有文件。
+
+刻录将替换光盘上的所有内容。是否继续？</value></data>
+  <data name="DialogReplaceDiscTitle" xml:space="preserve"><value>替换此光盘上的文件？</value></data>
+  <data name="DialogUnexpectedErrorBody" xml:space="preserve"><value>发生意外错误：
+
+{0}</value></data>
+  <data name="DialogUnsupportedFilesBody" xml:space="preserve"><value>{0}以下 {1} 个文件无法读取或不受支持：
+
+{2}</value></data>
+  <data name="DialogUnsupportedFilesTitle" xml:space="preserve"><value>不受支持的音频文件 — IgnisDisc</value></data>
+  <data name="StatusArchiveBurnCancelled" xml:space="preserve"><value>刻录已取消。</value></data>
+  <data name="StatusArchiveCancellingArchiveOperation" xml:space="preserve"><value>正在取消归档操作...</value></data>
+  <data name="StatusArchiveDownloadingPar2cmdlinePar2Exe" xml:space="preserve"><value>正在下载 par2cmdline（par2.exe）...</value></data>
+  <data name="StatusArchiveNoOpticalRecorderSelected" xml:space="preserve"><value>未选择光盘刻录机。</value></data>
+  <data name="StatusArchivePar2ExecutableNotFound" xml:space="preserve"><value>未找到 par2 可执行文件。</value></data>
+  <data name="StatusArchivePar2RecoveryDataRequiresPar2cmdlinePar2" xml:space="preserve"><value>PAR2 恢复数据需要 par2cmdline（par2.exe）。请安装它，或将冗余度设为 0。</value></data>
+  <data name="StatusArchivePlanningArchiveSpanning" xml:space="preserve"><value>正在规划归档分卷...</value></data>
+  <data name="StatusArchiveRepairCancelled" xml:space="preserve"><value>修复已取消。</value></data>
+  <data name="StatusArchiveRepairIsNotAvailableForThe" xml:space="preserve"><value>当前校验结果无法进行修复。</value></data>
+  <data name="StatusArchiveSourceFolderIsNotSpecified" xml:space="preserve"><value>未指定源文件夹。</value></data>
+  <data name="StatusArchiveStagingCancelled" xml:space="preserve"><value>暂存已取消。</value></data>
+  <data name="StatusArchiveStagingFolderIsNotSpecified" xml:space="preserve"><value>未指定暂存文件夹。</value></data>
+  <data name="StatusArchiveVerificationCancelled" xml:space="preserve"><value>校验已取消。</value></data>
+  <data name="StatusArchiveVerifyPathIsEmpty" xml:space="preserve"><value>校验路径为空。</value></data>
+  <data name="StatusAudioBurnAddAtLeastOneTrackBefore" xml:space="preserve"><value>导出可打印的 CD 封面前，请至少添加一首曲目。</value></data>
+  <data name="StatusAudioBurnAudioCdBurnCancelledByUser" xml:space="preserve"><value>音频 CD 刻录已被用户取消。</value></data>
+  <data name="StatusAudioBurnAudioCdRipCancelledByUser" xml:space="preserve"><value>音频 CD 抓取已被用户取消。</value></data>
+  <data name="StatusAudioBurnAudioPreviewStopped" xml:space="preserve"><value>音频预览已停止。</value></data>
+  <data name="StatusAudioBurnCancellingAudioCdBurn" xml:space="preserve"><value>正在取消音频 CD 刻录...</value></data>
+  <data name="StatusAudioBurnClearedAllTracksFromCompilation" xml:space="preserve"><value>已清除合集中的所有曲目。</value></data>
+  <data name="StatusAudioBurnDiscNotFoundInAccurateripDatabase" xml:space="preserve"><value>在 AccurateRip 数据库中未找到该光盘。</value></data>
+  <data name="StatusAudioBurnNoAudioTracksFoundOnInserted" xml:space="preserve"><value>在已放入的光盘上未找到音频曲目。</value></data>
+  <data name="StatusAudioBurnNoAudioTracksInCompilationTo" xml:space="preserve"><value>合集中没有可刻录的音频曲目。</value></data>
+  <data name="StatusAudioBurnNoOpticalRecorderSelectedOrAvailable" xml:space="preserve"><value>未选择光盘刻录机，或没有可用的刻录机。</value></data>
+  <data name="StatusAudioBurnOffsetDetectionCancelled" xml:space="preserve"><value>偏移检测已取消。</value></data>
+  <data name="StatusBurnFailedNoSessionAtOnce" xml:space="preserve"><value>刻录失败：此驱动器未报告支持 Session-at-Once 写入，因此无法使用驱动器直接命令。请关闭“驱动器直接命令”，改用 Windows 刻录程序。</value></data>
+  <data name="StatusDataBurnCancellingDataDiscBurn" xml:space="preserve"><value>正在取消数据光盘刻录...</value></data>
+  <data name="StatusDataBurnCompilingOpticalDiscImage" xml:space="preserve"><value>正在编译光盘映像...</value></data>
+  <data name="StatusDataBurnDataDiscBurnCancelled" xml:space="preserve"><value>数据光盘刻录已取消。</value></data>
+  <data name="StatusDataBurnDataDiscBurnCancelledByUser" xml:space="preserve"><value>数据光盘刻录已被用户取消。</value></data>
+  <data name="StatusDataBurnIsoExportCancelled" xml:space="preserve"><value>ISO 导出已取消。</value></data>
+  <data name="StatusDataBurnPreviousSessionImportedSuccessfully" xml:space="preserve"><value>已成功导入上一个会话。</value></data>
+  <data name="StatusDataBurnSessionImportCancelled" xml:space="preserve"><value>会话导入已取消。</value></data>
+  <data name="StatusDiscUnchangedSwitchOffDirect" xml:space="preserve"><value> 光盘未被更改；请关闭“驱动器直接命令”，改用 Windows 刻录程序进行刻录。</value></data>
+  <data name="StatusDriveUtilitiesCancellingHardwareOperation" xml:space="preserve"><value>正在取消硬件操作...</value></data>
+  <data name="StatusDriveUtilitiesCheckingTheDiscReadingEverySector" xml:space="preserve"><value>正在检查光盘：像播放器一样将每个扇区读取一遍...</value></data>
+  <data name="StatusDriveUtilitiesDiscCheckCancelled" xml:space="preserve"><value>光盘检查已取消。</value></data>
+  <data name="StatusDriveUtilitiesDriveCompatibilityReportGeneratedAndReady" xml:space="preserve"><value>驱动器兼容性报告已生成，可以复制。</value></data>
+  <data name="StatusDriveUtilitiesEraseOperationCancelledByUser" xml:space="preserve"><value>擦除操作已被用户取消。</value></data>
+  <data name="StatusDriveUtilitiesNoDriveSelectedForTheDisc" xml:space="preserve"><value>未选择用于光盘检查的驱动器。</value></data>
+  <data name="StatusDriveUtilitiesNoOpticalRecorderDriveSelected" xml:space="preserve"><value>未选择光盘刻录机。</value></data>
+  <data name="StatusDriveUtilitiesNoOpticalRecorderSelectedForBitsetting" xml:space="preserve"><value>未选择用于 bitsetting 的光盘刻录机。</value></data>
+  <data name="StatusDriveUtilitiesNoOpticalRecorderSelectedForErase" xml:space="preserve"><value>未选择用于擦除的光盘刻录机。</value></data>
+  <data name="StatusDriveUtilitiesNoOpticalRecorderSelectedForSurface" xml:space="preserve"><value>未选择用于表面扫描的光盘刻录机。</value></data>
+  <data name="StatusDriveUtilitiesRunASurfaceScanBeforeExporting" xml:space="preserve"><value>导出 CSV 数据前，请先运行表面扫描。</value></data>
+  <data name="StatusDriveUtilitiesSurfaceScanCancelledByUser" xml:space="preserve"><value>表面扫描已被用户取消。</value></data>
+  <data name="StatusDvdVideoAuthoringDvdVideoIsoImage" xml:space="preserve"><value>正在制作 DVD-Video ISO 映像...</value></data>
+  <data name="StatusDvdVideoBuildingTheDiscImageToPlace" xml:space="preserve"><value>正在构建光盘映像以放置换层点...</value></data>
+  <data name="StatusDvdVideoCancellingDvdVideoOperation" xml:space="preserve"><value>正在取消 DVD-Video 操作...</value></data>
+  <data name="StatusDvdVideoDownloadingFfmpegLgpl" xml:space="preserve"><value>正在下载 FFmpeg（LGPL）...</value></data>
+  <data name="StatusDvdVideoDvdVideoBurnCancelled" xml:space="preserve"><value>DVD-Video 刻录已取消。</value></data>
+  <data name="StatusDvdVideoDvdVideoBurnCancelledByUser" xml:space="preserve"><value>DVD-Video 刻录已被用户取消。</value></data>
+  <data name="StatusDvdVideoDvdVideoIsoBuildCancelled" xml:space="preserve"><value>DVD-Video ISO 构建已取消。</value></data>
+  <data name="StatusDvdVideoPreparingDvdVideoAuthoringPipeline" xml:space="preserve"><value>正在准备 DVD-Video 制作流程...</value></data>
+  <data name="StatusDvdVideoTranscodingAuthoringDvdVideoStructure" xml:space="preserve"><value>正在转码并制作 DVD-Video 结构...</value></data>
+  <data name="StatusImageStudioBurnCompleteVerifyingDiscBitFor" xml:space="preserve"><value>刻录完成。正在将光盘与映像逐位比对...</value></data>
+  <data name="StatusImageStudioBurnQueueCancelledByUser" xml:space="preserve"><value>刻录队列已被用户取消。</value></data>
+  <data name="StatusImageStudioBurnQueueIsEmpty" xml:space="preserve"><value>刻录队列为空。</value></data>
+  <data name="StatusImageStudioCancellingOperation" xml:space="preserve"><value>正在取消操作...</value></data>
+  <data name="StatusImageStudioDiscCopyCancelledByUser" xml:space="preserve"><value>光盘复制已被用户取消。</value></data>
+  <data name="StatusImageStudioDiscRipCancelledByUser" xml:space="preserve"><value>光盘抓取已被用户取消。</value></data>
+  <data name="StatusImageStudioImageBurnCancelledByUser" xml:space="preserve"><value>映像刻录已被用户取消。</value></data>
+  <data name="StatusImageStudioNoOpticalRecorderDriveSelectedOr" xml:space="preserve"><value>未选择光盘刻录机，或没有可用的刻录机。</value></data>
+  <data name="StatusImageStudioSourceDiscImageFileDoesNot" xml:space="preserve"><value>源光盘映像文件不存在。</value></data>
+  <data name="StatusImageStudioSourceOrTargetOpticalDriveIs" xml:space="preserve"><value>源光驱或目标光驱不可用。</value></data>
+  <data name="StatusSettingsCheckingGithubReleasesForUpdates" xml:space="preserve"><value>正在通过 GitHub Releases 检查更新...</value></data>
+  <data name="StatusSettingsSettingsLoaded" xml:space="preserve"><value>设置已加载。</value></data>
+  <data name="StatusSettingsSettingsResetToDefaultValues" xml:space="preserve"><value>设置已恢复为默认值。</value></data>
+  <data name="StatusSettingsSettingsSavedSuccessfully" xml:space="preserve"><value>设置已成功保存。</value></data>
+  <data name="StatusSettingsUpdateCheckHasNotBeenRun" xml:space="preserve"><value>尚未检查更新。</value></data>
+  <data name="StatusVirtualDriveCannotInjectBadLbaNoMedia" xml:space="preserve"><value>无法注入坏 LBA：虚拟驱动器中未挂载介质。</value></data>
+  <data name="StatusVirtualDriveClearedAllSimulatedBadLbas" xml:space="preserve"><value>已清除所有模拟坏 LBA。</value></data>
+  <data name="StatusVirtualDriveNoVirtualOpticalDriveIsAvailable" xml:space="preserve"><value>没有可用的虚拟光驱。</value></data>
+  <data name="StatusVirtualDriveNoVirtualOpticalDriveIsCurrently" xml:space="preserve"><value>当前没有可用的虚拟光驱。</value></data>
+  <data name="StatusVirtualDriveVirtualDriveTrayClosed" xml:space="preserve"><value>虚拟驱动器托盘已关闭。</value></data>
+  <data name="StatusVirtualDriveVirtualDriveTrayOpened" xml:space="preserve"><value>虚拟驱动器托盘已打开。</value></data>
+</root>

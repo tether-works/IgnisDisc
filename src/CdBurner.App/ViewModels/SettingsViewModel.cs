@@ -1,4 +1,4 @@
-﻿using CdBurner.App.Resources;
+using CdBurner.App.Resources;
 using System.Collections.ObjectModel;
 using System.IO;
 using System.Net.Http;
@@ -35,6 +35,7 @@ public class SettingsViewModel : ObservableObject
     private bool _enableBurnFreeByDefault;
     private string _tempStagingDirectory = string.Empty;
     private ThemeMode _themeMode = ThemeMode.System;
+    private string _uiLanguage = LocalizationManager.SystemDefault;
     private string _ffmpegExecutablePath = string.Empty;
     private bool _enableVirtualDrive;
     private int _logRingBufferCapacity;
@@ -59,7 +60,7 @@ public class SettingsViewModel : ObservableObject
     [
         nameof(DefaultWriteSpeedMultiplier), nameof(VerifyAfterBurnByDefault), nameof(StrictVerify),
         nameof(EjectAfterBurnByDefault), nameof(NotifyWhenBurnFinishes), nameof(EnableBurnFreeByDefault),
-        nameof(TempStagingDirectory), nameof(ThemeMode), nameof(FfmpegExecutablePath), nameof(EnableVirtualDrive),
+        nameof(TempStagingDirectory), nameof(ThemeMode), nameof(UiLanguage), nameof(FfmpegExecutablePath), nameof(EnableVirtualDrive),
         nameof(LogRingBufferCapacity), nameof(LookupMusicBrainzByDefault), nameof(VerifyAccurateRipByDefault),
         nameof(VerifyCtdbByDefault), nameof(CheckForUpdatesOnStartup), nameof(DirectWritingForDvdRw),
         nameof(EnableExplorerShellIntegration)
@@ -205,6 +206,33 @@ public class SettingsViewModel : ObservableObject
         }
     }
 
+    /// <summary>
+    /// Language of the app's text as a culture name; empty follows the Windows display language. A change is applied
+    /// to the open windows at once and saved with the other settings.
+    /// </summary>
+    public string UiLanguage
+    {
+        get => _uiLanguage;
+        set
+        {
+            var normalized = LocalizationManager.Normalize(value);
+            if (SetProperty(ref _uiLanguage, normalized))
+            {
+                LocalizationManager.Apply(normalized);
+                foreach (var option in AvailableLanguages)
+                {
+                    option.Refresh();
+                }
+            }
+        }
+    }
+
+    /// <summary>Languages offered by the selector: the system default first, then every shipped language.</summary>
+    public IReadOnlyList<LanguageOption> AvailableLanguages { get; } =
+        new[] { LocalizationManager.SystemDefault }
+            .Concat(LocalizationManager.SupportedLanguages)
+            .Select(code => new LanguageOption(code))
+            .ToList();
     /// <summary>
     /// Full file path or command name for the FFmpeg transcoder executable used in DVD-Video authoring.
     /// </summary>
@@ -647,6 +675,7 @@ public class SettingsViewModel : ObservableObject
         EnableBurnFreeByDefault = settings.EnableBurnFreeByDefault;
         TempStagingDirectory = settings.TempStagingDirectory;
         ThemeMode = settings.ThemeMode;
+        UiLanguage = settings.UiLanguage;
         FfmpegExecutablePath = settings.FfmpegExecutablePath;
         EnableVirtualDrive = settings.EnableVirtualDrive;
         LogRingBufferCapacity = settings.LogRingBufferCapacity;
@@ -678,6 +707,7 @@ public class SettingsViewModel : ObservableObject
         settings.DirectWritingForDvdRw = DirectWritingForDvdRw;
         settings.TempStagingDirectory = TempStagingDirectory;
         settings.ThemeMode = ThemeMode;
+        settings.UiLanguage = UiLanguage;
         settings.FfmpegExecutablePath = FfmpegExecutablePath;
         settings.EnableVirtualDrive = EnableVirtualDrive;
         settings.LogRingBufferCapacity = LogRingBufferCapacity;
