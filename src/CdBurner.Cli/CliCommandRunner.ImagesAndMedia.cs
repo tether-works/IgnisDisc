@@ -624,6 +624,40 @@ public static partial class CliCommandRunner
                 options.OrderedTitleNames.Add(part.Trim());
             }
         }
+        foreach (string rawAudio in cmd.GetOptions("audio-track"))
+        {
+            if (options.DefaultAudioTracks.Count >= DvdVideoProject.MaxAudioTracksPerTitle)
+            {
+                throw new CommandLineException($"DVD-Video allows at most {DvdVideoProject.MaxAudioTracksPerTitle} --audio-track entries per title.");
+            }
+            if (!DvdLanguageCodes.TryParseTrackSpec(rawAudio, out string lang, out string path))
+            {
+                throw new CommandLineException($"Invalid --audio-track '{rawAudio}'. Use <lang>:<path>, for example eng:audio.ac3.");
+            }
+            string fullPath = Path.GetFullPath(path);
+            if (!File.Exists(fullPath))
+            {
+                throw new FileNotFoundException($"Audio track file not found: '{fullPath}'.", fullPath);
+            }
+            options.DefaultAudioTracks.Add(new DvdAudioTrackSpec(fullPath, lang));
+        }
+        foreach (string rawSub in cmd.GetOptions("subtitle-track"))
+        {
+            if (options.DefaultSubtitleTracks.Count >= DvdVideoProject.MaxSubtitleTracksPerTitle)
+            {
+                throw new CommandLineException($"DVD-Video allows at most {DvdVideoProject.MaxSubtitleTracksPerTitle} --subtitle-track entries per title.");
+            }
+            if (!DvdLanguageCodes.TryParseTrackSpec(rawSub, out string lang, out string path))
+            {
+                throw new CommandLineException($"Invalid --subtitle-track '{rawSub}'. Use <lang>:<path>, for example eng:subtitles.srt.");
+            }
+            string fullPath = Path.GetFullPath(path);
+            if (!File.Exists(fullPath))
+            {
+                throw new FileNotFoundException($"Subtitle track file not found: '{fullPath}'.", fullPath);
+            }
+            options.DefaultSubtitleTracks.Add(new DvdSubtitleTrackSpec(fullPath, lang));
+        }
         ApplySubtitleOptions(cmd, options);
         return options;
     }
@@ -809,6 +843,8 @@ public static partial class CliCommandRunner
                     fitToDisc = authorOptions.FitToDisc,
                     videoBitrateKbps = authorOptions.VideoBitrateKbps,
                     dualLayer = authorOptions.DualLayer,
+                    audioTracks = authorOptions.DefaultAudioTracks.Select((t, idx) => new { stream = $"0x{0x80 + idx:X2}", language = t.NormalizedLanguage, path = t.SourcePath }).ToArray(),
+                    subtitleTracks = authorOptions.DefaultSubtitleTracks.Select((t, idx) => new { stream = $"0x{0x20 + idx:X2}", language = t.NormalizedLanguage, path = t.SourcePath }).ToArray(),
                     titleCount = authResult?.TitleCount ?? Math.Max(validation.TitleSetNumbers.Count, 1),
                     validatedFiles = validation.FileCount,
                     totalSectors,

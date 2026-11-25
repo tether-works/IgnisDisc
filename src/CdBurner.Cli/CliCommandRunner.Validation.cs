@@ -18,7 +18,7 @@ public static partial class CliCommandRunner
     private static readonly HashSet<string> KnownValueOptions = new(StringComparer.OrdinalIgnoreCase)
     {
         "aac-bitrate", "after-title", "append-to", "art-inner-radius-mm", "art-outer-radius-mm",
-        "artist", "aspect", "attach-health", "bitrate", "blank", "block-size", "book-type", "boot-bios", "boot-uefi", "candidate",
+        "artist", "aspect", "attach-health", "audio-track", "bitrate", "blank", "block-size", "book-type", "boot-bios", "boot-uefi", "candidate",
         "cells", "chapters", "compare", "config", "copies", "cover", "cover-art", "crossfade",
         "csv", "cue", "data-folder", "data-label", "date", "dir", "disc", "disc-preset",
         "disc-presets-file", "drive", "drives", "drive-model", "entry", "ffmpeg", "files", "fill-picture", "fit",
@@ -31,7 +31,7 @@ public static partial class CliCommandRunner
         "pregap-seconds", "read-offset", "redundancy", "release", "retries", "rotate", "scale",
         "sectors", "set", "settings-file", "size", "songwriter", "source", "spacing", "speed",
         "stage", "staging", "standard", "start-angle", "store", "subtitle-language",
-        "subtitle-size", "subtitles-default", "svg", "target", "telemetry-out", "text", "title", "title-names",
+        "subtitle-size", "subtitle-track", "subtitles-default", "svg", "target", "telemetry-out", "text", "title", "title-names",
         "title-ring", "title-ring-date", "title-ring-height-mm", "to", "tone", "tracks",
         "tracks-file", "turn-map", "turn-map-offset", "udf-rev", "upc", "value",
         "max-overburn-minutes", "video-bitrate", "video-ts", "virtual-media", "virtual-state", "wait-minutes", "write-offset"
@@ -129,7 +129,7 @@ public static partial class CliCommandRunner
     [
         "label", "ffmpeg", "standard", "aspect", "menu", "menu-title", "menu-autoplay",
         "after-title", "chapters", "subtitles-default", "subtitle-size", "video-bitrate",
-        "title-names", "subtitle-language"
+        "title-names", "subtitle-language", "audio-track", "subtitle-track"
     ];
 
     private static readonly CommandOptionSpec BurnIsoSpec = CommandOptionSpec.Of(

@@ -34,6 +34,20 @@ public enum DvdAspectRatio
     Standard4x3
 }
 
+/// <summary>One audio stream passed to <see cref="FfmpegDvdTranscodeBuilder"/>.</summary>
+public sealed record DvdMuxAudioInput(
+    string? SourcePath = null,
+    int StreamIndex = 0,
+    string Language = "eng",
+    int Channels = 2,
+    int BitrateKbps = 0,
+    string Codec = "ac3");
+
+/// <summary>One VobSub subtitle stream passed to <see cref="FfmpegDvdTranscodeBuilder"/>.</summary>
+public sealed record DvdMuxSubtitleInput(
+    string VobSubIndexPath,
+    string Language = "eng");
+
 /// <summary>
 /// Builds deterministic FFmpeg command-line arguments for transcoding video files
 /// into fully compliant DVD-Video MPEG-2 program stream VOB files (NTSC or PAL).
@@ -113,6 +127,16 @@ public sealed class FfmpegDvdTranscodeBuilder
     /// </summary>
     public int AudioChannels { get; set; } = 2;
 
+    /// <summary>
+    /// Optional multi-audio tracks (up to 8). When populated, overrides single-stream audio mapping.
+    /// </summary>
+    public IList<DvdMuxAudioInput> AudioTracks { get; } = new List<DvdMuxAudioInput>();
+
+    /// <summary>
+    /// Optional multi-subtitle VobSub inputs (up to 8). When populated, overrides <see cref="SubtitleIndexPath"/>.
+    /// </summary>
+    public IList<DvdMuxSubtitleInput> SubtitleTracks { get; } = new List<DvdMuxSubtitleInput>();
+
     public FfmpegDvdTranscodeBuilder WithInput(string inputPath)
     {
         InputPath = inputPath;
@@ -180,6 +204,28 @@ public sealed class FfmpegDvdTranscodeBuilder
         return this;
     }
 
+    public FfmpegDvdTranscodeBuilder WithAudioTracks(IEnumerable<DvdMuxAudioInput> tracks)
+    {
+        ArgumentNullException.ThrowIfNull(tracks);
+        AudioTracks.Clear();
+        foreach (var track in tracks.Take(DvdVideoProject.MaxAudioTracksPerTitle))
+        {
+            AudioTracks.Add(track);
+        }
+        return this;
+    }
+
+    public FfmpegDvdTranscodeBuilder WithSubtitleTracks(IEnumerable<DvdMuxSubtitleInput> tracks)
+    {
+        ArgumentNullException.ThrowIfNull(tracks);
+        SubtitleTracks.Clear();
+        foreach (var track in tracks.Take(DvdVideoProject.MaxSubtitleTracksPerTitle))
+        {
+            SubtitleTracks.Add(track);
+        }
+        return this;
+    }
+
     public FfmpegDvdTranscodeBuilder WithScaleAndPadFilter(bool enabled = true)
     {
         EnableScaleAndPadFilter = enabled;
@@ -210,11 +256,67 @@ public sealed class FfmpegDvdTranscodeBuilder
 
         args.Add("-i");
         args.Add(InputPath);
-        if (!string.IsNullOrWhiteSpace(SubtitleIndexPath))
+
+        var cappedAudio = AudioTracks.Take(DvdVideoProject.MaxAudioTracksPerTitle).ToList();
+        var cappedSubtitles = SubtitleTracks.Count > 0
+            ? SubtitleTracks.Where(s => !string.IsNullOrWhiteSpace(s.VobSubIndexPath)).Take(DvdVideoProject.MaxSubtitleTracksPerTitle).ToList()
+            : (!string.IsNullOrWhiteSpace(SubtitleIndexPath)
+                ? [new DvdMuxSubtitleInput(SubtitleIndexPath!, "eng")]
+                : new List<DvdMuxSubtitleInput>());
+
+        bool useMultiTrackMapping = cappedAudio.Count > 0 || SubtitleTracks.Count > 0;
+        if (!useMultiTrackMapping && cappedSubtitles.Count == 1)
         {
             args.Add("-i");
-            args.Add(SubtitleIndexPath);
+            args.Add(cappedSubtitles[0].VobSubIndexPath);
             args.AddRange(["-map", "0:v:0", "-map", "0:a:0", "-map", "1:s:0", "-c:s", "copy"]);
+        }
+        else if (useMultiTrackMapping)
+        {
+            var audioInputIndices = new List<int>(cappedAudio.Count);
+            int nextInputIndex = 1;
+            string primaryFull = SafeFullPath(InputPath);
+
+            foreach (var audio in cappedAudio)
+            {
+                if (string.IsNullOrWhiteSpace(audio.SourcePath) ||
+                    string.Equals(SafeFullPath(audio.SourcePath), primaryFull, StringComparison.OrdinalIgnoreCase))
+                {
+                    audioInputIndices.Add(0);
+                }
+                else
+                {
+                    args.Add("-i");
+                    args.Add(audio.SourcePath);
+                    audioInputIndices.Add(nextInputIndex++);
+                }
+            }
+
+            var subInputIndices = new List<int>(cappedSubtitles.Count);
+            foreach (var sub in cappedSubtitles)
+            {
+                args.Add("-i");
+                args.Add(sub.VobSubIndexPath);
+                subInputIndices.Add(nextInputIndex++);
+            }
+
+            args.AddRange(["-map", "0:v:0"]);
+            if (cappedAudio.Count == 0)
+            {
+                args.AddRange(["-map", "0:a:0"]);
+            }
+            else
+            {
+                for (int a = 0; a < cappedAudio.Count; a++)
+                {
+                    args.AddRange(["-map", $"{audioInputIndices[a]}:a:{Math.Max(0, cappedAudio[a].StreamIndex)}"]);
+                }
+            }
+
+            for (int s = 0; s < cappedSubtitles.Count; s++)
+            {
+                args.AddRange(["-map", $"{subInputIndices[s]}:s:0"]);
+            }
         }
 
         // Target preset: -target ntsc-dvd or -target pal-dvd
@@ -263,33 +365,88 @@ public sealed class FfmpegDvdTranscodeBuilder
         }
 
         // Audio parameters
-        if (!string.IsNullOrWhiteSpace(AudioCodec))
+        if (cappedAudio.Count > 0)
         {
-            args.Add("-c:a");
-            args.Add(AudioCodec);
+            for (int a = 0; a < cappedAudio.Count; a++)
+            {
+                var track = cappedAudio[a];
+                string codec = string.IsNullOrWhiteSpace(track.Codec) ? AudioCodec : track.Codec;
+                int channels = Math.Clamp(track.Channels, 1, 8);
+                int bitrate = track.BitrateKbps > 0 ? track.BitrateKbps : (channels >= 6 ? 448 : AudioBitrateKbps);
+                args.Add($"-c:a:{a}");
+                args.Add(codec);
+                args.Add($"-b:a:{a}");
+                args.Add($"{bitrate}k");
+                args.Add($"-ar:a:{a}");
+                args.Add(AudioSampleRateHz.ToString());
+                args.Add($"-ac:a:{a}");
+                args.Add(channels.ToString());
+
+                string iso2 = DvdLanguageCodes.NormalizeIso639Part2(track.Language);
+                if (!string.IsNullOrEmpty(iso2) && iso2 != "und" && iso2 != "auto")
+                {
+                    args.Add($"-metadata:s:a:{a}");
+                    args.Add($"language={iso2}");
+                }
+            }
+        }
+        else
+        {
+            if (!string.IsNullOrWhiteSpace(AudioCodec))
+            {
+                args.Add("-c:a");
+                args.Add(AudioCodec);
+            }
+
+            if (AudioBitrateKbps > 0)
+            {
+                args.Add("-b:a");
+                args.Add($"{AudioBitrateKbps}k");
+            }
+
+            if (AudioSampleRateHz > 0)
+            {
+                args.Add("-ar");
+                args.Add(AudioSampleRateHz.ToString());
+            }
+
+            if (AudioChannels > 0)
+            {
+                args.Add("-ac");
+                args.Add(AudioChannels.ToString());
+            }
         }
 
-        if (AudioBitrateKbps > 0)
+        if (useMultiTrackMapping && cappedSubtitles.Count > 0)
         {
-            args.Add("-b:a");
-            args.Add($"{AudioBitrateKbps}k");
-        }
-
-        if (AudioSampleRateHz > 0)
-        {
-            args.Add("-ar");
-            args.Add(AudioSampleRateHz.ToString());
-        }
-
-        if (AudioChannels > 0)
-        {
-            args.Add("-ac");
-            args.Add(AudioChannels.ToString());
+            for (int s = 0; s < cappedSubtitles.Count; s++)
+            {
+                args.Add($"-c:s:{s}");
+                args.Add("copy");
+                string iso2 = DvdLanguageCodes.NormalizeIso639Part2(cappedSubtitles[s].Language);
+                if (!string.IsNullOrEmpty(iso2) && iso2 != "und" && iso2 != "auto")
+                {
+                    args.Add($"-metadata:s:s:{s}");
+                    args.Add($"language={iso2}");
+                }
+            }
         }
 
         args.Add(OutputPath);
 
         return args;
+    }
+
+    private static string SafeFullPath(string path)
+    {
+        try
+        {
+            return Path.GetFullPath(path);
+        }
+        catch (Exception ex) when (ex is ArgumentException or NotSupportedException or PathTooLongException)
+        {
+            return path;
+        }
     }
 
     /// <summary>

@@ -99,23 +99,60 @@ public static class DvdSubtitleWriter
     /// </summary>
     public static string WriteVobSub(IReadOnlyList<SubtitleCue> cues, string subPath, int width = 720, int height = 480,
         DvdSubtitleSize size = DvdSubtitleSize.Medium)
-        => WriteVobSub(cues.Select(c => (c.Start, (TimeSpan?)c.End, (byte[]?)null)).ToList(), cues, subPath, width, height, size);
+        => WriteVobSub(cues, subPath, width, height, size, "en", streamIndex: 0);
+
+    /// <summary>
+    /// Writes <paramref name="cues"/> as VobSub for the given <paramref name="languageCode"/> and DVD subpicture stream
+    /// index (<c>0..7</c>, mapped to substream ID <c>0x20..0x27</c>).
+    /// </summary>
+    public static string WriteVobSub(IReadOnlyList<SubtitleCue> cues, string subPath, int width, int height,
+        DvdSubtitleSize size, string languageCode, int streamIndex = 0)
+        => WriteVobSub(cues.Select(c => (c.Start, (TimeSpan?)c.End, (byte[]?)null)).ToList(), cues, subPath, width, height, size,
+            languageCode, streamIndex);
 
     /// <summary>Writes one ready-made SPU (a menu's button highlights) shown from the start, as VobSub.</summary>
     public static string WriteVobSub(byte[] spu, string subPath, int width = 720, int height = 480)
-        => WriteVobSub(new List<(TimeSpan, TimeSpan?, byte[]?)> { (TimeSpan.Zero, null, spu) }, Array.Empty<SubtitleCue>(), subPath, width, height, DvdSubtitleSize.Medium);
+        => WriteVobSub(new List<(TimeSpan, TimeSpan?, byte[]?)> { (TimeSpan.Zero, null, spu) }, Array.Empty<SubtitleCue>(), subPath, width, height, DvdSubtitleSize.Medium, "en", 0);
+
+    /// <summary>
+    /// Encodes a list of subtitle cues to DVD SPU units paired with 90 kHz PTS values (overlapping cues cut at next start).
+    /// </summary>
+    public static IReadOnlyList<(long Pts, byte[] Spu)> EncodeCuesToSpuUnits(
+        IReadOnlyList<SubtitleCue> cues,
+        int width = 720,
+        int height = 480,
+        DvdSubtitleSize size = DvdSubtitleSize.Medium)
+    {
+        ArgumentNullException.ThrowIfNull(cues);
+        var result = new List<(long Pts, byte[] Spu)>(cues.Count);
+        for (int i = 0; i < cues.Count; i++)
+        {
+            var end = i + 1 < cues.Count && cues[i + 1].Start < cues[i].End ? cues[i + 1].Start : cues[i].End;
+            if (end <= cues[i].Start)
+            {
+                continue;
+            }
+            long pts = (long)Math.Round(cues[i].Start.TotalSeconds * 90_000);
+            byte[] spu = EncodeCue(cues[i].Lines, end - cues[i].Start, width, height, size);
+            result.Add((pts, spu));
+        }
+        return result;
+    }
 
     private static string WriteVobSub(List<(TimeSpan Start, TimeSpan? End, byte[]? Spu)> items, IReadOnlyList<SubtitleCue> cues,
-        string subPath, int width, int height, DvdSubtitleSize size)
+        string subPath, int width, int height, DvdSubtitleSize size, string languageCode, int streamIndex)
     {
+        int clampedStream = Math.Clamp(streamIndex, 0, 31);
+        byte substreamId = (byte)(0x20 + clampedStream);
+        string idxLang = DvdLanguageCodes.ToIso639Part1(languageCode) ?? "en";
         string idxPath = Path.ChangeExtension(subPath, ".idx");
         using var sub = new FileStream(subPath, FileMode.Create, FileAccess.Write, FileShare.None);
         var idx = new StringBuilder();
         idx.Append("# VobSub index file, v7 (do not modify this line!)\n");
         idx.Append(CultureInfo.InvariantCulture, $"size: {width}x{height}\n");
         idx.Append("palette: 000000, ffffff, 000000, 808080, ffa020, ffffff, 000000, 000000, 000000, 000000, 000000, 000000, 000000, 000000, 000000, 000000\n");
-        idx.Append("langidx: 0\n");
-        idx.Append("id: en, index: 0\n");
+        idx.Append(CultureInfo.InvariantCulture, $"langidx: {clampedStream}\n");
+        idx.Append(CultureInfo.InvariantCulture, $"id: {idxLang}, index: {clampedStream}\n");
 
         for (int i = 0; i < items.Count; i++)
         {
@@ -137,7 +174,7 @@ public static class DvdSubtitleWriter
             long pts = (long)Math.Round(start.TotalSeconds * 90_000);
             idx.Append(CultureInfo.InvariantCulture,
                 $"timestamp: {start.Hours:D2}:{start.Minutes:D2}:{start.Seconds:D2}:{start.Milliseconds:D3}, filepos: {sub.Position:X9}\n");
-            WritePacks(sub, spu, pts);
+            WritePacks(sub, spu, pts, substreamId);
         }
         File.WriteAllText(idxPath, idx.ToString(), new UTF8Encoding(false));
         return idxPath;
@@ -367,7 +404,7 @@ public static class DvdSubtitleWriter
     /// Writes an SPU as 2,048-byte MPEG-2 program stream packs: private stream 1, substream 0x20, the PTS on the first
     /// PES packet; the last pack is filled with a padding packet.
     /// </summary>
-    private static void WritePacks(Stream output, byte[] spu, long pts)
+    private static void WritePacks(Stream output, byte[] spu, long pts, byte substreamId = 0x20)
     {
         int offset = 0;
         bool first = true;
@@ -395,7 +432,7 @@ public static class DvdSubtitleWriter
                 WritePts(pack.AsSpan(at), pts);
                 at += 5;
             }
-            pack[at++] = 0x20; // subpicture stream 0
+            pack[at++] = substreamId;
             spu.AsSpan(offset, take).CopyTo(pack.AsSpan(at));
             at += take;
             offset += take;

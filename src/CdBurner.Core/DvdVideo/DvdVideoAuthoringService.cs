@@ -177,6 +177,20 @@ public sealed class DvdAuthoringOptions
 
     /// <summary>Accent and button-highlight color preset used for DVD menus. Default: <see cref="DvdMenuHighlightPreset.Amber"/>.</summary>
     public DvdMenuHighlightPreset MenuHighlightPreset { get; set; } = DvdMenuHighlightPreset.Amber;
+
+    /// <summary>Per-title audio stream tracks (up to 8 per title), keyed by movie path.</summary>
+    public IDictionary<string, IList<DvdAudioTrackSpec>> TitleAudioTracks { get; } =
+        new Dictionary<string, IList<DvdAudioTrackSpec>>(StringComparer.OrdinalIgnoreCase);
+
+    /// <summary>Per-title subtitle stream tracks (up to 8 per title), keyed by movie path.</summary>
+    public IDictionary<string, IList<DvdSubtitleTrackSpec>> TitleSubtitleTracks { get; } =
+        new Dictionary<string, IList<DvdSubtitleTrackSpec>>(StringComparer.OrdinalIgnoreCase);
+
+    /// <summary>Default audio stream list applied when a title has no explicit entry in <see cref="TitleAudioTracks"/>.</summary>
+    public IList<DvdAudioTrackSpec> DefaultAudioTracks { get; } = new List<DvdAudioTrackSpec>();
+
+    /// <summary>Default subtitle stream list applied when a title has no explicit entry in <see cref="TitleSubtitleTracks"/>.</summary>
+    public IList<DvdSubtitleTrackSpec> DefaultSubtitleTracks { get; } = new List<DvdSubtitleTrackSpec>();
 }
 
 /// <summary>The video bitrate chosen for an authoring run, and why it was lowered (null when it was not).</summary>
@@ -246,53 +260,173 @@ public sealed class DvdVideoAuthoringService
     private static readonly System.Text.RegularExpressions.Regex Advert = new(@"\bYTS\b|YTS\.|YIFY|opensubtitles|Downloaded from",
         System.Text.RegularExpressions.RegexOptions.IgnoreCase | System.Text.RegularExpressions.RegexOptions.CultureInvariant);
 
-    /// <summary>
-    /// The movie's .srt (from <see cref="DvdAuthoringOptions.SubtitleFiles"/>, else beside it) written as VobSub in the
-    /// work folder, for FFmpeg to mux as subpicture stream 0; null when there is none or it cannot be read (noted).
-    /// </summary>
-    private static string? PrepareSubtitles(string moviePath, DvdAuthoringOptions options, int setNum, List<string> logNotes)
+    private sealed record PreparedSubtitleTrack(
+        DvdSubtitleTrackSpec Track,
+        string? VobSubIndexPath,
+        IReadOnlyList<(long Pts, byte[] Spu)> SpuUnits);
+
+    internal static bool TryGetMovieKey<T>(IDictionary<string, T> map, string moviePath, out string? matchedKey)
     {
-        string? srt = FindSubtitleFile(moviePath, options);
-        if (srt == null)
+        if (map.ContainsKey(moviePath))
         {
-            return null;
+            matchedKey = moviePath;
+            return true;
         }
-        try
+        string full = NormalizedPath(moviePath);
+        if (map.ContainsKey(full))
         {
-            var cues = DvdSubtitleWriter.ReadSrt(srt);
-            var kept = cues.Where(c => !c.Lines.Any(l => Advert.IsMatch(l))).ToList();
-            if (kept.Count == 0)
+            matchedKey = full;
+            return true;
+        }
+        foreach (string key in map.Keys)
+        {
+            if (string.Equals(NormalizedPath(key), full, StringComparison.OrdinalIgnoreCase))
             {
-                logNotes.Add($"Subtitles '{Path.GetFileName(srt)}' hold no cues; title {setNum} has none.");
-                return null;
+                matchedKey = key;
+                return true;
             }
-            string workDir = Path.Combine(Path.GetTempPath(), "IgnisDisc_Subtitles_" + Guid.NewGuid().ToString("N"));
-            Directory.CreateDirectory(workDir); // outside VIDEO_TS: nothing but DVD-Video files may sit there
-            string idx;
+        }
+        matchedKey = null;
+        return false;
+    }
+
+    /// <summary>Resolves up to 8 audio stream specs for a title.</summary>
+    public static IReadOnlyList<DvdAudioTrackSpec> ResolveAudioTracks(string moviePath, DvdAuthoringOptions options)
+    {
+        ArgumentException.ThrowIfNullOrWhiteSpace(moviePath);
+        ArgumentNullException.ThrowIfNull(options);
+
+        IList<DvdAudioTrackSpec>? configured = null;
+        if (TryGetMovieKey(options.TitleAudioTracks, moviePath, out string? key) && key != null && options.TitleAudioTracks[key].Count > 0)
+        {
+            configured = options.TitleAudioTracks[key];
+        }
+        else if (options.DefaultAudioTracks.Count > 0)
+        {
+            configured = options.DefaultAudioTracks;
+        }
+
+        if (configured != null)
+        {
+            return configured.Take(DvdVideoProject.MaxAudioTracksPerTitle).ToList();
+        }
+
+        return [new DvdAudioTrackSpec(SourcePath: null, Language: "eng", Channels: 2, BitrateKbps: options.AudioBitrateKbps)];
+    }
+
+    /// <summary>Resolves up to 8 subtitle stream specs for a title (combining multi-track lists and legacy/beside-movie .srt).</summary>
+    public static IReadOnlyList<DvdSubtitleTrackSpec> ResolveSubtitleTracks(string moviePath, DvdAuthoringOptions options)
+    {
+        ArgumentException.ThrowIfNullOrWhiteSpace(moviePath);
+        ArgumentNullException.ThrowIfNull(options);
+
+        var result = new List<DvdSubtitleTrackSpec>();
+        if (TryGetMovieKey(options.TitleSubtitleTracks, moviePath, out string? key) && key != null)
+        {
+            foreach (var track in options.TitleSubtitleTracks[key])
+            {
+                if (result.Count >= DvdVideoProject.MaxSubtitleTracksPerTitle) break;
+                result.Add(track);
+            }
+        }
+        else if (options.DefaultSubtitleTracks.Count > 0)
+        {
+            foreach (var track in options.DefaultSubtitleTracks)
+            {
+                if (result.Count >= DvdVideoProject.MaxSubtitleTracksPerTitle) break;
+                result.Add(track);
+            }
+        }
+
+        string? legacySrt = FindSubtitleFile(moviePath, options);
+        if (legacySrt != null && result.Count < DvdVideoProject.MaxSubtitleTracksPerTitle)
+        {
+            string fullLegacy = NormalizedPath(legacySrt);
+            bool alreadyPresent = result.Any(t =>
+                !string.IsNullOrWhiteSpace(t.SourcePath) &&
+                string.Equals(NormalizedPath(t.SourcePath!), fullLegacy, StringComparison.OrdinalIgnoreCase));
+            if (!alreadyPresent)
+            {
+                string lang = string.IsNullOrWhiteSpace(options.SubtitleLanguage) ||
+                              string.Equals(options.SubtitleLanguage, "auto", StringComparison.OrdinalIgnoreCase)
+                    ? "eng"
+                    : options.SubtitleLanguage;
+                result.Add(new DvdSubtitleTrackSpec(legacySrt, lang));
+            }
+        }
+
+        return result;
+    }
+
+    private static List<PreparedSubtitleTrack> PrepareSubtitleTracks(
+        IReadOnlyList<DvdSubtitleTrackSpec> tracks,
+        DvdAuthoringOptions options,
+        int setNum,
+        bool writeVobSubFiles,
+        List<string> logNotes)
+    {
+        var prepared = new List<PreparedSubtitleTrack>();
+        int videoHeight = options.Standard == DvdVideoStandard.Pal ? 576 : 480;
+        for (int s = 0; s < tracks.Count && prepared.Count < DvdVideoProject.MaxSubtitleTracksPerTitle; s++)
+        {
+            var track = tracks[s];
+            string? srt = track.SourcePath;
+            if (string.IsNullOrWhiteSpace(srt) || !File.Exists(srt))
+            {
+                if (!string.IsNullOrWhiteSpace(srt))
+                {
+                    logNotes.Add($"Subtitles '{Path.GetFileName(srt)}' were not found; skipping subtitle stream {s + 1} for title {setNum}.");
+                }
+                continue;
+            }
+
             try
             {
-                int videoHeight = options.Standard == DvdVideoStandard.Pal ? 576 : 480;
-                idx = DvdSubtitleWriter.WriteVobSub(
-                    kept,
-                    Path.Combine(workDir, $"subtitles_{setNum}.sub"),
-                    width: 720,
-                    height: videoHeight,
-                    size: options.SubtitleSize);
+                var cues = DvdSubtitleWriter.ReadSrt(srt);
+                var kept = cues.Where(c => !c.Lines.Any(l => Advert.IsMatch(l))).ToList();
+                if (kept.Count == 0)
+                {
+                    logNotes.Add($"Subtitles '{Path.GetFileName(srt)}' hold no cues; skipping subtitle stream {s + 1} for title {setNum}.");
+                    continue;
+                }
+
+                string? idx = null;
+                if (writeVobSubFiles)
+                {
+                    string workDir = Path.Combine(Path.GetTempPath(), "IgnisDisc_Subtitles_" + Guid.NewGuid().ToString("N"));
+                    Directory.CreateDirectory(workDir);
+                    try
+                    {
+                        idx = DvdSubtitleWriter.WriteVobSub(
+                            kept,
+                            Path.Combine(workDir, $"subtitles_{setNum}_{prepared.Count}.sub"),
+                            width: 720,
+                            height: videoHeight,
+                            size: options.SubtitleSize,
+                            languageCode: track.NormalizedLanguage,
+                            streamIndex: 0);
+                    }
+                    catch
+                    {
+                        try { Directory.Delete(workDir, recursive: true); } catch (IOException) { } catch (UnauthorizedAccessException) { }
+                        throw;
+                    }
+                }
+
+                var spuUnits = writeVobSubFiles
+                    ? Array.Empty<(long Pts, byte[] Spu)>()
+                    : DvdSubtitleWriter.EncodeCuesToSpuUnits(kept, width: 720, height: videoHeight, size: options.SubtitleSize);
+
+                prepared.Add(new PreparedSubtitleTrack(track, idx, spuUnits));
+                logNotes.Add($"Subtitle stream {prepared.Count} ({track.NormalizedLanguage}) for title {setNum} from '{Path.GetFileName(srt)}': {kept.Count} cues" +
+                    (kept.Count < cues.Count ? $" ({cues.Count - kept.Count} download-site adverts left out)." : "."));
             }
-            catch
+            catch (Exception ex) when (ex is IOException or UnauthorizedAccessException or InvalidOperationException or FormatException or ArgumentException)
             {
-                try { Directory.Delete(workDir, recursive: true); } catch (IOException) { } catch (UnauthorizedAccessException) { }
-                throw;
+                logNotes.Add($"Subtitles '{Path.GetFileName(srt)}' could not be used ({ex.Message}); skipping subtitle stream {s + 1} for title {setNum}.");
             }
-            logNotes.Add($"English subtitles for title {setNum} from '{Path.GetFileName(srt)}': {kept.Count} cues" +
-                (kept.Count < cues.Count ? $" ({cues.Count - kept.Count} download-site adverts left out)." : "."));
-            return idx;
         }
-        catch (Exception ex) when (ex is IOException or UnauthorizedAccessException or InvalidOperationException or FormatException or ArgumentException)
-        {
-            logNotes.Add($"Subtitles '{Path.GetFileName(srt)}' could not be used ({ex.Message}); title {setNum} has none.");
-            return null;
-        }
+        return prepared;
     }
 
     /// <summary>The .srt for a movie: given in <see cref="DvdAuthoringOptions.SubtitleFiles"/>, else beside it; null when none.</summary>
@@ -467,14 +601,29 @@ public sealed class DvdVideoAuthoringService
     {
         ArgumentNullException.ThrowIfNull(titleSeconds);
         ArgumentNullException.ThrowIfNull(options);
+        int effectiveAudioKbps = options.AudioBitrateKbps;
+        if (options.DefaultAudioTracks.Count > 0)
+        {
+            effectiveAudioKbps = Math.Max(effectiveAudioKbps,
+                options.DefaultAudioTracks.Take(DvdVideoProject.MaxAudioTracksPerTitle).Sum(a => a.EffectiveBitrateKbps(options.AudioBitrateKbps)));
+        }
+        foreach (var list in options.TitleAudioTracks.Values)
+        {
+            if (list.Count > 0)
+            {
+                effectiveAudioKbps = Math.Max(effectiveAudioKbps,
+                    list.Take(DvdVideoProject.MaxAudioTracksPerTitle).Sum(a => a.EffectiveBitrateKbps(options.AudioBitrateKbps)));
+            }
+        }
+
         double total = titleSeconds.Where(s => s > 0).Sum();
         if (!options.FitToDisc)
         {
             int fixedKbps = Math.Clamp(options.VideoBitrateKbps, MinimumVideoKbps, 9000);
-            int fixedMaxKbps = Math.Clamp(Math.Max(options.MaxVideoBitrateKbps, fixedKbps), fixedKbps, 9800 - options.AudioBitrateKbps);
+            int fixedMaxKbps = Math.Clamp(Math.Max(options.MaxVideoBitrateKbps, fixedKbps), fixedKbps, Math.Max(fixedKbps, 9800 - effectiveAudioKbps));
             double targetBytes = options.DualLayer ? Dvd9PayloadBytes : Dvd5PayloadBytes;
             long projectedBytes = total > 0
-                ? (long)Math.Ceiling((fixedKbps + options.AudioBitrateKbps) * 1000.0 / 8.0 * MuxOverhead * total)
+                ? (long)Math.Ceiling((fixedKbps + effectiveAudioKbps) * 1000.0 / 8.0 * MuxOverhead * total)
                 : 0;
             string? overNote = projectedBytes > targetBytes
                 ? $"At {fixedKbps} kbps ({FormatSeconds(total)}), the authored VOBs (~{projectedBytes / 1_000_000_000.0:F2} GB) may exceed {(options.DualLayer ? "DVD-9" : "DVD-5")} capacity."
@@ -529,7 +678,7 @@ public sealed class DvdVideoAuthoringService
             }
         }
 
-        int fittedVideoKbps = Math.Clamp(allowedKbps - options.AudioBitrateKbps, MinimumVideoKbps, options.VideoBitrateKbps);
+        int fittedVideoKbps = Math.Clamp(allowedKbps - effectiveAudioKbps, MinimumVideoKbps, options.VideoBitrateKbps);
         if (fittedVideoKbps >= options.VideoBitrateKbps)
         {
             return new DvdBitratePlan(options.VideoBitrateKbps, options.MaxVideoBitrateKbps, warning);
@@ -597,6 +746,20 @@ public sealed class DvdVideoAuthoringService
 
         DvdIfoGenerator.PatchVobNavPackets(vob, vobId: 1, cellId: 1, isMenu: false);
         return vob;
+    }
+
+    /// <summary>
+    /// Authors DVD-Video from a <see cref="DvdVideoProject"/> with per-title audio and subtitle track definitions.
+    /// </summary>
+    public Task<DvdAuthoringResult> AuthorAsync(
+        DvdVideoProject project,
+        string outputRootDirectory,
+        IProgress<(double Percent, string Status)>? progress = null,
+        CancellationToken cancellationToken = default)
+    {
+        ArgumentNullException.ThrowIfNull(project);
+        var options = project.ToAuthoringOptions();
+        return AuthorAsync(project.Titles.Select(t => t.MoviePath), outputRootDirectory, options, progress, cancellationToken);
     }
 
     /// <summary>
@@ -832,7 +995,8 @@ public sealed class DvdVideoAuthoringService
                             }
                         }
                         string name = i < resolvedTitles.Count ? resolvedTitles[i] : $"Title {i + 1}";
-                        menuTitles.Add(new DvdMenuTitle(name, stillPath, FindSubtitleFile(analyzed.MovieFilePaths[i], options) != null));
+                        bool hasSubs = ResolveSubtitleTracks(analyzed.MovieFilePaths[i], options).Count > 0;
+                        menuTitles.Add(new DvdMenuTitle(name, stillPath, hasSubs));
                     }
 
                     int initialButton = options.SubtitlesOnByDefault && menuTitles.Count > 0 && menuTitles[0].HasSubtitles ? 2 : 1;
@@ -905,21 +1069,45 @@ public sealed class DvdVideoAuthoringService
 
                 // Place tempVob inside videoTsDir so it is on the same filesystem volume for fast 0ms File.Move
                 string tempVob = Path.Combine(videoTsDir, $"_temp_transcode_{setNum}_{Guid.NewGuid():N}.vob");
-                string? subtitleIndex = ffmpegReady ? PrepareSubtitles(moviePath, options, setNum, logNotes) : null;
+                var resolvedAudioTracks = ResolveAudioTracks(moviePath, options);
+                var resolvedSubtitleSpecs = ResolveSubtitleTracks(moviePath, options);
+                var preparedSubtitles = PrepareSubtitleTracks(resolvedSubtitleSpecs, options, setNum, writeVobSubFiles: ffmpegReady, logNotes);
                 try
                 {
                     bool transcodeSuccess = false;
                     double detectedDurationSeconds = probedDurations[i];
 
-                    async Task<(bool, double)> TranscodeAsync(string? subtitles)
+                    async Task<(bool, double)> TranscodeAsync(IReadOnlyList<PreparedSubtitleTrack> subs)
                     {
                         var transcodeBuilder = (options.Standard == DvdVideoStandard.Pal
                             ? FfmpegDvdTranscodeBuilder.ForPal(moviePath, tempVob, options.AspectRatio)
                             : FfmpegDvdTranscodeBuilder.ForNtsc(moviePath, tempVob, options.AspectRatio))
                             .WithScaleAndPadFilter(true)
                             .WithVideoBitrate(targetVideoBitrateKbps, targetMaxVideoBitrateKbps)
-                            .WithAudio("ac3", options.AudioBitrateKbps)
-                            .WithSubtitles(subtitles);
+                            .WithAudio("ac3", options.AudioBitrateKbps);
+
+                        bool useMultiAudio = resolvedAudioTracks.Count > 1 ||
+                                             !string.IsNullOrWhiteSpace(resolvedAudioTracks[0].SourcePath) ||
+                                             resolvedAudioTracks[0].Channels != 2 ||
+                                             !string.Equals(resolvedAudioTracks[0].NormalizedLanguage, "eng", StringComparison.OrdinalIgnoreCase);
+
+                        if (useMultiAudio || subs.Count > 1 || (subs.Count == 1 && !string.Equals(subs[0].Track.NormalizedLanguage, "eng", StringComparison.OrdinalIgnoreCase)))
+                        {
+                            transcodeBuilder.WithAudioTracks(resolvedAudioTracks.Select(a => new DvdMuxAudioInput(
+                                a.SourcePath,
+                                a.StreamIndex,
+                                a.NormalizedLanguage,
+                                a.Channels,
+                                a.EffectiveBitrateKbps(options.AudioBitrateKbps))));
+                            transcodeBuilder.WithSubtitleTracks(subs
+                                .Where(s => s.VobSubIndexPath != null)
+                                .Select(s => new DvdMuxSubtitleInput(s.VobSubIndexPath!, s.Track.NormalizedLanguage)));
+                        }
+                        else if (subs.Count == 1)
+                        {
+                            transcodeBuilder.WithSubtitles(subs[0].VobSubIndexPath);
+                        }
+
                         return await RunFfmpegTranscodeWithProgressAsync(ffmpegExe!, transcodeBuilder.BuildArgumentList(), tempVob, setNum,
                             titleCount, movieName, detectedDurationSeconds, titleStartPct, titleSpanPct, progress, logNotes, cancellationToken).ConfigureAwait(false);
                     }
@@ -928,15 +1116,18 @@ public sealed class DvdVideoAuthoringService
                     {
                         if (ffmpegReady)
                         {
-                            (transcodeSuccess, detectedDurationSeconds) = await TranscodeAsync(subtitleIndex).ConfigureAwait(false);
-                            if (!transcodeSuccess && subtitleIndex != null)
+                            (transcodeSuccess, detectedDurationSeconds) = await TranscodeAsync(preparedSubtitles).ConfigureAwait(false);
+                            if (!transcodeSuccess && preparedSubtitles.Count > 0)
                             {
                                 // Some FFmpeg builds fail to mux large subtitle pictures; the film matters more than its subtitles.
                                 logNotes.Add($"FFmpeg could not write title {setNum} with its subtitles; writing it again without them.");
-                                DeleteSubtitleFiles(subtitleIndex);
-                                subtitleIndex = null;
+                                foreach (var sub in preparedSubtitles)
+                                {
+                                    DeleteSubtitleFiles(sub.VobSubIndexPath);
+                                }
+                                preparedSubtitles.Clear();
                                 try { if (File.Exists(tempVob)) File.Delete(tempVob); } catch (IOException) { } catch (UnauthorizedAccessException) { }
-                                (transcodeSuccess, detectedDurationSeconds) = await TranscodeAsync(null).ConfigureAwait(false);
+                                (transcodeSuccess, detectedDurationSeconds) = await TranscodeAsync(preparedSubtitles).ConfigureAwait(false);
                             }
                         }
                     }
@@ -968,9 +1159,16 @@ public sealed class DvdVideoAuthoringService
                         try { inputLen = new FileInfo(moviePath).Length; } catch { }
                         // Cap synthetic fallback to 4096 sectors max if FFmpeg failed on a large dummy/corrupt file
                         int secCount = (int)Math.Clamp(inputLen / OpticalConstants.DataSectorSize, 32L, 4096L);
-                        byte[] synthBytes = CreateSyntheticMovieVob(secCount, setNum);
+                        var muxAudio = resolvedAudioTracks
+                            .Select((a, idx) => new Mpeg2AudioMuxStream(idx, a.NormalizedLanguage, a.Channels))
+                            .ToList();
+                        var muxSubs = preparedSubtitles
+                            .Select((s, idx) => new Mpeg2SubtitleMuxStream(idx, s.Track.NormalizedLanguage, s.SpuUnits))
+                            .ToList();
+                        byte[] synthBytes = Mpeg2Muxer.MuxProgramStream(muxAudio, muxSubs,
+                            new Mpeg2MuxOptions(options.Standard, options.AspectRatio, secCount, Math.Max(0, options.ChapterIntervalSeconds)));
                         await File.WriteAllBytesAsync(tempVob, synthBytes, cancellationToken).ConfigureAwait(false);
-                        logNotes.Add($"Generated synthetic movie VOB for Title {setNum} ({secCount} sectors).");
+                        logNotes.Add($"Generated synthetic movie VOB for Title {setNum} ({synthBytes.Length / OpticalConstants.DataSectorSize} sectors, {muxAudio.Count} audio stream(s), {muxSubs.Count} subtitle stream(s)).");
                     }
 
                     // Patch NAV packets on the contiguous VOB stream before splitting into 1 GB extents
@@ -1052,17 +1250,21 @@ public sealed class DvdVideoAuthoringService
                     bool chainToNext = options.AfterTitleAction == DvdAfterTitleAction.PlayNextTitle;
                     int nextTitle = chainToNext && setNum < titleCount ? setNum + 1 : 0;
                     int effectiveDurationSec = detectedDurationSeconds > 1.0 ? (int)Math.Round(detectedDurationSeconds) : 60;
+                    var audioInfos = resolvedAudioTracks.Select(a => a.ToIfoInfo()).ToList();
+                    var subtitleInfos = preparedSubtitles.Select(s => s.Track.ToIfoInfo()).ToList();
                     var vtsInput = new TitleSetIfoInput(
                         setNum,
                         totalVobSecs,
                         effectiveDurationSec,
                         vobus,
                         nextTitle,
-                        subtitleIndex != null && transcodeSuccess,
+                        subtitleInfos.Count > 0,
                         vtsMenuVobSectors,
                         vtsMenuPages,
                         vtsMenuVobus,
-                        vtsMenuHasAudio);
+                        vtsMenuHasAudio,
+                        audioInfos,
+                        subtitleInfos);
                     byte[] vtsIfoBytes = BuildVtsIfoFromInput(vtsInput, options, ifoSectors: 0, callMenuAtEnd: hasMenu,
                         menuPalette: menuPalette, vmgMenuPageCount: titleMenuPageCount);
 
@@ -1075,7 +1277,10 @@ public sealed class DvdVideoAuthoringService
                 }
                 finally
                 {
-                    DeleteSubtitleFiles(subtitleIndex);
+                    foreach (var sub in preparedSubtitles)
+                    {
+                        DeleteSubtitleFiles(sub.VobSubIndexPath);
+                    }
                     try { if (File.Exists(tempVob)) File.Delete(tempVob); } catch (IOException) { } catch (UnauthorizedAccessException) { }
                 }
             }
@@ -1174,7 +1379,9 @@ public sealed class DvdVideoAuthoringService
                 menuHasAudio: menuHasAudio,
                 menuPalette: menuPalette,
                 vtsHasMenus: titleSetIfoInputs.Select(t => t.MenuVobSectors > 0).ToList(),
-                vtsMenuHasAudio: titleSetIfoInputs.Select(t => t.MenuHasAudio).ToList());
+                vtsMenuHasAudio: titleSetIfoInputs.Select(t => t.MenuHasAudio).ToList(),
+                titleAudioStreams: titleSetIfoInputs.Select(t => t.AudioStreams).ToList(),
+                titleSubtitleStreams: titleSetIfoInputs.Select(t => t.SubtitleStreams).ToList());
 
             string vmgIfoPath = Path.Combine(videoTsDir, "VIDEO_TS.IFO");
             string vmgBupPath = Path.Combine(videoTsDir, "VIDEO_TS.BUP");
@@ -1572,7 +1779,9 @@ public sealed class DvdVideoAuthoringService
         int MenuVobSectors,
         IReadOnlyList<DvdMenuPageCell> MenuPages,
         IReadOnlyList<DvdVobu> MenuVobus,
-        bool MenuHasAudio);
+        bool MenuHasAudio,
+        IReadOnlyList<DvdAudioStreamInfo> AudioStreams,
+        IReadOnlyList<DvdSubtitleStreamInfo> SubtitleStreams);
 
     private static byte[] BuildVtsIfoFromInput(
         TitleSetIfoInput input,
@@ -1600,7 +1809,9 @@ public sealed class DvdVideoAuthoringService
             menuHasButtons: input.MenuVobSectors > 0,
             menuHasAudio: input.MenuHasAudio,
             menuPalette: menuPalette,
-            vmgMenuPageCount: vmgMenuPageCount);
+            vmgMenuPageCount: vmgMenuPageCount,
+            audioStreams: input.AudioStreams,
+            subtitleStreams: input.SubtitleStreams);
 
     private static IReadOnlyList<DvdMenuChapterInfo> ExtractChapters(IReadOnlyList<DvdVobu> vobus)
     {

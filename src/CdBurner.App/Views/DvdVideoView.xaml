@@ -309,58 +309,125 @@
                     <ItemsControl ItemsSource="{Binding SubtitleRows}" AutomationProperties.Name="Subtitles per movie">
                         <ItemsControl.ItemTemplate>
                             <DataTemplate>
-                                <Grid Margin="0,2,0,2">
-                                    <Grid.ColumnDefinitions>
-                                        <ColumnDefinition Width="Auto" MaxWidth="240" />
-                                        <ColumnDefinition Width="190" />
-                                        <ColumnDefinition Width="*" />
-                                        <ColumnDefinition Width="Auto" />
-                                        <ColumnDefinition Width="Auto" />
-                                    </Grid.ColumnDefinitions>
-                                    <TextBlock Grid.Column="0"
-                                               Text="{Binding MovieName}"
-                                               ToolTip="{Binding MoviePath}"
-                                               TextTrimming="CharacterEllipsis"
-                                               FontWeight="SemiBold"
-                                               Foreground="{DynamicResource TextPrimaryBrush}"
-                                               VerticalAlignment="Center"
-                                               Margin="0,0,10,0" />
-                                    <TextBox Grid.Column="1"
-                                             Text="{Binding MenuTitleName, UpdateSourceTrigger=PropertyChanged}"
-                                             AutomationProperties.Name="Menu title name"
-                                             ToolTip="Title shown on the DVD title menu"
-                                             MaxLength="80"
-                                             Padding="6,3"
-                                             Background="{DynamicResource ControlBackgroundBrush}"
-                                             Foreground="{DynamicResource TextPrimaryBrush}"
-                                             BorderBrush="{DynamicResource ControlBorderBrush}"
-                                             VerticalAlignment="Center"
-                                             Margin="0,0,10,0" />
-                                    <TextBlock Grid.Column="2"
-                                               Text="{Binding StatusText}"
-                                               ToolTip="{Binding SubtitlePath}"
-                                               TextWrapping="Wrap"
-                                               Foreground="{DynamicResource TextSecondaryBrush}"
-                                               VerticalAlignment="Center"
-                                               Margin="0,0,10,0" />
-                                    <Button Grid.Column="3"
-                                            Content="Choose .srt..."
-                                            AutomationProperties.Name="Choose subtitle file"
-                                            Command="{Binding DataContext.ChooseSubtitleFileCommand, RelativeSource={RelativeSource AncestorType=ItemsControl}}"
-                                            CommandParameter="{Binding}"
-                                            Padding="10,3"
-                                            FontSize="11.5"
-                                            Margin="0,0,6,0" />
-                                    <Button Grid.Column="4"
-                                            Content="No subtitles"
-                                            AutomationProperties.Name="Use no subtitle file"
-                                            ToolTip="Leave this movie's subtitle file off the disc (with Generate subtitles on, they are made by speech recognition instead)"
-                                            Command="{Binding DataContext.ClearSubtitleFileCommand, RelativeSource={RelativeSource AncestorType=ItemsControl}}"
-                                            CommandParameter="{Binding}"
-                                            Visibility="{Binding HasSubtitleFile, Converter={StaticResource BoolToVis}}"
-                                            Padding="10,3"
-                                            FontSize="11.5" />
-                                </Grid>
+                                <StackPanel Margin="0,2,0,4">
+                                    <Grid>
+                                        <Grid.ColumnDefinitions>
+                                            <ColumnDefinition Width="Auto" MaxWidth="240" />
+                                            <ColumnDefinition Width="190" />
+                                            <ColumnDefinition Width="*" />
+                                            <ColumnDefinition Width="Auto" />
+                                            <ColumnDefinition Width="Auto" />
+                                        </Grid.ColumnDefinitions>
+                                        <TextBlock Grid.Column="0"
+                                                   Text="{Binding MovieName}"
+                                                   ToolTip="{Binding MoviePath}"
+                                                   TextTrimming="CharacterEllipsis"
+                                                   FontWeight="SemiBold"
+                                                   Foreground="{DynamicResource TextPrimaryBrush}"
+                                                   VerticalAlignment="Center"
+                                                   Margin="0,0,10,0" />
+                                        <TextBox Grid.Column="1"
+                                                 Text="{Binding MenuTitleName, UpdateSourceTrigger=PropertyChanged}"
+                                                 AutomationProperties.Name="Menu title name"
+                                                 ToolTip="Title shown on the DVD title menu"
+                                                 MaxLength="80"
+                                                 Padding="6,3"
+                                                 Background="{DynamicResource ControlBackgroundBrush}"
+                                                 Foreground="{DynamicResource TextPrimaryBrush}"
+                                                 BorderBrush="{DynamicResource ControlBorderBrush}"
+                                                 VerticalAlignment="Center"
+                                                 Margin="0,0,10,0" />
+                                        <TextBlock Grid.Column="2"
+                                                   Text="{Binding StatusText}"
+                                                   ToolTip="{Binding SubtitlePath}"
+                                                   TextWrapping="Wrap"
+                                                   Foreground="{DynamicResource TextSecondaryBrush}"
+                                                   VerticalAlignment="Center"
+                                                   Margin="0,0,10,0" />
+                                        <Button Grid.Column="3"
+                                                Content="Choose .srt..."
+                                                AutomationProperties.Name="Choose subtitle file"
+                                                Command="{Binding DataContext.ChooseSubtitleFileCommand, RelativeSource={RelativeSource AncestorType=ItemsControl}}"
+                                                CommandParameter="{Binding}"
+                                                Padding="10,3"
+                                                FontSize="11.5"
+                                                Margin="0,0,6,0" />
+                                        <Button Grid.Column="4"
+                                                Content="No subtitles"
+                                                AutomationProperties.Name="Use no subtitle file"
+                                                ToolTip="Leave this movie's subtitle file off the disc (with Generate subtitles on, they are made by speech recognition instead)"
+                                                Command="{Binding DataContext.ClearSubtitleFileCommand, RelativeSource={RelativeSource AncestorType=ItemsControl}}"
+                                                CommandParameter="{Binding}"
+                                                Visibility="{Binding HasSubtitleFile, Converter={StaticResource BoolToVis}}"
+                                                Padding="10,3"
+                                                FontSize="11.5" />
+                                    </Grid>
+                                    <WrapPanel Orientation="Horizontal" Margin="14,3,0,0">
+                                        <TextBlock Text="Audio tracks (max 8):"
+                                                   FontSize="11"
+                                                   Foreground="{DynamicResource TextMutedBrush}"
+                                                   VerticalAlignment="Center"
+                                                   Margin="0,0,8,0" />
+                                        <Button Content="+ Audio Track..."
+                                                AutomationProperties.Name="Add audio track"
+                                                Command="{Binding DataContext.AddAudioTrackCommand, RelativeSource={RelativeSource AncestorType=ItemsControl}}"
+                                                CommandParameter="{Binding}"
+                                                IsEnabled="{Binding CanAddAudioTrack}"
+                                                Padding="8,2"
+                                                FontSize="11"
+                                                Margin="0,0,12,0" />
+                                        <TextBlock Text="Subtitle tracks (max 8):"
+                                                   FontSize="11"
+                                                   Foreground="{DynamicResource TextMutedBrush}"
+                                                   VerticalAlignment="Center"
+                                                   Margin="0,0,8,0" />
+                                        <Button Content="+ Subtitle Track..."
+                                                AutomationProperties.Name="Add subtitle track"
+                                                Command="{Binding DataContext.AddSubtitleTrackCommand, RelativeSource={RelativeSource AncestorType=ItemsControl}}"
+                                                CommandParameter="{Binding}"
+                                                IsEnabled="{Binding CanAddSubtitleTrack}"
+                                                Padding="8,2"
+                                                FontSize="11" />
+                                    </WrapPanel>
+                                    <ItemsControl ItemsSource="{Binding AudioTracks}"
+                                                  Visibility="{Binding HasAudioTracks, Converter={StaticResource BoolToVis}}"
+                                                  Margin="22,2,0,0">
+                                        <ItemsControl.ItemTemplate>
+                                            <DataTemplate>
+                                                <WrapPanel Orientation="Horizontal" Margin="0,1">
+                                                    <TextBlock Text="{Binding StreamIdLabel}" FontFamily="Consolas" FontSize="11" Foreground="{DynamicResource AccentBrush}" VerticalAlignment="Center" Margin="0,0,6,0" />
+                                                    <TextBlock Text="{Binding SourceName}" ToolTip="{Binding SourcePath}" FontSize="11" Foreground="{DynamicResource TextSecondaryBrush}" VerticalAlignment="Center" Margin="0,0,8,0" />
+                                                    <TextBox Width="44" Text="{Binding Language, UpdateSourceTrigger=LostFocus}" ToolTip="ISO 639-2 language code (e.g. eng, spa, fra)" FontSize="11" Padding="4,1" Margin="0,0,6,0" />
+                                                    <ComboBox Width="56" ItemsSource="{Binding AvailableChannels}" SelectedItem="{Binding Channels}" ToolTip="Channel count (2 = stereo, 6 = 5.1)" FontSize="11" Margin="0,0,6,0" />
+                                                    <ComboBox Width="140" ItemsSource="{Binding AvailableContentKinds}" SelectedItem="{Binding ContentKind}" ToolTip="Audio stream role" FontSize="11" Margin="0,0,6,0" />
+                                                    <Button Content="Remove"
+                                                            Command="{Binding DataContext.RemoveAudioTrackCommand, RelativeSource={RelativeSource AncestorType=UserControl}}"
+                                                            CommandParameter="{Binding}"
+                                                            Padding="6,1"
+                                                            FontSize="10.5" />
+                                                </WrapPanel>
+                                            </DataTemplate>
+                                        </ItemsControl.ItemTemplate>
+                                    </ItemsControl>
+                                    <ItemsControl ItemsSource="{Binding SubtitleTracks}"
+                                                  Visibility="{Binding HasSubtitleTracks, Converter={StaticResource BoolToVis}}"
+                                                  Margin="22,2,0,0">
+                                        <ItemsControl.ItemTemplate>
+                                            <DataTemplate>
+                                                <WrapPanel Orientation="Horizontal" Margin="0,1">
+                                                    <TextBlock Text="{Binding StreamIdLabel}" FontFamily="Consolas" FontSize="11" Foreground="{DynamicResource AccentBrush}" VerticalAlignment="Center" Margin="0,0,6,0" />
+                                                    <TextBlock Text="{Binding SourceName}" ToolTip="{Binding SourcePath}" FontSize="11" Foreground="{DynamicResource TextSecondaryBrush}" VerticalAlignment="Center" Margin="0,0,8,0" />
+                                                    <TextBox Width="44" Text="{Binding Language, UpdateSourceTrigger=LostFocus}" ToolTip="ISO 639-2 language code (e.g. eng, spa, fra)" FontSize="11" Padding="4,1" Margin="0,0,6,0" />
+                                                    <Button Content="Remove"
+                                                            Command="{Binding DataContext.RemoveSubtitleTrackCommand, RelativeSource={RelativeSource AncestorType=UserControl}}"
+                                                            CommandParameter="{Binding}"
+                                                            Padding="6,1"
+                                                            FontSize="10.5" />
+                                                </WrapPanel>
+                                            </DataTemplate>
+                                        </ItemsControl.ItemTemplate>
+                                    </ItemsControl>
+                                </StackPanel>
                             </DataTemplate>
                         </ItemsControl.ItemTemplate>
                     </ItemsControl>

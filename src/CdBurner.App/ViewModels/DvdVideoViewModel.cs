@@ -132,6 +132,12 @@ public class DvdVideoViewModel : ObservableObject
     /// <summary>Custom menu title names entered by the user, keyed by full movie path.</summary>
     private readonly Dictionary<string, string> _customTitleNames = new(StringComparer.OrdinalIgnoreCase);
 
+    /// <summary>Per-title audio stream specifications (up to 8 per movie), keyed by full movie path.</summary>
+    private readonly Dictionary<string, List<DvdAudioTrackSpec>> _titleAudioTracks = new(StringComparer.OrdinalIgnoreCase);
+
+    /// <summary>Per-title subtitle stream specifications (up to 8 per movie), keyed by full movie path.</summary>
+    private readonly Dictionary<string, List<DvdSubtitleTrackSpec>> _titleSubtitleTracks = new(StringComparer.OrdinalIgnoreCase);
+
     /// <summary>
     /// Physical path to the VIDEO_TS directory, root folder containing VIDEO_TS, or delimited movie file list.
     /// </summary>
@@ -1278,6 +1284,18 @@ public class DvdVideoViewModel : ObservableObject
 
     /// <summary>Uses no subtitle file for one movie (parameter: its <see cref="DvdSubtitleChoiceRow"/>).</summary>
     public RelayCommand ClearSubtitleFileCommand { get; }
+
+    /// <summary>Adds an external audio stream track (up to 8) to a movie row.</summary>
+    public RelayCommand AddAudioTrackCommand { get; }
+
+    /// <summary>Removes an audio stream track from a movie row.</summary>
+    public RelayCommand RemoveAudioTrackCommand { get; }
+
+    /// <summary>Adds a subtitle stream track (up to 8) to a movie row.</summary>
+    public RelayCommand AddSubtitleTrackCommand { get; }
+
+    /// <summary>Removes a subtitle stream track from a movie row.</summary>
+    public RelayCommand RemoveSubtitleTrackCommand { get; }
     public RelayCommand ClearSourceCommand { get; }
 
     /// <summary>Starts a new DVD: forgets the movies, subtitle picks, disc name and menu title (see <see cref="StartNewDvd"/>).</summary>
@@ -1313,6 +1331,10 @@ public class DvdVideoViewModel : ObservableObject
         NextMenuPreviewPageCommand = new RelayCommand(_ => MenuPreviewPageIndex++, _ => CanGoToNextMenuPreviewPage);
         ChooseSubtitleFileCommand = new RelayCommand(p => { if (p is DvdSubtitleChoiceRow row) PickSubtitleFile(row); }, _ => !IsBusy);
         ClearSubtitleFileCommand = new RelayCommand(p => { if (p is DvdSubtitleChoiceRow row) ChooseSubtitleFile(row.MoviePath, null); }, _ => !IsBusy);
+        AddAudioTrackCommand = new RelayCommand(p => { if (p is DvdSubtitleChoiceRow row) PickAudioTrack(row); }, _ => !IsBusy);
+        RemoveAudioTrackCommand = new RelayCommand(p => { if (p is DvdAudioTrackRow track) RemoveAudioTrack(track.MoviePath, track.StreamIndex); }, _ => !IsBusy);
+        AddSubtitleTrackCommand = new RelayCommand(p => { if (p is DvdSubtitleChoiceRow row) PickSubtitleTrack(row); }, _ => !IsBusy);
+        RemoveSubtitleTrackCommand = new RelayCommand(p => { if (p is DvdSubtitleTrackRow track) RemoveSubtitleTrack(track.MoviePath, track.StreamIndex); }, _ => !IsBusy);
         SourceMediaFiles.CollectionChanged += (_, _) => RefreshSubtitleRows();
         ClearSourceCommand = new RelayCommand(_ => ClearSource());
         NewDvdCommand = new RelayCommand(_ => StartNewDvd(), _ => !IsBusy);
@@ -1502,7 +1524,128 @@ public class DvdVideoViewModel : ObservableObject
     public void ChooseSubtitleFile(string moviePath, string? subtitlePath)
     {
         _chosenSubtitles[Path.GetFullPath(moviePath)] = subtitlePath == null ? string.Empty : Path.GetFullPath(subtitlePath);
+        InvalidateAuthoredCache();
         RefreshSubtitleRows();
+    }
+
+    /// <summary>Adds an audio stream track (up to 8) to <paramref name="moviePath"/>.</summary>
+    public bool AddAudioTrack(
+        string moviePath,
+        string? audioSourcePath,
+        string language = "eng",
+        int channels = 2,
+        DvdAudioContentKind contentKind = DvdAudioContentKind.Normal)
+    {
+        ArgumentException.ThrowIfNullOrWhiteSpace(moviePath);
+        string fullMovie = Path.GetFullPath(moviePath);
+        if (!_titleAudioTracks.TryGetValue(fullMovie, out var list))
+        {
+            list = new List<DvdAudioTrackSpec>();
+            _titleAudioTracks[fullMovie] = list;
+        }
+        if (list.Count >= DvdVideoProject.MaxAudioTracksPerTitle)
+        {
+            return false;
+        }
+
+        string? normalizedSource = string.IsNullOrWhiteSpace(audioSourcePath) ? null : Path.GetFullPath(audioSourcePath);
+        list.Add(new DvdAudioTrackSpec(
+            normalizedSource,
+            DvdLanguageCodes.NormalizeIso639Part2(language),
+            Math.Clamp(channels, 1, 8),
+            ContentKind: contentKind));
+        InvalidateAuthoredCache();
+        RefreshSubtitleRows();
+        return true;
+    }
+
+    /// <summary>Removes audio track at <paramref name="index"/> from <paramref name="moviePath"/>.</summary>
+    public void RemoveAudioTrack(string moviePath, int index)
+    {
+        string fullMovie = Path.GetFullPath(moviePath);
+        if (_titleAudioTracks.TryGetValue(fullMovie, out var list) && index >= 0 && index < list.Count)
+        {
+            list.RemoveAt(index);
+            if (list.Count == 0)
+            {
+                _titleAudioTracks.Remove(fullMovie);
+            }
+            InvalidateAuthoredCache();
+            RefreshSubtitleRows();
+        }
+    }
+
+    /// <summary>Adds a subtitle stream track (up to 8) to <paramref name="moviePath"/>.</summary>
+    public bool AddSubtitleTrack(
+        string moviePath,
+        string? srtPath,
+        string language = "eng",
+        bool generateWithWhisper = false)
+    {
+        ArgumentException.ThrowIfNullOrWhiteSpace(moviePath);
+        string fullMovie = Path.GetFullPath(moviePath);
+        if (!_titleSubtitleTracks.TryGetValue(fullMovie, out var list))
+        {
+            list = new List<DvdSubtitleTrackSpec>();
+            _titleSubtitleTracks[fullMovie] = list;
+        }
+        if (list.Count >= DvdVideoProject.MaxSubtitleTracksPerTitle)
+        {
+            return false;
+        }
+
+        string? normalizedSrt = string.IsNullOrWhiteSpace(srtPath) ? null : Path.GetFullPath(srtPath);
+        string normalizedLang = string.Equals(language?.Trim(), "auto", StringComparison.OrdinalIgnoreCase)
+            ? "auto"
+            : DvdLanguageCodes.NormalizeIso639Part2(language);
+        list.Add(new DvdSubtitleTrackSpec(normalizedSrt, normalizedLang, generateWithWhisper));
+        InvalidateAuthoredCache();
+        RefreshSubtitleRows();
+        return true;
+    }
+
+    /// <summary>Removes subtitle track at <paramref name="index"/> from <paramref name="moviePath"/>.</summary>
+    public void RemoveSubtitleTrack(string moviePath, int index)
+    {
+        string fullMovie = Path.GetFullPath(moviePath);
+        if (_titleSubtitleTracks.TryGetValue(fullMovie, out var list) && index >= 0 && index < list.Count)
+        {
+            list.RemoveAt(index);
+            if (list.Count == 0)
+            {
+                _titleSubtitleTracks.Remove(fullMovie);
+            }
+            InvalidateAuthoredCache();
+            RefreshSubtitleRows();
+        }
+    }
+
+    private void PickAudioTrack(DvdSubtitleChoiceRow row)
+    {
+        var dlg = new Microsoft.Win32.OpenFileDialog
+        {
+            Title = $"Add audio track for {row.MovieName}",
+            Filter = "Audio files (*.ac3;*.wav;*.flac;*.mp3;*.aac;*.m4a;*.dts)|*.ac3;*.wav;*.flac;*.mp3;*.aac;*.m4a;*.dts|All Files (*.*)|*.*",
+            InitialDirectory = Path.GetDirectoryName(row.MoviePath) ?? string.Empty
+        };
+        if (dlg.ShowDialog() == true && !string.IsNullOrEmpty(dlg.FileName))
+        {
+            AddAudioTrack(row.MoviePath, dlg.FileName);
+        }
+    }
+
+    private void PickSubtitleTrack(DvdSubtitleChoiceRow row)
+    {
+        var dlg = new Microsoft.Win32.OpenFileDialog
+        {
+            Title = $"Add subtitle track for {row.MovieName}",
+            Filter = "SubRip subtitles (*.srt)|*.srt|All Files (*.*)|*.*",
+            InitialDirectory = Path.GetDirectoryName(row.SubtitlePath ?? row.MoviePath) ?? string.Empty
+        };
+        if (dlg.ShowDialog() == true && !string.IsNullOrEmpty(dlg.FileName))
+        {
+            AddSubtitleTrack(row.MoviePath, dlg.FileName);
+        }
     }
 
     private void PickSubtitleFile(DvdSubtitleChoiceRow row)
@@ -1537,11 +1680,67 @@ public class DvdVideoViewModel : ObservableObject
         {
             _customTitleNames.Remove(staleKey);
         }
-
-        SubtitleRows.Clear();
-        foreach (string movie in SourceMediaFiles)
+        foreach (string staleKey in _titleAudioTracks.Keys.Where(k => !activeSet.Contains(k)).ToList())
         {
-            var row = new DvdSubtitleChoiceRow(movie, GetTitleName(movie), SetTitleName);
+            _titleAudioTracks.Remove(staleKey);
+        }
+        foreach (string staleKey in _titleSubtitleTracks.Keys.Where(k => !activeSet.Contains(k)).ToList())
+        {
+            _titleSubtitleTracks.Remove(staleKey);
+        }
+
+        bool reuseRows = SubtitleRows.Count == SourceMediaFiles.Count &&
+                         Enumerable.Range(0, SourceMediaFiles.Count)
+                             .All(idx => string.Equals(SubtitleRows[idx].MoviePath, SourceMediaFiles[idx], StringComparison.OrdinalIgnoreCase));
+        if (!reuseRows)
+        {
+            SubtitleRows.Clear();
+        }
+
+        for (int m = 0; m < SourceMediaFiles.Count; m++)
+        {
+            string movie = SourceMediaFiles[m];
+            var row = reuseRows ? SubtitleRows[m] : new DvdSubtitleChoiceRow(movie, GetTitleName(movie), SetTitleName);
+            row.AudioTracks.Clear();
+            row.SubtitleTracks.Clear();
+            string fullMovie = Path.GetFullPath(movie);
+            if (_titleAudioTracks.TryGetValue(fullMovie, out var audioSpecs))
+            {
+                for (int a = 0; a < audioSpecs.Count && a < DvdVideoProject.MaxAudioTracksPerTitle; a++)
+                {
+                    int captureIdx = a;
+                    var spec = audioSpecs[a];
+                    DvdAudioTrackRow? audioRow = null;
+                    audioRow = new DvdAudioTrackRow(movie, a, spec.SourcePath, spec.Language, spec.Channels, spec.ContentKind, () =>
+                    {
+                        if (audioRow != null && captureIdx < audioSpecs.Count)
+                        {
+                            audioSpecs[captureIdx] = audioRow.ToSpec();
+                            InvalidateAuthoredCache();
+                        }
+                    });
+                    row.AudioTracks.Add(audioRow);
+                }
+            }
+            if (_titleSubtitleTracks.TryGetValue(fullMovie, out var subSpecs))
+            {
+                for (int s = 0; s < subSpecs.Count && s < DvdVideoProject.MaxSubtitleTracksPerTitle; s++)
+                {
+                    int captureIdx = s;
+                    var spec = subSpecs[s];
+                    DvdSubtitleTrackRow? subRow = null;
+                    subRow = new DvdSubtitleTrackRow(movie, s, spec.SourcePath, spec.Language, spec.GenerateWithWhisper, () =>
+                    {
+                        if (subRow != null && captureIdx < subSpecs.Count)
+                        {
+                            subSpecs[captureIdx] = subRow.ToSpec();
+                            InvalidateAuthoredCache();
+                        }
+                    });
+                    row.SubtitleTracks.Add(subRow);
+                }
+            }
+            row.NotifyTrackCollectionsChanged();
             bool chosen = _chosenSubtitles.TryGetValue(movie, out string? pick);
             string? srt = DvdVideoAuthoringService.FindSubtitleFile(movie, lookup);
             string ifNone = GenerateSubtitles
@@ -1577,6 +1776,7 @@ public class DvdVideoViewModel : ObservableObject
             }
             else
             {
+                row.SubtitlePath = null;
                 row.Source = GenerateSubtitles ? DvdSubtitleSource.WillBeGenerated : DvdSubtitleSource.None;
                 row.StatusText = chosen && string.IsNullOrEmpty(pick)
                     ? "Subtitle file left off: " + ifNone
@@ -1584,7 +1784,10 @@ public class DvdVideoViewModel : ObservableObject
                         ? $"The chosen file {Path.GetFileName(pick)} is gone: " + ifNone
                         : "No .srt file with the movie's name beside it: " + ifNone;
             }
-            SubtitleRows.Add(row);
+            if (!reuseRows)
+            {
+                SubtitleRows.Add(row);
+            }
         }
         OnPropertyChanged(nameof(HasSubtitleRows));
         RefreshMenuPreview();
@@ -1598,6 +1801,8 @@ public class DvdVideoViewModel : ObservableObject
         CleanupTempAuthoredDirectory();
         _chosenSubtitles.Clear();
         _customTitleNames.Clear();
+        _titleAudioTracks.Clear();
+        _titleSubtitleTracks.Clear();
         SourceMediaFiles.Clear();
         VideoTsFolderPath = string.Empty;
     }
@@ -2087,6 +2292,20 @@ public class DvdVideoViewModel : ObservableObject
             if (!string.IsNullOrWhiteSpace(titleName))
             {
                 options.TitleNames[movie] = titleName.Trim();
+            }
+        }
+        foreach (var (movie, audioList) in _titleAudioTracks)
+        {
+            if (audioList.Count > 0)
+            {
+                options.TitleAudioTracks[movie] = audioList.Take(DvdVideoProject.MaxAudioTracksPerTitle).ToList();
+            }
+        }
+        foreach (var (movie, subList) in _titleSubtitleTracks)
+        {
+            if (subList.Count > 0)
+            {
+                options.TitleSubtitleTracks[movie] = subList.Take(DvdVideoProject.MaxSubtitleTracksPerTitle).ToList();
             }
         }
 
@@ -2779,7 +2998,8 @@ public class DvdVideoViewModel : ObservableObject
         var titles = new List<DvdMenuTitle>();
         foreach (string movie in SourceMediaFiles.Take(DvdStillMenu.MaxTitles))
         {
-            bool hasSubs = DvdVideoAuthoringService.FindSubtitleFile(movie, lookup) != null;
+            bool hasMultiSubs = _titleSubtitleTracks.TryGetValue(Path.GetFullPath(movie), out var list) && list.Count > 0;
+            bool hasSubs = hasMultiSubs || DvdVideoAuthoringService.FindSubtitleFile(movie, lookup) != null;
             titles.Add(new DvdMenuTitle(GetTitleName(movie), null, hasSubs));
         }
         if (titles.Count == 0)

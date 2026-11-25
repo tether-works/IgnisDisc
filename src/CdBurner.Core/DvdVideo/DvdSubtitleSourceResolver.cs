@@ -36,38 +36,129 @@ public static class DvdSubtitleSourceResolver
         ArgumentNullException.ThrowIfNull(options);
         ArgumentNullException.ThrowIfNull(logNotes);
 
-        if (!options.GenerateSubtitles)
+        bool anyExplicitWhisper = options.DefaultSubtitleTracks.Any(t => t.GenerateWithWhisper && string.IsNullOrWhiteSpace(t.SourcePath)) ||
+                                  options.TitleSubtitleTracks.Values.Any(list => list.Any(t => t.GenerateWithWhisper && string.IsNullOrWhiteSpace(t.SourcePath)));
+
+        if (!options.GenerateSubtitles && !anyExplicitWhisper)
         {
             return null;
         }
 
-        List<string> missing = moviePaths.Where(m => DvdVideoAuthoringService.FindSubtitleFile(m, options) == null).ToList();
-        foreach (string movie in moviePaths.Except(missing, StringComparer.OrdinalIgnoreCase))
-        {
-            logNotes.Add($"Subtitles for '{Path.GetFileName(movie)}': {Path.GetFileName(DvdVideoAuthoringService.FindSubtitleFile(movie, options))} (not generated).");
-        }
-
-        generator ??= (movie, p, ct) => new SubtitleGenerationService().GenerateAsync(
+        SubtitleGenerator effectiveGenerator = generator ?? ((movie, p, ct) => new SubtitleGenerationService().GenerateAsync(
             movie,
             new SubtitleGenerationOptions { Language = options.SubtitleLanguage, FfmpegPath = options.CustomFfmpegPath },
             p,
-            ct);
+            ct));
 
-        for (int i = 0; i < missing.Count; i++)
+        // Materialize DefaultSubtitleTracks into per-movie entries so multi-track + Whisper resolution stays per-title.
+        if (options.DefaultSubtitleTracks.Count > 0)
         {
-            string movie = missing[i];
-            string label = missing.Count > 1 ? $" ({i + 1} of {missing.Count})" : string.Empty;
+            foreach (string movie in moviePaths)
+            {
+                if (!DvdVideoAuthoringService.TryGetMovieKey(options.TitleSubtitleTracks, movie, out _))
+                {
+                    options.TitleSubtitleTracks[movie] = options.DefaultSubtitleTracks.ToList();
+                }
+            }
+        }
+
+        // Handle movies that have explicit multi-track lists (may combine external .srt files with Whisper-generated tracks).
+        var multiTrackMovies = new HashSet<string>(StringComparer.OrdinalIgnoreCase);
+        var whisperJobs = new List<(string Movie, int? TrackIndex, string Language)>();
+
+        foreach (string movie in moviePaths)
+        {
+            if (DvdVideoAuthoringService.TryGetMovieKey(options.TitleSubtitleTracks, movie, out string? existingKey) &&
+                existingKey != null &&
+                options.TitleSubtitleTracks[existingKey] is { Count: > 0 } tracks)
+            {
+                multiTrackMovies.Add(movie);
+                bool addedExplicit = false;
+                for (int t = 0; t < tracks.Count && t < DvdVideoProject.MaxSubtitleTracksPerTitle; t++)
+                {
+                    if (tracks[t].GenerateWithWhisper && string.IsNullOrWhiteSpace(tracks[t].SourcePath))
+                    {
+                        string lang = tracks[t].Language;
+                        if (string.IsNullOrWhiteSpace(lang)) lang = options.SubtitleLanguage;
+                        whisperJobs.Add((movie, t, lang));
+                        addedExplicit = true;
+                    }
+                }
+
+                if (options.GenerateSubtitles && !addedExplicit && tracks.Count < DvdVideoProject.MaxSubtitleTracksPerTitle)
+                {
+                    string targetLang = options.SubtitleLanguage;
+                    string normTarget = DvdLanguageCodes.NormalizeIso639Part2(targetLang);
+                    bool alreadyHasLang = string.Equals(targetLang, "auto", StringComparison.OrdinalIgnoreCase)
+                        ? tracks.Any(t => t.GenerateWithWhisper)
+                        : tracks.Any(t => string.Equals(t.NormalizedLanguage, normTarget, StringComparison.OrdinalIgnoreCase));
+                    if (!alreadyHasLang)
+                    {
+                        whisperJobs.Add((movie, null, targetLang));
+                    }
+                }
+            }
+        }
+
+        // Legacy single-subtitle path for movies without explicit TitleSubtitleTracks.
+        if (options.GenerateSubtitles)
+        {
+            var legacyMovies = moviePaths.Where(m => !multiTrackMovies.Contains(m)).ToList();
+            List<string> missing = legacyMovies.Where(m => DvdVideoAuthoringService.FindSubtitleFile(m, options) == null).ToList();
+            foreach (string movie in legacyMovies.Except(missing, StringComparer.OrdinalIgnoreCase))
+            {
+                logNotes.Add($"Subtitles for '{Path.GetFileName(movie)}': {Path.GetFileName(DvdVideoAuthoringService.FindSubtitleFile(movie, options))} (not generated).");
+            }
+            foreach (string movie in missing)
+            {
+                whisperJobs.Add((movie, -1, options.SubtitleLanguage));
+            }
+        }
+
+        for (int i = 0; i < whisperJobs.Count; i++)
+        {
+            var (movie, trackIndex, lang) = whisperJobs[i];
+            string label = whisperJobs.Count > 1 ? $" ({i + 1} of {whisperJobs.Count})" : string.Empty;
             var jobProgress = progress == null
                 ? null
                 : new SyncProgress<SubtitleGenerationProgress>(p => progress.Report((3.0, $"Subtitles{label}: {p.Status}")));
 
-            SubtitleGenerationResult result = await generator(movie, jobProgress, cancellationToken).ConfigureAwait(false);
+            SubtitleGenerationResult result;
+            if (generator == null && !string.Equals(lang, options.SubtitleLanguage, StringComparison.OrdinalIgnoreCase))
+            {
+                result = await new SubtitleGenerationService().GenerateAsync(
+                    movie,
+                    new SubtitleGenerationOptions { Language = lang, FfmpegPath = options.CustomFfmpegPath },
+                    jobProgress,
+                    cancellationToken).ConfigureAwait(false);
+            }
+            else
+            {
+                result = await effectiveGenerator(movie, jobProgress, cancellationToken).ConfigureAwait(false);
+            }
+
             if (!result.Success || result.SrtPath == null)
             {
                 return $"Generating subtitles for '{Path.GetFileName(movie)}' failed: {result.ErrorMessage}";
             }
 
-            options.SubtitleFiles[movie] = result.SrtPath;
+            if (trackIndex == -1)
+            {
+                options.SubtitleFiles[movie] = result.SrtPath;
+            }
+            else if (DvdVideoAuthoringService.TryGetMovieKey(options.TitleSubtitleTracks, movie, out string? key) && key != null)
+            {
+                var list = options.TitleSubtitleTracks[key];
+                if (trackIndex is int idx && idx >= 0 && idx < list.Count)
+                {
+                    list[idx] = list[idx] with { SourcePath = result.SrtPath, GenerateWithWhisper = true };
+                }
+                else if (list.Count < DvdVideoProject.MaxSubtitleTracksPerTitle)
+                {
+                    list.Add(new DvdSubtitleTrackSpec(result.SrtPath, lang, GenerateWithWhisper: true));
+                }
+            }
+
             string how = result.FromCache
                 ? "reused from an earlier run"
                 : $"generated in {result.Elapsed.TotalMinutes:F1} min" + (result.Backend != null ? $" on the {result.Backend}" : string.Empty);

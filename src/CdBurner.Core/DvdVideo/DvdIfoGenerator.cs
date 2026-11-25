@@ -4,6 +4,17 @@ using CdBurner.Core.Primitives;
 
 namespace CdBurner.Core.DvdVideo;
 
+/// <summary>Audio stream metadata written into DVD-Video IFO attribute tables (up to 8 streams).</summary>
+public sealed record DvdAudioStreamInfo(
+    string Language = "eng",
+    int Channels = 2,
+    DvdAudioContentKind ContentKind = DvdAudioContentKind.Normal);
+
+/// <summary>Subpicture stream metadata written into DVD-Video IFO attribute tables (up to 8 streams).</summary>
+public sealed record DvdSubtitleStreamInfo(
+    string Language = "eng",
+    byte CodeExtension = 0x01);
+
 /// <summary>One cell/page inside a multi-page menu VOB for IFO table construction.</summary>
 public sealed record DvdMenuPageCell(
     int VobId,
@@ -74,6 +85,20 @@ public static class DvdIfoGenerator
     /// </summary>
     internal const uint SubtitleStreamControl = 0x80000000;
 
+    /// <summary>PGC <c>audio_control[streamIndex]</c> entry: bit 15 present, bits 10..8 decoding stream index (0..7).</summary>
+    public static ushort AudioStreamControl(int streamIndex)
+    {
+        int idx = Math.Clamp(streamIndex, 0, 7);
+        return (ushort)(0x8000 | (idx << 8));
+    }
+
+    /// <summary>PGC <c>subp_control[streamIndex]</c> entry: bit 31 present, stream index across 4:3, wide, letterbox, pan-scan.</summary>
+    public static uint SubpictureStreamControl(int streamIndex)
+    {
+        uint idx = (uint)Math.Clamp(streamIndex, 0, 31);
+        return 0x80000000u | (idx << 24) | (idx << 16) | (idx << 8) | idx;
+    }
+
     /// <summary>
     /// The 16-colour palette of a PGC with subpictures, as 0, Y, Cr, Cb (ITU-R BT.601, video range): 0 black, 1 white,
     /// 2 black (outline), 3 grey (edge smoothing), 4 amber and 5 white for menu highlights, the rest black.
@@ -85,13 +110,23 @@ public static class DvdIfoGenerator
         0x00108080, 0x00108080, 0x00108080, 0x00108080
     ];
 
-    /// <summary>subp_attr_t: run-length coded, language given ("en"), normal captions.</summary>
-    private static void WriteSubtitleAttributes(Span<byte> a)
+    /// <summary>subp_attr_t: run-length coded, language given ("en" or mapped from ISO 639-2), code extension (default normal captions).</summary>
+    private static void WriteSubtitleAttributes(Span<byte> a, string? language = "en", byte codeExtension = 0x01)
     {
-        a[0] = 0x01;
-        a[2] = (byte)'e';
-        a[3] = (byte)'n';
-        a[5] = 0x01;
+        string? two = DvdLanguageCodes.ToIso639Part1(language);
+        if (two != null)
+        {
+            a[0] = 0x01;
+            a[2] = (byte)two[0];
+            a[3] = (byte)two[1];
+        }
+        else
+        {
+            a[0] = 0x00;
+            a[2] = 0;
+            a[3] = 0;
+        }
+        a[5] = codeExtension;
     }
 
     /// <summary>LinkPGCN n: go to program chain n of the current domain (a menu button to a VMGM/VTSM chain).</summary>
@@ -274,7 +309,9 @@ public static class DvdIfoGenerator
         bool menuHasAudio = false,
         IReadOnlyList<uint>? menuPalette = null,
         IReadOnlyList<bool>? vtsHasMenus = null,
-        IReadOnlyList<bool>? vtsMenuHasAudio = null)
+        IReadOnlyList<bool>? vtsMenuHasAudio = null,
+        IReadOnlyList<IReadOnlyList<DvdAudioStreamInfo>>? titleAudioStreams = null,
+        IReadOnlyList<IReadOnlyList<DvdSubtitleStreamInfo>>? titleSubtitleStreams = null)
     {
         titleSetCount = Math.Clamp(titleSetCount, 1, 99);
         bool hasMenu = menuVobSectors > 0;
@@ -412,9 +449,37 @@ public static class DvdIfoGenerator
                 WriteSubtitleAttributes(e[94..]);
             }
             WriteVideoAttributes(e[264..], standard, aspect); // title VOBs' video
-            e[267] = 1;                                        // one audio stream
-            WriteAc3Stereo(e[268..]);
-            if (subtitleStreams != null && i < subtitleStreams.Count && subtitleStreams[i])
+            var audios = titleAudioStreams != null && i < titleAudioStreams.Count && titleAudioStreams[i].Count > 0
+                ? titleAudioStreams[i]
+                : null;
+            if (audios != null)
+            {
+                int audioCount = Math.Min(8, audios.Count);
+                e[267] = (byte)audioCount;
+                for (int a = 0; a < audioCount; a++)
+                {
+                    WriteAudioAttributes(e[(268 + 8 * a)..], audios[a]);
+                }
+            }
+            else
+            {
+                e[267] = 1;                                        // one audio stream
+                WriteAc3Stereo(e[268..]);
+            }
+
+            var subs = titleSubtitleStreams != null && i < titleSubtitleStreams.Count && titleSubtitleStreams[i].Count > 0
+                ? titleSubtitleStreams[i]
+                : null;
+            if (subs != null)
+            {
+                int subCount = Math.Min(8, subs.Count);
+                e[349] = (byte)subCount;
+                for (int s = 0; s < subCount; s++)
+                {
+                    WriteSubtitleAttributes(e[(350 + 6 * s)..], subs[s].Language, subs[s].CodeExtension);
+                }
+            }
+            else if (subtitleStreams != null && i < subtitleStreams.Count && subtitleStreams[i])
             {
                 e[349] = 1;                                    // one subpicture stream
                 WriteSubtitleAttributes(e[350..]);
@@ -535,7 +600,9 @@ public static class DvdIfoGenerator
         bool menuHasButtons = false,
         bool menuHasAudio = false,
         IReadOnlyList<uint>? menuPalette = null,
-        int? vmgMenuPageCount = null)
+        int? vmgMenuPageCount = null,
+        IReadOnlyList<DvdAudioStreamInfo>? audioStreams = null,
+        IReadOnlyList<DvdSubtitleStreamInfo>? subtitleStreams = null)
     {
         titleSetNumber = Math.Clamp(titleSetNumber, 1, 99);
         titleVobTotalSectors = Math.Max(16, titleVobTotalSectors);
@@ -546,14 +613,22 @@ public static class DvdIfoGenerator
         bool timed = units[0].StartPts >= 0 && units[^1].EndPts > units[0].StartPts;
         long durationPts = timed ? Duration(units) : Math.Max(1, durationSeconds) * 90_000L;
 
+        int audioCount = audioStreams is { Count: > 0 } ? Math.Min(8, audioStreams.Count) : 1;
+        var resolvedSubs = subtitleStreams is { Count: > 0 }
+            ? subtitleStreams.Take(8).ToList()
+            : (subtitleStream ? [new DvdSubtitleStreamInfo("eng", 0x01)] : new List<DvdSubtitleStreamInfo>());
+
         int menuPgcOffset = vmgMenuPageCount ?? (callMenuAtEnd ? 1 : 0);
         byte[] post = nextTitleNumber > 0
             ? CallVmgmPgc(TitleJumpPgcNumber(nextTitleNumber, menuPgcOffset))
             : (callMenuAtEnd ? CallTitleMenu : Exit);
         var cells = CellsOf(units, titleVobTotalSectors, durationPts);
         byte[] pgc = BuildPgc(cells, thirtyFps, hasAudio: true, pre: null, post: post,
-            subpictureControl: subtitleStream ? SubtitleStreamControl : 0, palette: subtitleStream ? SubtitlePalette : null,
-            layerBreakCellId: layerBreakCellId);
+            subpictureControl: resolvedSubs.Count > 0 ? SubtitleStreamControl : 0,
+            palette: resolvedSubs.Count > 0 ? SubtitlePalette : null,
+            layerBreakCellId: layerBreakCellId,
+            audioStreamCount: audioCount,
+            subpictureStreamCount: resolvedSubs.Count);
         byte[] timeMap = BuildTimeMap(units, timed);
 
         bool hasVtsmMenu = menuVobSectors > 0 && menuPages is { Count: > 0 };
@@ -632,13 +707,27 @@ public static class DvdIfoGenerator
             }
         }
         WriteVideoAttributes(mat[0x200..], standard, aspect);
-        mat[0x203] = 1; // one audio stream
-        WriteAc3Stereo(mat[0x204..]);
-
-        if (subtitleStream)
+        if (audioStreams is { Count: > 0 })
         {
-            mat[0x255] = 1; // one subpicture stream
-            WriteSubtitleAttributes(mat[0x256..]);
+            mat[0x203] = (byte)audioCount;
+            for (int a = 0; a < audioCount; a++)
+            {
+                WriteAudioAttributes(mat[(0x204 + 8 * a)..], audioStreams[a]);
+            }
+        }
+        else
+        {
+            mat[0x203] = 1; // one audio stream
+            WriteAc3Stereo(mat[0x204..]);
+        }
+
+        if (resolvedSubs.Count > 0)
+        {
+            mat[0x255] = (byte)resolvedSubs.Count;
+            for (int s = 0; s < resolvedSubs.Count; s++)
+            {
+                WriteSubtitleAttributes(mat[(0x256 + 6 * s)..], resolvedSubs[s].Language, resolvedSubs[s].CodeExtension);
+            }
         }
 
         // --- VTS_PTT_SRPT: title 1, chapter n = PGC 1, program n ---
@@ -697,7 +786,8 @@ public static class DvdIfoGenerator
     /// after the first are marked seamless: they follow on in the same VOB without a pause.
     /// </summary>
     private static byte[] BuildPgc(IReadOnlyList<CellInfo> cells, bool thirtyFps, bool hasAudio, byte[]? pre, byte[]? post,
-        uint subpictureControl = 0, IReadOnlyList<uint>? palette = null, byte[]? pre2 = null, int? layerBreakCellId = null)
+        uint subpictureControl = 0, IReadOnlyList<uint>? palette = null, byte[]? pre2 = null, int? layerBreakCellId = null,
+        int audioStreamCount = 1, int subpictureStreamCount = 0)
     {
         int preCount = (pre != null ? 1 : 0) + (pre2 != null ? 1 : 0);
         int commands = preCount + (post != null ? 1 : 0);
@@ -711,9 +801,21 @@ public static class DvdIfoGenerator
         }
         if (hasAudio)
         {
-            W16(p, 0x0C, 0x8000); // audio stream 0 present, decoding stream 0
+            int count = Math.Clamp(audioStreamCount, 1, 8);
+            for (int a = 0; a < count; a++)
+            {
+                W16(p, 0x0C + 2 * a, AudioStreamControl(a));
+            }
         }
-        if (subpictureControl != 0)
+        if (subpictureStreamCount > 0)
+        {
+            int count = Math.Clamp(subpictureStreamCount, 1, 32);
+            for (int s = 0; s < count; s++)
+            {
+                W32(p, 0x1C + 4 * s, SubpictureStreamControl(s));
+            }
+        }
+        else if (subpictureControl != 0)
         {
             W32(p, 0x1C, subpictureControl);
         }
@@ -888,6 +990,26 @@ public static class DvdIfoGenerator
         a[1] = 0x01; // 48 kHz, channels - 1 = 1
         a[2] = (byte)'e';
         a[3] = (byte)'n';
+    }
+
+    /// <summary>audio_attr_t: AC-3, 48 kHz, channel count 1..8, ISO 639-1 language code, and content extension.</summary>
+    private static void WriteAudioAttributes(Span<byte> a, DvdAudioStreamInfo info)
+    {
+        string? two = DvdLanguageCodes.ToIso639Part1(info.Language);
+        a[0] = (byte)(two != null ? 0x04 : 0x00);
+        a[1] = (byte)Math.Clamp(info.Channels - 1, 0, 7);
+        if (two != null)
+        {
+            a[2] = (byte)two[0];
+            a[3] = (byte)two[1];
+        }
+        else
+        {
+            a[2] = 0;
+            a[3] = 0;
+        }
+        a[4] = 0;
+        a[5] = (byte)info.ContentKind;
     }
 
     private static long Duration(IReadOnlyList<DvdVobu> units) =>

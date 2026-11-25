@@ -78,6 +78,8 @@ public static class DvdNavPackWriter
         public long MinPts = -1;
         public long MaxPts = -1;
         public int FirstAudioSector = -1;
+        public readonly int[] FirstAudioSectors = [-1, -1, -1, -1, -1, -1, -1, -1];
+        public readonly int[] FirstSubpictureSectors = [-1, -1, -1, -1, -1, -1, -1, -1];
         public readonly List<(int Sector, int Type)> Pictures = new();
     }
 
@@ -263,9 +265,25 @@ public static class DvdNavPackWriter
             BinaryPrimitives.WriteUInt32BigEndian(sri[84..], prev);
             BinaryPrimitives.WriteUInt32BigEndian(sri[164..], prev);
 
-            // SYNCI: the first pack of audio stream 0, counted from the NAV pack.
+            // SYNCI: the first pack of each audio stream 0..7 (a_synca[8]) and subpicture stream 0..7 (sp_synca[32]).
             BinaryPrimitives.WriteUInt16BigEndian(dsi[SynciOffset..],
-                (ushort)(scan.FirstAudioSector >= 0 ? Math.Min(0x7FFF, scan.FirstAudioSector - scan.Sector) : 0x3FFF));
+                (ushort)(scan.FirstAudioSectors[0] >= 0 ? Math.Min(0x7FFF, scan.FirstAudioSectors[0] - scan.Sector) : 0x3FFF));
+            for (int a = 1; a < 8; a++)
+            {
+                if (scan.FirstAudioSectors[a] >= 0)
+                {
+                    BinaryPrimitives.WriteUInt16BigEndian(dsi[(SynciOffset + 2 * a)..],
+                        (ushort)Math.Min(0x7FFF, scan.FirstAudioSectors[a] - scan.Sector));
+                }
+            }
+            for (int sp = 0; sp < 8; sp++)
+            {
+                if (scan.FirstSubpictureSectors[sp] >= 0)
+                {
+                    BinaryPrimitives.WriteUInt32BigEndian(dsi[(SynciOffset + 16 + 4 * sp)..],
+                        0x80000000u | (uint)(scan.FirstSubpictureSectors[sp] - scan.Sector));
+                }
+            }
 
             vob.Position = (long)scan.Sector * SectorSize;
             vob.Write(sector);
@@ -423,10 +441,41 @@ public static class DvdNavPackWriter
                                 carrySector = sectorIndex;
                             }
                         }
-                        else if (current.FirstAudioSector < 0 &&
-                                 (streamId != 0xBD || (payload < end && (s[payload] & 0xF8) == 0x80)))
+                        else if (streamId is >= 0xC0 and <= 0xDF)
                         {
-                            current.FirstAudioSector = sectorIndex;
+                            int audioIdx = streamId - 0xC0;
+                            if (current.FirstAudioSector < 0)
+                            {
+                                current.FirstAudioSector = sectorIndex;
+                            }
+                            if (audioIdx < 8 && current.FirstAudioSectors[audioIdx] < 0)
+                            {
+                                current.FirstAudioSectors[audioIdx] = sectorIndex;
+                            }
+                        }
+                        else if (streamId == 0xBD && payload < end)
+                        {
+                            byte subId = s[payload];
+                            if ((subId & 0xF8) == 0x80)
+                            {
+                                int audioIdx = subId & 0x07;
+                                if (current.FirstAudioSector < 0)
+                                {
+                                    current.FirstAudioSector = sectorIndex;
+                                }
+                                if (current.FirstAudioSectors[audioIdx] < 0)
+                                {
+                                    current.FirstAudioSectors[audioIdx] = sectorIndex;
+                                }
+                            }
+                            else if (subId is >= 0x20 and <= 0x27)
+                            {
+                                int subIdx = subId - 0x20;
+                                if (current.FirstSubpictureSectors[subIdx] < 0)
+                                {
+                                    current.FirstSubpictureSectors[subIdx] = sectorIndex;
+                                }
+                            }
                         }
                     }
                     p = end;
