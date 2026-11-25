@@ -291,6 +291,7 @@ public static partial class CliCommandRunner
             "extract-image" or "extractimage" => await HandleExtractImageAsync(cmd, stdout, stderr).ConfigureAwait(false),
             "convert-image" or "convertimage" => await HandleConvertImageAsync(cmd, stdout, stderr).ConfigureAwait(false),
             "author-dvd" or "authordvd" => await HandleAuthorDvdAsync(cmd, stdout, stderr).ConfigureAwait(false),
+            "author-bdmv" or "authorbdmv" => await HandleAuthorBdmvAsync(cmd, stdout, stderr).ConfigureAwait(false),
             "jewel-cover" or "jewelcover" => HandleJewelCover(cmd, stdout, stderr),
             "audio-plan" or "audioplan" => HandleAudioPlan(cmd, stdout, stderr),
             "burn-queue" or "burnqueue" => await HandleBurnQueueAsync(cmd, stdout, stderr, deviceService, burnEngine).ConfigureAwait(false),
@@ -4561,6 +4562,8 @@ public static partial class CliCommandRunner
         stdout.WriteLine("      Converts legacy images or BIN+CUE to .iso, or converts .iso/legacy images to .bin + .cue.");
         stdout.WriteLine("  author-dvd --input <folder|movies> --output <folder|file.iso> [--label <vol>] [--menu-title <title>] [--menu on|off | --no-menu] [--menu-autoplay <never|sec>] [--after-title next|menu] [--standard ntsc|pal] [--aspect 16:9|4:3] [--chapters <none|sec>] [--subtitles-default on|off] [--subtitle-size small|medium|large] [--video-bitrate <fit|kbps>] [--fit-to-disc] [--title-names <a;b;...>] [--audio-track <lang>:<path>]... [--subtitle-track <lang>:<path>]... [--dual-layer] [--generate-subtitles [--subtitle-language <code|auto>]] [--overwrite] [--json]");
         stdout.WriteLine("      Authors DVD-Video files into a VIDEO_TS folder or compliant .iso without burning a disc.");
+        stdout.WriteLine("  author-bdmv --input <movie[;movie...]> --output <folder|file.iso> [--target bluray|avchd] [--video-format 1080p|1080i|720p] [--audio ac3|lpcm] [--subtitle-track <lang>:<file.srt>]... [--generate-subtitles] [--overwrite] [--json]");
+        stdout.WriteLine("      Authors a Blu-ray Video (BDMV) or AVCHD folder, or a UDF 2.50 .iso, without burning a disc (file structure checked only).");
         stdout.WriteLine("  jewel-cover (--tracks <files> | --tracks-file <file.json>) --output <file.html> [--title <album>] [--artist <name>] [--songwriter <name>] [--upc <13digits>] [--dao] [--pregap <frames>] [--overwrite] [--json]");
         stdout.WriteLine("      Generates a printable HTML CD jewel case cover and tray inlay from audio tracks.");
         stdout.WriteLine("  audio-plan (--tracks <files> | --tracks-file <file.json>) [--title <album>] [--artist <name>] [--dao] [--pregap <frames>] [--normalize] [--rms-level] [--loudness track|album|off] [--crossfade <sec>] [--media 74|80] [--json]");
@@ -4731,6 +4734,18 @@ public static partial class CliCommandRunner
             stdout.WriteLine("      Safely extracts all entries or repeated --entry <path> selections into <dir> with path-safety validation.");
             stdout.WriteLine("  convert-image --input <file> --output <file> [--cue <file.cue>] [--overwrite] [--json]");
             stdout.WriteLine("      Converts .nrg, .mdf/.mds, .ccd/.img, .cdi, .bin, or .cue to .iso, or converts .iso/legacy images to .bin + .cue.");
+            return;
+        }
+        if (string.Equals(subcommand, "author-bdmv", StringComparison.OrdinalIgnoreCase) ||
+            string.Equals(subcommand, "authorbdmv", StringComparison.OrdinalIgnoreCase))
+        {
+            stdout.WriteLine(LegalBanner.VersionNotice);
+            stdout.WriteLine();
+            stdout.WriteLine("  author-bdmv --input <movie[;movie...]> --output <folder|file.iso> [--target bluray|avchd] [--label <vol>] [--video-format 1080p|1080i|720p] [--frame-rate 23.976|24|25|29.97|50|59.94] [--audio ac3|lpcm] [--audio-channels 2|6] [--audio-language <code>] [--video-bitrate <kbps>] [--max-video-bitrate <kbps>] [--chapters <none|sec>] [--subtitle-track <lang>:<file.srt>]... [--generate-subtitles [--subtitle-language <code>]] [--ffmpeg <path>] [--overwrite] [--json]");
+            stdout.WriteLine("      Authors a Blu-ray Video (BDMV) or AVCHD folder, or a UDF 2.50 image, without burning: FFmpeg makes H.264 and");
+            stdout.WriteLine("      AC-3 or LPCM, the stream is muxed to 192-byte BDAV packets, index/playlist/clip files and CERTIFICATE are written,");
+            stdout.WriteLine("      and subtitles become PGS bitmap tracks. Needs an FFmpeg with libx264. The result is checked for file structure only;");
+            stdout.WriteLine("      it has not been tested on a Blu-ray player.");
             return;
         }
         if (string.Equals(subcommand, "author-dvd", StringComparison.OrdinalIgnoreCase) ||

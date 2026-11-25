@@ -20,7 +20,146 @@
     </UserControl.Resources>
 
     <ScrollViewer VerticalScrollBarVisibility="Auto" HorizontalScrollBarVisibility="Disabled">
-        <Grid Margin="16">
+        <StackPanel>
+        <!-- ========================================================================= -->
+        <!-- MODE: DVD-Video or Blu-ray Video (BDMV / AVCHD)                           -->
+        <!-- ========================================================================= -->
+        <Border Background="{DynamicResource CardBackgroundBrush}"
+                BorderBrush="{DynamicResource CardBorderBrush}"
+                BorderThickness="1"
+                CornerRadius="8"
+                Padding="16,12"
+                Margin="16,16,16,0">
+            <StackPanel>
+                <StackPanel Orientation="Horizontal">
+                    <TextBlock Text="Disc format:"
+                               FontWeight="SemiBold"
+                               VerticalAlignment="Center"
+                               Foreground="{DynamicResource TextSecondaryBrush}"
+                               Margin="0,0,8,0" />
+                    <ComboBox Width="220"
+                              AutomationProperties.Name="Authoring mode"
+                              ItemsSource="{Binding AuthoringModes}"
+                              SelectedItem="{Binding SelectedAuthoringMode}"
+                              ToolTip="DVD-Video makes a DVD with menus. Blu-ray Video makes a BDMV disc image from the same movie list." />
+                </StackPanel>
+
+                <StackPanel Margin="0,12,0,0"
+                            Visibility="{Binding IsBluRayMode, Converter={StaticResource BoolToVis}}">
+                    <TextBlock Text="{Binding BdmvSourceSummary}"
+                               TextWrapping="Wrap"
+                               Foreground="{DynamicResource TextSecondaryBrush}" />
+                    <WrapPanel Orientation="Horizontal" Margin="0,8,0,0">
+                        <Button Content="Add Movie(s)..."
+                                AutomationProperties.Name="Add movies to the Blu-ray Video"
+                                Command="{Binding AddMovieFilesCommand}"
+                                Margin="0,2,8,2" />
+                        <Button Content="Add Subtitle File (.srt)..."
+                                AutomationProperties.Name="Add a subtitle file to the Blu-ray Video"
+                                Command="{Binding AddBdmvSubtitleCommand}"
+                                ToolTip="Each .srt file becomes one picture-based (PGS) subtitle track."
+                                Margin="0,2,8,2" />
+                        <Button Content="Clear Movies"
+                                AutomationProperties.Name="Clear the movie list"
+                                Command="{Binding ClearSourceCommand}"
+                                Margin="0,2,0,2" />
+                    </WrapPanel>
+                    <ItemsControl ItemsSource="{Binding BdmvSubtitleFiles}" Margin="0,4,0,0">
+                        <ItemsControl.ItemTemplate>
+                            <DataTemplate>
+                                <StackPanel Orientation="Horizontal" Margin="0,2,0,2">
+                                    <TextBlock Text="{Binding}" VerticalAlignment="Center" Margin="0,0,8,0" />
+                                    <Button Content="Remove"
+                                            AutomationProperties.Name="Remove this subtitle file"
+                                            Command="{Binding DataContext.RemoveBdmvSubtitleCommand, RelativeSource={RelativeSource AncestorType=UserControl}}"
+                                            CommandParameter="{Binding}" />
+                                </StackPanel>
+                            </DataTemplate>
+                        </ItemsControl.ItemTemplate>
+                    </ItemsControl>
+                    <WrapPanel Orientation="Horizontal" Margin="0,8,0,0">
+                        <StackPanel Orientation="Horizontal" Margin="0,2,14,2">
+                            <TextBlock Text="Disc type:" VerticalAlignment="Center" FontWeight="SemiBold" Foreground="{DynamicResource TextSecondaryBrush}" Margin="0,0,6,0" />
+                            <ComboBox Width="250"
+                                      AutomationProperties.Name="Blu-ray disc type"
+                                      ItemsSource="{Binding AvailableBdmvTargets}"
+                                      SelectedValuePath="Value"
+                                      DisplayMemberPath="Label"
+                                      SelectedValue="{Binding BdmvTarget}" />
+                        </StackPanel>
+                        <StackPanel Orientation="Horizontal" Margin="0,2,14,2">
+                            <TextBlock Text="Picture:" VerticalAlignment="Center" FontWeight="SemiBold" Foreground="{DynamicResource TextSecondaryBrush}" Margin="0,0,6,0" />
+                            <ComboBox Width="130"
+                                      AutomationProperties.Name="Blu-ray picture format"
+                                      ItemsSource="{Binding AvailableBdmvVideoFormats}"
+                                      SelectedValuePath="Value"
+                                      DisplayMemberPath="Label"
+                                      SelectedValue="{Binding BdmvVideoFormat}" />
+                        </StackPanel>
+                        <StackPanel Orientation="Horizontal" Margin="0,2,14,2">
+                            <TextBlock Text="Audio:" VerticalAlignment="Center" FontWeight="SemiBold" Foreground="{DynamicResource TextSecondaryBrush}" Margin="0,0,6,0" />
+                            <ComboBox Width="170"
+                                      AutomationProperties.Name="Blu-ray audio encoding"
+                                      ItemsSource="{Binding AvailableBdmvAudioCodecs}"
+                                      SelectedValuePath="Value"
+                                      DisplayMemberPath="Label"
+                                      SelectedValue="{Binding BdmvAudioCodec}" />
+                        </StackPanel>
+                        <StackPanel Orientation="Horizontal" Margin="0,2,14,2">
+                            <TextBlock Text="Video kbit/s:" VerticalAlignment="Center" FontWeight="SemiBold" Foreground="{DynamicResource TextSecondaryBrush}" Margin="0,0,6,0" />
+                            <TextBox Width="70"
+                                     AutomationProperties.Name="Blu-ray video bitrate in kilobits per second"
+                                     Text="{Binding BdmvVideoBitrateKbps, UpdateSourceTrigger=LostFocus}" />
+                        </StackPanel>
+                        <StackPanel Orientation="Horizontal" Margin="0,2,14,2">
+                            <TextBlock Text="Volume label:" VerticalAlignment="Center" FontWeight="SemiBold" Foreground="{DynamicResource TextSecondaryBrush}" Margin="0,0,6,0" />
+                            <TextBox Width="160"
+                                     AutomationProperties.Name="Blu-ray volume label"
+                                     Text="{Binding VolumeLabel, UpdateSourceTrigger=PropertyChanged}" />
+                        </StackPanel>
+                        <CheckBox Content="Make subtitles from speech"
+                                  AutomationProperties.Name="Make Blu-ray subtitles from speech"
+                                  IsChecked="{Binding GenerateSubtitles}"
+                                  ToolTip="Uses the optional speech-recognition download; the text is machine-generated and can contain mistakes."
+                                  VerticalAlignment="Center"
+                                  Margin="0,2,14,2" />
+                    </WrapPanel>
+                    <WrapPanel Orientation="Horizontal" Margin="0,8,0,0">
+                        <Button Content="Build Blu-ray Video Image..."
+                                AutomationProperties.Name="Build Blu-ray Video image"
+                                Command="{Binding BuildBdmvImageCommand}"
+                                Style="{StaticResource AccentButtonStyle}"
+                                ToolTip="Encodes the movies with FFmpeg, writes the BDMV files and packs them on a UDF 2.50 image. Nothing is burned."
+                                Margin="0,2,10,2" />
+                        <Button Content="Cancel"
+                                AutomationProperties.Name="Cancel the Blu-ray Video build"
+                                Command="{Binding CancelCommand}"
+                                Style="{StaticResource DangerButtonStyle}"
+                                Visibility="{Binding IsBusy, Converter={StaticResource BoolToVis}}"
+                                Margin="0,2,10,2" />
+                    </WrapPanel>
+                    <ProgressBar Height="8"
+                                 AutomationProperties.Name="Blu-ray Video build progress"
+                                 Minimum="0"
+                                 Maximum="100"
+                                 Value="{Binding BurnProgress}"
+                                 Margin="0,6,0,0"
+                                 Visibility="{Binding IsBusy, Converter={StaticResource BoolToVis}}" />
+                    <TextBlock Text="{Binding StatusMessage}"
+                               TextWrapping="Wrap"
+                               FontStyle="Italic"
+                               Foreground="{DynamicResource TextSecondaryBrush}"
+                               Margin="0,6,0,0" />
+                    <TextBlock Text="Checked against the Blu-ray file-format rules only. Not yet played on a Blu-ray player, so player compatibility is not claimed."
+                               TextWrapping="Wrap"
+                               FontSize="11"
+                               Foreground="{DynamicResource TextSecondaryBrush}"
+                               Margin="0,4,0,0" />
+                </StackPanel>
+            </StackPanel>
+        </Border>
+
+        <Grid Margin="16" Visibility="{Binding IsDvdMode, Converter={StaticResource BoolToVis}}">
             <Grid.RowDefinitions>
                 <!-- Row 0: Top VIDEO_TS / Source Media Selection Card -->
                 <RowDefinition Height="Auto" />
@@ -964,5 +1103,6 @@
             </Grid>
         </Border>
         </Grid>
+        </StackPanel>
     </ScrollViewer>
 </UserControl>

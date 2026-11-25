@@ -25,6 +25,13 @@
   </ItemGroup>
 
   <ItemGroup>
+    <!-- The hand-built transport stream and the structural BDMV reader of the core tests also check the command line and the screen. -->
+    <Compile Include="..\CdBurner.Core.Tests\BdmvStructuralValidator.cs" Link="Shared\BdmvStructuralValidator.cs" />
+    <Compile Include="..\CdBurner.Core.Tests\SyntheticTransportStream.cs" Link="Shared\SyntheticTransportStream.cs" />
+    <Compile Include="..\CdBurner.Core.Tests\UdfTestWalker.cs" Link="Shared\UdfTestWalker.cs" />
+  </ItemGroup>
+
+  <ItemGroup>
     <ProjectReference Include="..\..\src\CdBurner.Core\CdBurner.Core.csproj" />
     <ProjectReference Include="..\..\src\CdBurner.Hardware\CdBurner.Hardware.csproj" />
     <ProjectReference Include="..\..\src\CdBurner.Lithography\CdBurner.Lithography.csproj" />

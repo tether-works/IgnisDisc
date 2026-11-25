@@ -31,7 +31,7 @@ public sealed record DvdQualityPreset(string Id, string Label, bool FitToDisc, i
 /// View model managing DVD-Video authoring, VIDEO_TS structure verification,
 /// 32 KB (16-sector) IFO/BUP ECC alignment gap inspection, DVD-9 layer break selection, and burning.
 /// </summary>
-public class DvdVideoViewModel : ObservableObject
+public partial class DvdVideoViewModel : ObservableObject
 {
     private readonly IDiscDeviceService _deviceService;
     private readonly IBurnEngineBackend _burnEngine;
@@ -1235,6 +1235,9 @@ public class DvdVideoViewModel : ObservableObject
                 StartDvdBurnCommand?.RaiseCanExecuteChanged();
                 InstallFfmpegCommand?.RaiseCanExecuteChanged();
                 InstallSubtitleToolCommand?.RaiseCanExecuteChanged();
+                BuildBdmvImageCommand?.RaiseCanExecuteChanged();
+                AddBdmvSubtitleCommand?.RaiseCanExecuteChanged();
+                RemoveBdmvSubtitleCommand?.RaiseCanExecuteChanged();
             }
         }
     }
@@ -1363,6 +1366,7 @@ public class DvdVideoViewModel : ObservableObject
         StartDvdBurnCommand = new AsyncRelayCommand(async param => await StartDvdBurnAsync(param), _ => IsStructureValid && !IsTooLongForDvd);
         InstallFfmpegCommand = new AsyncRelayCommand(async _ => await InstallFfmpegAsync(), _ => !IsBusy);
         InstallSubtitleToolCommand = new AsyncRelayCommand(async _ => await InstallSubtitleToolAsync(), _ => !IsBusy);
+        InitializeBdmvMode();
 
         RefreshFfmpegStatus();
         RefreshSubtitleToolStatus();

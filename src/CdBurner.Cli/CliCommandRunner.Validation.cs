@@ -18,7 +18,7 @@ public static partial class CliCommandRunner
     private static readonly HashSet<string> KnownValueOptions = new(StringComparer.OrdinalIgnoreCase)
     {
         "aac-bitrate", "after-title", "append-to", "art-inner-radius-mm", "art-outer-radius-mm",
-        "artist", "aspect", "attach-health", "audio-track", "bitrate", "blank", "block-size", "book-type", "boot-bios", "boot-uefi", "candidate",
+        "artist", "aspect", "attach-health", "audio", "audio-channels", "audio-language", "audio-track", "bitrate", "blank", "block-size", "book-type", "boot-bios", "boot-uefi", "candidate",
         "cells", "chapters", "compare", "config", "copies", "cover", "cover-art", "crossfade",
         "csv", "cue", "data-folder", "data-label", "date", "dir", "disc", "disc-preset",
         "disc-presets-file", "discs", "drive", "drives", "drive-model", "ecc", "entry", "ffmpeg", "files", "fill-picture", "fit",
@@ -34,7 +34,7 @@ public static partial class CliCommandRunner
         "subtitle-size", "subtitle-track", "subtitles-default", "svg", "target", "telemetry-out", "text", "title", "title-names",
         "title-ring", "title-ring-date", "title-ring-height-mm", "to", "tone", "tracks",
         "tracks-file", "turn-map", "turn-map-offset", "udf-rev", "upc", "value",
-        "max-overburn-minutes", "video-bitrate", "video-ts", "virtual-media", "virtual-state", "wait-minutes", "write-offset"
+        "max-overburn-minutes", "max-video-bitrate", "frame-rate", "video-format", "video-bitrate", "video-ts", "virtual-media", "virtual-state", "wait-minutes", "write-offset"
     };
 
     /// <summary>
@@ -229,7 +229,7 @@ public static partial class CliCommandRunner
         "rip", "rip-audio", "convert-audio", "copy-disc", "duplicate", "check-disc", "detect-offset",
         "archive", "archive-stage", "archive-burn", "archive-verify", "archive-rebuild", "recover", "verify", "erase", "scan", "quality-scan",
         "settings", "tools", "install-ffmpeg", "install-par2", "check-update", "image-info",
-        "convert-image", "browse-image", "extract-image", "author-dvd", "jewel-cover", "audio-plan", "burn-queue", "book-type",
+        "convert-image", "browse-image", "extract-image", "author-dvd", "author-bdmv", "jewel-cover", "audio-plan", "burn-queue", "book-type",
         "repair-par2", "ecc-rs03", "rosetta", "disc-art"
     ];
 
@@ -285,6 +285,7 @@ public static partial class CliCommandRunner
         Add(CommandOptionSpec.Of(["overwrite"], ["image", "input", "out", "entry"]), "extract-image", "extractimage");
         Add(CommandOptionSpec.Of(["overwrite"], ["input", "output", "cue"]), "convert-image", "convertimage");
         Add(CommandOptionSpec.Of(["overwrite", .. DvdAuthoringFlags], ["input", "video-ts", "output", .. DvdAuthoringOptions]), "author-dvd", "authordvd");
+        Add(CommandOptionSpec.Of(BdmvFlags, BdmvOptions), "author-bdmv", "authorbdmv");
         Add(CommandOptionSpec.Of(["overwrite", .. AudioCompilationFlags], ["output", .. AudioCompilationOptions]), "jewel-cover", "jewelcover");
         Add(CommandOptionSpec.Of(AudioCompilationFlags, ["media", .. AudioCompilationOptions]), "audio-plan", "audioplan");
         Add(CommandOptionSpec.Of(
