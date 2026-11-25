@@ -36,7 +36,7 @@ back); a DVD-R written in one pass, a DVD-R left open and given a second session
 write; a used and a new DVD+RW; a DVD+R finalized by the drive; three added sessions on a CD-RW, a CD-R and a DVD+R and
 four on a DVD-R, every file of every session identical; a 60 s DVD-Video test disc on a DVD+RW, read back and decoded
 in full; and a dual-layer DVD+R with the layer break where IgnisDisc was told to put it (the Ubuntu 26.04 image, 6.5 GB,
-SHA-256 of the disc equal to the image). Also real: a two-film DVD-9 on a dual-layer DVD+R with the break on the second film's first cell, played on an Xbox Series X across the layer change. Real since 2026-11-15: DVD-RW closed (Disc-At-Once), left open (incremental) and in restricted overwrite mode (expanded with 13h). A second session added to a real DVD-RW the same day. Still simulator only: DVD-RAM, dual-layer DVD-R, Blu-ray, a Mode 2 / XA data track in a mixed-mode CD, the open audio session with a data
+SHA-256 of the disc equal to the image). Also real: a two-film DVD-9 on a dual-layer DVD+R with the break on the second film's first cell, played on an Xbox Series X across the layer change. Real since 2026-11-15: DVD-RW closed (Disc-At-Once), left open (incremental) and in restricted overwrite mode (expanded with 13h). A second session added to a real DVD-RW the same day. Still simulator only: DVD-RAM, dual-layer DVD-R, Blu-ray, CD-R overburning, DVD+R book type (bitsetting), DVD-RW test write, a Mode 2 / XA data track in a mixed-mode CD, the open audio session with a data
 session after it (CD-Extra) and copying an Enhanced CD whole, the Audio CD recovery session, the radial spread of archive recovery data, the archive
 `HEALTH.json` certificates, `eject` and `load` on any tray other than the Lite-On iHAS124's motorised one (where `eject` opened the tray when clear and returned `4/53/00` when blocked, and `load` closed it, 2026-11-19 to 21), CD picture tracks added after a base `.cue`, and the picture-disc options not covered by the burns noted below: `disc-art burn` (including
 the two-session burn of a picture with the files at the outer edge on DVD-R and DVD+R, the rim header drawn on calibrated CD, DVD and BD-R picture discs, and the experimental audio CD
@@ -129,8 +129,7 @@ DVD+R the table was complete straight after every session. Dual-layer DVD+R, BD-
 appended to (the Windows writer adds the session, and says so). The simulator places the next session as measured on
 the GP60NB50 (2026-11-10 to 2026-11-13): on CD as the Orange Book does (11,400 sectors after the first session's
 lead-out, 6,900 after later ones); on DVD-R the first session at least to LBA 65,264, then 28,688 sectors, and 6,160
-after later sessions; on DVD+R 2,048 sectors after every session, with no minimum. DVD-RW uses the DVD-R rule until it is
-measured.
+after later sessions; on DVD+R 2,048 sectors after every session, with no minimum. On DVD-RW the gap after the first session measured 28,688 sectors (Ritek DVD-RW on the GP60NB50, 2026-11-15, matching DVD-R); later sessions use the DVD-R rule until measured.
 
 **Data session after an open audio session (CD-Extra; simulator only, 2026-11-13):** the same sequence adds one Mode 1
 data track Track-at-Once to a CD whose Session-at-Once audio session was left open. There is no earlier file system
@@ -300,7 +299,7 @@ speed in kB over 1,000 ms), then `SET CD SPEED` if the drive refuses that.
   `SEND DISC STRUCTURE` (0xBF) format 20h (byte 1 = 10, bytes 8-11 = layer 0 size) and read back; the read-back
   decides, because some drives answer 5/26/00 yet set the break (cdwrite list). A break fixed elsewhere that would
   have to move, or one the drive will not take, stops the burn before the first `WRITE`.
-- *DVD-Video layer break on a cell boundary* (2026-11-11, simulator and unit tests). `DvdCellLayerBreak` (Core) reads
+- *DVD-Video layer break on a cell boundary* (built 2026-11-11; first real DVD-9 2026-11-14 on the GP60NB50 with a Verbatim DVD+R DL, played across the layer change on an Xbox Series X, results table). `DvdCellLayerBreak` (Core) reads
   each title set's cell address table: the IFO's byte 0xE0 holds the VTS_C_ADT sector; 8-byte header (number of VOBs,
   reserved, end address), 12-byte entries (VOB id, cell id, reserved, start sector, last sector) counted within the
   title set's VOB files (mpucoder's IFO reference; libdvdread `c_adt_t`, `cell_adr_t`). The DVD-Video screen, with
@@ -375,7 +374,7 @@ Track-at-Once, so a data image that does not fit is refused with that reason) an
 Before the first WRITE the writer logs the ATIP capacity and the lead-out the program needs; after the last it logs the exact
 number of sectors sent. The Audio CD screen shows the rated capacity against the image size, the excess in MB and mm:ss, and
 the risk, and writes only after the user presses Overburn. Many drives refuse a cue sheet past the ATIP (the simulated drive
-does unless `VirtualMmcDrive.OverburnLimitSectors` allows it); that refusal is reported before anything is written.
+does unless `VirtualMmcDrive.OverburnLimitSectors` allows it); that refusal is reported before anything is written. Tested in the drive simulator only so far; not yet run on a real CD-R.
 
 ## Buffer and underrun handling
 
