@@ -1,3 +1,4 @@
+using System.Security.Cryptography;
 using CdBurner.Core.Compilation;
 using CdBurner.Core.Iso;
 using CdBurner.Core.Primitives;
@@ -53,6 +54,12 @@ public static class ArchiveStager
                 "PAR2 recovery data requires par2cmdline (par2.exe). Install it or use redundancy 0.");
         }
 
+        if (plan.ParityDiscCount > 0 && plan.Discs.Count + plan.ParityDiscCount > CrossDiscReedSolomon.MaxTotalDiscs)
+        {
+            throw new InvalidOperationException(
+                $"Cross-disc Reed-Solomon parity supports at most {CrossDiscReedSolomon.MaxTotalDiscs} total discs ({plan.Discs.Count} data + {plan.ParityDiscCount} parity).");
+        }
+
         foreach (var disc in plan.Discs)
         {
             string discFolderName = $"disc{disc.DiscNumber:D2}";
@@ -63,12 +70,26 @@ public static class ArchiveStager
             }
         }
 
+        if (plan.ParityDiscCount > 0 && plan.Discs.Count > 0)
+        {
+            for (int p = 0; p < plan.ParityDiscCount; p++)
+            {
+                int discNum = plan.Discs.Count + 1 + p;
+                string discDir = Path.Combine(stagingRoot, $"disc{discNum:D2}");
+                if (Directory.Exists(discDir) && Directory.EnumerateFileSystemEntries(discDir).Any())
+                {
+                    throw new IOException($"Target staging directory '{discDir}' already exists and is non-empty.");
+                }
+            }
+        }
+
         // Every disc carries the same list of the whole set, so every source file is hashed once before staging.
         progress?.Report("Cataloging the whole set...");
         var catalog = await ArchiveCatalog.BuildEntriesAsync(plan, progress, cancellationToken).ConfigureAwait(false);
 
-        var stagedDiscs = new List<ArchiveStagedDisc>(plan.Discs.Count);
-        var createdDiscDirs = new List<string>(plan.Discs.Count);
+        var stagedDiscs = new List<ArchiveStagedDisc>(plan.Discs.Count + (plan.Discs.Count > 0 ? plan.ParityDiscCount : 0));
+        var createdDiscDirs = new List<string>(plan.Discs.Count + (plan.Discs.Count > 0 ? plan.ParityDiscCount : 0));
+        var dataDiscDescriptors = new List<ParitySetDataDisc>(plan.Discs.Count);
         string parentScratch = Path.Combine(stagingRoot, ".par2-scratch");
 
         try
@@ -85,6 +106,7 @@ public static class ArchiveStager
                 Directory.CreateDirectory(discRoot);
                 createdDiscDirs.Add(discRoot);
 
+                var fileEntries = new List<ParitySetFileEntry>(disc.Files.Count);
                 for (int f = 0; f < disc.Files.Count; f++)
                 {
                     cancellationToken.ThrowIfCancellationRequested();
@@ -122,14 +144,30 @@ public static class ArchiveStager
                 // The catalog hashed the sources, the manifest hashed the copies: a difference means a source file
                 // changed while it was being staged, and the catalog on every disc would then be wrong.
                 var cataloged = catalog.Where(e => e.DiscNumber == disc.DiscNumber).ToDictionary(e => e.Path, e => e.Sha256, StringComparer.Ordinal);
+                var manifestByPath = new Dictionary<string, string>(StringComparer.Ordinal);
                 foreach (var entry in index.Files)
                 {
+                    manifestByPath[entry.RelativePath] = entry.Sha256;
                     if (cataloged.TryGetValue(entry.RelativePath, out string? catalogHash) &&
                         !string.Equals(catalogHash, entry.Sha256, StringComparison.OrdinalIgnoreCase))
                     {
                         throw new InvalidOperationException(
                             $"'{entry.RelativePath}' changed while it was being staged (its copy does not match the catalog). Stage again once nothing writes to the source folder.");
                     }
+                }
+
+                if (plan.ParityDiscCount > 0)
+                {
+                    foreach (var file in disc.Files)
+                    {
+                        string norm = file.RelativePath.Replace('\\', '/');
+                        string stagedFilePath = ArchiveManifest.ResolveInsideRoot(discRoot, norm)!;
+                        DateTime lastWriteUtc = File.GetLastWriteTimeUtc(stagedFilePath);
+                        fileEntries.Add(new ParitySetFileEntry(norm, file.SizeBytes, manifestByPath[norm], lastWriteUtc));
+                    }
+
+                    long discStreamBytes = ArchiveParitySet.ComputeDataDiscStreamBytes(disc.Files.Select(f => f.SizeBytes));
+                    dataDiscDescriptors.Add(new ParitySetDataDisc(disc.DiscNumber, discStreamBytes, fileEntries));
                 }
 
                 Par2RecoveryLayout? layout = null;
@@ -182,7 +220,29 @@ public static class ArchiveStager
                 }
 
                 int recoverySectors = SectorsUnder(Path.Combine(discRoot, ArchiveManifest.RecoveryFolderName));
-                stagedDiscs.Add(new ArchiveStagedDisc(discRoot, layout, recoverySectors, SectorsUnder(discRoot), layout != null ? budget : 0));
+                stagedDiscs.Add(new ArchiveStagedDisc(
+                    discRoot,
+                    layout,
+                    recoverySectors,
+                    SectorsUnder(discRoot),
+                    layout != null ? budget : 0,
+                    DiscNumber: disc.DiscNumber,
+                    IsParityDisc: false));
+            }
+
+            if (plan.ParityDiscCount > 0 && plan.Discs.Count > 0)
+            {
+                await StageParityDiscsAsync(
+                    plan,
+                    stagingRoot,
+                    par2Path,
+                    parentScratch,
+                    catalog,
+                    dataDiscDescriptors,
+                    stagedDiscs,
+                    createdDiscDirs,
+                    progress,
+                    cancellationToken).ConfigureAwait(false);
             }
         }
         catch
@@ -230,7 +290,9 @@ public static class ArchiveStager
             ArchiveManifest.RecoveryReadmeFileName,
             ArchiveCatalog.CatalogFileName,
             ArchiveCatalog.HtmlIndexFileName,
-            ArchiveManifest.RecoveryFolderName
+            ArchiveManifest.RecoveryFolderName,
+            ArchiveParitySet.ParitySetFileName,
+            ArchiveParitySet.ParityPayloadFileName
         };
 
         foreach (var file in disc.Files)
@@ -319,6 +381,303 @@ public static class ArchiveStager
 
             Directory.Delete(recoveryFolder, recursive: true);
             layout = layout with { RecoveryBlocks = layout.RecoveryBlocks - fewer };
+        }
+    }
+
+    private static async Task StageParityDiscsAsync(
+        ArchivePlan plan,
+        string stagingRoot,
+        string? par2Path,
+        string parentScratch,
+        IReadOnlyList<ArchiveCatalogEntry> catalog,
+        IReadOnlyList<ParitySetDataDisc> dataDiscDescriptors,
+        List<ArchiveStagedDisc> stagedDiscs,
+        List<string> createdDiscDirs,
+        IProgress<string>? progress,
+        CancellationToken cancellationToken)
+    {
+        int dataCount = plan.Discs.Count;
+        int parityCount = plan.ParityDiscCount;
+        int stripeSize = ArchiveParitySet.DefaultStripeSizeBytes;
+        long maxStreamBytes = ArchiveParitySet.AlignUpToStripe(
+            dataDiscDescriptors.Max(d => d.DataStreamBytes),
+            stripeSize);
+        long totalStripes = maxStreamBytes / stripeSize;
+
+        var chunkPaths = ArchiveParitySet.GetChunkRelativePaths(maxStreamBytes);
+        var parityRoots = new string[parityCount];
+        var chunkWriters = new ParityChunkWriter[parityCount];
+        var readers = new ArchiveParitySet.DiscContainerReader[dataCount];
+        var sources = new ArchiveParitySet.IArchiveDiscSource[dataCount];
+
+        try
+        {
+            for (int p = 0; p < parityCount; p++)
+            {
+                int discNum = dataCount + 1 + p;
+                string parityRoot = Path.Combine(stagingRoot, $"disc{discNum:D2}");
+                Directory.CreateDirectory(parityRoot);
+                createdDiscDirs.Add(parityRoot);
+                parityRoots[p] = parityRoot;
+                chunkWriters[p] = new ParityChunkWriter(parityRoot, chunkPaths, maxStreamBytes);
+            }
+
+            for (int j = 0; j < dataCount; j++)
+            {
+                sources[j] = ArchiveParitySet.OpenDiscSource(stagedDiscs[j].DiscRoot);
+                readers[j] = new ArchiveParitySet.DiscContainerReader(
+                    sources[j],
+                    dataDiscDescriptors[j].Files,
+                    OpticalConstants.DataSectorSize,
+                    verifySha256: false);
+            }
+
+            var codec = new CrossDiscReedSolomon(dataCount, parityCount);
+            byte[] dataBuffer = new byte[stripeSize];
+            byte[][] parityBuffers = new byte[parityCount][];
+            for (int p = 0; p < parityCount; p++)
+            {
+                parityBuffers[p] = new byte[stripeSize];
+            }
+
+            for (long stripe = 0; stripe < totalStripes; stripe++)
+            {
+                cancellationToken.ThrowIfCancellationRequested();
+                if (stripe % 256 == 0)
+                {
+                    progress?.Report($"Generating cross-disc Reed-Solomon parity ({stripe + 1}/{totalStripes} stripes)...");
+                }
+
+                for (int p = 0; p < parityCount; p++)
+                {
+                    Array.Clear(parityBuffers[p]);
+                }
+
+                for (int j = 0; j < dataCount; j++)
+                {
+                    await readers[j].ReadStripeAsync(dataBuffer, cancellationToken).ConfigureAwait(false);
+                    for (int p = 0; p < parityCount; p++)
+                    {
+                        CrossDiscReedSolomon.MultiplyXor(codec.GetCoefficient(p, j), dataBuffer, parityBuffers[p]);
+                    }
+                }
+
+                for (int p = 0; p < parityCount; p++)
+                {
+                    await chunkWriters[p].WriteAsync(parityBuffers[p], cancellationToken).ConfigureAwait(false);
+                }
+            }
+
+            for (int p = 0; p < parityCount; p++)
+            {
+                cancellationToken.ThrowIfCancellationRequested();
+                int discNum = dataCount + 1 + p;
+                string discFolderName = $"disc{discNum:D2}";
+                string parityRoot = parityRoots[p];
+
+                ParityPayloadInfo payloadInfo = await chunkWriters[p].CompleteAsync(cancellationToken).ConfigureAwait(false);
+                var doc = new ParitySetDocument(
+                    SchemaVersion: ArchiveParitySet.CurrentSchemaVersion,
+                    SetId: plan.SetId,
+                    Algorithm: CrossDiscReedSolomon.AlgorithmName,
+                    MediaType: plan.MediaType.ToString(),
+                    DataDiscCount: dataCount,
+                    ParityDiscCount: parityCount,
+                    TotalDiscCount: plan.TotalDiscCount,
+                    ThisDiscNumber: discNum,
+                    ParitySlotIndex: p,
+                    SectorSizeBytes: OpticalConstants.DataSectorSize,
+                    StripeSizeBytes: stripeSize,
+                    MaxDataStreamBytes: maxStreamBytes,
+                    RedundancyPercent: plan.RedundancyPercent,
+                    ParityPayload: payloadInfo,
+                    DataDiscs: dataDiscDescriptors);
+
+                progress?.Report($"Staging parity disc {discNum}/{plan.TotalDiscCount}: writing PARITY-SET.JSON and manifests...");
+                await ArchiveManifest.WriteParityDiscAsync(parityRoot, plan, doc, catalog, cancellationToken).ConfigureAwait(false);
+
+                Par2RecoveryLayout? layout = null;
+                long budget = 0;
+                if (plan.RedundancyPercent > 0)
+                {
+                    string scratchDir = Path.Combine(parentScratch, discFolderName);
+                    try
+                    {
+                        var par2Sources = ListSourceFiles(parityRoot);
+                        long freeSectors = RecoveryBudgetSectors(plan.EffectiveCeilingSectors, parityRoot);
+                        int dataSectors = SectorsUnder(parityRoot);
+                        budget = plan.FillFreeSpace
+                            ? freeSectors
+                            : Math.Min(freeSectors, (long)Math.Round(dataSectors * (plan.RedundancyPercent / 100.0)));
+                        layout = Par2RecoverySizer.Plan(par2Sources, budget);
+                        if (layout == null && !plan.FillFreeSpace)
+                        {
+                            long oneBlock = Par2RecoverySizer.MinimumBudgetSectors(par2Sources);
+                            if (freeSectors >= oneBlock)
+                            {
+                                budget = oneBlock;
+                                layout = Par2RecoverySizer.Plan(par2Sources, budget);
+                            }
+                        }
+
+                        if (layout != null)
+                        {
+                            string fillDetail = plan.FillFreeSpace ? "to fill the disc " : string.Empty;
+                            progress?.Report($"Staging parity disc {discNum}/{plan.TotalDiscCount}: generating PAR2 recovery data " +
+                                             $"{fillDetail}({layout.RecoveryBlocks:N0} blocks of {layout.BlockSize / 1024.0:N0} KB, " +
+                                             $"{layout.RedundancyPercent:N0} %)...");
+                            layout = await CreateFittingAsync(par2Path!, parityRoot, layout, plan.EffectiveCeilingSectors, scratchDir, cancellationToken)
+                                .ConfigureAwait(false);
+                        }
+                    }
+                    finally
+                    {
+                        try
+                        {
+                            if (Directory.Exists(scratchDir))
+                            {
+                                Directory.Delete(scratchDir, recursive: true);
+                            }
+                        }
+                        catch
+                        {
+                        }
+                    }
+                }
+
+                int recoverySectors = SectorsUnder(Path.Combine(parityRoot, ArchiveManifest.RecoveryFolderName));
+                stagedDiscs.Add(new ArchiveStagedDisc(
+                    parityRoot,
+                    layout,
+                    recoverySectors,
+                    SectorsUnder(parityRoot),
+                    layout != null ? budget : 0,
+                    DiscNumber: discNum,
+                    IsParityDisc: true));
+            }
+        }
+        finally
+        {
+            for (int j = 0; j < readers.Length; j++)
+            {
+                if (readers[j] != null)
+                {
+                    await readers[j].DisposeAsync().ConfigureAwait(false);
+                }
+                sources[j]?.Dispose();
+            }
+            for (int p = 0; p < chunkWriters.Length; p++)
+            {
+                if (chunkWriters[p] != null)
+                {
+                    await chunkWriters[p].DisposeAsync().ConfigureAwait(false);
+                }
+            }
+        }
+    }
+
+    internal sealed class ParityChunkWriter : IAsyncDisposable
+    {
+        private readonly string _root;
+        private readonly IReadOnlyList<string> _chunkPaths;
+        private readonly long _totalExpectedBytes;
+        private readonly List<ParityPayloadChunk> _completedChunks = new();
+        private readonly IncrementalHash _totalHash = IncrementalHash.CreateHash(HashAlgorithmName.SHA256);
+
+        private int _chunkIndex;
+        private long _chunkBytesWritten;
+        private long _totalBytesWritten;
+        private FileStream? _stream;
+        private IncrementalHash? _chunkHash;
+
+        public ParityChunkWriter(string root, IReadOnlyList<string> chunkPaths, long totalExpectedBytes)
+        {
+            _root = root;
+            _chunkPaths = chunkPaths;
+            _totalExpectedBytes = totalExpectedBytes;
+        }
+
+        public async Task WriteAsync(ReadOnlyMemory<byte> buffer, CancellationToken cancellationToken)
+        {
+            int offset = 0;
+            while (offset < buffer.Length)
+            {
+                if (_stream == null)
+                {
+                    OpenNextChunk();
+                }
+
+                long chunkCap = ArchiveParitySet.MaxParityChunkBytes - _chunkBytesWritten;
+                int toWrite = (int)Math.Min(chunkCap, buffer.Length - offset);
+                await _stream!.WriteAsync(buffer.Slice(offset, toWrite), cancellationToken).ConfigureAwait(false);
+                var span = buffer.Span.Slice(offset, toWrite);
+                _chunkHash!.AppendData(span);
+                _totalHash.AppendData(span);
+
+                offset += toWrite;
+                _chunkBytesWritten += toWrite;
+                _totalBytesWritten += toWrite;
+
+                if (_chunkBytesWritten >= ArchiveParitySet.MaxParityChunkBytes && _chunkIndex + 1 < _chunkPaths.Count)
+                {
+                    await CloseCurrentChunkAsync().ConfigureAwait(false);
+                    _chunkIndex++;
+                }
+            }
+        }
+
+        public async Task<ParityPayloadInfo> CompleteAsync(CancellationToken cancellationToken)
+        {
+            cancellationToken.ThrowIfCancellationRequested();
+            if (_stream == null && _completedChunks.Count == 0 && _chunkPaths.Count > 0)
+            {
+                // Zero-byte payload (e.g., archive containing only 0-byte files).
+                OpenNextChunk();
+            }
+            if (_stream != null)
+            {
+                await CloseCurrentChunkAsync().ConfigureAwait(false);
+            }
+
+            string totalSha = Convert.ToHexStringLower(_totalHash.GetHashAndReset());
+            return new ParityPayloadInfo(_completedChunks, _totalBytesWritten, totalSha);
+        }
+
+        private void OpenNextChunk()
+        {
+            string rel = _chunkPaths[_chunkIndex];
+            string full = ArchiveManifest.ResolveInsideRoot(_root, rel)
+                ?? throw new InvalidOperationException($"Invalid parity chunk path '{rel}'.");
+            Directory.CreateDirectory(Path.GetDirectoryName(full)!);
+            _stream = new FileStream(full, FileMode.Create, FileAccess.Write, FileShare.None, 65536, FileOptions.SequentialScan | FileOptions.Asynchronous);
+            _chunkBytesWritten = 0;
+            _chunkHash = IncrementalHash.CreateHash(HashAlgorithmName.SHA256);
+        }
+
+        private async Task CloseCurrentChunkAsync()
+        {
+            if (_stream != null)
+            {
+                await _stream.FlushAsync().ConfigureAwait(false);
+                await _stream.DisposeAsync().ConfigureAwait(false);
+                _stream = null;
+            }
+            string chunkSha = Convert.ToHexStringLower(_chunkHash!.GetHashAndReset());
+            _chunkHash.Dispose();
+            _chunkHash = null;
+            _completedChunks.Add(new ParityPayloadChunk(_chunkPaths[_chunkIndex], _chunkBytesWritten, chunkSha));
+        }
+
+        public async ValueTask DisposeAsync()
+        {
+            _chunkHash?.Dispose();
+            _chunkHash = null;
+            _totalHash.Dispose();
+            if (_stream != null)
+            {
+                await _stream.DisposeAsync().ConfigureAwait(false);
+                _stream = null;
+            }
         }
     }
 

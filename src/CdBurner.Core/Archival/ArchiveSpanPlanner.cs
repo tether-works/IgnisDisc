@@ -69,7 +69,8 @@ public static class ArchiveSpanPlanner
         string? setId = null,
         bool fillFreeSpace = true,
         int? ceilingSectorsOverride = null,
-        ArchivePackingMode packing = ArchivePackingMode.FirstFitDecreasing)
+        ArchivePackingMode packing = ArchivePackingMode.FirstFitDecreasing,
+        int parityDiscCount = 0)
     {
         ArgumentException.ThrowIfNullOrWhiteSpace(sourceFolder);
         if (!Directory.Exists(sourceFolder))
@@ -87,7 +88,7 @@ public static class ArchiveSpanPlanner
             files.Add(new ArchiveSourceFile(fullPath, relative, size));
         }
 
-        return Plan(files, mediaType, redundancyPercent, setId, fillFreeSpace, ceilingSectorsOverride, packing);
+        return Plan(files, mediaType, redundancyPercent, setId, fillFreeSpace, ceilingSectorsOverride, packing, parityDiscCount);
     }
 
     /// <summary>
@@ -101,6 +102,7 @@ public static class ArchiveSpanPlanner
     /// <param name="fillFreeSpace">Grow recovery data to fill each disc (redundancy is then the minimum).</param>
     /// <param name="ceilingSectorsOverride">Sectors per disc in all, instead of the media type's (tests, odd media).</param>
     /// <param name="packing">How files are placed on discs; see <see cref="ArchivePackingMode"/>.</param>
+    /// <param name="parityDiscCount">Optional number of cross-disc Reed-Solomon parity discs (0..254).</param>
     public static ArchivePlan Plan(
         IReadOnlyList<ArchiveSourceFile> files,
         DiscMediaType mediaType,
@@ -108,12 +110,20 @@ public static class ArchiveSpanPlanner
         string? setId = null,
         bool fillFreeSpace = true,
         int? ceilingSectorsOverride = null,
-        ArchivePackingMode packing = ArchivePackingMode.FirstFitDecreasing)
+        ArchivePackingMode packing = ArchivePackingMode.FirstFitDecreasing,
+        int parityDiscCount = 0)
     {
         ArgumentNullException.ThrowIfNull(files);
         if (redundancyPercent < 0 || redundancyPercent > 100)
         {
             throw new ArgumentOutOfRangeException(nameof(redundancyPercent), redundancyPercent, "Redundancy percent must be between 0 and 100.");
+        }
+        if (parityDiscCount < 0 || parityDiscCount >= CrossDiscReedSolomon.MaxTotalDiscs)
+        {
+            throw new ArgumentOutOfRangeException(
+                nameof(parityDiscCount),
+                parityDiscCount,
+                $"Parity disc count must be between 0 and {CrossDiscReedSolomon.MaxTotalDiscs - 1}.");
         }
 
         int ceilingSectors = ceilingSectorsOverride is > 0 ? ceilingSectorsOverride.Value : CalculateCeilingSectors(mediaType);
@@ -133,23 +143,30 @@ public static class ArchiveSpanPlanner
                 Discs: Array.Empty<ArchiveDiscPlan>(),
                 TotalBytes: 0L,
                 CeilingSectorsPerDisc: ceilingSectors,
-                FillFreeSpace: fillFreeSpace);
+                FillFreeSpace: fillFreeSpace,
+                PackingMode: packing,
+                ParityDiscCount: parityDiscCount);
         }
 
         // Every disc also carries CATALOG.JSON and INDEX.HTML, which list the whole set: keep room for them.
+        // When cross-disc parity is enabled, reserve metadata room on parity discs as well.
         long catalogSectors = ArchiveCatalog.EstimateSectors(orderedFiles);
-        long packCapacity = usableSectors - catalogSectors;
+        long parityMetadataSectors = ArchiveParitySet.EstimateMetadataSectors(orderedFiles, parityDiscCount);
+        long packCapacity = usableSectors - catalogSectors - parityMetadataSectors;
         if (packCapacity <= 0)
         {
             throw new InvalidOperationException(
-                $"Usable disc capacity ({usableSectors} sectors) leaves no room for the archive catalog ({catalogSectors} sectors).");
+                $"Usable disc capacity ({usableSectors} sectors) leaves no room for the archive catalog ({catalogSectors + parityMetadataSectors} sectors).");
         }
 
         foreach (var file in orderedFiles)
         {
             string leaf = file.RelativePath.Replace('\\', '/');
             if (string.Equals(leaf, ArchiveCatalog.CatalogFileName, StringComparison.OrdinalIgnoreCase) ||
-                string.Equals(leaf, ArchiveCatalog.HtmlIndexFileName, StringComparison.OrdinalIgnoreCase))
+                string.Equals(leaf, ArchiveCatalog.HtmlIndexFileName, StringComparison.OrdinalIgnoreCase) ||
+                (parityDiscCount > 0 && (
+                    string.Equals(leaf, ArchiveParitySet.ParitySetFileName, StringComparison.OrdinalIgnoreCase) ||
+                    string.Equals(leaf, ArchiveParitySet.ParityPayloadFileName, StringComparison.OrdinalIgnoreCase))))
             {
                 throw new InvalidOperationException(
                     $"The source folder holds a file named '{file.RelativePath}' in its top level, a name every archive disc uses for its own " +
@@ -163,7 +180,7 @@ public static class ArchiveSpanPlanner
                 long requiredSectors = file.SizeBytes / OpticalConstants.DataSectorSize +
                                        (file.SizeBytes % OpticalConstants.DataSectorSize != 0 ? 1 : 0);
                 throw new InvalidOperationException(
-                    $"File '{file.RelativePath}' requires {requiredSectors} sectors, which is larger than one disc's available capacity ({packCapacity} sectors after reserving {catalogSectors} for the catalog).");
+                    $"File '{file.RelativePath}' requires {requiredSectors} sectors, which is larger than one disc's available capacity ({packCapacity} sectors after reserving {catalogSectors + parityMetadataSectors} for the catalog).");
             }
         }
 
@@ -176,6 +193,12 @@ public static class ArchiveSpanPlanner
             ArchivePackingMode.FirstFitDecreasing => PackFirstFitDecreasing(BuildFileUnits(orderedFiles), packCapacity, fileLimit),
             _ => throw new ArgumentOutOfRangeException(nameof(packing), packing, "Unknown packing mode.")
         };
+
+        if (parityDiscCount > 0 && bins.Count + parityDiscCount > CrossDiscReedSolomon.MaxTotalDiscs)
+        {
+            throw new InvalidOperationException(
+                $"The archive requires {bins.Count} data discs plus {parityDiscCount} parity discs ({bins.Count + parityDiscCount} total), exceeding the {CrossDiscReedSolomon.MaxTotalDiscs}-disc Reed-Solomon limit.");
+        }
 
         var discs = new List<ArchiveDiscPlan>(bins.Count);
         foreach (var bin in bins)
@@ -199,7 +222,8 @@ public static class ArchiveSpanPlanner
             TotalBytes: totalBytes,
             CeilingSectorsPerDisc: ceilingSectors,
             FillFreeSpace: fillFreeSpace,
-            PackingMode: packing);
+            PackingMode: packing,
+            ParityDiscCount: parityDiscCount);
     }
 
     /// <summary>One disc being filled.</summary>

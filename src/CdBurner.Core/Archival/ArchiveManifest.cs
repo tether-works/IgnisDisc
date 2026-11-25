@@ -263,7 +263,7 @@ public static class ArchiveManifest
         var index = new ArchiveIndex(
             SetId: plan.SetId,
             DiscNumber: disc.DiscNumber,
-            DiscCount: plan.Discs.Count,
+            DiscCount: plan.TotalDiscCount > 0 ? plan.TotalDiscCount : plan.Discs.Count,
             MediaType: plan.MediaType.ToString(),
             CreatedUtc: DateTime.UtcNow,
             RedundancyPercent: plan.RedundancyPercent,
@@ -273,15 +273,115 @@ public static class ArchiveManifest
         string indexPath = Path.Combine(discRoot, IndexFileName);
         await File.WriteAllTextAsync(indexPath, json, Utf8NoBom, cancellationToken).ConfigureAwait(false);
 
-        await WriteStandaloneVerificationScriptsAsync(discRoot, plan, disc, cancellationToken).ConfigureAwait(false);
+        await WriteStandaloneVerificationScriptsAsync(discRoot, plan, disc.DiscNumber, readmeOverride: null, cancellationToken).ConfigureAwait(false);
 
         return index;
+    }
+
+    /// <summary>
+    /// Writes <c>PARITY-SET.JSON</c>, <c>CATALOG.JSON</c>, <c>INDEX.HTML</c>, <c>IGNISDISC-MANIFEST.sha256</c>,
+    /// <c>IGNISDISC-ARCHIVE.json</c>, verification scripts, and cross-disc recovery instructions on a parity disc.
+    /// </summary>
+    public static async Task<ArchiveIndex> WriteParityDiscAsync(
+        string discRoot,
+        ArchivePlan plan,
+        ParitySetDocument paritySet,
+        IReadOnlyList<ArchiveCatalogEntry> catalog,
+        CancellationToken cancellationToken = default)
+    {
+        ArgumentException.ThrowIfNullOrWhiteSpace(discRoot);
+        ArgumentNullException.ThrowIfNull(plan);
+        ArgumentNullException.ThrowIfNull(paritySet);
+        ArgumentNullException.ThrowIfNull(catalog);
+
+        await ArchiveParitySet.WriteParitySetJsonAsync(discRoot, paritySet, cancellationToken).ConfigureAwait(false);
+        await ArchiveCatalog.WriteAsync(discRoot, plan, paritySet.ThisDiscNumber, catalog, cancellationToken).ConfigureAwait(false);
+
+        var listed = new List<(string RelativePath, long SizeBytes)>(paritySet.ParityPayload.Chunks.Count + 3);
+        foreach (var chunk in paritySet.ParityPayload.Chunks)
+        {
+            string chunkPath = Path.Combine(discRoot, chunk.RelativePath.Replace('/', Path.DirectorySeparatorChar));
+            listed.Add((chunk.RelativePath, new FileInfo(chunkPath).Length));
+        }
+        foreach (string name in new[] { ArchiveParitySet.ParitySetFileName, ArchiveCatalog.CatalogFileName, ArchiveCatalog.HtmlIndexFileName })
+        {
+            listed.Add((name, new FileInfo(Path.Combine(discRoot, name)).Length));
+        }
+
+        var entries = new List<ArchiveManifestEntry>(listed.Count);
+        var manifestBuilder = new StringBuilder();
+
+        foreach (var file in listed)
+        {
+            cancellationToken.ThrowIfCancellationRequested();
+
+            string normalizedRelative = file.RelativePath.Replace('\\', '/');
+            string diskPath = Path.Combine(discRoot, normalizedRelative.Replace('/', Path.DirectorySeparatorChar));
+
+            string hashHex;
+            using (var stream = OpenForHashing(diskPath))
+            {
+                byte[] hashBytes = await SHA256.HashDataAsync(stream, cancellationToken).ConfigureAwait(false);
+                hashHex = Convert.ToHexStringLower(hashBytes);
+            }
+
+            entries.Add(new ArchiveManifestEntry(normalizedRelative, file.SizeBytes, hashHex));
+            AppendManifestLine(manifestBuilder, hashHex, normalizedRelative);
+        }
+
+        await File.WriteAllTextAsync(Path.Combine(discRoot, ManifestFileName), manifestBuilder.ToString(), Utf8NoBom, cancellationToken).ConfigureAwait(false);
+
+        var index = new ArchiveIndex(
+            SetId: plan.SetId,
+            DiscNumber: paritySet.ThisDiscNumber,
+            DiscCount: plan.TotalDiscCount,
+            MediaType: plan.MediaType.ToString(),
+            CreatedUtc: DateTime.UtcNow,
+            RedundancyPercent: plan.RedundancyPercent,
+            Files: entries);
+
+        await File.WriteAllTextAsync(Path.Combine(discRoot, IndexFileName), JsonSerializer.Serialize(index, JsonOptions), Utf8NoBom, cancellationToken).ConfigureAwait(false);
+
+        string readme = ArchiveParitySet.BuildParityReadmeText(paritySet);
+        await WriteStandaloneVerificationScriptsAsync(discRoot, plan, paritySet.ThisDiscNumber, readme, cancellationToken).ConfigureAwait(false);
+
+        return index;
+    }
+
+    private static void AppendManifestLine(StringBuilder manifestBuilder, string hashHex, string normalizedRelative)
+    {
+        bool needsEscape = normalizedRelative.IndexOfAny(['\\', '\n', '\r']) >= 0;
+        if (needsEscape)
+        {
+            manifestBuilder.Append('\\');
+        }
+        manifestBuilder.Append(hashHex);
+        manifestBuilder.Append("  ");
+        if (!needsEscape)
+        {
+            manifestBuilder.Append(normalizedRelative);
+        }
+        else
+        {
+            foreach (char c in normalizedRelative)
+            {
+                switch (c)
+                {
+                    case '\\': manifestBuilder.Append("\\\\"); break;
+                    case '\n': manifestBuilder.Append("\\n"); break;
+                    case '\r': manifestBuilder.Append("\\r"); break;
+                    default: manifestBuilder.Append(c); break;
+                }
+            }
+        }
+        manifestBuilder.Append('\n');
     }
 
     private static async Task WriteStandaloneVerificationScriptsAsync(
         string discRoot,
         ArchivePlan plan,
-        ArchiveDiscPlan disc,
+        int discNumber,
+        string? readmeOverride,
         CancellationToken cancellationToken)
     {
         string ps1Path = Path.Combine(discRoot, VerifyPowerShellFileName);
@@ -303,6 +403,7 @@ public static class ArchiveManifest
                 }
                 $checked = 0
                 $failed = 0
+                $verifiedHashes = @{}
                 foreach ($line in Get-Content -LiteralPath $manifest -Encoding UTF8) {
                     if ([string]::IsNullOrWhiteSpace($line)) { continue }
                     $isEscaped = $line.StartsWith('\')
@@ -361,6 +462,7 @@ public static class ArchiveManifest
                         Write-Host "[CORRUPT] $relPath" -ForegroundColor Red
                         $failed++
                     } else {
+                        $verifiedHashes[$listedPath.ToLowerInvariant()] = $actual
                         Write-Host "[OK]      $relPath" -ForegroundColor Green
                     }
                 }
@@ -379,6 +481,64 @@ public static class ArchiveManifest
                         }
                     } catch {
                         Write-Host "[UNREADABLE] IGNISDISC-ARCHIVE.json" -ForegroundColor Red
+                        $failed++
+                    }
+                }
+                $paritySetPath = Join-Path $PSScriptRoot 'PARITY-SET.JSON'
+                if (Test-Path -LiteralPath $paritySetPath) {
+                    try {
+                        $psDoc = Get-Content -LiteralPath $paritySetPath -Raw -Encoding UTF8 | ConvertFrom-Json
+                        if ([string]::IsNullOrWhiteSpace($psDoc.setId) -or $psDoc.dataDiscCount -lt 1 -or $psDoc.parityDiscCount -lt 1 -or $null -eq $psDoc.parityPayload -or $null -eq $psDoc.parityPayload.chunks) {
+                            Write-Host "[CORRUPT] PARITY-SET.JSON is missing required parity-set fields" -ForegroundColor Red
+                            $failed++
+                        } else {
+                            $payloadOk = $true
+                            foreach ($ch in @($psDoc.parityPayload.chunks)) {
+                                $chRel = $ch.relativePath -replace '/', [IO.Path]::DirectorySeparatorChar
+                                $chFull = Join-Path $PSScriptRoot $chRel
+                                if (-not (Test-Path -LiteralPath $chFull)) {
+                                    Write-Host "[MISSING] $chRel (listed in PARITY-SET.JSON)" -ForegroundColor Red
+                                    $failed++
+                                    $payloadOk = $false
+                                    continue
+                                }
+                                $chLen = (Get-Item -LiteralPath $chFull).Length
+                                if ($chLen -ne [int64]$ch.sizeBytes) {
+                                    Write-Host "[CORRUPT] $chRel size $chLen does not match PARITY-SET.JSON ($($ch.sizeBytes))" -ForegroundColor Red
+                                    $failed++
+                                    $payloadOk = $false
+                                    continue
+                                }
+                                $chKey = $ch.relativePath.ToLowerInvariant()
+                                $chHash = $verifiedHashes[$chKey]
+                                if ([string]::IsNullOrWhiteSpace($chHash)) {
+                                    $s = [System.IO.File]::OpenRead($chFull)
+                                    try {
+                                        $h = [System.Security.Cryptography.SHA256]::Create()
+                                        try { $chHash = ([System.BitConverter]::ToString($h.ComputeHash($s)) -replace '-', '').ToLowerInvariant() } finally { $h.Dispose() }
+                                    } finally { $s.Dispose() }
+                                }
+                                if ($chHash -ne $ch.sha256.ToLowerInvariant()) {
+                                    Write-Host "[CORRUPT] $chRel checksum does not match PARITY-SET.JSON" -ForegroundColor Red
+                                    $failed++
+                                    $payloadOk = $false
+                                }
+                            }
+                            $catalogPath = Join-Path $PSScriptRoot 'CATALOG.JSON'
+                            if (Test-Path -LiteralPath $catalogPath) {
+                                $catDoc = Get-Content -LiteralPath $catalogPath -Raw -Encoding UTF8 | ConvertFrom-Json
+                                if ($catDoc.setId -ne $psDoc.setId -or $null -eq $catDoc.paritySet -or $catDoc.paritySet.dataDiscCount -ne $psDoc.dataDiscCount -or $catDoc.paritySet.parityDiscCount -ne $psDoc.parityDiscCount) {
+                                    Write-Host "[MISMATCH] PARITY-SET.JSON disagrees with CATALOG.JSON" -ForegroundColor Red
+                                    $failed++
+                                    $payloadOk = $false
+                                }
+                            }
+                            if ($payloadOk) {
+                                Write-Host "[OK]      PARITY-SET.JSON (parity disc $($psDoc.paritySlotIndex + 1) of $($psDoc.parityDiscCount), protects $($psDoc.dataDiscCount) data discs)" -ForegroundColor Green
+                            }
+                        }
+                    } catch {
+                        Write-Host "[UNREADABLE] PARITY-SET.JSON" -ForegroundColor Red
                         $failed++
                     }
                 }
@@ -408,13 +568,17 @@ public static class ArchiveManifest
         string readmePath = Path.Combine(discRoot, RecoveryReadmeFileName);
         if (!File.Exists(readmePath))
         {
-            string readmeContent = $"""
+            int totalDiscs = plan.TotalDiscCount > 0 ? plan.TotalDiscCount : plan.Discs.Count;
+            string parityLine = plan.ParityDiscCount > 0
+                ? $"\nCross-Disc:  {plan.ParityDiscCount} parity disc(s) (discs {plan.Discs.Count + 1}..{totalDiscs})"
+                : string.Empty;
+            string readmeContent = readmeOverride ?? $"""
                 ================================================================================
                 IGNISDISC ARCHIVAL DISC VERIFICATION & RECOVERY GUIDE
                 Set ID:      {plan.SetId}
-                Disc:        {disc.DiscNumber} of {plan.Discs.Count}
+                Disc:        {discNumber} of {totalDiscs}
                 Media Type:  {plan.MediaType}
-                PAR2 Parity: {plan.RedundancyPercent}%
+                PAR2 Parity: {plan.RedundancyPercent}%{parityLine}
                 ================================================================================
 
                 This disc is self-describing and can be verified on any computer without
@@ -600,6 +764,8 @@ public static class ArchiveManifest
             corrupt.Add($"{ManifestFileName} (lists no files)");
         }
 
+        await ValidateParitySetMetadataAsync(discRoot, setId, discNumber, corrupt, cancellationToken).ConfigureAwait(false);
+
         int filesChecked = 0;
 
         foreach (var (expectedHash, relativePath) in entries)
@@ -650,5 +816,83 @@ public static class ArchiveManifest
             SetId: setId,
             DiscNumber: discNumber,
             DiscCount: discCount);
+    }
+
+    private static async Task ValidateParitySetMetadataAsync(
+        string discRoot,
+        string? indexSetId,
+        int? indexDiscNumber,
+        List<string> corrupt,
+        CancellationToken cancellationToken)
+    {
+        string paritySetPath = Path.Combine(discRoot, ArchiveParitySet.ParitySetFileName);
+        if (!File.Exists(paritySetPath))
+        {
+            return;
+        }
+
+        ParitySetDocument? parityDoc;
+        try
+        {
+            var info = new FileInfo(paritySetPath);
+            if (info.Length > MaxMetadataFileSizeBytes)
+            {
+                corrupt.Add($"{ArchiveParitySet.ParitySetFileName} (exceeds maximum readable size)");
+                return;
+            }
+
+            string json = await File.ReadAllTextAsync(paritySetPath, cancellationToken).ConfigureAwait(false);
+            parityDoc = ArchiveParitySet.ParseJson(json);
+        }
+        catch (Exception ex) when (ex is JsonException or IOException or NotSupportedException or UnauthorizedAccessException)
+        {
+            corrupt.Add($"{ArchiveParitySet.ParitySetFileName} (unreadable)");
+            return;
+        }
+
+        if (parityDoc == null ||
+            string.IsNullOrWhiteSpace(parityDoc.SetId) ||
+            parityDoc.DataDiscCount < 1 ||
+            parityDoc.ParityDiscCount < 1 ||
+            parityDoc.ParityPayload?.Chunks == null ||
+            parityDoc.ParityPayload.Chunks.Count == 0 ||
+            parityDoc.DataDiscs == null ||
+            parityDoc.DataDiscs.Count != parityDoc.DataDiscCount)
+        {
+            corrupt.Add($"{ArchiveParitySet.ParitySetFileName} (invalid parity metadata)");
+            return;
+        }
+
+        if (!string.IsNullOrWhiteSpace(indexSetId) &&
+            !string.Equals(parityDoc.SetId, indexSetId, StringComparison.Ordinal))
+        {
+            corrupt.Add($"{ArchiveParitySet.ParitySetFileName} (set ID mismatch)");
+        }
+        if (indexDiscNumber.HasValue && parityDoc.ThisDiscNumber != indexDiscNumber.Value)
+        {
+            corrupt.Add($"{ArchiveParitySet.ParitySetFileName} (disc number mismatch)");
+        }
+
+        string catalogPath = Path.Combine(discRoot, ArchiveCatalog.CatalogFileName);
+        if (File.Exists(catalogPath))
+        {
+            try
+            {
+                string catJson = await File.ReadAllTextAsync(catalogPath, cancellationToken).ConfigureAwait(false);
+                var catDoc = ArchiveCatalog.ParseJson(catJson);
+                if (catDoc == null ||
+                    !string.Equals(catDoc.SetId, parityDoc.SetId, StringComparison.Ordinal) ||
+                    catDoc.ParitySet == null ||
+                    catDoc.ParitySet.DataDiscCount != parityDoc.DataDiscCount ||
+                    catDoc.ParitySet.ParityDiscCount != parityDoc.ParityDiscCount)
+                {
+                    corrupt.Add($"{ArchiveParitySet.ParitySetFileName} (does not match {ArchiveCatalog.CatalogFileName})");
+                }
+            }
+            catch (Exception ex) when (ex is JsonException or IOException or UnauthorizedAccessException)
+            {
+                corrupt.Add($"{ArchiveCatalog.CatalogFileName} (unreadable)");
+            }
+        }
     }
 }

@@ -3,6 +3,7 @@ using System.Net;
 using System.Security.Cryptography;
 using System.Text;
 using System.Text.Json;
+using System.Text.Json.Serialization;
 using CdBurner.Core.Primitives;
 
 namespace CdBurner.Core.Archival;
@@ -14,12 +15,26 @@ namespace CdBurner.Core.Archival;
 /// <param name="Sha256">SHA-256 in lowercase hex.</param>
 public sealed record ArchiveCatalogEntry(int DiscNumber, string Path, long SizeBytes, string Sha256);
 
+/// <summary>Cross-disc Reed-Solomon parity metadata recorded in <c>CATALOG.JSON</c> when parity discs are generated.</summary>
+public sealed record ArchiveCatalogParitySet(
+    int DataDiscCount,
+    int ParityDiscCount,
+    int TotalDiscCount,
+    int StripeSizeBytes,
+    int SectorSizeBytes,
+    long MaxDataStreamBytes,
+    string ParitySetFileName,
+    IReadOnlyList<int> ParityDiscNumbers,
+    string Algorithm = CrossDiscReedSolomon.AlgorithmName);
+
 /// <summary>The catalog file's content: the whole set, identical on every disc.</summary>
 public sealed record ArchiveCatalogDocument(
     string SetId,
     int DiscCount,
     string MediaType,
-    IReadOnlyList<ArchiveCatalogEntry> Files);
+    IReadOnlyList<ArchiveCatalogEntry> Files,
+    [property: JsonIgnore(Condition = JsonIgnoreCondition.WhenWritingNull)]
+    ArchiveCatalogParitySet? ParitySet = null);
 
 /// <summary>
 /// Builds CATALOG.JSON and INDEX.HTML, the two files every archive disc carries so a file can be found without
@@ -99,9 +114,18 @@ public static class ArchiveCatalog
     }
 
     /// <summary>Catalog JSON text for the whole set.</summary>
-    public static string ToJson(ArchivePlan plan, IReadOnlyList<ArchiveCatalogEntry> entries)
+    public static string ToJson(
+        ArchivePlan plan,
+        IReadOnlyList<ArchiveCatalogEntry> entries,
+        ArchiveCatalogParitySet? paritySet = null)
     {
-        var doc = new ArchiveCatalogDocument(plan.SetId, plan.Discs.Count, plan.MediaType.ToString(), entries);
+        int discCount = plan.Discs.Count > 0 ? plan.TotalDiscCount : 0;
+        var doc = new ArchiveCatalogDocument(
+            plan.SetId,
+            discCount,
+            plan.MediaType.ToString(),
+            entries,
+            paritySet ?? ArchiveParitySet.CreateCatalogParitySet(plan));
         return JsonSerializer.Serialize(doc, JsonOptions) + "\n";
     }
 
@@ -117,6 +141,7 @@ public static class ArchiveCatalog
     {
         var sb = new StringBuilder(64 * 1024);
         string set = WebUtility.HtmlEncode(plan.SetId);
+        int totalDiscs = plan.Discs.Count > 0 ? plan.TotalDiscCount : plan.Discs.Count;
         sb.Append("<!DOCTYPE html>\n<html lang=\"en\">\n<head>\n<meta charset=\"utf-8\">\n");
         sb.Append("<title>Archive set ").Append(set).Append(" - file index</title>\n");
         sb.Append("<style>\n");
@@ -132,9 +157,17 @@ public static class ArchiveCatalog
         sb.Append("</style>\n</head>\n<body>\n");
         sb.Append("<h1>Archive set ").Append(set).Append("</h1>\n");
         sb.Append("<p>This is disc ").Append(currentDisc.ToString(CultureInfo.InvariantCulture)).Append(" of ")
-            .Append(plan.Discs.Count.ToString(CultureInfo.InvariantCulture))
-            .Append(". The table lists every file of the whole set and the disc that holds it. ")
-            .Append("The same list, as data, is in CATALOG.JSON on this disc.</p>\n");
+            .Append(totalDiscs.ToString(CultureInfo.InvariantCulture))
+            .Append(". The table lists every file of the whole set and the disc that holds it. ");
+        if (plan.ParityDiscCount > 0 && plan.Discs.Count > 0)
+        {
+            sb.Append("Discs ").Append((plan.Discs.Count + 1).ToString(CultureInfo.InvariantCulture)).Append("..")
+                .Append(totalDiscs.ToString(CultureInfo.InvariantCulture))
+                .Append(" hold cross-disc Reed-Solomon parity capable of rebuilding up to ")
+                .Append(plan.ParityDiscCount.ToString(CultureInfo.InvariantCulture))
+                .Append(" lost disc(s). ");
+        }
+        sb.Append("The same list, as data, is in CATALOG.JSON on this disc.</p>\n");
         sb.Append("<p><label>Search the file list: <input type=\"search\" id=\"q\" placeholder=\"part of a file name\"></label> ");
         sb.Append("<span id=\"count\"></span></p>\n");
         sb.Append("<table id=\"files\">\n<thead><tr><th>Disc</th><th>Path</th><th>Size (bytes)</th><th>SHA-256</th></tr></thead>\n<tbody>\n");

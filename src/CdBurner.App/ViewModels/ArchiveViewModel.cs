@@ -41,6 +41,16 @@ public sealed class ArchiveDiscRow : ObservableObject
     public int DiscNumber { get; }
 
     /// <summary>
+    /// True when this disc stores cross-disc Reed-Solomon parity rather than source files.
+    /// </summary>
+    public bool IsParityDisc { get; }
+
+    /// <summary>
+    /// Display label for the disc row.
+    /// </summary>
+    public string DiscLabel => IsParityDisc ? $"Disc {DiscNumber:D2} (Parity)" : $"Disc {DiscNumber:D2}";
+
+    /// <summary>
     /// Total count of source files assigned to this disc.
     /// </summary>
     public int FileCount { get; }
@@ -96,9 +106,11 @@ public sealed class ArchiveDiscRow : ObservableObject
         long dataBytes,
         string sizeText,
         string? stagedPath = null,
-        string status = "Planned")
+        string status = "Planned",
+        bool isParityDisc = false)
     {
         DiscNumber = discNumber;
+        IsParityDisc = isParityDisc;
         FileCount = fileCount;
         DataBytes = dataBytes;
         SizeText = sizeText;
@@ -182,10 +194,40 @@ public class ArchiveViewModel : ObservableObject
         }
     }
 
+    private bool _useCrossDiscParity;
+    private int _parityDiscCount = 1;
     private bool _useRs03Parity;
     private bool _useRs03AugmentedMode;
     private bool _allowRewritableRs03Augmented;
     private string? _rs03RewritableWarning;
+
+    /// <summary>Selectable parity disc counts in the UI.</summary>
+    public IReadOnlyList<int> ParityDiscCountOptions { get; } = [1, 2, 3, 4];
+
+    /// <summary>
+    /// Opt-in: appends cross-disc Reed-Solomon parity disc(s) (discs N+1..N+K) to tolerate completely lost discs.
+    /// </summary>
+    public bool UseCrossDiscParity
+    {
+        get => _useCrossDiscParity;
+        set => SetProperty(ref _useCrossDiscParity, value);
+    }
+
+    /// <summary>
+    /// Number of cross-disc parity discs to generate when <see cref="UseCrossDiscParity"/> is enabled (1..254).
+    /// </summary>
+    public int ParityDiscCount
+    {
+        get => _parityDiscCount;
+        set
+        {
+            int clamped = Math.Clamp(value, 1, CrossDiscReedSolomon.MaxTotalDiscs - 1);
+            SetProperty(ref _parityDiscCount, clamped);
+        }
+    }
+
+    /// <summary>Effective parity disc count in effect (0 when <see cref="UseCrossDiscParity"/> is false).</summary>
+    public int EffectiveParityDiscCount => UseCrossDiscParity ? ParityDiscCount : 0;
 
     /// <summary>
     /// Opt-in: generates RS03 raw-sector parity alongside PAR2 (off by default; PAR2 remains the primary mounted recovery format).
@@ -781,8 +823,13 @@ public class ArchiveViewModel : ObservableObject
             var mediaType = SelectedMedia.MediaType;
             var redundancy = RedundancyPercent;
             var folder = SourceFolder;
+            int parityDiscs = EffectiveParityDiscCount;
 
-            var plan = await Task.Run(() => ArchiveSpanPlanner.Plan(folder, mediaType, redundancy)).ConfigureAwait(true);
+            var plan = await Task.Run(() => ArchiveSpanPlanner.Plan(
+                folder,
+                mediaType,
+                redundancy,
+                parityDiscCount: parityDiscs)).ConfigureAwait(true);
             CurrentPlan = plan;
 
             Discs.Clear();
@@ -793,14 +840,34 @@ public class ArchiveViewModel : ObservableObject
                     fileCount: disc.Files.Count,
                     dataBytes: disc.DataBytes,
                     sizeText: FormatBytes(disc.DataBytes),
-                    status: "Planned");
+                    status: "Planned",
+                    isParityDisc: false);
                 Discs.Add(row);
+            }
+
+            if (plan.ParityDiscCount > 0 && plan.Discs.Count > 0)
+            {
+                long maxStreamBytes = ArchiveParitySet.CreateCatalogParitySet(plan)?.MaxDataStreamBytes ?? 0;
+                for (int p = 0; p < plan.ParityDiscCount; p++)
+                {
+                    int parityDiscNumber = plan.Discs.Count + 1 + p;
+                    Discs.Add(new ArchiveDiscRow(
+                        discNumber: parityDiscNumber,
+                        fileCount: 0,
+                        dataBytes: maxStreamBytes,
+                        sizeText: $"{FormatBytes(maxStreamBytes)} parity",
+                        status: "Planned (Parity)",
+                        isParityDisc: true));
+                }
             }
 
             int totalFiles = plan.Discs.Sum(d => d.Files.Count);
             string discWord = plan.Discs.Count == 1 ? "disc" : "discs";
-            PlanSummary = $"{plan.Discs.Count} {discWord} · {FormatBytes(plan.TotalBytes)} in {totalFiles:N0} files · {plan.RedundancyPercent}% PAR2";
-            StatusMessage = $"Plan created: {plan.Discs.Count} {discWord}, {FormatBytes(plan.TotalBytes)}.";
+            string paritySuffix = plan.ParityDiscCount > 0 && plan.Discs.Count > 0
+                ? $" + {plan.ParityDiscCount} parity"
+                : string.Empty;
+            PlanSummary = $"{plan.Discs.Count} {discWord}{paritySuffix} · {FormatBytes(plan.TotalBytes)} in {totalFiles:N0} files · {plan.RedundancyPercent}% PAR2";
+            StatusMessage = $"Plan created: {plan.Discs.Count} {discWord}{paritySuffix}, {FormatBytes(plan.TotalBytes)}.";
             return plan;
         }
         catch (Exception ex)
@@ -909,18 +976,18 @@ public class ArchiveViewModel : ObservableObject
                 }
             });
 
-            var stagedDiscs = await ArchiveStager.StageAsync(effectivePlan, stagingRoot, par2Path, progressHandler, token).ConfigureAwait(true);
+            var stagedDiscs = await ArchiveStager.StageDiscsAsync(effectivePlan, stagingRoot, par2Path, progressHandler, token).ConfigureAwait(true);
 
             for (int i = 0; i < stagedDiscs.Count && i < Discs.Count; i++)
             {
-                Discs[i].StagedPath = stagedDiscs[i];
-                Discs[i].Status = "Staged";
+                Discs[i].StagedPath = stagedDiscs[i].DiscRoot;
+                Discs[i].Status = Discs[i].IsParityDisc ? "Staged (Parity)" : "Staged";
 
                 if (UseRs03Parity)
                 {
                     string isoPath = Path.Combine(stagingRoot, $"disc{Discs[i].DiscNumber:D2}.iso");
                     string label = ArchiveManifest.VolumeLabel(effectivePlan.SetId, Discs[i].DiscNumber);
-                    var root = CompilationFolderImporter.ImportAsRoot(stagedDiscs[i], strict: true);
+                    var root = CompilationFolderImporter.ImportAsRoot(stagedDiscs[i].DiscRoot, strict: true);
                     await IsoUdfImageBuilder.BuildToFileAsync(
                         root,
                         isoPath,

@@ -21,12 +21,12 @@ public static partial class CliCommandRunner
         "artist", "aspect", "attach-health", "audio-track", "bitrate", "blank", "block-size", "book-type", "boot-bios", "boot-uefi", "candidate",
         "cells", "chapters", "compare", "config", "copies", "cover", "cover-art", "crossfade",
         "csv", "cue", "data-folder", "data-label", "date", "dir", "disc", "disc-preset",
-        "disc-presets-file", "drive", "drives", "drive-model", "ecc", "entry", "ffmpeg", "files", "fill-picture", "fit",
+        "disc-presets-file", "discs", "drive", "drives", "drive-model", "ecc", "entry", "ffmpeg", "files", "fill-picture", "fit",
         "fixed-time", "format", "from", "health-json", "image", "images", "inner-radius-mm", "input", "iso",
         "json-output", "key", "label", "language", "layer-break", "library", "log-dir",
         "loudness", "media", "media-id", "medium-sectors", "menu", "menu-autoplay", "menu-title", "mode", "mp3-bitrate",
         "mp3-quality", "naming", "offset-cache", "offset-store", "offset-x-mm", "offset-y-mm", "opus-bitrate", "order", "out",
-        "outer-radius-mm", "output", "pages-radius", "par2", "path", "picture", "pitch-cubic",
+        "outer-radius-mm", "output", "pages-radius", "par2", "parity-discs", "path", "picture", "pitch-cubic",
         "pitch-linear", "pitch-quadratic", "points", "post-action", "pregap", "pregap-art",
         "pregap-seconds", "read-offset", "redundancy", "release", "retries", "roots", "rotate", "scale",
         "sectors", "set", "settings-file", "size", "songwriter", "source", "spacing", "speed",
@@ -202,6 +202,24 @@ public static partial class CliCommandRunner
         [],
         ["drive", "output", "out", "from", "to", "spacing"]);
 
+    private static readonly CommandOptionSpec ArchiveStageSpec = CommandOptionSpec.Of(
+        ["plan-only", "keep-folders", "no-fill"],
+        ["input", "staging", "media", "redundancy", "order", "parity-discs"]);
+
+    private static readonly CommandOptionSpec ArchiveBurnSpec = CommandOptionSpec.Of(
+        ["native", "test-write", "test-first", "streaming", "windows-writer", "strict-verify", "verify", "no-verify", "overwrite", "no-burnfree", "health-certificate", "confirm-shutdown", "require-book-type"],
+        ["drive", "disc", "speed", "log-dir", "book-type", "post-action", "virtual-media", "virtual-state"]);
+
+    private static readonly CommandOptionSpec ArchiveVerifySpec = CommandOptionSpec.Of([], ["path"]);
+
+    private static readonly CommandOptionSpec ArchiveRebuildSpec = CommandOptionSpec.Of(
+        [],
+        ["discs", "from", "disc", "out", "output"]);
+
+    private static readonly CommandOptionSpec RecoverSpec = CommandOptionSpec.Of(
+        ["keep-image"],
+        ["out", "image", "drive", "retries", "virtual-media", "virtual-state"]);
+
     private static readonly Dictionary<string, CommandOptionSpec> CommandSpecs = BuildCommandSpecs();
 
     private static readonly IReadOnlyList<string> SupportedCommandNames =
@@ -209,7 +227,7 @@ public static partial class CliCommandRunner
         "drives", "drive-report", "media-info", "eject", "load", "virtual-mount", "virtual-eject", "virtual-status",
         "build-iso", "burn-iso", "burn-data", "burn-audio", "burn-dvd", "install-subtitle-tool", "generate-subtitles",
         "rip", "rip-audio", "convert-audio", "copy-disc", "duplicate", "check-disc", "detect-offset",
-        "archive-stage", "archive-burn", "archive-verify", "recover", "verify", "erase", "scan", "quality-scan",
+        "archive", "archive-stage", "archive-burn", "archive-verify", "archive-rebuild", "recover", "verify", "erase", "scan", "quality-scan",
         "settings", "tools", "install-ffmpeg", "install-par2", "check-update", "image-info",
         "convert-image", "browse-image", "extract-image", "author-dvd", "jewel-cover", "audio-plan", "burn-queue", "book-type",
         "repair-par2", "ecc-rs03", "rosetta", "disc-art"
@@ -248,13 +266,11 @@ public static partial class CliCommandRunner
         Add(CommandOptionSpec.Of([], ["drive", "compare", "virtual-state"]), "check-disc", "checkdisc");
         Add(CommandOptionSpec.Of(["native", "raw", "allow-suspect"], ["source", "target", "copies", "wait-minutes", "log-dir", "keep-image", "speed", "virtual-state"]), "copy-disc", "copydisc", "copy");
         Add(DuplicateSpec, "duplicate");
-        Add(CommandOptionSpec.Of(["plan-only", "keep-folders", "no-fill"], ["input", "staging", "media", "redundancy", "order"]), "archive-stage", "archivestage");
-        Add(CommandOptionSpec.Of(
-            ["native", "test-write", "test-first", "streaming", "windows-writer", "strict-verify", "verify", "no-verify", "overwrite", "no-burnfree", "health-certificate", "confirm-shutdown", "require-book-type"],
-            ["drive", "disc", "speed", "log-dir", "book-type", "post-action", "virtual-media", "virtual-state"]),
-            "archive-burn", "archiveburn");
-        Add(CommandOptionSpec.Of([], ["path"]), "archive-verify", "archiveverify");
-        Add(CommandOptionSpec.Of(["keep-image"], ["out", "image", "drive", "retries", "virtual-media", "virtual-state"]), "recover", "archive-recover");
+        Add(ArchiveStageSpec, "archive-stage", "archivestage");
+        Add(ArchiveBurnSpec, "archive-burn", "archiveburn");
+        Add(ArchiveVerifySpec, "archive-verify", "archiveverify");
+        Add(ArchiveRebuildSpec, "archive-rebuild", "archiverebuild");
+        Add(RecoverSpec, "recover", "archive-recover");
         Add(CommandOptionSpec.Of(["strict-verify", "no-cd-text"], ["drive", "cue", "iso", "log-dir", "title", "artist", "write-offset", "virtual-media", "virtual-state"]), "verify", "verify-disc");
         Add(CommandOptionSpec.Of(["full"], ["drive", "virtual-media", "virtual-state"]), "erase", "erase-disc");
         Add(CommandOptionSpec.Of([], ["drive", "block-size", "csv", "output", "virtual-media", "virtual-state"]), "scan", "scan-disc");
@@ -382,11 +398,29 @@ public static partial class CliCommandRunner
             };
         }
 
+        if (subcommand == "archive")
+        {
+            string verb = cmd.Positionals.Count > 0 ? cmd.Positionals[0].ToLowerInvariant() : string.Empty;
+            return verb switch
+            {
+                "stage" or "" => ArchiveStageSpec,
+                "burn" => ArchiveBurnSpec,
+                "verify" => ArchiveVerifySpec,
+                "rebuild" => ArchiveRebuildSpec,
+                "recover" => RecoverSpec,
+                _ => CommandOptionSpec.Merge(ArchiveStageSpec, ArchiveBurnSpec, ArchiveVerifySpec, ArchiveRebuildSpec, RecoverSpec)
+            };
+        }
+
         return CommandSpecs.GetValueOrDefault(subcommand);
     }
 
     private static string FormatCommandLabel(CommandLineArgs cmd, string subcommand)
     {
+        if (subcommand == "archive" && cmd.Positionals.Count > 0)
+        {
+            return $"archive {cmd.Positionals[0].ToLowerInvariant()}";
+        }
         if (subcommand == "rosetta" && cmd.Positionals.Count > 0)
         {
             return $"rosetta {cmd.Positionals[0].ToLowerInvariant()}";

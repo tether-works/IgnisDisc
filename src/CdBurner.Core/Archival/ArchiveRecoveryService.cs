@@ -1,3 +1,5 @@
+using System.Security.Cryptography;
+using System.Text.Json;
 using CdBurner.Core.Abstractions;
 using CdBurner.Core.Archival.Rs03;
 using CdBurner.Core.Images;
@@ -458,5 +460,681 @@ public static class ArchiveRecoveryService
             return false;
         }
         return true;
+    }
+
+    /// <summary>
+    /// Reconstructs a completely lost or shattered archive disc (data disc <c>1..N</c> or parity disc
+    /// <c>N+1..N+K</c>) from remaining discs and parity disc(s) using bounded O(1)-memory Reed-Solomon streaming,
+    /// verifies SHA-256 parity across every restored file, and writes manifests and verification scripts.
+    /// </summary>
+    public static async Task<ArchiveRebuildReport> RebuildMissingDiscAsync(
+        IReadOnlyList<string> availableDiscPaths,
+        int missingDiscNumber,
+        string outputFolder,
+        IProgress<string>? progress = null,
+        CancellationToken cancellationToken = default)
+    {
+        ArgumentNullException.ThrowIfNull(availableDiscPaths);
+        ArgumentOutOfRangeException.ThrowIfLessThan(missingDiscNumber, 1);
+        ArgumentException.ThrowIfNullOrWhiteSpace(outputFolder);
+
+        var targets = new Dictionary<int, string> { [missingDiscNumber] = outputFolder };
+        var reports = await RebuildMissingDiscsAsync(availableDiscPaths, targets, progress, cancellationToken).ConfigureAwait(false);
+        return reports[0];
+    }
+
+    /// <summary>
+    /// Reconstructs one or more completely lost archive discs (up to <c>K</c> discs total) in a single
+    /// bounded O(1)-memory streaming pass from the remaining discs and parity disc(s).
+    /// </summary>
+    public static async Task<IReadOnlyList<ArchiveRebuildReport>> RebuildMissingDiscsAsync(
+        IReadOnlyList<string> availableDiscPaths,
+        IReadOnlyDictionary<int, string> targetDiscOutputs,
+        IProgress<string>? progress = null,
+        CancellationToken cancellationToken = default)
+    {
+        ArgumentNullException.ThrowIfNull(availableDiscPaths);
+        ArgumentNullException.ThrowIfNull(targetDiscOutputs);
+        if (availableDiscPaths.Count == 0)
+        {
+            throw new ArgumentException("At least one surviving disc path must be provided.", nameof(availableDiscPaths));
+        }
+        if (targetDiscOutputs.Count == 0)
+        {
+            throw new ArgumentException("At least one target missing disc must be specified.", nameof(targetDiscOutputs));
+        }
+
+        foreach (var (discNum, outDir) in targetDiscOutputs)
+        {
+            ArgumentOutOfRangeException.ThrowIfLessThan(discNum, 1, nameof(targetDiscOutputs));
+            ArgumentException.ThrowIfNullOrWhiteSpace(outDir, nameof(targetDiscOutputs));
+            if (Directory.Exists(outDir) && Directory.EnumerateFileSystemEntries(outDir).Any())
+            {
+                throw new IOException($"Output folder '{outDir}' is not empty.");
+            }
+        }
+
+        var openedSources = new List<ArchiveParitySet.IArchiveDiscSource>(availableDiscPaths.Count);
+        try
+        {
+            var indexedSources = new Dictionary<int, (ArchiveParitySet.IArchiveDiscSource Source, ParitySetDocument? ParityDoc)>();
+            ParitySetDocument? referenceParityDoc = null;
+            string? referenceSetId = null;
+
+            foreach (string rawPath in availableDiscPaths)
+            {
+                cancellationToken.ThrowIfCancellationRequested();
+                if (string.IsNullOrWhiteSpace(rawPath))
+                {
+                    continue;
+                }
+
+                var source = ArchiveParitySet.OpenDiscSource(rawPath);
+                openedSources.Add(source);
+
+                ParitySetDocument? parityDoc = null;
+                int? discNum = null;
+                string? setId = null;
+
+                string? parityJson = await source.ReadTextIfExistsAsync(ArchiveParitySet.ParitySetFileName, cancellationToken).ConfigureAwait(false);
+                if (!string.IsNullOrWhiteSpace(parityJson))
+                {
+                    try
+                    {
+                        parityDoc = ArchiveParitySet.ParseJson(parityJson);
+                        if (parityDoc != null && parityDoc.ThisDiscNumber >= 1)
+                        {
+                            discNum = parityDoc.ThisDiscNumber;
+                            setId = parityDoc.SetId;
+                        }
+                    }
+                    catch (JsonException)
+                    {
+                        parityDoc = null;
+                    }
+                }
+
+                if (discNum == null)
+                {
+                    string? indexJson = await source.ReadTextIfExistsAsync(ArchiveManifest.IndexFileName, cancellationToken).ConfigureAwait(false);
+                    if (!string.IsNullOrWhiteSpace(indexJson))
+                    {
+                        try
+                        {
+                            var idx = JsonSerializer.Deserialize<ArchiveIndex>(indexJson, new JsonSerializerOptions { PropertyNameCaseInsensitive = true });
+                            if (idx != null && idx.DiscNumber >= 1)
+                            {
+                                discNum = idx.DiscNumber;
+                                setId = idx.SetId;
+                            }
+                        }
+                        catch (JsonException)
+                        {
+                        }
+                    }
+                }
+
+                if (discNum == null)
+                {
+                    continue;
+                }
+
+                if (referenceSetId == null && !string.IsNullOrWhiteSpace(setId))
+                {
+                    referenceSetId = setId;
+                }
+                else if (referenceSetId != null && !string.IsNullOrWhiteSpace(setId) &&
+                         !string.Equals(referenceSetId, setId, StringComparison.Ordinal))
+                {
+                    return BuildFailureReports(referenceSetId, targetDiscOutputs, referenceParityDoc,
+                        $"Surviving discs belong to different archive sets ('{referenceSetId}' vs '{setId}').");
+                }
+
+                if (parityDoc != null)
+                {
+                    if (referenceParityDoc == null)
+                    {
+                        referenceParityDoc = parityDoc;
+                    }
+                    else if (!string.Equals(referenceParityDoc.SetId, parityDoc.SetId, StringComparison.Ordinal) ||
+                             referenceParityDoc.DataDiscCount != parityDoc.DataDiscCount ||
+                             referenceParityDoc.ParityDiscCount != parityDoc.ParityDiscCount ||
+                             referenceParityDoc.StripeSizeBytes != parityDoc.StripeSizeBytes ||
+                             referenceParityDoc.MaxDataStreamBytes != parityDoc.MaxDataStreamBytes)
+                    {
+                        return BuildFailureReports(referenceSetId ?? string.Empty, targetDiscOutputs, referenceParityDoc,
+                            "Parity discs disagree on archive set geometry.");
+                    }
+                }
+
+                if (!targetDiscOutputs.ContainsKey(discNum.Value) && !indexedSources.ContainsKey(discNum.Value))
+                {
+                    indexedSources[discNum.Value] = (source, parityDoc);
+                }
+            }
+
+            if (referenceParityDoc == null)
+            {
+                return BuildFailureReports(referenceSetId ?? string.Empty, targetDiscOutputs, null,
+                    $"No valid {ArchiveParitySet.ParitySetFileName} metadata was found on the provided discs.");
+            }
+
+            if (referenceParityDoc.DataDiscCount < 1 || referenceParityDoc.ParityDiscCount < 1 ||
+                referenceParityDoc.StripeSizeBytes <= 0 || referenceParityDoc.SectorSizeBytes <= 0 ||
+                referenceParityDoc.DataDiscs.Count != referenceParityDoc.DataDiscCount)
+            {
+                return BuildFailureReports(referenceParityDoc.SetId, targetDiscOutputs, referenceParityDoc,
+                    $"{ArchiveParitySet.ParitySetFileName} contains invalid layout metadata.");
+            }
+
+            foreach (int targetDisc in targetDiscOutputs.Keys)
+            {
+                if (targetDisc < 1 || targetDisc > referenceParityDoc.TotalDiscCount)
+                {
+                    return BuildFailureReports(referenceParityDoc.SetId, targetDiscOutputs, referenceParityDoc,
+                        $"Requested disc {targetDisc} is outside archive set range 1..{referenceParityDoc.TotalDiscCount}.");
+                }
+            }
+
+            var excludedDiscs = new HashSet<int>(targetDiscOutputs.Keys);
+            while (true)
+            {
+                cancellationToken.ThrowIfCancellationRequested();
+
+                var attemptResult = await TryRebuildPassAsync(
+                    referenceParityDoc,
+                    indexedSources,
+                    excludedDiscs,
+                    targetDiscOutputs,
+                    progress,
+                    cancellationToken).ConfigureAwait(false);
+
+                if (attemptResult.CorruptDiscToExclude is int badDisc)
+                {
+                    excludedDiscs.Add(badDisc);
+                    foreach (string outDir in targetDiscOutputs.Values)
+                    {
+                        CleanDirectoryContents(outDir);
+                    }
+                    continue;
+                }
+
+                return attemptResult.Reports;
+            }
+        }
+        finally
+        {
+            foreach (var source in openedSources)
+            {
+                source.Dispose();
+            }
+        }
+    }
+
+    private static async Task<(IReadOnlyList<ArchiveRebuildReport> Reports, int? CorruptDiscToExclude)> TryRebuildPassAsync(
+        ParitySetDocument parityDoc,
+        IReadOnlyDictionary<int, (ArchiveParitySet.IArchiveDiscSource Source, ParitySetDocument? ParityDoc)> indexedSources,
+        IReadOnlySet<int> excludedDiscs,
+        IReadOnlyDictionary<int, string> targetDiscOutputs,
+        IProgress<string>? progress,
+        CancellationToken cancellationToken)
+    {
+        int n = parityDoc.DataDiscCount;
+        int k = parityDoc.ParityDiscCount;
+        int stripeSize = parityDoc.StripeSizeBytes;
+        long totalStripes = parityDoc.MaxDataStreamBytes / stripeSize;
+        var orderedDataDiscs = parityDoc.DataDiscs.OrderBy(d => d.DiscNumber).ToList();
+
+        var survivingDataIndices = new List<int>(n);
+        var missingDataIndices = new List<int>();
+        for (int j = 0; j < n; j++)
+        {
+            int discNum = j + 1;
+            if (!excludedDiscs.Contains(discNum) &&
+                indexedSources.TryGetValue(discNum, out var entry) &&
+                CanReadAllFiles(entry.Source, orderedDataDiscs[j].Files))
+            {
+                survivingDataIndices.Add(j);
+            }
+            else
+            {
+                missingDataIndices.Add(j);
+            }
+        }
+
+        var survivingParity = new List<(int SlotIndex, int DiscNumber, ArchiveParitySet.IArchiveDiscSource Source, ParitySetDocument Doc)>();
+        for (int p = 0; p < k; p++)
+        {
+            int discNum = n + 1 + p;
+            if (!excludedDiscs.Contains(discNum) &&
+                indexedSources.TryGetValue(discNum, out var entry) &&
+                entry.ParityDoc != null &&
+                CanReadAllParityChunks(entry.Source, entry.ParityDoc.ParityPayload))
+            {
+                survivingParity.Add((p, discNum, entry.Source, entry.ParityDoc));
+            }
+        }
+
+        int neededParity = missingDataIndices.Count;
+        if (neededParity > survivingParity.Count)
+        {
+            return (BuildFailureReports(
+                parityDoc.SetId,
+                targetDiscOutputs,
+                parityDoc,
+                $"Cannot rebuild missing disc(s): {neededParity} data disc(s) unavailable, but only {survivingParity.Count} valid parity disc(s) available."),
+                null);
+        }
+
+        var selectedParity = survivingParity.Take(neededParity).ToList();
+        var selectedParitySlots = selectedParity.Select(x => x.SlotIndex).ToList();
+        var targetParitySlots = targetDiscOutputs.Keys
+            .Where(d => d > n)
+            .OrderBy(d => d)
+            .Select(d => (DiscNumber: d, SlotIndex: d - n - 1, OutputFolder: targetDiscOutputs[d]))
+            .ToList();
+
+        var codec = new CrossDiscReedSolomon(n, k);
+        byte[,] recoveryMatrix = neededParity > 0
+            ? codec.BuildRecoveryMatrix(missingDataIndices, selectedParitySlots)
+            : new byte[0, 0];
+
+        var dataReaders = new Dictionary<int, ArchiveParitySet.DiscContainerReader>();
+        var parityReaders = new List<ParityChunkReader>(selectedParity.Count);
+        var targetDataWriters = new Dictionary<int, ArchiveParitySet.DiscContainerWriter>();
+        var targetParityWriters = new Dictionary<int, ArchiveStager.ParityChunkWriter>();
+
+        try
+        {
+            foreach (int j in survivingDataIndices)
+            {
+                int discNum = j + 1;
+                dataReaders[j] = new ArchiveParitySet.DiscContainerReader(
+                    indexedSources[discNum].Source,
+                    orderedDataDiscs[j].Files,
+                    parityDoc.SectorSizeBytes,
+                    verifySha256: true);
+            }
+
+            foreach (var sp in selectedParity)
+            {
+                parityReaders.Add(new ParityChunkReader(sp.DiscNumber, sp.Source, sp.Doc.ParityPayload));
+            }
+
+            foreach (var (discNum, outDir) in targetDiscOutputs)
+            {
+                Directory.CreateDirectory(outDir);
+                if (discNum <= n)
+                {
+                    targetDataWriters[discNum] = new ArchiveParitySet.DiscContainerWriter(
+                        outDir,
+                        orderedDataDiscs[discNum - 1].Files,
+                        parityDoc.SectorSizeBytes);
+                }
+                else
+                {
+                    var chunkPaths = ArchiveParitySet.GetChunkRelativePaths(parityDoc.MaxDataStreamBytes);
+                    targetParityWriters[discNum] = new ArchiveStager.ParityChunkWriter(outDir, chunkPaths, parityDoc.MaxDataStreamBytes);
+                }
+            }
+
+            byte[] readBuffer = new byte[stripeSize];
+            byte[][] residualBuffers = new byte[neededParity][];
+            byte[][] rebuiltDataBuffers = new byte[neededParity][];
+            for (int r = 0; r < neededParity; r++)
+            {
+                residualBuffers[r] = new byte[stripeSize];
+                rebuiltDataBuffers[r] = new byte[stripeSize];
+            }
+            byte[][] targetParityBuffers = new byte[targetParitySlots.Count][];
+            for (int tp = 0; tp < targetParitySlots.Count; tp++)
+            {
+                targetParityBuffers[tp] = new byte[stripeSize];
+            }
+
+            for (long stripe = 0; stripe < totalStripes; stripe++)
+            {
+                cancellationToken.ThrowIfCancellationRequested();
+                if (stripe % 256 == 0)
+                {
+                    progress?.Report($"Reconstructing missing disc(s) ({stripe + 1}/{totalStripes} stripes)...");
+                }
+
+                for (int r = 0; r < neededParity; r++)
+                {
+                    await parityReaders[r].ReadStripeAsync(residualBuffers[r], cancellationToken).ConfigureAwait(false);
+                }
+                for (int tp = 0; tp < targetParitySlots.Count; tp++)
+                {
+                    Array.Clear(targetParityBuffers[tp]);
+                }
+
+                foreach (int j in survivingDataIndices)
+                {
+                    await dataReaders[j].ReadStripeAsync(readBuffer, cancellationToken).ConfigureAwait(false);
+                    for (int r = 0; r < neededParity; r++)
+                    {
+                        CrossDiscReedSolomon.MultiplyXor(codec.GetCoefficient(selectedParitySlots[r], j), readBuffer, residualBuffers[r]);
+                    }
+                    for (int tp = 0; tp < targetParitySlots.Count; tp++)
+                    {
+                        CrossDiscReedSolomon.MultiplyXor(codec.GetCoefficient(targetParitySlots[tp].SlotIndex, j), readBuffer, targetParityBuffers[tp]);
+                    }
+                }
+
+                for (int c = 0; c < neededParity; c++)
+                {
+                    Array.Clear(rebuiltDataBuffers[c]);
+                    for (int r = 0; r < neededParity; r++)
+                    {
+                        CrossDiscReedSolomon.MultiplyXor(recoveryMatrix[c, r], residualBuffers[r], rebuiltDataBuffers[c]);
+                    }
+
+                    int discNum = missingDataIndices[c] + 1;
+                    if (targetDataWriters.TryGetValue(discNum, out var writer))
+                    {
+                        await writer.WriteStripeAsync(rebuiltDataBuffers[c], cancellationToken).ConfigureAwait(false);
+                    }
+                    for (int tp = 0; tp < targetParitySlots.Count; tp++)
+                    {
+                        CrossDiscReedSolomon.MultiplyXor(
+                            codec.GetCoefficient(targetParitySlots[tp].SlotIndex, missingDataIndices[c]),
+                            rebuiltDataBuffers[c],
+                            targetParityBuffers[tp]);
+                    }
+                }
+
+                for (int tp = 0; tp < targetParitySlots.Count; tp++)
+                {
+                    await targetParityWriters[targetParitySlots[tp].DiscNumber].WriteAsync(targetParityBuffers[tp], cancellationToken).ConfigureAwait(false);
+                }
+            }
+
+            foreach (var (j, reader) in dataReaders)
+            {
+                await reader.VerifyRemainingZeroByteFilesAsync(cancellationToken).ConfigureAwait(false);
+                if (reader.HashMismatchPath != null)
+                {
+                    int corruptDiscNum = j + 1;
+                    if (neededParity + 1 <= survivingParity.Count)
+                    {
+                        return (Array.Empty<ArchiveRebuildReport>(), corruptDiscNum);
+                    }
+                    return (BuildFailureReports(
+                        parityDoc.SetId,
+                        targetDiscOutputs,
+                        parityDoc,
+                        $"Surviving disc {corruptDiscNum} failed SHA-256 verification on '{reader.HashMismatchPath}'."),
+                        null);
+                }
+            }
+
+            foreach (var pr in parityReaders)
+            {
+                if (!pr.VerifyCompletedHashes())
+                {
+                    if (neededParity <= survivingParity.Count - 1)
+                    {
+                        return (Array.Empty<ArchiveRebuildReport>(), pr.DiscNumber);
+                    }
+                    return (BuildFailureReports(
+                        parityDoc.SetId,
+                        targetDiscOutputs,
+                        parityDoc,
+                        $"Parity disc {pr.DiscNumber} failed SHA-256 payload verification."),
+                        null);
+                }
+            }
+
+            var plan = ArchiveParitySet.ToArchivePlan(parityDoc);
+            var catalog = ArchiveParitySet.ToCatalogEntries(parityDoc);
+            var sourceDiscsUsed = survivingDataIndices.Select(j => j + 1).Concat(selectedParity.Select(p => p.DiscNumber)).OrderBy(x => x).ToList();
+            var reports = new List<ArchiveRebuildReport>(targetDiscOutputs.Count);
+
+            foreach (var (discNum, outDir) in targetDiscOutputs.OrderBy(kv => kv.Key))
+            {
+                if (discNum <= n)
+                {
+                    var writer = targetDataWriters[discNum];
+                    await writer.CompleteAsync(cancellationToken).ConfigureAwait(false);
+
+                    string? problem = writer.FailedFiles.Count > 0
+                        ? $"{writer.FailedFiles.Count} restored file(s) failed SHA-256 verification."
+                        : null;
+
+                    if (problem == null)
+                    {
+                        var discPlan = plan.Discs.Single(d => d.DiscNumber == discNum);
+                        await ArchiveManifest.WriteAsync(outDir, plan, discPlan, cancellationToken, catalog).ConfigureAwait(false);
+                    }
+
+                    reports.Add(new ArchiveRebuildReport(
+                        SetId: parityDoc.SetId,
+                        RebuiltDiscNumber: discNum,
+                        OutputFolder: outDir,
+                        FilesRestored: writer.VerifiedFiles.Count,
+                        BytesRestored: writer.PayloadBytesRestored,
+                        SourceDiscNumbersUsed: sourceDiscsUsed,
+                        VerifiedFiles: writer.VerifiedFiles,
+                        FailedFiles: writer.FailedFiles,
+                        IsParityDisc: false,
+                        Problem: problem));
+                }
+                else
+                {
+                    var pWriter = targetParityWriters[discNum];
+                    ParityPayloadInfo payloadInfo = await pWriter.CompleteAsync(cancellationToken).ConfigureAwait(false);
+                    int slotIdx = discNum - n - 1;
+                    var rebuiltDoc = parityDoc with
+                    {
+                        ThisDiscNumber = discNum,
+                        ParitySlotIndex = slotIdx,
+                        ParityPayload = payloadInfo
+                    };
+                    await ArchiveManifest.WriteParityDiscAsync(outDir, plan, rebuiltDoc, catalog, cancellationToken).ConfigureAwait(false);
+
+                    var verifiedList = payloadInfo.Chunks.Select(c => c.RelativePath)
+                        .Append(ArchiveParitySet.ParitySetFileName)
+                        .Append(ArchiveCatalog.CatalogFileName)
+                        .Append(ArchiveCatalog.HtmlIndexFileName)
+                        .ToList();
+
+                    reports.Add(new ArchiveRebuildReport(
+                        SetId: parityDoc.SetId,
+                        RebuiltDiscNumber: discNum,
+                        OutputFolder: outDir,
+                        FilesRestored: verifiedList.Count,
+                        BytesRestored: payloadInfo.TotalSizeBytes,
+                        SourceDiscNumbersUsed: sourceDiscsUsed,
+                        VerifiedFiles: verifiedList,
+                        FailedFiles: Array.Empty<string>(),
+                        IsParityDisc: true,
+                        Problem: null));
+                }
+            }
+
+            return (reports, null);
+        }
+        finally
+        {
+            foreach (var r in dataReaders.Values) await r.DisposeAsync().ConfigureAwait(false);
+            foreach (var pr in parityReaders) await pr.DisposeAsync().ConfigureAwait(false);
+            foreach (var w in targetDataWriters.Values) await w.DisposeAsync().ConfigureAwait(false);
+            foreach (var pw in targetParityWriters.Values) await pw.DisposeAsync().ConfigureAwait(false);
+        }
+    }
+
+    private static bool CanReadAllFiles(ArchiveParitySet.IArchiveDiscSource source, IReadOnlyList<ParitySetFileEntry> files)
+    {
+        foreach (var f in files)
+        {
+            if (source.GetFileLength(f.RelativePath) != f.SizeBytes)
+            {
+                return false;
+            }
+        }
+        return true;
+    }
+
+    private static bool CanReadAllParityChunks(ArchiveParitySet.IArchiveDiscSource source, ParityPayloadInfo payload)
+    {
+        if (payload?.Chunks == null || payload.Chunks.Count == 0)
+        {
+            return false;
+        }
+        foreach (var c in payload.Chunks)
+        {
+            if (source.GetFileLength(c.RelativePath) != c.SizeBytes)
+            {
+                return false;
+            }
+        }
+        return true;
+    }
+
+    private static IReadOnlyList<ArchiveRebuildReport> BuildFailureReports(
+        string setId,
+        IReadOnlyDictionary<int, string> targets,
+        ParitySetDocument? doc,
+        string problem)
+    {
+        int dataCount = doc?.DataDiscCount ?? int.MaxValue;
+        return targets.OrderBy(kv => kv.Key)
+            .Select(kv => new ArchiveRebuildReport(
+                SetId: setId,
+                RebuiltDiscNumber: kv.Key,
+                OutputFolder: kv.Value,
+                FilesRestored: 0,
+                BytesRestored: 0,
+                SourceDiscNumbersUsed: Array.Empty<int>(),
+                VerifiedFiles: Array.Empty<string>(),
+                FailedFiles: Array.Empty<string>(),
+                IsParityDisc: kv.Key > dataCount,
+                Problem: problem))
+            .ToList();
+    }
+
+    private static void CleanDirectoryContents(string folder)
+    {
+        if (!Directory.Exists(folder))
+        {
+            return;
+        }
+        foreach (string file in Directory.EnumerateFiles(folder))
+        {
+            try { File.Delete(file); } catch (IOException) { } catch (UnauthorizedAccessException) { }
+        }
+        foreach (string dir in Directory.EnumerateDirectories(folder))
+        {
+            try { Directory.Delete(dir, recursive: true); } catch (IOException) { } catch (UnauthorizedAccessException) { }
+        }
+    }
+
+    private sealed class ParityChunkReader : IAsyncDisposable
+    {
+        private readonly ArchiveParitySet.IArchiveDiscSource _source;
+        private readonly ParityPayloadInfo _payload;
+        private readonly IncrementalHash _totalHash = IncrementalHash.CreateHash(HashAlgorithmName.SHA256);
+
+        private int _chunkIndex;
+        private long _chunkBytesRead;
+        private Stream? _stream;
+        private IncrementalHash? _chunkHash;
+        private bool _anyMismatch;
+
+        public int DiscNumber { get; }
+
+        public ParityChunkReader(int discNumber, ArchiveParitySet.IArchiveDiscSource source, ParityPayloadInfo payload)
+        {
+            DiscNumber = discNumber;
+            _source = source;
+            _payload = payload;
+        }
+
+        public async Task ReadStripeAsync(Memory<byte> destination, CancellationToken cancellationToken)
+        {
+            int filled = 0;
+            while (filled < destination.Length)
+            {
+                if (_stream == null)
+                {
+                    if (_chunkIndex >= _payload.Chunks.Count)
+                    {
+                        destination.Span[filled..].Clear();
+                        return;
+                    }
+                    var chunk = _payload.Chunks[_chunkIndex];
+                    _stream = _source.OpenRead(chunk.RelativePath);
+                    _chunkBytesRead = 0;
+                    _chunkHash = IncrementalHash.CreateHash(HashAlgorithmName.SHA256);
+                }
+
+                var currentChunk = _payload.Chunks[_chunkIndex];
+                long remaining = currentChunk.SizeBytes - _chunkBytesRead;
+                if (remaining <= 0)
+                {
+                    await CloseCurrentChunkAsync(currentChunk).ConfigureAwait(false);
+                    _chunkIndex++;
+                    continue;
+                }
+
+                int toRead = (int)Math.Min(remaining, destination.Length - filled);
+                int read = await _stream.ReadAsync(destination.Slice(filled, toRead), cancellationToken).ConfigureAwait(false);
+                if (read <= 0)
+                {
+                    throw new EndOfStreamException($"Unexpected end of parity chunk '{currentChunk.RelativePath}'.");
+                }
+
+                var span = destination.Span.Slice(filled, read);
+                _chunkHash!.AppendData(span);
+                _totalHash.AppendData(span);
+                filled += read;
+                _chunkBytesRead += read;
+
+                if (_chunkBytesRead >= currentChunk.SizeBytes)
+                {
+                    await CloseCurrentChunkAsync(currentChunk).ConfigureAwait(false);
+                    _chunkIndex++;
+                }
+            }
+        }
+
+        public bool VerifyCompletedHashes()
+        {
+            if (_anyMismatch || _chunkIndex < _payload.Chunks.Count)
+            {
+                return false;
+            }
+            string totalActual = Convert.ToHexStringLower(_totalHash.GetHashAndReset());
+            return string.Equals(totalActual, _payload.Sha256, StringComparison.OrdinalIgnoreCase);
+        }
+
+        private async Task CloseCurrentChunkAsync(ParityPayloadChunk chunk)
+        {
+            string actual = Convert.ToHexStringLower(_chunkHash!.GetHashAndReset());
+            if (!string.Equals(actual, chunk.Sha256, StringComparison.OrdinalIgnoreCase))
+            {
+                _anyMismatch = true;
+            }
+            _chunkHash.Dispose();
+            _chunkHash = null;
+            if (_stream != null)
+            {
+                await _stream.DisposeAsync().ConfigureAwait(false);
+                _stream = null;
+            }
+        }
+
+        public async ValueTask DisposeAsync()
+        {
+            _chunkHash?.Dispose();
+            _chunkHash = null;
+            _totalHash.Dispose();
+            if (_stream != null)
+            {
+                await _stream.DisposeAsync().ConfigureAwait(false);
+                _stream = null;
+            }
+        }
     }
 }

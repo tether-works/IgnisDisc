@@ -54,11 +54,15 @@ public sealed record ArchivePlan(
     long TotalBytes,
     int CeilingSectorsPerDisc = 0,
     bool FillFreeSpace = true,
-    ArchivePackingMode PackingMode = ArchivePackingMode.FirstFitDecreasing)
+    ArchivePackingMode PackingMode = ArchivePackingMode.FirstFitDecreasing,
+    int ParityDiscCount = 0)
 {
     /// <summary>The ceiling in effect: <see cref="CeilingSectorsPerDisc"/> or the media type's.</summary>
     public int EffectiveCeilingSectors =>
         CeilingSectorsPerDisc > 0 ? CeilingSectorsPerDisc : ArchiveSpanPlanner.CalculateCeilingSectors(MediaType);
+
+    /// <summary>Total physical discs in the set (data discs plus parity discs when data discs exist).</summary>
+    public int TotalDiscCount => Discs.Count > 0 ? Discs.Count + ParityDiscCount : 0;
 }
 
 /// <summary>What staging produced for one disc.</summary>
@@ -67,8 +71,27 @@ public sealed record ArchivePlan(
 /// <param name="RecoverySectors">Sectors the RECOVERY folder's files take.</param>
 /// <param name="TotalSectors">Sectors all files on the disc take (each rounded up), recovery included.</param>
 /// <param name="RecoveryBudgetSectors">Sector budget the recovery data was sized for (0 when none).</param>
+/// <param name="DiscNumber">1-based disc number in the set (0 if unspecified).</param>
+/// <param name="IsParityDisc">True when this disc holds cross-disc Reed-Solomon parity instead of source files.</param>
 public sealed record ArchiveStagedDisc(string DiscRoot, Par2RecoveryLayout? Recovery, int RecoverySectors, int TotalSectors,
-    long RecoveryBudgetSectors = 0);
+    long RecoveryBudgetSectors = 0, int DiscNumber = 0, bool IsParityDisc = false);
+
+/// <summary>Outcome of rebuilding a completely lost or shattered archive disc from remaining discs and parity.</summary>
+public sealed record ArchiveRebuildReport(
+    string SetId,
+    int RebuiltDiscNumber,
+    string OutputFolder,
+    int FilesRestored,
+    long BytesRestored,
+    IReadOnlyList<int> SourceDiscNumbersUsed,
+    IReadOnlyList<string> VerifiedFiles,
+    IReadOnlyList<string> FailedFiles,
+    bool IsParityDisc,
+    string? Problem = null)
+{
+    /// <summary>True when all restored files matched their SHA-256 checksums with no errors.</summary>
+    public bool Success => Problem == null && FailedFiles.Count == 0;
+}
 
 /// <summary>
 /// File checksum entry in an archive manifest.

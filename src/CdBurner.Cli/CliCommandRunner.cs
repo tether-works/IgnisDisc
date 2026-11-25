@@ -266,9 +266,11 @@ public static partial class CliCommandRunner
             "check-disc" or "checkdisc" => HandleCheckDisc(cmd, stdout, deviceService),
             "copy-disc" or "copydisc" or "copy" => await HandleCopyDiscAsync(cmd, stdout, stderr, deviceService, burnEngine).ConfigureAwait(false),
             "duplicate" => await HandleDuplicateAsync(cmd, stdout, stderr, deviceService, burnEngine).ConfigureAwait(false),
+            "archive" => await HandleArchiveCommandAsync(cmd, stdout, stderr, deviceService, burnEngine).ConfigureAwait(false),
             "archive-stage" or "archivestage" => await HandleArchiveStageAsync(cmd, stdout).ConfigureAwait(false),
             "archive-burn" or "archiveburn" => await HandleArchiveBurnAsync(cmd, stdout, stderr, deviceService, burnEngine).ConfigureAwait(false),
             "archive-verify" or "archiveverify" => await HandleArchiveVerifyAsync(cmd, stdout).ConfigureAwait(false),
+            "archive-rebuild" or "archiverebuild" => await HandleArchiveRebuildAsync(cmd, stdout).ConfigureAwait(false),
             "recover" or "archive-recover" => await HandleRecoverAsync(cmd, stdout, deviceService, burnEngine).ConfigureAwait(false),
             "verify" or "verify-disc" => await HandleVerifyAsync(cmd, stdout, stderr, deviceService, burnEngine).ConfigureAwait(false),
             "erase" or "erase-disc" => await HandleEraseAsync(cmd, stdout, stderr, deviceService, burnEngine).ConfigureAwait(false),
@@ -3177,6 +3179,25 @@ public static partial class CliCommandRunner
         return 0;
     }
 
+    private static async Task<int> HandleArchiveCommandAsync(
+        CommandLineArgs cmd,
+        TextWriter stdout,
+        TextWriter stderr,
+        IDiscDeviceService deviceService,
+        IBurnEngineBackend burnEngine)
+    {
+        string verb = cmd.Positionals.Count > 0 ? cmd.Positionals[0].ToLowerInvariant() : string.Empty;
+        return verb switch
+        {
+            "" or "stage" => await HandleArchiveStageAsync(cmd, stdout).ConfigureAwait(false),
+            "burn" => await HandleArchiveBurnAsync(cmd, stdout, stderr, deviceService, burnEngine).ConfigureAwait(false),
+            "verify" => await HandleArchiveVerifyAsync(cmd, stdout).ConfigureAwait(false),
+            "rebuild" => await HandleArchiveRebuildAsync(cmd, stdout).ConfigureAwait(false),
+            "recover" => await HandleRecoverAsync(cmd, stdout, deviceService, burnEngine).ConfigureAwait(false),
+            _ => throw new CommandLineException("Usage: archive [stage | burn | verify | rebuild | recover] [options] [--json]")
+        };
+    }
+
     private static async Task<int> HandleArchiveStageAsync(CommandLineArgs cmd, TextWriter stdout)
     {
         string input = cmd.GetRequiredOption("input", "--input <folder>");
@@ -3220,7 +3241,26 @@ public static partial class CliCommandRunner
         ArchivePackingMode packing = order == "path"
             ? ArchivePackingMode.PathOrder
             : cmd.HasFlag("keep-folders") ? ArchivePackingMode.KeepFolders : ArchivePackingMode.FirstFitDecreasing;
-        var plan = ArchiveSpanPlanner.Plan(input, media, redundancy, fillFreeSpace: !cmd.HasFlag("no-fill"), packing: packing);
+
+        string? parityOpt = cmd.GetOption("parity-discs");
+        int parityDiscs = 0;
+        if (!string.IsNullOrWhiteSpace(parityOpt))
+        {
+            if (!int.TryParse(parityOpt, NumberStyles.Integer, CultureInfo.InvariantCulture, out parityDiscs) ||
+                parityDiscs < 0 || parityDiscs >= CrossDiscReedSolomon.MaxTotalDiscs)
+            {
+                throw new CommandLineException(
+                    $"Invalid --parity-discs '{parityOpt}'. Expected an integer between 0 and {CrossDiscReedSolomon.MaxTotalDiscs - 1}.");
+            }
+        }
+
+        var plan = ArchiveSpanPlanner.Plan(
+            input,
+            media,
+            redundancy,
+            fillFreeSpace: !cmd.HasFlag("no-fill"),
+            packing: packing,
+            parityDiscCount: parityDiscs);
 
         string? par2Path = null;
         if (!planOnly && redundancy > 0)
@@ -3240,32 +3280,60 @@ public static partial class CliCommandRunner
 
         if (cmd.IsJson)
         {
-            WriteJsonResult(stdout, new
+            var discJsonItems = new List<object>(plan.TotalDiscCount > 0 ? plan.TotalDiscCount : plan.Discs.Count);
+            foreach (var d in plan.Discs)
             {
-                success = true,
-                setId = plan.SetId,
-                media = media.ToString(),
-                redundancyPercent = plan.RedundancyPercent,
-                usableSectorsPerDisc = plan.UsableSectorsPerDisc,
-                ceilingSectorsPerDisc = plan.EffectiveCeilingSectors,
-                fillFreeSpace = plan.FillFreeSpace,
-                totalBytes = plan.TotalBytes,
-                discs = plan.Discs.Select(d =>
+                var s = staged.Count >= d.DiscNumber ? staged[d.DiscNumber - 1] : null;
+                discJsonItems.Add(new
                 {
-                    var s = staged.Count >= d.DiscNumber ? staged[d.DiscNumber - 1] : null;
-                    return new
+                    discNumber = d.DiscNumber,
+                    isParityDisc = false,
+                    files = d.Files.Count,
+                    dataBytes = d.DataBytes,
+                    path = s?.DiscRoot,
+                    totalSectors = s?.TotalSectors,
+                    recoverySectors = s?.RecoverySectors,
+                    recoveryBlocks = s?.Recovery?.RecoveryBlocks,
+                    recoveryBlockSize = s?.Recovery?.BlockSize,
+                    recoveryPercent = s?.Recovery == null ? (double?)null : Math.Round(s.Recovery.RedundancyPercent, 1)
+                });
+            }
+            if (plan.ParityDiscCount > 0 && plan.Discs.Count > 0)
+            {
+                for (int p = 0; p < plan.ParityDiscCount; p++)
+                {
+                    int discNum = plan.Discs.Count + 1 + p;
+                    var s = staged.Count >= discNum ? staged[discNum - 1] : null;
+                    discJsonItems.Add(new
                     {
-                        discNumber = d.DiscNumber,
-                        files = d.Files.Count,
-                        dataBytes = d.DataBytes,
+                        discNumber = discNum,
+                        isParityDisc = true,
+                        files = 0,
+                        dataBytes = 0L,
                         path = s?.DiscRoot,
                         totalSectors = s?.TotalSectors,
                         recoverySectors = s?.RecoverySectors,
                         recoveryBlocks = s?.Recovery?.RecoveryBlocks,
                         recoveryBlockSize = s?.Recovery?.BlockSize,
                         recoveryPercent = s?.Recovery == null ? (double?)null : Math.Round(s.Recovery.RedundancyPercent, 1)
-                    };
-                }),
+                    });
+                }
+            }
+
+            WriteJsonResult(stdout, new
+            {
+                success = true,
+                setId = plan.SetId,
+                media = media.ToString(),
+                redundancyPercent = plan.RedundancyPercent,
+                parityDiscCount = plan.ParityDiscCount,
+                dataDiscCount = plan.Discs.Count,
+                totalDiscs = plan.TotalDiscCount,
+                usableSectorsPerDisc = plan.UsableSectorsPerDisc,
+                ceilingSectorsPerDisc = plan.EffectiveCeilingSectors,
+                fillFreeSpace = plan.FillFreeSpace,
+                totalBytes = plan.TotalBytes,
+                discs = discJsonItems,
                 planOnly
             });
             return 0;
@@ -3286,9 +3354,9 @@ public static partial class CliCommandRunner
             _ => media.GetDisplayName()
         };
         stdout.WriteLine($"  Media:            {mediaName}");
-        stdout.WriteLine($"  Redundancy:       {plan.RedundancyPercent}% PAR2");
+        stdout.WriteLine($"  Redundancy:       {plan.RedundancyPercent}% PAR2" + (plan.ParityDiscCount > 0 ? $" + {plan.ParityDiscCount} cross-disc parity disc(s)" : string.Empty));
         stdout.WriteLine($"  Total Data:       {plan.TotalBytes / 1048576.0:N1} MB in {plan.Discs.Sum(d => d.Files.Count):N0} files");
-        stdout.WriteLine($"  Discs:            {plan.Discs.Count}");
+        stdout.WriteLine($"  Discs:            {plan.Discs.Count}" + (plan.ParityDiscCount > 0 && plan.Discs.Count > 0 ? $" data + {plan.ParityDiscCount} parity ({plan.TotalDiscCount} total)" : string.Empty));
         foreach (var d in plan.Discs)
         {
             var s = staged.Count >= d.DiscNumber ? staged[d.DiscNumber - 1] : null;
@@ -3297,6 +3365,16 @@ public static partial class CliCommandRunner
                 ? $", recovery {r.RecoverySectors * 2048.0 / 1048576:N1} MB ({r.RedundancyPercent:N0} %, survives {r.RecoveryBlocks:N0} damaged blocks of {r.BlockSize / 1024:N0} KB)"
                 : string.Empty;
             stdout.WriteLine($"    Disc {d.DiscNumber:D2}: {d.Files.Count:N0} files, {d.DataBytes / 1048576.0:N1} MB{recovery}{where}");
+        }
+        if (plan.ParityDiscCount > 0 && plan.Discs.Count > 0)
+        {
+            for (int p = 0; p < plan.ParityDiscCount; p++)
+            {
+                int discNum = plan.Discs.Count + 1 + p;
+                var s = staged.Count >= discNum ? staged[discNum - 1] : null;
+                string where = s != null ? $"  -> {s.DiscRoot}" : string.Empty;
+                stdout.WriteLine($"    Disc {discNum:D2}: parity {p + 1}/{plan.ParityDiscCount} (cross-disc RS){where}");
+            }
         }
         if (!planOnly && stagedDiscs.Count > 0)
         {
@@ -3730,6 +3808,69 @@ public static partial class CliCommandRunner
             stdout.WriteLine("  (par2 keeps each damaged original as <name>.1; delete those once verified.)");
         }
         return result.IsIntact ? 0 : 1;
+    }
+
+    private static async Task<int> HandleArchiveRebuildAsync(CommandLineArgs cmd, TextWriter stdout)
+    {
+        string discsRaw = cmd.GetOption("discs") ?? cmd.GetOption("from")
+            ?? throw new CommandLineException("Missing required option --discs <path1;path2;...> (or --from <paths>).");
+        string discNumOpt = cmd.GetRequiredOption("disc", "--disc <missing disc number>");
+        if (!int.TryParse(discNumOpt, NumberStyles.Integer, CultureInfo.InvariantCulture, out int missingDisc) || missingDisc < 1)
+        {
+            throw new CommandLineException($"Invalid --disc '{discNumOpt}'. Expected a positive disc number (1..N+K).");
+        }
+        string output = Path.GetFullPath(cmd.GetOption("out") ?? cmd.GetOption("output")
+            ?? throw new CommandLineException("Missing required option --out <folder>."));
+
+        var paths = discsRaw.Split([';', ','], StringSplitOptions.RemoveEmptyEntries | StringSplitOptions.TrimEntries)
+            .Select(Path.GetFullPath)
+            .ToList();
+        if (paths.Count == 1 && Directory.Exists(paths[0]) &&
+            !File.Exists(Path.Combine(paths[0], ArchiveManifest.IndexFileName)) &&
+            !File.Exists(Path.Combine(paths[0], ArchiveParitySet.ParitySetFileName)))
+        {
+            var subDiscs = Directory.EnumerateDirectories(paths[0], "disc*")
+                .OrderBy(d => d, StringComparer.OrdinalIgnoreCase)
+                .ToList();
+            if (subDiscs.Count > 0)
+            {
+                paths = subDiscs;
+            }
+        }
+
+        var progress = cmd.IsJson ? null : new Progress<string>(msg => stdout.WriteLine($"  {msg}"));
+        var report = await ArchiveRecoveryService.RebuildMissingDiscAsync(paths, missingDisc, output, progress).ConfigureAwait(false);
+
+        if (cmd.IsJson)
+        {
+            WriteJsonResult(stdout, new
+            {
+                success = report.Success,
+                setId = report.SetId,
+                rebuiltDiscNumber = report.RebuiltDiscNumber,
+                isParityDisc = report.IsParityDisc,
+                output = report.OutputFolder,
+                filesRestored = report.FilesRestored,
+                bytesRestored = report.BytesRestored,
+                sourceDiscsUsed = report.SourceDiscNumbersUsed,
+                verifiedFiles = report.VerifiedFiles,
+                failedFiles = report.FailedFiles,
+                problem = report.Problem
+            });
+            return report.Success ? 0 : 2;
+        }
+
+        stdout.WriteLine(report.Success
+            ? $"Rebuilt disc {report.RebuiltDiscNumber} of set {report.SetId}:"
+            : $"Failed to rebuild disc {report.RebuiltDiscNumber}:");
+        stdout.WriteLine($"  Output:         {report.OutputFolder}");
+        stdout.WriteLine($"  Files Restored: {report.FilesRestored:N0} ({report.BytesRestored:N0} bytes)");
+        stdout.WriteLine($"  Sources Used:   {string.Join(", ", report.SourceDiscNumbersUsed)}");
+        if (report.Problem != null)
+        {
+            stdout.WriteLine($"  Problem:        {report.Problem}");
+        }
+        return report.Success ? 0 : 2;
     }
 
     /// <summary>
@@ -4376,10 +4517,14 @@ public static partial class CliCommandRunner
         stdout.WriteLine("      --compare sets the result against a health certificate and lists the minutes that changed.");
         stdout.WriteLine("  detect-offset --drive <id> [--json]");
         stdout.WriteLine("      Finds the drive's audio read offset using an inserted CD that is in the AccurateRip database.");
-        stdout.WriteLine("  archive-stage --input <folder> (--staging <folder> | --plan-only) [--media cd|dvd|dvd-dl|bd|bd-dl|bdxl|bdxl-ql] [--redundancy <min %>] [--no-fill] [--keep-folders | --order size|path] [--json]");
+        stdout.WriteLine("  archive-stage --input <folder> (--staging <folder> | --plan-only) [--media cd|dvd|dvd-dl|bd|bd-dl|bdxl|bdxl-ql] [--redundancy <min %>] [--parity-discs <k>] [--no-fill] [--keep-folders | --order size|path] [--json]");
+        stdout.WriteLine("      (or: archive [stage | burn | verify | rebuild | recover] ...)");
         stdout.WriteLine("      Splits a folder across discs and stages disc01..discNN with SHA-256 manifests and PAR2 recovery data (fills free space unless --no-fill).");
+        stdout.WriteLine("      --parity-discs <k> adds 1..K cross-disc Reed-Solomon parity discs (discN+1..discN+K) capable of rebuilding up to K completely lost discs.");
         stdout.WriteLine("      Files are packed largest first into the first disc with room (--order size, the default); --keep-folders keeps a folder whole when it fits on one disc;");
         stdout.WriteLine("      --order path fills discs in path order. Every disc also gets CATALOG.JSON and INDEX.HTML listing the whole set.");
+        stdout.WriteLine("  archive-rebuild --discs <path1;path2;...> --disc <k> --out <folder> [--json]");
+        stdout.WriteLine("      Reconstructs a completely lost archive disc k from surviving discs and parity disc(s), verifying SHA-256 checksums.");
         stdout.WriteLine("  archive-burn --drive <id> --disc <staged disc folder> [--speed <X|max>] [--no-verify | --strict-verify] [--no-burnfree] [--overwrite] [--post-action none|eject|sound|eject-sound|shutdown] [--native [--test-write | --test-first] [--streaming] [--log-dir <folder>]] [--health-certificate] [--json]");
         stdout.WriteLine("      --health-certificate (off by default) writes discNN.HEALTH.json and .svg next to the disc folder: read-back result, write-speed curve, drive, media ID, date and, for a CD, one read-health pass.");
         stdout.WriteLine("      Burns one staged archive disc (ISO 9660 + Joliet + UDF, closed). With --native, discs the direct writer does not cover go to the Windows writer, and the output says why.");

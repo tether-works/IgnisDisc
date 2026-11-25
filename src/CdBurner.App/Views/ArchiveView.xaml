@@ -139,8 +139,27 @@
                                 VerticalAlignment="Center" />
                     </WrapPanel>
 
-                    <!-- Opt-in RS03 Raw-Sector Parity -->
+                    <!-- Opt-in Cross-Disc Parity & RS03 Raw-Sector Parity -->
                     <StackPanel Margin="0,0,0,10">
+                        <WrapPanel Orientation="Horizontal" VerticalAlignment="Center" Margin="0,0,0,6">
+                            <CheckBox Content="Generate cross-disc parity disc(s) (rebuilds lost discs)"
+                                      AutomationProperties.Name="Generate cross-disc parity discs"
+                                      IsChecked="{Binding UseCrossDiscParity}"
+                                      ToolTip="Stages 1..K Reed-Solomon parity discs (N+1..N+K) across discs 1..N so any K completely lost or shattered discs can be rebuilt."
+                                      Margin="0,2,12,2"
+                                      VerticalAlignment="Center" />
+                            <TextBlock Text="Parity Discs:"
+                                       VerticalAlignment="Center"
+                                       Foreground="{DynamicResource TextSecondaryBrush}"
+                                       Margin="0,2,6,2" />
+                            <ComboBox Width="64"
+                                      AutomationProperties.Name="Parity disc count"
+                                      ItemsSource="{Binding ParityDiscCountOptions}"
+                                      SelectedItem="{Binding ParityDiscCount}"
+                                      IsEnabled="{Binding UseCrossDiscParity}"
+                                      VerticalAlignment="Center"
+                                      Margin="0,2,0,2" />
+                        </WrapPanel>
                         <WrapPanel Orientation="Horizontal" VerticalAlignment="Center">
                             <CheckBox Content="Also generate RS03 raw-sector parity (opt-in; external dvdisaster interop unverified)"
                                       AutomationProperties.Name="Also generate RS03 raw-sector parity"
@@ -317,7 +336,7 @@
                                                 </Grid.ColumnDefinitions>
 
                                                 <StackPanel Grid.Column="0" Orientation="Horizontal" VerticalAlignment="Center">
-                                                    <TextBlock Text="{Binding DiscNumber, StringFormat='Disc {0:D2}'}"
+                                                    <TextBlock Text="{Binding DiscLabel}"
                                                                FontWeight="Bold"
                                                                Foreground="{DynamicResource AccentBrush}"
                                                                Margin="0,0,8,0" />
