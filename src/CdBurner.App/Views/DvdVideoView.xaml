@@ -49,6 +49,7 @@
                     <RowDefinition Height="Auto" />
                     <RowDefinition Height="Auto" />
                     <RowDefinition Height="Auto" />
+                    <RowDefinition Height="Auto" />
                 </Grid.RowDefinitions>
 
                 <!-- Source Path Row -->
@@ -407,6 +408,156 @@
                         </StackPanel>
                     </StackPanel>
                 </Grid>
+
+                <!-- Menu Personalization & Live Still-Menu Preview -->
+                <Border Grid.Row="5"
+                        Margin="0,12,0,0"
+                        Padding="12"
+                        Background="{DynamicResource SurfaceBackgroundBrush}"
+                        BorderBrush="{DynamicResource CardBorderBrush}"
+                        BorderThickness="1"
+                        CornerRadius="6"
+                        Visibility="{Binding AutoCreatePlayMenu, Converter={StaticResource BoolToVis}}"
+                        IsEnabled="{Binding AreAuthoringOptionsEnabled}">
+                    <Grid>
+                        <Grid.ColumnDefinitions>
+                            <ColumnDefinition Width="*" />
+                            <ColumnDefinition Width="Auto" />
+                        </Grid.ColumnDefinitions>
+
+                        <!-- Left: Styling, Chapter Submenus, Background Image & Menu Audio Controls -->
+                        <StackPanel Grid.Column="0" VerticalAlignment="Center" Margin="0,0,16,0">
+                            <TextBlock Text="Menu Styling &amp; Chapter Submenus"
+                                       FontWeight="SemiBold"
+                                       Foreground="{DynamicResource TextPrimaryBrush}"
+                                       Margin="0,0,0,8" />
+
+                            <WrapPanel Orientation="Horizontal" VerticalAlignment="Center">
+                                <CheckBox Content="Include chapter submenus"
+                                          AutomationProperties.Name="Include chapter submenus"
+                                          IsChecked="{Binding GenerateChapterMenus}"
+                                          ToolTip="Generates paginated per-title chapter selection submenus with a Back to Main Menu button"
+                                          VerticalAlignment="Center"
+                                          Margin="0,2,16,4" />
+
+                                <StackPanel Orientation="Horizontal" VerticalAlignment="Center" Margin="0,2,14,4">
+                                    <TextBlock Text="Font:"
+                                               VerticalAlignment="Center"
+                                               FontWeight="SemiBold"
+                                               Foreground="{DynamicResource TextSecondaryBrush}"
+                                               Margin="0,0,6,0" />
+                                    <ComboBox Width="120"
+                                              AutomationProperties.Name="Menu font preset"
+                                              ItemsSource="{Binding AvailableMenuFontPresets}"
+                                              SelectedItem="{Binding SelectedMenuFontPreset}" />
+                                </StackPanel>
+
+                                <StackPanel Orientation="Horizontal" VerticalAlignment="Center" Margin="0,2,0,4">
+                                    <TextBlock Text="Highlight:"
+                                               VerticalAlignment="Center"
+                                               FontWeight="SemiBold"
+                                               Foreground="{DynamicResource TextSecondaryBrush}"
+                                               Margin="0,0,6,0" />
+                                    <ComboBox Width="110"
+                                              AutomationProperties.Name="Menu highlight color preset"
+                                              ItemsSource="{Binding AvailableMenuHighlightPresets}"
+                                              SelectedItem="{Binding SelectedMenuHighlightPreset}" />
+                                </StackPanel>
+                            </WrapPanel>
+
+                            <WrapPanel Orientation="Horizontal" VerticalAlignment="Center" Margin="0,6,0,0">
+                                <TextBlock Text="Background:"
+                                           VerticalAlignment="Center"
+                                           FontWeight="SemiBold"
+                                           Foreground="{DynamicResource TextSecondaryBrush}"
+                                           Margin="0,0,6,0" />
+                                <Button Content="Background Image..."
+                                        AutomationProperties.Name="Choose menu background image"
+                                        Command="{Binding BrowseMenuBackgroundCommand}"
+                                        Padding="10,3"
+                                        FontSize="11.5"
+                                        Margin="0,2,6,2" />
+                                <Button Content="Clear"
+                                        AutomationProperties.Name="Clear menu background image"
+                                        Command="{Binding ClearMenuBackgroundCommand}"
+                                        Visibility="{Binding HasMenuBackgroundImage, Converter={StaticResource BoolToVis}}"
+                                        Padding="8,3"
+                                        FontSize="11.5"
+                                        Margin="0,2,10,2" />
+                                <TextBlock Text="{Binding MenuBackgroundStatusText}"
+                                           ToolTip="{Binding MenuBackgroundImagePath}"
+                                           VerticalAlignment="Center"
+                                           Foreground="{DynamicResource TextMutedBrush}"
+                                           FontSize="11.5"
+                                           Margin="0,2,16,2" />
+
+                                <TextBlock Text="Menu Audio:"
+                                           VerticalAlignment="Center"
+                                           FontWeight="SemiBold"
+                                           Foreground="{DynamicResource TextSecondaryBrush}"
+                                           Margin="0,0,6,0" />
+                                <Button Content="Menu Audio..."
+                                        AutomationProperties.Name="Choose menu background audio"
+                                        Command="{Binding BrowseMenuAudioCommand}"
+                                        Padding="10,3"
+                                        FontSize="11.5"
+                                        Margin="0,2,6,2" />
+                                <Button Content="Clear"
+                                        AutomationProperties.Name="Clear menu background audio"
+                                        Command="{Binding ClearMenuAudioCommand}"
+                                        Visibility="{Binding HasMenuAudio, Converter={StaticResource BoolToVis}}"
+                                        Padding="8,3"
+                                        FontSize="11.5"
+                                        Margin="0,2,10,2" />
+                                <TextBlock Text="{Binding MenuAudioStatusText}"
+                                           ToolTip="{Binding MenuAudioPath}"
+                                           VerticalAlignment="Center"
+                                           Foreground="{DynamicResource TextMutedBrush}"
+                                           FontSize="11.5"
+                                           Margin="0,2,0,2" />
+                            </WrapPanel>
+                        </StackPanel>
+
+                        <!-- Right: Live Still-Menu Preview -->
+                        <StackPanel Grid.Column="1" VerticalAlignment="Center" HorizontalAlignment="Right">
+                            <Border BorderBrush="{DynamicResource CardBorderBrush}"
+                                    BorderThickness="1"
+                                    Background="#0E0E10"
+                                    Width="284"
+                                    Height="160">
+                                <Image Source="{Binding MenuPreviewImage}"
+                                       AutomationProperties.Name="Live DVD menu preview"
+                                       Stretch="Uniform"
+                                       RenderOptions.BitmapScalingMode="HighQuality" />
+                            </Border>
+                            <StackPanel Orientation="Horizontal" HorizontalAlignment="Center" Margin="0,6,0,0">
+                                <Button Content="&lt; Prev"
+                                        AutomationProperties.Name="Previous menu preview page"
+                                        Command="{Binding PreviousMenuPreviewPageCommand}"
+                                        Padding="8,2"
+                                        FontSize="11"
+                                        Margin="0,0,6,0" />
+                                <TextBlock Text="{Binding MenuPreviewPageText}"
+                                           VerticalAlignment="Center"
+                                           FontSize="11"
+                                           Foreground="{DynamicResource TextSecondaryBrush}"
+                                           Margin="0,0,6,0" />
+                                <Button Content="Next &gt;"
+                                        AutomationProperties.Name="Next menu preview page"
+                                        Command="{Binding NextMenuPreviewPageCommand}"
+                                        Padding="8,2"
+                                        FontSize="11"
+                                        Margin="0,0,8,0" />
+                                <CheckBox Content="Chapters view"
+                                          AutomationProperties.Name="Preview chapter submenu"
+                                          IsChecked="{Binding PreviewChapterSubmenu}"
+                                          Visibility="{Binding GenerateChapterMenus, Converter={StaticResource BoolToVis}}"
+                                          VerticalAlignment="Center"
+                                          FontSize="11" />
+                            </StackPanel>
+                        </StackPanel>
+                    </Grid>
+                </Border>
             </Grid>
         </Border>
 

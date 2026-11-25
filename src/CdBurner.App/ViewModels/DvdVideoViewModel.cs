@@ -1,3 +1,4 @@
+using System.Windows.Media.Imaging;
 using CdBurner.App.Resources;
 using System.Collections.ObjectModel;
 using System.IO;
@@ -86,6 +87,15 @@ public class DvdVideoViewModel : ObservableObject
     private string _fitSummaryText = string.Empty;
     private bool _useDualLayerDisc;
     private bool _dualLayer;
+    private bool _generateChapterMenus;
+    private string? _menuBackgroundImagePath;
+    private string? _menuAudioPath;
+    private DvdMenuFontPreset _selectedMenuFontPreset = DvdMenuFontPreset.ModernSans;
+    private DvdMenuHighlightPreset _selectedMenuHighlightPreset = DvdMenuHighlightPreset.Amber;
+    private BitmapSource? _menuPreviewImage;
+    private int _menuPreviewPageIndex;
+    private int _menuPreviewPageCount = 1;
+    private bool _previewChapterSubmenu;
 
     #region Properties
 
@@ -163,7 +173,14 @@ public class DvdVideoViewModel : ObservableObject
     public DvdVideoStandard SelectedStandard
     {
         get => _selectedStandard;
-        set => SetProperty(ref _selectedStandard, value);
+        set
+        {
+            if (SetProperty(ref _selectedStandard, value))
+            {
+                InvalidateAuthoredCache();
+                RefreshMenuPreview();
+            }
+        }
     }
 
     /// <summary>
@@ -177,7 +194,14 @@ public class DvdVideoViewModel : ObservableObject
     public DvdAspectRatio SelectedAspectRatio
     {
         get => _selectedAspectRatio;
-        set => SetProperty(ref _selectedAspectRatio, value);
+        set
+        {
+            if (SetProperty(ref _selectedAspectRatio, value))
+            {
+                InvalidateAuthoredCache();
+                RefreshMenuPreview();
+            }
+        }
     }
 
     /// <summary>
@@ -199,7 +223,12 @@ public class DvdVideoViewModel : ObservableObject
                 {
                     AfterTitleAction = DvdAfterTitleAction.PlayNextTitle;
                 }
+                if (!value)
+                {
+                    PreviewChapterSubmenu = false;
+                }
                 InvalidateAuthoredCache();
+                RefreshMenuPreview();
                 if (RequiresAutoAuthoring && !IsBusy)
                 {
                     ValidateAndPlanLayout();
@@ -207,6 +236,170 @@ public class DvdVideoViewModel : ObservableObject
             }
         }
     }
+
+    /// <summary>Whether to generate paginated per-title chapter selection submenus (with Back to Main Menu).</summary>
+    public bool GenerateChapterMenus
+    {
+        get => _generateChapterMenus;
+        set
+        {
+            if (SetProperty(ref _generateChapterMenus, value))
+            {
+                if (!value)
+                {
+                    _previewChapterSubmenu = false;
+                    OnPropertyChanged(nameof(PreviewChapterSubmenu));
+                }
+                InvalidateAuthoredCache();
+                RefreshMenuPreview();
+                if (RequiresAutoAuthoring && !IsBusy)
+                {
+                    ValidateAndPlanLayout();
+                }
+            }
+        }
+    }
+
+    /// <summary>Available font presets for DVD menus.</summary>
+    public IReadOnlyList<DvdMenuFontPreset> AvailableMenuFontPresets { get; } =
+        [DvdMenuFontPreset.ModernSans, DvdMenuFontPreset.ClassicSerif, DvdMenuFontPreset.CinemaMono];
+
+    /// <summary>Selected font preset for DVD menus.</summary>
+    public DvdMenuFontPreset SelectedMenuFontPreset
+    {
+        get => _selectedMenuFontPreset;
+        set
+        {
+            if (SetProperty(ref _selectedMenuFontPreset, value))
+            {
+                InvalidateAuthoredCache();
+                RefreshMenuPreview();
+            }
+        }
+    }
+
+    /// <summary>Available highlight/accent color presets for DVD menus.</summary>
+    public IReadOnlyList<DvdMenuHighlightPreset> AvailableMenuHighlightPresets { get; } =
+        [DvdMenuHighlightPreset.Amber, DvdMenuHighlightPreset.Cyan, DvdMenuHighlightPreset.Crimson, DvdMenuHighlightPreset.Emerald, DvdMenuHighlightPreset.Gold];
+
+    /// <summary>Selected highlight/accent color preset for DVD menus.</summary>
+    public DvdMenuHighlightPreset SelectedMenuHighlightPreset
+    {
+        get => _selectedMenuHighlightPreset;
+        set
+        {
+            if (SetProperty(ref _selectedMenuHighlightPreset, value))
+            {
+                InvalidateAuthoredCache();
+                RefreshMenuPreview();
+            }
+        }
+    }
+
+    /// <summary>Optional custom background image path scaled and letterboxed onto DVD menus.</summary>
+    public string? MenuBackgroundImagePath
+    {
+        get => _menuBackgroundImagePath;
+        set
+        {
+            if (SetProperty(ref _menuBackgroundImagePath, value))
+            {
+                OnPropertyChanged(nameof(HasMenuBackgroundImage));
+                OnPropertyChanged(nameof(MenuBackgroundStatusText));
+                InvalidateAuthoredCache();
+                RefreshMenuPreview();
+            }
+        }
+    }
+
+    /// <summary>True when a custom menu background image path is set.</summary>
+    public bool HasMenuBackgroundImage => !string.IsNullOrWhiteSpace(_menuBackgroundImagePath);
+
+    /// <summary>Short label describing the active menu background.</summary>
+    public string MenuBackgroundStatusText =>
+        string.IsNullOrWhiteSpace(_menuBackgroundImagePath) ? "Default dark gradient" : Path.GetFileName(_menuBackgroundImagePath);
+
+    /// <summary>Optional background audio file muxed as AC-3 into DVD menus.</summary>
+    public string? MenuAudioPath
+    {
+        get => _menuAudioPath;
+        set
+        {
+            if (SetProperty(ref _menuAudioPath, value))
+            {
+                OnPropertyChanged(nameof(HasMenuAudio));
+                OnPropertyChanged(nameof(MenuAudioStatusText));
+                ClearMenuAudioCommand?.RaiseCanExecuteChanged();
+                InvalidateAuthoredCache();
+            }
+        }
+    }
+
+    /// <summary>True when a custom menu background audio path is set.</summary>
+    public bool HasMenuAudio => !string.IsNullOrWhiteSpace(_menuAudioPath);
+
+    /// <summary>Short label describing the active menu audio.</summary>
+    public string MenuAudioStatusText =>
+        string.IsNullOrWhiteSpace(_menuAudioPath) ? "Silent menu" : Path.GetFileName(_menuAudioPath);
+
+    /// <summary>Live rendered still-menu preview image for display in <c>DvdVideoView</c>.</summary>
+    public BitmapSource? MenuPreviewImage
+    {
+        get => _menuPreviewImage;
+        private set => SetProperty(ref _menuPreviewImage, value);
+    }
+
+    /// <summary>0-based page index currently shown in the live still-menu preview.</summary>
+    public int MenuPreviewPageIndex
+    {
+        get => _menuPreviewPageIndex;
+        set
+        {
+            int clamped = Math.Clamp(value, 0, Math.Max(0, _menuPreviewPageCount - 1));
+            if (SetProperty(ref _menuPreviewPageIndex, clamped))
+            {
+                RefreshMenuPreview();
+            }
+        }
+    }
+
+    /// <summary>Total number of pages in the live still-menu preview.</summary>
+    public int MenuPreviewPageCount
+    {
+        get => _menuPreviewPageCount;
+        private set
+        {
+            if (SetProperty(ref _menuPreviewPageCount, value))
+            {
+                OnPropertyChanged(nameof(MenuPreviewPageText));
+                OnPropertyChanged(nameof(CanGoToPreviousMenuPreviewPage));
+                OnPropertyChanged(nameof(CanGoToNextMenuPreviewPage));
+            }
+        }
+    }
+
+    /// <summary>Whether the live preview displays the Chapter Selection submenu instead of the main title menu.</summary>
+    public bool PreviewChapterSubmenu
+    {
+        get => _previewChapterSubmenu;
+        set
+        {
+            bool effective = value && GenerateChapterMenus && AutoCreatePlayMenu;
+            if (SetProperty(ref _previewChapterSubmenu, effective))
+            {
+                _menuPreviewPageIndex = 0;
+                OnPropertyChanged(nameof(MenuPreviewPageIndex));
+                RefreshMenuPreview();
+            }
+        }
+    }
+
+    public string MenuPreviewPageText => PreviewChapterSubmenu
+        ? $"Chapters · Page {_menuPreviewPageIndex + 1} of {_menuPreviewPageCount}"
+        : $"Page {_menuPreviewPageIndex + 1} of {_menuPreviewPageCount}";
+
+    public bool CanGoToPreviousMenuPreviewPage => AutoCreatePlayMenu && _menuPreviewPageIndex > 0;
+    public bool CanGoToNextMenuPreviewPage => AutoCreatePlayMenu && _menuPreviewPageIndex < _menuPreviewPageCount - 1;
 
     /// <summary>True when authoring options apply (movies staged or no folder loaded yet).</summary>
     public bool AreAuthoringOptionsEnabled =>
@@ -265,6 +458,7 @@ public class DvdVideoViewModel : ObservableObject
             {
                 OnPropertyChanged(nameof(ChapterIntervalMinutes));
                 InvalidateAuthoredCache();
+                RefreshMenuPreview();
             }
         }
     }
@@ -459,6 +653,7 @@ public class DvdVideoViewModel : ObservableObject
             _customTitleNames[full] = trimmed;
         }
         InvalidateAuthoredCache();
+        RefreshMenuPreview();
     }
 
     /// <summary>Returns the menu title name for <paramref name="moviePath"/> (custom name or cleaned filename).</summary>
@@ -527,7 +722,14 @@ public class DvdVideoViewModel : ObservableObject
     public string MenuTitle
     {
         get => _menuTitle;
-        set => SetProperty(ref _menuTitle, value);
+        set
+        {
+            if (SetProperty(ref _menuTitle, value))
+            {
+                InvalidateAuthoredCache();
+                RefreshMenuPreview();
+            }
+        }
     }
 
     /// <summary>
@@ -1064,6 +1266,12 @@ public class DvdVideoViewModel : ObservableObject
 
     public RelayCommand AddMovieFilesCommand { get; }
     public RelayCommand BrowseFillPictureCommand { get; }
+    public RelayCommand BrowseMenuBackgroundCommand { get; }
+    public RelayCommand ClearMenuBackgroundCommand { get; }
+    public RelayCommand BrowseMenuAudioCommand { get; }
+    public RelayCommand ClearMenuAudioCommand { get; }
+    public RelayCommand PreviousMenuPreviewPageCommand { get; }
+    public RelayCommand NextMenuPreviewPageCommand { get; }
 
     /// <summary>Opens a file dialog to pick the .srt for one movie (parameter: its <see cref="DvdSubtitleChoiceRow"/>).</summary>
     public RelayCommand ChooseSubtitleFileCommand { get; }
@@ -1097,6 +1305,12 @@ public class DvdVideoViewModel : ObservableObject
 
         AddMovieFilesCommand = new RelayCommand(ExecuteAddMovieFiles);
         BrowseFillPictureCommand = new RelayCommand(ExecuteBrowseFillPicture);
+        BrowseMenuBackgroundCommand = new RelayCommand(ExecuteBrowseMenuBackground);
+        ClearMenuBackgroundCommand = new RelayCommand(_ => MenuBackgroundImagePath = null, _ => HasMenuBackgroundImage);
+        BrowseMenuAudioCommand = new RelayCommand(ExecuteBrowseMenuAudio);
+        ClearMenuAudioCommand = new RelayCommand(_ => MenuAudioPath = null, _ => HasMenuAudio);
+        PreviousMenuPreviewPageCommand = new RelayCommand(_ => MenuPreviewPageIndex--, _ => CanGoToPreviousMenuPreviewPage);
+        NextMenuPreviewPageCommand = new RelayCommand(_ => MenuPreviewPageIndex++, _ => CanGoToNextMenuPreviewPage);
         ChooseSubtitleFileCommand = new RelayCommand(p => { if (p is DvdSubtitleChoiceRow row) PickSubtitleFile(row); }, _ => !IsBusy);
         ClearSubtitleFileCommand = new RelayCommand(p => { if (p is DvdSubtitleChoiceRow row) ChooseSubtitleFile(row.MoviePath, null); }, _ => !IsBusy);
         SourceMediaFiles.CollectionChanged += (_, _) => RefreshSubtitleRows();
@@ -1132,6 +1346,7 @@ public class DvdVideoViewModel : ObservableObject
         RefreshSubtitleToolStatus();
 
         RefreshDrives();
+        RefreshMenuPreview();
     }
 
     #region Operations
@@ -1372,6 +1587,7 @@ public class DvdVideoViewModel : ObservableObject
             SubtitleRows.Add(row);
         }
         OnPropertyChanged(nameof(HasSubtitleRows));
+        RefreshMenuPreview();
     }
 
     /// <summary>
@@ -1409,9 +1625,16 @@ public class DvdVideoViewModel : ObservableObject
         OnPropertyChanged(nameof(DualLayer));
         VolumeLabel = "DVD_VIDEO";
         MenuTitle = "DVD Video";
+        MenuBackgroundImagePath = null;
+        MenuAudioPath = null;
+        _menuPreviewPageIndex = 0;
+        _previewChapterSubmenu = false;
+        OnPropertyChanged(nameof(MenuPreviewPageIndex));
+        OnPropertyChanged(nameof(PreviewChapterSubmenu));
         LastBuiltIsoPath = null;
         BurnProgress = 0;
         StatusMessage = "New DVD: add movies or choose a VIDEO_TS folder.";
+        RefreshMenuPreview();
     }
 
     private void InvalidateAuthoredCache()
@@ -1653,6 +1876,10 @@ public class DvdVideoViewModel : ObservableObject
                 long vobSize = Math.Max(65536L, fileLength);
 
                 previewEntries.Add(new DvdVideoMemoryFileEntry($"VTS_{setNum:D2}_0.IFO", new byte[ifoBytes]));
+                if (AutoCreatePlayMenu && GenerateChapterMenus)
+                {
+                    previewEntries.Add(new DvdVideoMemoryFileEntry($"VTS_{setNum:D2}_0.VOB", new byte[32768]));
+                }
                 if (vobSize <= 10_000_000)
                 {
                     previewEntries.Add(new DvdVideoMemoryFileEntry($"VTS_{setNum:D2}_1.VOB", new byte[(int)vobSize]));
@@ -1843,7 +2070,12 @@ public class DvdVideoViewModel : ObservableObject
             CustomFfmpegPath = string.IsNullOrWhiteSpace(CustomFfmpegPath) ? null : CustomFfmpegPath,
             GenerateSubtitles = GenerateSubtitles,
             SubtitleLanguage = string.IsNullOrWhiteSpace(SubtitleLanguage) ? "en" : SubtitleLanguage.Trim().ToLowerInvariant(),
-            DualLayer = DualLayer || FitEstimate?.DualLayer == true
+            DualLayer = DualLayer || FitEstimate?.DualLayer == true,
+            GenerateChapterMenus = GenerateChapterMenus,
+            MenuBackgroundImagePath = string.IsNullOrWhiteSpace(MenuBackgroundImagePath) ? null : MenuBackgroundImagePath,
+            MenuAudioPath = string.IsNullOrWhiteSpace(MenuAudioPath) ? null : MenuAudioPath,
+            MenuFontPreset = SelectedMenuFontPreset,
+            MenuHighlightPreset = SelectedMenuHighlightPreset
         };
 
         foreach (var (movie, srt) in _chosenSubtitles)
@@ -2516,6 +2748,182 @@ public class DvdVideoViewModel : ObservableObject
                    : TotalSectors <= DvdLayerBreakCalculator.MaxDvd9Sectors
                    ? "Put in a dual-layer DVD (DVD+R DL, 8.5 GB), or remove a movie and burn it on another disc."
                    : "Remove a movie and burn it on another disc.");
+    }
+
+    /// <summary>Re-renders the live still-menu preview bitmap for <c>DvdVideoView</c>.</summary>
+    public void RefreshMenuPreview()
+    {
+        if (!AutoCreatePlayMenu)
+        {
+            MenuPreviewImage = null;
+            MenuPreviewPageCount = 1;
+            if (_menuPreviewPageIndex != 0)
+            {
+                _menuPreviewPageIndex = 0;
+                OnPropertyChanged(nameof(MenuPreviewPageIndex));
+            }
+            OnPropertyChanged(nameof(MenuPreviewPageText));
+            OnPropertyChanged(nameof(CanGoToPreviousMenuPreviewPage));
+            OnPropertyChanged(nameof(CanGoToNextMenuPreviewPage));
+            PreviousMenuPreviewPageCommand.RaiseCanExecuteChanged();
+            NextMenuPreviewPageCommand.RaiseCanExecuteChanged();
+            return;
+        }
+
+        var lookup = new DvdAuthoringOptions();
+        foreach (var (movie, srt) in _chosenSubtitles)
+        {
+            lookup.SubtitleFiles[movie] = srt;
+        }
+
+        var titles = new List<DvdMenuTitle>();
+        foreach (string movie in SourceMediaFiles.Take(DvdStillMenu.MaxTitles))
+        {
+            bool hasSubs = DvdVideoAuthoringService.FindSubtitleFile(movie, lookup) != null;
+            titles.Add(new DvdMenuTitle(GetTitleName(movie), null, hasSubs));
+        }
+        if (titles.Count == 0)
+        {
+            int fallbackCount = Math.Clamp(TitleSetCount > 0 ? TitleSetCount : 1, 1, DvdStillMenu.MaxTitles);
+            for (int i = 1; i <= fallbackCount; i++)
+            {
+                titles.Add(new DvdMenuTitle(fallbackCount == 1 ? "Sample Movie" : $"Title {i}", null, false));
+            }
+        }
+
+        var style = new DvdMenuStyle(
+            SelectedMenuFontPreset,
+            SelectedMenuHighlightPreset,
+            MenuBackgroundImagePath,
+            MenuAudioPath);
+
+        string heading = string.IsNullOrWhiteSpace(MenuTitle) ? "DVD Video" : MenuTitle;
+        System.Drawing.Bitmap previewBitmap;
+
+        if (PreviewChapterSubmenu && GenerateChapterMenus)
+        {
+            double durationSec = 1800.0;
+            if (SourceMediaFiles.Count > 0 && _probedSeconds.TryGetValue(SourceMediaFiles[0], out double probed) && probed > 1.0)
+            {
+                durationSec = probed;
+            }
+            int interval = ChapterIntervalSeconds > 0 ? ChapterIntervalSeconds : (int)Math.Ceiling(durationSec) + 1;
+            int chapterCount = Math.Clamp((int)Math.Floor(durationSec / Math.Max(1, interval)) + 1, 1, 24);
+            var chapters = Enumerable.Range(0, chapterCount)
+                .Select(i => new DvdMenuChapterInfo(i + 1, $"Chapter {i + 1}", TimeSpan.FromSeconds(i * (ChapterIntervalSeconds > 0 ? ChapterIntervalSeconds : 0))))
+                .ToList();
+            int pages = DvdStillMenu.GetChapterMenuPageCount(chapters.Count);
+            MenuPreviewPageCount = pages;
+            if (_menuPreviewPageIndex >= pages)
+            {
+                _menuPreviewPageIndex = pages - 1;
+                OnPropertyChanged(nameof(MenuPreviewPageIndex));
+            }
+            int mainPage = DvdStillMenu.GetTitleMenuPageForTitle(1, titles.Count, includeChapters: true);
+            (previewBitmap, _) = DvdStillMenu.RenderChapterPagePreview(
+                titles[0].Name,
+                titleNumber: 1,
+                mainMenuPage: mainPage,
+                chapters,
+                _menuPreviewPageIndex,
+                SelectedStandard,
+                SelectedAspectRatio,
+                style);
+        }
+        else
+        {
+            int pages = DvdStillMenu.GetTitleMenuPageCount(titles.Count, GenerateChapterMenus);
+            MenuPreviewPageCount = pages;
+            if (_menuPreviewPageIndex >= pages)
+            {
+                _menuPreviewPageIndex = pages - 1;
+                OnPropertyChanged(nameof(MenuPreviewPageIndex));
+            }
+            (previewBitmap, _) = DvdStillMenu.RenderTitlePagePreview(
+                heading,
+                titles,
+                _menuPreviewPageIndex,
+                SelectedStandard,
+                SelectedAspectRatio,
+                GenerateChapterMenus,
+                style);
+        }
+
+        using (previewBitmap)
+        {
+            MenuPreviewImage = ConvertBitmapToFrozenSource(previewBitmap);
+        }
+
+        OnPropertyChanged(nameof(MenuPreviewPageText));
+        OnPropertyChanged(nameof(CanGoToPreviousMenuPreviewPage));
+        OnPropertyChanged(nameof(CanGoToNextMenuPreviewPage));
+        PreviousMenuPreviewPageCommand.RaiseCanExecuteChanged();
+        NextMenuPreviewPageCommand.RaiseCanExecuteChanged();
+        ClearMenuBackgroundCommand.RaiseCanExecuteChanged();
+        ClearMenuAudioCommand.RaiseCanExecuteChanged();
+    }
+
+    private static BitmapSource ConvertBitmapToFrozenSource(System.Drawing.Bitmap bitmap)
+    {
+        var rect = new System.Drawing.Rectangle(0, 0, bitmap.Width, bitmap.Height);
+        var data = bitmap.LockBits(rect, System.Drawing.Imaging.ImageLockMode.ReadOnly, System.Drawing.Imaging.PixelFormat.Format24bppRgb);
+        try
+        {
+            var source = BitmapSource.Create(
+                bitmap.Width,
+                bitmap.Height,
+                96,
+                96,
+                System.Windows.Media.PixelFormats.Bgr24,
+                null,
+                data.Scan0,
+                data.Stride * bitmap.Height,
+                data.Stride);
+            source.Freeze();
+            return source;
+        }
+        finally
+        {
+            bitmap.UnlockBits(data);
+        }
+    }
+
+    private void ExecuteBrowseMenuBackground(object? parameter)
+    {
+        if (parameter is string path && !string.IsNullOrWhiteSpace(path))
+        {
+            MenuBackgroundImagePath = path;
+            return;
+        }
+
+        var dlg = new Microsoft.Win32.OpenFileDialog
+        {
+            Title = "Select Custom DVD Menu Background Image",
+            Filter = "Image Files (*.png;*.jpg;*.jpeg;*.bmp)|*.png;*.jpg;*.jpeg;*.bmp|All Files (*.*)|*.*"
+        };
+        if (dlg.ShowDialog() == true && !string.IsNullOrWhiteSpace(dlg.FileName))
+        {
+            MenuBackgroundImagePath = dlg.FileName;
+        }
+    }
+
+    private void ExecuteBrowseMenuAudio(object? parameter)
+    {
+        if (parameter is string path && !string.IsNullOrWhiteSpace(path))
+        {
+            MenuAudioPath = path;
+            return;
+        }
+
+        var dlg = new Microsoft.Win32.OpenFileDialog
+        {
+            Title = "Select Background Menu Audio",
+            Filter = "Audio Files (*.ac3;*.wav;*.mp3;*.flac;*.m4a;*.aac;*.ogg)|*.ac3;*.wav;*.mp3;*.flac;*.m4a;*.aac;*.ogg|All Files (*.*)|*.*"
+        };
+        if (dlg.ShowDialog() == true && !string.IsNullOrWhiteSpace(dlg.FileName))
+        {
+            MenuAudioPath = dlg.FileName;
+        }
     }
 
     private void ExecuteBrowseFillPicture(object? parameter)

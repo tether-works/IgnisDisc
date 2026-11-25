@@ -16,6 +16,26 @@ public readonly record struct DvdVobu(int Sector, long StartPts, long EndPts, in
 public sealed record DvdMenuButton(int X1, int Y1, int X2, int Y2, int Up, int Down, int Left, int Right, byte[] Command);
 
 /// <summary>
+/// One cell/page inside a multi-page menu VOB: its sector range in the combined stream, VOB/Cell IDs,
+/// buttons to write into its NAV packs, and the initially selected button (1-based).
+/// </summary>
+public sealed record DvdMenuCellPatch(
+    int StartSector,
+    int SectorCount,
+    int VobId,
+    int CellId,
+    IReadOnlyList<DvdMenuButton> Buttons,
+    int InitialButton = 1);
+
+/// <summary>Result of patching one cell in a multi-cell menu VOB.</summary>
+public sealed record DvdPatchedMenuCell(
+    int VobId,
+    int CellId,
+    int FirstSector,
+    int LastSector,
+    IReadOnlyList<DvdVobu> Vobus);
+
+/// <summary>
 /// Fills the NAV packs of an MPEG-2 program stream (one per VOBU, as FFmpeg's DVD muxer leaves them: pack header, system
 /// header, PCI and DSI private stream 2 packets) with what DVD players navigate by. Layout per libdvdread's nav_types.h
 /// and nav_read.c (PCI data at byte 0x2D, DSI data at 0x407): PCI general information (NAV pack address, VOBU start and
@@ -86,14 +106,97 @@ public static class DvdNavPackWriter
             vob.Write(sector);
         }
 
-        var (scans, frameDuration, thirtyFps, height) = Scan(vob, totalSectors);
-        var vobus = AssignCells(Times(scans, totalSectors, frameDuration), cellId, chapterSeconds);
+        var (scans, frameDuration, thirtyFps, height) = ScanRange(vob, 0, totalSectors);
+        var vobus = AssignCells(Times(scans, frameDuration), cellId, chapterSeconds);
+        WriteNavPacksForRange(vob, scans, vobus, totalSectors, vobId, buttonCommand, buttons, wideButtons, height, thirtyFps, initialButton);
+        vob.Flush();
+        return vobus;
+    }
 
+    /// <summary>
+    /// Patches a multi-page menu VOB where each page occupies a contiguous sector range with its own VOB/Cell ID and button set.
+    /// </summary>
+    public static (IReadOnlyList<DvdPatchedMenuCell> Cells, IReadOnlyList<DvdVobu> AllVobus) PatchMultiCellMenu(
+        Stream vob,
+        IReadOnlyList<DvdMenuCellPatch> cells,
+        bool wideButtons = false)
+    {
+        ArgumentNullException.ThrowIfNull(vob);
+        ArgumentNullException.ThrowIfNull(cells);
+        int totalSectors = (int)(vob.Length / SectorSize);
+        if (totalSectors == 0 || cells.Count == 0)
+        {
+            return (Array.Empty<DvdPatchedMenuCell>(), Array.Empty<DvdVobu>());
+        }
+
+        byte[] sector = new byte[SectorSize];
+        var cellResults = new List<DvdPatchedMenuCell>(cells.Count);
+        var allVobus = new List<DvdVobu>();
+
+        foreach (var cell in cells)
+        {
+            if (cell.StartSector < 0 || cell.SectorCount <= 0 || cell.StartSector + cell.SectorCount > totalSectors)
+            {
+                continue;
+            }
+
+            vob.Position = (long)cell.StartSector * SectorSize;
+            vob.ReadExactly(sector);
+            if (!IsNavPack(sector))
+            {
+                FormatNavPack(sector);
+                vob.Position = (long)cell.StartSector * SectorSize;
+                vob.Write(sector);
+            }
+
+            var (scans, frameDuration, thirtyFps, height) = ScanRange(vob, cell.StartSector, cell.SectorCount);
+            var cellVobus = AssignCells(Times(scans, frameDuration), cell.CellId, chapterSeconds: 0);
+            int endSectorExclusive = cell.StartSector + cell.SectorCount;
+            WriteNavPacksForRange(vob, scans, cellVobus, endSectorExclusive, cell.VobId,
+                buttonCommand: null, cell.Buttons, wideButtons, height, thirtyFps, cell.InitialButton);
+
+            cellResults.Add(new DvdPatchedMenuCell(
+                cell.VobId,
+                cell.CellId,
+                cell.StartSector,
+                endSectorExclusive - 1,
+                cellVobus));
+            allVobus.AddRange(cellVobus);
+        }
+
+        vob.Flush();
+        return (cellResults, allVobus);
+    }
+
+    /// <summary>Patches a multi-page menu VOB file in place.</summary>
+    public static (IReadOnlyList<DvdPatchedMenuCell> Cells, IReadOnlyList<DvdVobu> AllVobus) PatchMultiCellMenuFile(
+        string path,
+        IReadOnlyList<DvdMenuCellPatch> cells,
+        bool wideButtons = false)
+    {
+        using var fs = new FileStream(path, FileMode.Open, FileAccess.ReadWrite, FileShare.Read, 1 << 20);
+        return PatchMultiCellMenu(fs, cells, wideButtons);
+    }
+
+    private static void WriteNavPacksForRange(
+        Stream vob,
+        List<VobuScan> scans,
+        List<DvdVobu> vobus,
+        int endSectorExclusive,
+        int vobId,
+        byte[]? buttonCommand,
+        IReadOnlyList<DvdMenuButton>? buttons,
+        bool wideButtons,
+        int height,
+        bool thirtyFps,
+        int initialButton)
+    {
+        byte[] sector = new byte[SectorSize];
         for (int i = 0; i < scans.Count; i++)
         {
             var scan = scans[i];
             var vobu = vobus[i];
-            int lastSector = (i + 1 < scans.Count ? scans[i + 1].Sector : totalSectors) - 1;
+            int lastSector = (i + 1 < scans.Count ? scans[i + 1].Sector : endSectorExclusive) - 1;
             int vobuEa = lastSector - scan.Sector;
 
             vob.Position = (long)scan.Sector * SectorSize;
@@ -167,8 +270,6 @@ public static class DvdNavPackWriter
             vob.Position = (long)scan.Sector * SectorSize;
             vob.Write(sector);
         }
-        vob.Flush();
-        return vobus;
     }
 
     /// <summary>Patches a VOB file in place; see <see cref="Patch(Stream, int, int, byte[], int, IReadOnlyList{DvdMenuButton}?, bool, int)"/>.</summary>
@@ -241,7 +342,7 @@ public static class DvdNavPackWriter
         dsi.CopyTo(s[1024..]);
     }
 
-    private static (List<VobuScan> Scans, long FrameDuration, bool ThirtyFps, int Height) Scan(Stream vob, int totalSectors)
+    private static (List<VobuScan> Scans, long FrameDuration, bool ThirtyFps, int Height) ScanRange(Stream vob, int startSector, int sectorCount)
     {
         var scans = new List<VobuScan>();
         VobuScan? current = null;
@@ -249,14 +350,15 @@ public static class DvdNavPackWriter
         bool thirtyFps = true, rateKnown = false;
         int height = 480;
         byte[] carry = Array.Empty<byte>();
-        int carrySector = 0;
+        int carrySector = startSector;
 
         const int chunkSectors = 512;
         byte[] chunk = new byte[chunkSectors * SectorSize];
-        vob.Position = 0;
-        for (int first = 0; first < totalSectors; first += chunkSectors)
+        int endSector = startSector + sectorCount;
+        vob.Position = (long)startSector * SectorSize;
+        for (int first = startSector; first < endSector; first += chunkSectors)
         {
-            int count = Math.Min(chunkSectors, totalSectors - first);
+            int count = Math.Min(chunkSectors, endSector - first);
             vob.ReadExactly(chunk.AsSpan(0, count * SectorSize));
             for (int k = 0; k < count; k++)
             {
@@ -336,7 +438,7 @@ public static class DvdNavPackWriter
 
     /// <summary>Start and end time of each VOBU: the earliest video PTS in it, and the next VOBU's start (the last one
     /// ends one frame after its latest PTS). A VOBU without a PTS takes the previous one's end.</summary>
-    private static List<DvdVobu> Times(List<VobuScan> scans, int totalSectors, long frameDuration)
+    private static List<DvdVobu> Times(List<VobuScan> scans, long frameDuration)
     {
         var result = new List<DvdVobu>(scans.Count);
         long previousEnd = -1;

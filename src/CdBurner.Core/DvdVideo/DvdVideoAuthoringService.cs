@@ -152,6 +152,31 @@ public sealed class DvdAuthoringOptions
     /// Default: "en". The disc's subtitle stream is declared English whatever this is.
     /// </summary>
     public string SubtitleLanguage { get; set; } = "en";
+
+    /// <summary>
+    /// Whether to generate paginated per-title Chapter Selection submenus (VTS_xx_0.VOB) with a Back to Main Menu button.
+    /// Default: false.
+    /// </summary>
+    public bool GenerateChapterMenus { get; set; }
+
+    /// <summary>
+    /// Optional custom background image path scaled and letterboxed to NTSC 720x480 or PAL 720x576 for DVD menus.
+    /// </summary>
+    public string? MenuBackgroundImagePath { get; set; }
+
+    /// <summary>
+    /// Optional background audio file muxed as stereo 48 kHz AC-3 into DVD menus.
+    /// </summary>
+    public string? MenuAudioPath { get; set; }
+
+    /// <summary>Duration in seconds for looping custom menu background audio (clamped 1..60). Default: 15.</summary>
+    public int MenuAudioDurationSeconds { get; set; } = 15;
+
+    /// <summary>Font family preset used for DVD menu text. Default: <see cref="DvdMenuFontPreset.ModernSans"/>.</summary>
+    public DvdMenuFontPreset MenuFontPreset { get; set; } = DvdMenuFontPreset.ModernSans;
+
+    /// <summary>Accent and button-highlight color preset used for DVD menus. Default: <see cref="DvdMenuHighlightPreset.Amber"/>.</summary>
+    public DvdMenuHighlightPreset MenuHighlightPreset { get; set; } = DvdMenuHighlightPreset.Amber;
 }
 
 /// <summary>The video bitrate chosen for an authoring run, and why it was lowered (null when it was not).</summary>
@@ -750,7 +775,19 @@ public sealed class DvdVideoAuthoringService
             var resolvedTitles = ResolveTitleNames(analyzed.MovieFilePaths, analyzed.CleanedMovieTitles, options);
             int menuVobSectors = 0;
             IReadOnlyList<DvdVobu> menuVobus = Array.Empty<DvdVobu>();
+            IReadOnlyList<DvdMenuPageCell> menuPages = Array.Empty<DvdMenuPageCell>();
             bool menuHasButtons = false;
+            bool menuHasAudio = false;
+            var menuStyle = new DvdMenuStyle(
+                options.MenuFontPreset,
+                options.MenuHighlightPreset,
+                options.MenuBackgroundImagePath,
+                options.MenuAudioPath,
+                options.MenuAudioDurationSeconds);
+            uint[] menuPalette = DvdIfoGenerator.BuildMenuPalette(options.MenuHighlightPreset);
+            int titleMenuPageCount = options.AutoCreatePlayMenu
+                ? DvdStillMenu.GetTitleMenuPageCount(titleCount, options.GenerateChapterMenus)
+                : 0;
 
             // Probe movie durations if FFmpeg is available, to fit the bitrate to the disc, pick menu stills and show progress
             string? ffmpegExe = null;
@@ -767,68 +804,73 @@ public sealed class DvdVideoAuthoringService
                 }
             }
 
-            // 1. Generate Menu VOB if requested
+            // 1. Generate Paginated Title Menu VOB if requested (supporting 1..99 titles)
             if (options.AutoCreatePlayMenu)
             {
                 progress?.Report((8.0, "Generating the DVD title menu..."));
                 string menuVobPath = Path.Combine(videoTsDir, "VIDEO_TS.VOB");
-                if (ffmpegReady)
+                string? stills = ffmpegReady
+                    ? Path.Combine(Path.GetTempPath(), "IgnisDisc_MenuStills_" + Guid.NewGuid().ToString("N"))
+                    : null;
+                if (stills != null)
                 {
-                    // A still from each film and a Play (and Play with subtitles) button per title.
-                    string stills = Path.Combine(Path.GetTempPath(), "IgnisDisc_MenuStills_" + Guid.NewGuid().ToString("N"));
                     Directory.CreateDirectory(stills);
-                    try
+                }
+
+                try
+                {
+                    var menuTitles = new List<DvdMenuTitle>(titleCount);
+                    for (int i = 0; i < titleCount; i++)
                     {
-                        var menuTitles = new List<DvdMenuTitle>();
-                        for (int i = 0; i < titleCount; i++)
+                        string? stillPath = null;
+                        if (ffmpegReady && stills != null && titleCount <= 3)
                         {
                             string still = Path.Combine(stills, $"title{i + 1}.png");
-                            bool haveStill = await ExtractStillAsync(ffmpegExe!, analyzed.MovieFilePaths[i], probedDurations[i] * 0.3, still, cancellationToken).ConfigureAwait(false);
-                            string name = i < resolvedTitles.Count ? resolvedTitles[i] : $"Title {i + 1}";
-                            menuTitles.Add(new DvdMenuTitle(name, haveStill ? still : null, FindSubtitleFile(analyzed.MovieFilePaths[i], options) != null));
+                            if (await ExtractStillAsync(ffmpegExe!, analyzed.MovieFilePaths[i], probedDurations[i] * 0.3, still, cancellationToken).ConfigureAwait(false))
+                            {
+                                stillPath = still;
+                            }
                         }
-                        int initialButton = options.SubtitlesOnByDefault && menuTitles.Count > 0 && menuTitles[0].HasSubtitles ? 2 : 1;
-                        var menu = await DvdStillMenu.BuildAsync(menuTitle, menuTitles, options.Standard, options.AspectRatio, ffmpegExe!,
-                            b => DvdIfoGenerator.LinkPgc(DvdIfoGenerator.TitlePlayPgcNumber(b.Title, titleCount, b.WithSubtitles)),
-                            cancellationToken, initialButton: initialButton).ConfigureAwait(false);
-                        if (menu != null)
-                        {
-                            await File.WriteAllBytesAsync(menuVobPath, menu.Vob, cancellationToken).ConfigureAwait(false);
-                            menuVobSectors = menu.Vob.Length / OpticalConstants.DataSectorSize;
-                            menuVobus = menu.Vobus;
-                            menuHasButtons = true;
-                            logNotes.Add($"Generated the title menu 'VIDEO_TS.VOB' ({menuVobSectors} sectors, {menu.Buttons.Count} buttons).");
-                        }
-                        else
-                        {
-                            logNotes.Add("The title menu with buttons could not be encoded; using the plain menu.");
-                        }
+                        string name = i < resolvedTitles.Count ? resolvedTitles[i] : $"Title {i + 1}";
+                        menuTitles.Add(new DvdMenuTitle(name, stillPath, FindSubtitleFile(analyzed.MovieFilePaths[i], options) != null));
                     }
-                    finally
+
+                    int initialButton = options.SubtitlesOnByDefault && menuTitles.Count > 0 && menuTitles[0].HasSubtitles ? 2 : 1;
+                    byte[] TitleMenuCommand(DvdMenuButtonPlan b, int _) => b.Kind switch
+                    {
+                        DvdMenuButtonKind.NextPage => DvdIfoGenerator.LinkPgc(b.Target),
+                        DvdMenuButtonKind.PreviousPage => DvdIfoGenerator.LinkPgc(b.Target),
+                        DvdMenuButtonKind.OpenChapters => DvdIfoGenerator.JumpVtsMenu(b.Title, vtsTitleNumber: 1, menuId: 7),
+                        _ => DvdIfoGenerator.LinkPgc(DvdIfoGenerator.TitlePlayPgcNumber(b.Title, titleCount, b.WithSubtitles, titleMenuPageCount))
+                    };
+
+                    var multiMenu = await DvdStillMenu.BuildMultiPageTitleMenuAsync(
+                        menuTitle,
+                        menuTitles,
+                        options.Standard,
+                        options.AspectRatio,
+                        options.GenerateChapterMenus,
+                        menuStyle,
+                        ffmpegReady ? ffmpegExe : null,
+                        TitleMenuCommand,
+                        cancellationToken,
+                        page1InitialButton: initialButton).ConfigureAwait(false);
+
+                    await File.WriteAllBytesAsync(menuVobPath, multiMenu.Vob, cancellationToken).ConfigureAwait(false);
+                    menuVobSectors = multiMenu.Vob.Length / OpticalConstants.DataSectorSize;
+                    menuVobus = multiMenu.Vobus;
+                    menuPages = multiMenu.Pages;
+                    menuHasButtons = true;
+                    menuHasAudio = multiMenu.UsedAudioStream;
+                    int totalButtons = multiMenu.PageButtons.Sum(p => p.Buttons.Count);
+                    logNotes.Add($"Generated the title menu 'VIDEO_TS.VOB' ({menuVobSectors} sectors, {menuPages.Count} page(s), {totalButtons} buttons).");
+                }
+                finally
+                {
+                    if (stills != null)
                     {
                         try { Directory.Delete(stills, recursive: true); } catch (IOException) { } catch (UnauthorizedAccessException) { }
                     }
-                }
-
-                if (!menuHasButtons)
-                {
-                    var menuOpts = new DvdMenuOptions
-                    {
-                        MenuTitle = menuTitle,
-                        TitleNames = resolvedTitles,
-                        Standard = options.Standard,
-                        AspectRatio = options.AspectRatio
-                    };
-                    byte[] menuBytes = await DvdMenuGenerator.GenerateMenuVobAsync(
-                        menuOpts,
-                        options.CustomFfmpegPath,
-                        options.UseFfmpegWhenAvailable,
-                        cancellationToken).ConfigureAwait(false);
-                    await File.WriteAllBytesAsync(menuVobPath, menuBytes, cancellationToken).ConfigureAwait(false);
-                    menuVobSectors = menuBytes.Length / OpticalConstants.DataSectorSize;
-                    menuVobus = DvdIfoGenerator.PatchVobNavPacketsInFile(menuVobPath, isMenu: true,
-                        wideButtons: options.AspectRatio == DvdAspectRatio.Widescreen16x9);
-                    logNotes.Add($"Generated menu 'VIDEO_TS.VOB' ({menuVobSectors} sectors).");
                 }
             }
             else if (options.AfterTitleAction == DvdAfterTitleAction.ReturnToMenu)
@@ -847,7 +889,7 @@ public sealed class DvdVideoAuthoringService
 
             // 2. Process each movie track into a Title Set (VTS_xx)
             var titleTotalSectors = new Dictionary<int, int>();
-            var titleSetIfoInputs = new List<(int SetNum, int VobSectors, int DurationSeconds, IReadOnlyList<DvdVobu> Vobus, int NextTitle, bool Subtitles)>();
+            var titleSetIfoInputs = new List<TitleSetIfoInput>();
 
             for (int i = 0; i < titleCount; i++)
             {
@@ -967,29 +1009,69 @@ public sealed class DvdVideoAuthoringService
                     }
                     titleTotalSectors[setNum] = totalVobSecs;
 
+                    // Optional paginated per-title Chapter Selection submenu (VTS_xx_0.VOB)
+                    int vtsMenuVobSectors = 0;
+                    IReadOnlyList<DvdMenuPageCell> vtsMenuPages = Array.Empty<DvdMenuPageCell>();
+                    IReadOnlyList<DvdVobu> vtsMenuVobus = Array.Empty<DvdVobu>();
+                    bool vtsMenuHasAudio = false;
+                    if (options.AutoCreatePlayMenu && options.GenerateChapterMenus)
+                    {
+                        var chapters = ExtractChapters(vobus);
+                        int mainMenuPage = DvdStillMenu.GetTitleMenuPageForTitle(setNum, titleCount, includeChapters: true);
+                        byte[] ChapterMenuCommand(DvdMenuButtonPlan b, int _) => b.Kind switch
+                        {
+                            DvdMenuButtonKind.NextPage => DvdIfoGenerator.LinkPgc(b.Target),
+                            DvdMenuButtonKind.PreviousPage => DvdIfoGenerator.LinkPgc(b.Target),
+                            DvdMenuButtonKind.BackToMainMenu => DvdIfoGenerator.JumpVmgmPgc(b.Target),
+                            _ => DvdIfoGenerator.JumpVtsPartOfTitle(1, b.Target)
+                        };
+
+                        var chapterMenu = await DvdStillMenu.BuildMultiPageChapterMenuAsync(
+                            movieName,
+                            setNum,
+                            mainMenuPage,
+                            chapters,
+                            options.Standard,
+                            options.AspectRatio,
+                            menuStyle,
+                            ffmpegReady ? ffmpegExe : null,
+                            ChapterMenuCommand,
+                            cancellationToken).ConfigureAwait(false);
+
+                        string vtsMenuVobPath = Path.Combine(videoTsDir, $"VTS_{setNum:D2}_0.VOB");
+                        await File.WriteAllBytesAsync(vtsMenuVobPath, chapterMenu.Vob, cancellationToken).ConfigureAwait(false);
+                        vtsMenuVobSectors = chapterMenu.Vob.Length / OpticalConstants.DataSectorSize;
+                        vtsMenuPages = chapterMenu.Pages;
+                        vtsMenuVobus = chapterMenu.Vobus;
+                        vtsMenuHasAudio = chapterMenu.UsedAudioStream;
+                        logNotes.Add($"Generated chapter submenu 'VTS_{setNum:D2}_0.VOB' ({vtsMenuPages.Count} page(s), {chapters.Count} chapter(s)).");
+                    }
+
                     // Build VTS_xx_0.IFO and VTS_xx_0.BUP
                     bool hasMenu = menuVobSectors > 0;
                     bool chainToNext = options.AfterTitleAction == DvdAfterTitleAction.PlayNextTitle;
                     int nextTitle = chainToNext && setNum < titleCount ? setNum + 1 : 0;
                     int effectiveDurationSec = detectedDurationSeconds > 1.0 ? (int)Math.Round(detectedDurationSeconds) : 60;
-                    byte[] vtsIfoBytes = DvdIfoGenerator.BuildVtsIfo(
-                        titleSetNumber: setNum,
-                        standard: options.Standard,
-                        aspect: options.AspectRatio,
-                        titleVobTotalSectors: totalVobSecs,
-                        durationSeconds: effectiveDurationSec,
-                        menuVobSectors: 0,
-                        nextTitleNumber: nextTitle,
-                        vobus: vobus,
-                        callMenuAtEnd: hasMenu,
-                        subtitleStream: subtitleIndex != null && transcodeSuccess);
+                    var vtsInput = new TitleSetIfoInput(
+                        setNum,
+                        totalVobSecs,
+                        effectiveDurationSec,
+                        vobus,
+                        nextTitle,
+                        subtitleIndex != null && transcodeSuccess,
+                        vtsMenuVobSectors,
+                        vtsMenuPages,
+                        vtsMenuVobus,
+                        vtsMenuHasAudio);
+                    byte[] vtsIfoBytes = BuildVtsIfoFromInput(vtsInput, options, ifoSectors: 0, callMenuAtEnd: hasMenu,
+                        menuPalette: menuPalette, vmgMenuPageCount: titleMenuPageCount);
 
                     string vtsIfoPath = Path.Combine(videoTsDir, $"VTS_{setNum:D2}_0.IFO");
                     string vtsBupPath = Path.Combine(videoTsDir, $"VTS_{setNum:D2}_0.BUP");
 
                     await File.WriteAllBytesAsync(vtsIfoPath, vtsIfoBytes, cancellationToken).ConfigureAwait(false);
                     await File.WriteAllBytesAsync(vtsBupPath, vtsIfoBytes, cancellationToken).ConfigureAwait(false);
-                    titleSetIfoInputs.Add((setNum, totalVobSecs, effectiveDurationSec, vobus, nextTitle, subtitleIndex != null && transcodeSuccess));
+                    titleSetIfoInputs.Add(vtsInput);
                 }
                 finally
                 {
@@ -1001,7 +1083,8 @@ public sealed class DvdVideoAuthoringService
             // 3. Plan preliminary layout to determine exact VTS start sector offsets
             progress?.Report((86.0, "Building Video Manager (VIDEO_TS.IFO / VIDEO_TS.BUP) navigation tables..."));
             var layoutPlanner = new DvdVideoLayoutPlanner();
-            int vmgIfoSectors = DvdIfoGenerator.CalculateVmgIfoSectors(titleCount, menuVobSectors, menuVobus.Count, menuHasButtons);
+            int vmgIfoSectors = DvdIfoGenerator.CalculateVmgIfoSectors(titleCount, menuVobSectors, menuVobus.Count, menuHasButtons,
+                menuPageCount: Math.Max(1, menuPages.Count));
 
             List<IDvdVideoFileEntry> PreliminaryFiles()
             {
@@ -1032,18 +1115,8 @@ public sealed class DvdVideoAuthoringService
                 }
                 int currentSectors = (int)(new FileInfo(Path.Combine(videoTsDir, $"VTS_{input.SetNum:D2}_0.IFO")).Length / OpticalConstants.DataSectorSize);
                 int ifoSectors = currentSectors + OpticalConstants.DvdEccBlockSectors - misalignment;
-                byte[] alignedIfo = DvdIfoGenerator.BuildVtsIfo(
-                    titleSetNumber: input.SetNum,
-                    standard: options.Standard,
-                    aspect: options.AspectRatio,
-                    titleVobTotalSectors: input.VobSectors,
-                    durationSeconds: input.DurationSeconds,
-                    menuVobSectors: 0,
-                    nextTitleNumber: input.NextTitle,
-                    ifoSectors: ifoSectors,
-                    vobus: input.Vobus,
-                    callMenuAtEnd: menuVobSectors > 0,
-                    subtitleStream: input.Subtitles);
+                byte[] alignedIfo = BuildVtsIfoFromInput(input, options, ifoSectors, callMenuAtEnd: menuVobSectors > 0,
+                    menuPalette: menuPalette, vmgMenuPageCount: titleMenuPageCount);
                 await File.WriteAllBytesAsync(Path.Combine(videoTsDir, $"VTS_{input.SetNum:D2}_0.IFO"), alignedIfo, cancellationToken).ConfigureAwait(false);
                 await File.WriteAllBytesAsync(Path.Combine(videoTsDir, $"VTS_{input.SetNum:D2}_0.BUP"), alignedIfo, cancellationToken).ConfigureAwait(false);
                 logNotes.Add($"VTS_{input.SetNum:D2}_0.IFO padded to {ifoSectors} sectors so title {input.SetNum} starts on a 16-sector block.");
@@ -1062,23 +1135,12 @@ public sealed class DvdVideoAuthoringService
                 if (chosen != null && chosen.Cell.CellId > 1)
                 {
                     var match = titleSetIfoInputs.FirstOrDefault(t => t.SetNum == chosen.Cell.TitleSet);
-                    if (match.SetNum == chosen.Cell.TitleSet)
+                    if (match != null)
                     {
                         string ifoPath = Path.Combine(videoTsDir, $"VTS_{match.SetNum:D2}_0.IFO");
                         int currentSectors = (int)(new FileInfo(ifoPath).Length / OpticalConstants.DataSectorSize);
-                        byte[] updatedIfo = DvdIfoGenerator.BuildVtsIfo(
-                            titleSetNumber: match.SetNum,
-                            standard: options.Standard,
-                            aspect: options.AspectRatio,
-                            titleVobTotalSectors: match.VobSectors,
-                            durationSeconds: match.DurationSeconds,
-                            menuVobSectors: 0,
-                            nextTitleNumber: match.NextTitle,
-                            ifoSectors: currentSectors,
-                            vobus: match.Vobus,
-                            callMenuAtEnd: menuVobSectors > 0,
-                            subtitleStream: match.Subtitles,
-                            layerBreakCellId: chosen.Cell.CellId);
+                        byte[] updatedIfo = BuildVtsIfoFromInput(match, options, currentSectors, callMenuAtEnd: menuVobSectors > 0,
+                            menuPalette: menuPalette, vmgMenuPageCount: titleMenuPageCount, layerBreakCellId: chosen.Cell.CellId);
                         await File.WriteAllBytesAsync(ifoPath, updatedIfo, cancellationToken).ConfigureAwait(false);
                         await File.WriteAllBytesAsync(Path.Combine(videoTsDir, $"VTS_{match.SetNum:D2}_0.BUP"), updatedIfo, cancellationToken).ConfigureAwait(false);
                     }
@@ -1107,7 +1169,12 @@ public sealed class DvdVideoAuthoringService
                 menuHasButtons: menuHasButtons,
                 menuAutoPlaySeconds: options.MenuAutoPlaySeconds,
                 subtitlesOnByDefault: options.SubtitlesOnByDefault,
-                chainTitles: options.AfterTitleAction == DvdAfterTitleAction.PlayNextTitle);
+                chainTitles: options.AfterTitleAction == DvdAfterTitleAction.PlayNextTitle,
+                menuPages: menuPages,
+                menuHasAudio: menuHasAudio,
+                menuPalette: menuPalette,
+                vtsHasMenus: titleSetIfoInputs.Select(t => t.MenuVobSectors > 0).ToList(),
+                vtsMenuHasAudio: titleSetIfoInputs.Select(t => t.MenuHasAudio).ToList());
 
             string vmgIfoPath = Path.Combine(videoTsDir, "VIDEO_TS.IFO");
             string vmgBupPath = Path.Combine(videoTsDir, "VIDEO_TS.BUP");
@@ -1493,5 +1560,63 @@ public sealed class DvdVideoAuthoringService
         return ts.TotalHours >= 1.0
             ? $"{(int)ts.TotalHours:D2}:{ts.Minutes:D2}:{ts.Seconds:D2}"
             : $"{ts.Minutes:D2}:{ts.Seconds:D2}";
+    }
+
+    private sealed record TitleSetIfoInput(
+        int SetNum,
+        int VobSectors,
+        int DurationSeconds,
+        IReadOnlyList<DvdVobu> Vobus,
+        int NextTitle,
+        bool Subtitles,
+        int MenuVobSectors,
+        IReadOnlyList<DvdMenuPageCell> MenuPages,
+        IReadOnlyList<DvdVobu> MenuVobus,
+        bool MenuHasAudio);
+
+    private static byte[] BuildVtsIfoFromInput(
+        TitleSetIfoInput input,
+        DvdAuthoringOptions options,
+        int ifoSectors,
+        bool callMenuAtEnd,
+        uint[] menuPalette,
+        int vmgMenuPageCount,
+        int? layerBreakCellId = null) =>
+        DvdIfoGenerator.BuildVtsIfo(
+            titleSetNumber: input.SetNum,
+            standard: options.Standard,
+            aspect: options.AspectRatio,
+            titleVobTotalSectors: input.VobSectors,
+            durationSeconds: input.DurationSeconds,
+            menuVobSectors: input.MenuVobSectors,
+            nextTitleNumber: input.NextTitle,
+            ifoSectors: ifoSectors,
+            vobus: input.Vobus,
+            callMenuAtEnd: callMenuAtEnd,
+            subtitleStream: input.Subtitles,
+            layerBreakCellId: layerBreakCellId,
+            menuPages: input.MenuPages,
+            menuVobus: input.MenuVobus,
+            menuHasButtons: input.MenuVobSectors > 0,
+            menuHasAudio: input.MenuHasAudio,
+            menuPalette: menuPalette,
+            vmgMenuPageCount: vmgMenuPageCount);
+
+    private static IReadOnlyList<DvdMenuChapterInfo> ExtractChapters(IReadOnlyList<DvdVobu> vobus)
+    {
+        var chapters = new List<DvdMenuChapterInfo>();
+        long originPts = vobus.Count > 0 && vobus[0].StartPts >= 0 ? vobus[0].StartPts : 0;
+        int lastCell = -1;
+        foreach (var v in vobus)
+        {
+            if (v.CellId != lastCell)
+            {
+                lastCell = v.CellId;
+                int chapterNum = chapters.Count + 1;
+                TimeSpan start = v.StartPts >= originPts ? TimeSpan.FromSeconds((v.StartPts - originPts) / 90_000.0) : TimeSpan.Zero;
+                chapters.Add(new DvdMenuChapterInfo(chapterNum, $"Chapter {chapterNum}", start));
+            }
+        }
+        return chapters.Count > 0 ? chapters : [new DvdMenuChapterInfo(1, "Chapter 1", TimeSpan.Zero)];
     }
 }
