@@ -13,6 +13,7 @@
 
     <UserControl.Resources>
         <converters:BooleanToVisibilityConverter x:Key="BoolToVis" />
+        <converters:NullToVisibilityConverter x:Key="NullToVis" />
         <converters:RadioButtonBooleanConverter x:Key="RadioButtonBooleanConverter" />
         <converters:BooleanToBrushConverter x:Key="BoolToBrush" />
     </UserControl.Resources>
@@ -42,6 +43,7 @@
                             Margin="0,0,0,12">
                         <Grid>
                             <Grid.RowDefinitions>
+                                <RowDefinition Height="Auto" />
                                 <RowDefinition Height="Auto" />
                                 <RowDefinition Height="Auto" />
                             </Grid.RowDefinitions>
@@ -113,6 +115,43 @@
                                         Visibility="{Binding IsLegacyImageLoaded, Converter={StaticResource BoolToVis}}"
                                         Padding="12,4"
                                         VerticalAlignment="Center" />
+                            </StackPanel>
+
+                            <StackPanel Grid.Row="2" Grid.Column="0" Grid.ColumnSpan="4" Margin="0,8,0,0">
+                                <WrapPanel Orientation="Horizontal" VerticalAlignment="Center">
+                                    <CheckBox Content="Create RS03 parity (.ecc; opt-in, dvdisaster interop unverified)"
+                                              AutomationProperties.Name="Create RS03 parity"
+                                              IsChecked="{Binding CreateRs03Parity}"
+                                              ToolTip="Opt in to create standalone RS03 .ecc parity (safe for all media) or an augmented write-once .iso before burning."
+                                              VerticalAlignment="Center"
+                                              Margin="0,2,16,2" />
+                                    <CheckBox Content="Augment .iso to disc capacity (write-once only)"
+                                              AutomationProperties.Name="Augment .iso to disc capacity"
+                                              IsChecked="{Binding UseRs03AugmentedMode}"
+                                              IsEnabled="{Binding CreateRs03Parity}"
+                                              ToolTip="Pads the .iso up to CD/DVD/BD capacity with RS03 layers. Avoid on rewritable media (DVD+RW, BD-RE)."
+                                              VerticalAlignment="Center"
+                                              Margin="0,2,16,2" />
+                                    <CheckBox Content="Allow augmented RS03 on rewritable media"
+                                              AutomationProperties.Name="Allow augmented RS03 on rewritable media"
+                                              IsChecked="{Binding AllowRewritableRs03Augmented}"
+                                              Visibility="{Binding Rs03RewritableWarning, Converter={StaticResource NullToVis}}"
+                                              VerticalAlignment="Center"
+                                              Margin="0,2,16,2" />
+                                    <Button Content="🛡 Create RS03 Parity"
+                                            AutomationProperties.Name="Create RS03 Parity"
+                                            Command="{Binding CreateRs03ParityCommand}"
+                                            Visibility="{Binding CreateRs03Parity, Converter={StaticResource BoolToVis}}"
+                                            Padding="10,3"
+                                            FontSize="11.5"
+                                            VerticalAlignment="Center" />
+                                </WrapPanel>
+                                <TextBlock Text="{Binding Rs03RewritableWarning}"
+                                           Visibility="{Binding Rs03RewritableWarning, Converter={StaticResource NullToVis}}"
+                                           Foreground="#E6A100"
+                                           FontSize="11.5"
+                                           TextWrapping="Wrap"
+                                           Margin="0,4,0,0" />
                             </StackPanel>
                         </Grid>
                     </Border>
@@ -246,6 +285,7 @@
                             Margin="0,12,0,0">
                         <Grid>
                             <Grid.RowDefinitions>
+                                <RowDefinition Height="Auto" />
                                 <RowDefinition Height="Auto" />
                                 <RowDefinition Height="Auto" />
                             </Grid.RowDefinitions>
@@ -418,6 +458,7 @@
                             <Grid.RowDefinitions>
                                 <RowDefinition Height="Auto" />
                                 <RowDefinition Height="Auto" />
+                                <RowDefinition Height="Auto" />
                             </Grid.RowDefinitions>
                             <Grid.ColumnDefinitions>
                                 <ColumnDefinition Width="Auto" />
@@ -583,6 +624,7 @@
                             Margin="0,0,0,12">
                         <Grid>
                             <Grid.RowDefinitions>
+                                <RowDefinition Height="Auto" />
                                 <RowDefinition Height="Auto" />
                                 <RowDefinition Height="Auto" />
                             </Grid.RowDefinitions>
@@ -1123,6 +1165,7 @@
                             Margin="0,0,0,10">
                         <Grid>
                             <Grid.RowDefinitions>
+                                <RowDefinition Height="Auto" />
                                 <RowDefinition Height="Auto" />
                                 <RowDefinition Height="Auto" />
                             </Grid.RowDefinitions>

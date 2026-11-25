@@ -259,6 +259,15 @@
             <li>The Windows writer has no test write</li>
           </ul>
         </div>
+        <div class="cell" id="opt-in-rs03-raw-sector-ecc-parity">
+          <h3 class="spec-module-title">Opt-in RS03 raw-sector ECC parity</h3>
+          <p class="feature-detail-status">PHYSICAL <span class="badge-na">[ N/A ]</span> · VIRTUAL <span class="badge-pass">[ PASS ]</span></p>
+          <ul class="spec-module-list feature-detail-notes">
+            <li>PAR2 remains the primary mounted-filesystem default; RS03 is opt-in (<code>ecc-rs03 create|verify|repair</code>, or checkboxes in Archive Studio and Disc Image Studio).</li>
+            <li>Supports standalone <code>.ecc</code> files (safe for any image, including rewritable media) and augmented write-once <code>.iso</code> images with an explicit rewritable-media guard.</li>
+            <li>Tested in the suite and virtual drive (including LBA 0-64 wipes and multi-track burst erasures); interoperability against upstream <code>dvdisaster</code> is not yet verified</li>
+          </ul>
+        </div>
         <!-- SUPPORT-DETAILS-END -->
       </div>
     </section>

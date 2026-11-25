@@ -1,4 +1,5 @@
 using System.Buffers.Binary;
+using CdBurner.Core.Archival.Rs03;
 using CdBurner.Core.Primitives;
 
 namespace CdBurner.Core.Iso;
@@ -22,6 +23,21 @@ public static class RecordedVolumeExtent
     /// <param name="readSector">Returns the 2,048 bytes of one sector, or null if it cannot be read.</param>
     /// <returns>The sector count (last sector + 1), or null when the disc holds neither ISO 9660 nor UDF.</returns>
     public static int? FindEndSector(Func<int, byte[]?> readSector)
+    {
+        int? fsEnd = FindFileSystemEndSector(readSector);
+        if (fsEnd is > 0 and < int.MaxValue - 2 &&
+            Rs03Codec.TryReadAugmentedTotalSectorsAtBoundary(readSector, fsEnd.Value) is { } rs03Total &&
+            rs03Total > fsEnd.Value && rs03Total <= int.MaxValue)
+        {
+            return (int)rs03Total;
+        }
+        return fsEnd;
+    }
+
+    /// <summary>
+    /// Returns the sector count (last sector + 1) of the ISO 9660 / UDF file system alone, without trailing RS03 parity.
+    /// </summary>
+    public static int? FindFileSystemEndSector(Func<int, byte[]?> readSector)
     {
         ArgumentNullException.ThrowIfNull(readSector);
         long end = 0;

@@ -21,14 +21,14 @@ public static partial class CliCommandRunner
         "artist", "aspect", "attach-health", "audio-track", "bitrate", "blank", "block-size", "book-type", "boot-bios", "boot-uefi", "candidate",
         "cells", "chapters", "compare", "config", "copies", "cover", "cover-art", "crossfade",
         "csv", "cue", "data-folder", "data-label", "date", "dir", "disc", "disc-preset",
-        "disc-presets-file", "drive", "drives", "drive-model", "entry", "ffmpeg", "files", "fill-picture", "fit",
+        "disc-presets-file", "drive", "drives", "drive-model", "ecc", "entry", "ffmpeg", "files", "fill-picture", "fit",
         "fixed-time", "format", "from", "health-json", "image", "images", "inner-radius-mm", "input", "iso",
         "json-output", "key", "label", "language", "layer-break", "library", "log-dir",
-        "loudness", "media", "media-id", "menu", "menu-autoplay", "menu-title", "mode", "mp3-bitrate",
+        "loudness", "media", "media-id", "medium-sectors", "menu", "menu-autoplay", "menu-title", "mode", "mp3-bitrate",
         "mp3-quality", "naming", "offset-cache", "offset-store", "offset-x-mm", "offset-y-mm", "opus-bitrate", "order", "out",
         "outer-radius-mm", "output", "pages-radius", "par2", "path", "picture", "pitch-cubic",
         "pitch-linear", "pitch-quadratic", "points", "post-action", "pregap", "pregap-art",
-        "pregap-seconds", "read-offset", "redundancy", "release", "retries", "rotate", "scale",
+        "pregap-seconds", "read-offset", "redundancy", "release", "retries", "roots", "rotate", "scale",
         "sectors", "set", "settings-file", "size", "songwriter", "source", "spacing", "speed",
         "stage", "staging", "standard", "start-angle", "store", "subtitle-language",
         "subtitle-size", "subtitle-track", "subtitles-default", "svg", "target", "telemetry-out", "text", "title", "title-names",
@@ -212,7 +212,7 @@ public static partial class CliCommandRunner
         "archive-stage", "archive-burn", "archive-verify", "recover", "verify", "erase", "scan", "quality-scan",
         "settings", "tools", "install-ffmpeg", "install-par2", "check-update", "image-info",
         "convert-image", "browse-image", "extract-image", "author-dvd", "jewel-cover", "audio-plan", "burn-queue", "book-type",
-        "repair-par2", "rosetta", "disc-art"
+        "repair-par2", "ecc-rs03", "rosetta", "disc-art"
     ];
 
     private static Dictionary<string, CommandOptionSpec> BuildCommandSpecs()
@@ -277,6 +277,10 @@ public static partial class CliCommandRunner
             "burn-queue", "burnqueue");
         Add(CommandOptionSpec.Of(["get"], ["drive", "set", "virtual-media", "virtual-state"]), "book-type", "booktype");
         Add(CommandOptionSpec.Of(["delete-backups"], ["path", "par2"]), "repair-par2", "repairpar2");
+        Add(CommandOptionSpec.Of(
+            ["overwrite", "allow-rewritable", "no-defect-management", "allow-fingerprint-mismatch", "quick"],
+            ["image", "ecc", "out", "mode", "redundancy", "roots", "media", "medium-sectors"]),
+            "ecc-rs03", "rs03");
         Add(RosettaLadderSpec, "rosetta-ladder", "rosettaladder");
 
         return specs;

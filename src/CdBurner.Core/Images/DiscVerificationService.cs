@@ -239,6 +239,17 @@ internal sealed class Crc32Algorithm
 
     public uint GetCurrentHashAsUInt32() => ~_crc;
 
+    /// <summary>Computes reflected IEEE 802.3 CRC-32 with init 0xFFFFFFFF and no final complement.</summary>
+    public static uint ComputeUncomplemented(ReadOnlySpan<byte> data)
+    {
+        uint crc = 0xFFFFFFFFu;
+        for (int i = 0; i < data.Length; i++)
+        {
+            crc = Table[(crc ^ data[i]) & 0xFF] ^ (crc >> 8);
+        }
+        return crc;
+    }
+
     public string GetCurrentHashAsHexString() => GetCurrentHashAsUInt32().ToString("X8");
 
     /// <summary>

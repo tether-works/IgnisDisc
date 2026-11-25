@@ -214,5 +214,14 @@
     "notesMarkdown": "With the experimental direct writer (`--native --test-write`): the whole burn with the laser off. Run on one drive (LG GP60NB50) on CD-R and CD-RW. DVD-R has passed a test write on the same drive (a Verbatim DVD-R, still blank after a reload); DVD-RW only in the drive simulator so far; DVD+R discs have none. The Windows writer has no test write",
     "notesHtml": "With the experimental direct writer (<code>--native --test-write</code>): the whole burn with the laser off. Run on one drive (LG GP60NB50) on CD-R and CD-RW. DVD-R has passed a test write on the same drive (a Verbatim DVD-R, still blank after a reload); DVD-RW only in the drive simulator so far; DVD+R discs have none. The Windows writer has no test write",
     "summaryHtml": "A laser-off burn with the direct writer (<code>--native --test-write</code>). Run on a real CD-R, CD-RW and DVD-R; DVD+R discs have no test write, and neither does the Windows writer."
+  },
+  {
+    "featureMarkdown": "Opt-in RS03 raw-sector ECC parity",
+    "featureHtml": "Opt-in RS03 raw-sector ECC parity",
+    "physical": "\u274c",
+    "virtual": "\u2705",
+    "notesMarkdown": "PAR2 remains the primary mounted-filesystem default; RS03 is opt-in (`ecc-rs03 create|verify|repair`, or checkboxes in Archive Studio and Disc Image Studio). Supports standalone `.ecc` files (safe for any image, including rewritable media) and augmented write-once `.iso` images with an explicit rewritable-media guard. Tested in the suite and virtual drive (including LBA 0-64 wipes and multi-track burst erasures); interoperability against upstream `dvdisaster` is not yet verified",
+    "notesHtml": "PAR2 remains the primary mounted-filesystem default; RS03 is opt-in (<code>ecc-rs03 create|verify|repair</code>, or checkboxes in Archive Studio and Disc Image Studio). Supports standalone <code>.ecc</code> files (safe for any image, including rewritable media) and augmented write-once <code>.iso</code> images with an explicit rewritable-media guard. Tested in the suite and virtual drive (including LBA 0-64 wipes and multi-track burst erasures); interoperability against upstream <code>dvdisaster</code> is not yet verified",
+    "summaryHtml": "Opt-in standalone <code>.ecc</code> files and augmented write-once <code>.iso</code> images (PAR2 remains the default). Tested in the test suite and virtual drive; upstream <code>dvdisaster</code> interoperability is not yet verified."
   }
 ]

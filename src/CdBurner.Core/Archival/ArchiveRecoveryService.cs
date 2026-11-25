@@ -1,4 +1,5 @@
 using CdBurner.Core.Abstractions;
+using CdBurner.Core.Archival.Rs03;
 using CdBurner.Core.Images;
 using CdBurner.Core.Iso;
 using CdBurner.Core.Primitives;
@@ -27,7 +28,8 @@ public sealed record ArchiveRecoveryReport(
     string? Problem,
     IReadOnlyList<string>? RejectedPaths = null,
     IReadOnlyList<string>? UdfSkippedEntries = null,
-    int RawRecoveredSectors = 0)
+    int RawRecoveredSectors = 0,
+    int Rs03RecoveredSectors = 0)
 {
     /// <summary>Every file the manifest lists is present and matches its checksum.</summary>
     public bool FullyRecovered => Problem == null && FilesChecked > 0 && StillMissing.Count == 0 && StillCorrupt.Count == 0;
@@ -62,6 +64,10 @@ public sealed record ArchiveRecoveryReport(
         if (RawRecoveredSectors > 0)
         {
             lines.Add($"Sectors repaired via raw P/Q parity: {RawRecoveredSectors:N0}");
+        }
+        if (Rs03RecoveredSectors > 0)
+        {
+            lines.Add($"Sectors repaired via RS03 parity: {Rs03RecoveredSectors:N0}");
         }
         lines.Add($"Damaged files before repair: {DamagedFiles.Count:N0}");
         lines.AddRange(DamagedFiles.Select(f => "  " + f + (RepairedFiles.Contains(f) ? "  (repaired)" : "  (NOT repaired)")));
@@ -179,10 +185,57 @@ public static class ArchiveRecoveryService
         var damaged = new List<string>();
         var rejectedPaths = new List<string>();
         IReadOnlyList<string> udfSkipped = Array.Empty<string>();
-        ArchiveRecoveryReport Fail(string problem) => new(outputFolder, bad.ToList(), damaged, false, false, 0,
-            Array.Empty<string>(), Array.Empty<string>(), problem, rejectedPaths, udfSkipped);
+        int rs03RecoveredSectors = 0;
+        string effectiveImagePath = imagePath;
+        string? tempRs03Image = null;
+        string? tempRs03Ecc = null;
 
-        await using (var image = new FileStream(imagePath, FileMode.Open, FileAccess.Read, FileShare.Read, 1 << 16, useAsync: false))
+        try
+        {
+            string? sidecarEcc = File.Exists(imagePath + ".ecc")
+                ? imagePath + ".ecc"
+                : (File.Exists(Path.ChangeExtension(imagePath, ".ecc")) ? Path.ChangeExtension(imagePath, ".ecc") : null);
+            bool hasAugmentedRs03 = sidecarEcc == null && Rs03Codec.TryInspectAugmentedImage(imagePath, out _, out _);
+
+            if (sidecarEcc != null || hasAugmentedRs03)
+            {
+                tempRs03Image = Path.Combine(Path.GetTempPath(), $"ignis_rs03_rec_{Guid.NewGuid():N}.iso");
+                File.Copy(imagePath, tempRs03Image, overwrite: true);
+                if (sidecarEcc != null)
+                {
+                    tempRs03Ecc = tempRs03Image + ".ecc";
+                    File.Copy(sidecarEcc, tempRs03Ecc, overwrite: true);
+                }
+
+                progress?.Report("Checking RS03 parity and repairing damaged sectors...");
+                var rs03Repair = await Rs03Codec.RepairAsync(
+                    tempRs03Image,
+                    tempRs03Ecc,
+                    new Rs03RepairOptions { UnreadableSectors = unreadableSectors },
+                    cancellationToken: cancellationToken).ConfigureAwait(false);
+
+                rs03RecoveredSectors = rs03Repair.RepairedDataSectors;
+                if (rs03Repair.Success)
+                {
+                    bad.RemoveWhere(lba => lba >= 0 && lba < rs03Repair.Layout.DataSectors);
+                }
+                if (rs03Repair.Mode == Rs03Mode.AugmentedImage)
+                {
+                    long prefixBytes = (rs03Repair.Layout.DataSectors - 1) * Rs03Constants.SectorSize + rs03Repair.Layout.InLastBytes;
+                    await using var trimFs = new FileStream(tempRs03Image, FileMode.Open, FileAccess.Write, FileShare.None);
+                    if (trimFs.Length > prefixBytes)
+                    {
+                        trimFs.SetLength(prefixBytes);
+                    }
+                }
+                effectiveImagePath = tempRs03Image;
+            }
+
+            ArchiveRecoveryReport Fail(string problem) => new(outputFolder, bad.ToList(), damaged, false, false, 0,
+                Array.Empty<string>(), Array.Empty<string>(), problem, rejectedPaths, udfSkipped,
+                Rs03RecoveredSectors: rs03RecoveredSectors);
+
+            await using (var image = new FileStream(effectiveImagePath, FileMode.Open, FileAccess.Read, FileShare.Read, 1 << 16, useAsync: false))
         {
             var files = ReadFileList(image, out string? listProblem, out int? descriptorCopyLba, out udfSkipped);
             foreach (string skippedEntry in udfSkipped)
@@ -275,7 +328,7 @@ public static class ArchiveRecoveryService
             return new ArchiveRecoveryReport(outputFolder, bad.ToList(), damaged, hasRecovery, repairAttempted, 0,
                 Array.Empty<string>(), Array.Empty<string>(),
                 "the disc has no IgnisDisc archive manifest, so the files cannot be checked.",
-                rejectedPaths, udfSkipped);
+                rejectedPaths, udfSkipped, Rs03RecoveredSectors: rs03RecoveredSectors);
         }
 
         var stillCorrupt = verification.Corrupt.ToList();
@@ -311,7 +364,20 @@ public static class ArchiveRecoveryService
         }
 
         return new ArchiveRecoveryReport(outputFolder, bad.ToList(), damaged, hasRecovery, repairAttempted,
-            verification.FilesChecked, verification.Missing, stillCorrupt, problem, rejectedPaths, udfSkipped);
+            verification.FilesChecked, verification.Missing, stillCorrupt, problem, rejectedPaths, udfSkipped,
+            Rs03RecoveredSectors: rs03RecoveredSectors);
+        }
+        finally
+        {
+            if (tempRs03Image != null && File.Exists(tempRs03Image))
+            {
+                try { File.Delete(tempRs03Image); } catch (IOException) { } catch (UnauthorizedAccessException) { }
+            }
+            if (tempRs03Ecc != null && File.Exists(tempRs03Ecc))
+            {
+                try { File.Delete(tempRs03Ecc); } catch (IOException) { } catch (UnauthorizedAccessException) { }
+            }
+        }
     }
 
     internal static IReadOnlyList<IsoFileEntry>? ReadFileList(Stream image, out string? problem, out int? descriptorCopyLba) =>

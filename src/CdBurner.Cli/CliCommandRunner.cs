@@ -59,7 +59,8 @@ public static partial class CliCommandRunner
         "no-cover-lookup", "no-folder-image", "recursive", "no-rim", "rim-header",
         "sha256sums", "blake3sums", "native", "test-write", "test-first", "recovery-session", "blue-book", "streaming",
         "allow-suspect", "repair", "repair-from-recovery", "no-replaygain", "health-certificate", "files-outer", "read-compat", "force-old",
-        "get", "require-book-type", "allow-overburn", "refresh-offsets"
+        "get", "require-book-type", "allow-overburn", "refresh-offsets",
+        "allow-rewritable", "no-defect-management", "allow-fingerprint-mismatch", "quick"
     };
 
     private static void WriteJsonResult(TextWriter stdout, object payload)
@@ -293,6 +294,7 @@ public static partial class CliCommandRunner
             "burn-queue" or "burnqueue" => await HandleBurnQueueAsync(cmd, stdout, stderr, deviceService, burnEngine).ConfigureAwait(false),
             "book-type" or "booktype" => HandleBookTypeCommand(cmd, stdout, stderr, deviceService),
             "repair-par2" or "repairpar2" => await HandleRepairPar2Async(cmd, stdout, stderr).ConfigureAwait(false),
+            "ecc-rs03" or "rs03" => await HandleEccRs03Async(cmd, stdout, stderr).ConfigureAwait(false),
             "rosetta" or "rosetta-ladder" or "rosettaladder" => await HandleRosettaCommandAsync(cmd, stdout, stderr, deviceService, burnEngine).ConfigureAwait(false),
             "disc-art" or "discart" => await HandleDiscArtCommandAsync(cmd, stdout, stderr, deviceService, burnEngine).ConfigureAwait(false),
             _ => throw new CommandLineException($"Unknown command '{cmd.Subcommand}'. Use --help for usage information.")
@@ -4424,6 +4426,8 @@ public static partial class CliCommandRunner
         stdout.WriteLine("      Reads or updates DVD+R / DVD+RW / DVD+R DL book-type bitsetting.");
         stdout.WriteLine("  repair-par2 --path <folder> [--par2 <path>] [--delete-backups] [--json]");
         stdout.WriteLine("      Verifies and repairs a folder in place from its PAR2 recovery set (keeps backup files unless --delete-backups).");
+        stdout.WriteLine("  ecc-rs03 (create | verify | repair) --image <file.iso> [--mode ecc|augmented] [--ecc <file.ecc>] [--redundancy <normal|high|N%|Nr>] [--media <cd|cd-rw|dvd|dvd+rw|dvd-rw|dvd-ram|dvd-dl|bd|bd-re|bd-dl|bdxl|bdxl-ql>] [--medium-sectors <N>] [--allow-rewritable] [--overwrite] [--json]");
+        stdout.WriteLine("      Opt-in clean-room RS03 raw-sector ECC parity (standalone .ecc file or augmented write-once ISO; external dvdisaster interop not yet verified).");
         stdout.WriteLine("  rosetta ladder --media dvd|cd --output <file.iso|file.wav|file.raw> [--json-output <file.json>] [--disc-preset <id>] [--start-angle <deg>] [--no-interleave] [--plan-only] [--json]");
         stdout.WriteLine("      Generates a DVD-R (250x375 down to 13x17 um) or CD-R (250x375 down to 50x75 um) optical resolution-ladder image across inner, middle, and outer radii plus a JSON manifest of rung positions.");
         stdout.WriteLine("  rosetta build --text <folder> --output <file.iso|file.cue|file.bin> [--media dvd|cd] [--title <text>] [--date yyyy-mm-dd] [--files <folder>] [--cells hobbyist|high-density|<rung id>] [--pages-radius <mm>] [--redundancy <0-100>] [--no-fill] [--no-rim] [--no-interleave] [--disc-preset <id>] [--plan-only] [--overwrite] [--json]");

@@ -5,6 +5,7 @@ using System.Security.Cryptography;
 using System.Windows.Input;
 using CdBurner.App.Mvvm;
 using CdBurner.Core.Abstractions;
+using CdBurner.Core.Archival.Rs03;
 using CdBurner.Core.Audio;
 using CdBurner.Core.Burning;
 using CdBurner.Core.Images;
@@ -200,6 +201,8 @@ public class ImageStudioViewModel : ObservableObject, IDisposable
                 InspectImage();
                 BurnImageToDiscCommand.RaiseCanExecuteChanged();
                 VerifyDiscAgainstImageCommand.RaiseCanExecuteChanged();
+                CreateRs03ParityCommand?.RaiseCanExecuteChanged();
+                RefreshRs03RewritableWarning();
             }
         }
     }
@@ -268,8 +271,104 @@ public class ImageStudioViewModel : ObservableObject, IDisposable
     private bool _streamingWrite;
     private bool _isOverwritableBdMedia;
     private bool _setDvdRomBookTypeWhenSupported;
+    private bool _createRs03Parity;
+    private bool _useRs03AugmentedMode;
+    private bool _allowRewritableRs03Augmented;
+    private string? _rs03RewritableWarning;
+    private Rs03CreateResult? _lastRs03Result;
     private readonly AutomaticChoice _directDefault = new();
     private readonly BookTypeService _bookTypeService = new(new VendorBookTypeController());
+
+    /// <summary>
+    /// Opt-in: creates clean-room RS03 raw-sector parity (.ecc file by default, or augmented .iso) for the source image.
+    /// Off by default; external dvdisaster interoperability is unverified.
+    /// </summary>
+    public bool CreateRs03Parity
+    {
+        get => _createRs03Parity;
+        set
+        {
+            if (SetProperty(ref _createRs03Parity, value))
+            {
+                RefreshRs03RewritableWarning();
+                CreateRs03ParityCommand?.RaiseCanExecuteChanged();
+            }
+        }
+    }
+
+    /// <summary>
+    /// Opt-in when <see cref="CreateRs03Parity"/> is enabled: augments the source .iso up to disc capacity instead of writing a separate .ecc file.
+    /// </summary>
+    public bool UseRs03AugmentedMode
+    {
+        get => _useRs03AugmentedMode;
+        set
+        {
+            if (SetProperty(ref _useRs03AugmentedMode, value))
+            {
+                RefreshRs03RewritableWarning();
+            }
+        }
+    }
+
+    /// <summary>Explicitly overrides the rewritable-media guard for RS03 augmented images.</summary>
+    public bool AllowRewritableRs03Augmented
+    {
+        get => _allowRewritableRs03Augmented;
+        set
+        {
+            if (SetProperty(ref _allowRewritableRs03Augmented, value))
+            {
+                RefreshRs03RewritableWarning();
+            }
+        }
+    }
+
+    /// <summary>Explicit warning shown when RS03 augmented mode targets rewritable media.</summary>
+    public string? Rs03RewritableWarning
+    {
+        get => _rs03RewritableWarning;
+        private set => SetProperty(ref _rs03RewritableWarning, value);
+    }
+
+    /// <summary>Outcome of the most recent RS03 parity creation operation.</summary>
+    public Rs03CreateResult? LastRs03Result
+    {
+        get => _lastRs03Result;
+        private set => SetProperty(ref _lastRs03Result, value);
+    }
+
+    private void RefreshRs03RewritableWarning()
+    {
+        bool sourceIsAugmented = false;
+        if (!string.IsNullOrWhiteSpace(SourceImagePath) &&
+            string.Equals(Path.GetExtension(SourceImagePath), ".iso", StringComparison.OrdinalIgnoreCase) &&
+            File.Exists(SourceImagePath))
+        {
+            try { sourceIsAugmented = Rs03Codec.TryInspectAugmentedImage(SourceImagePath, out _, out _); } catch { }
+        }
+
+        if (!((_createRs03Parity && _useRs03AugmentedMode) || sourceIsAugmented))
+        {
+            Rs03RewritableWarning = null;
+            return;
+        }
+
+        try
+        {
+            var st = SelectedRecorder?.QueryMediaStatus();
+            if (st is { MediaPresent: true } && st.MediaType.IsRewritable())
+            {
+                Rs03RewritableWarning = Rs03MediaGuard.Evaluate(st.MediaType, Rs03Mode.AugmentedImage, _allowRewritableRs03Augmented).WarningMessage;
+                return;
+            }
+        }
+        catch
+        {
+        }
+
+        Rs03RewritableWarning = null;
+    }
 
     /// <summary>
     /// Opt-in: before burning DVD+R or DVD+R DL media, attempt to set its Book Type to DVD-ROM when supported.
@@ -438,6 +537,7 @@ public class ImageStudioViewModel : ObservableObject, IDisposable
                 if (_copySourceRecorder == null) CopySourceRecorder = value;
                 if (_copyTargetRecorder == null) CopyTargetRecorder = value;
                 RefreshOverwritableBdFlag(value);
+                RefreshRs03RewritableWarning();
             }
         }
     }
@@ -631,6 +731,7 @@ public class ImageStudioViewModel : ObservableObject, IDisposable
                 RunBurnQueueCommand?.RaiseCanExecuteChanged();
                 ExtractSelectedCommand?.RaiseCanExecuteChanged();
                 ExtractAllCommand?.RaiseCanExecuteChanged();
+                CreateRs03ParityCommand?.RaiseCanExecuteChanged();
                 CancelCommand?.RaiseCanExecuteChanged();
             }
         }
@@ -921,6 +1022,11 @@ public class ImageStudioViewModel : ObservableObject, IDisposable
     /// </summary>
     public AsyncRelayCommand ExtractAllCommand { get; }
 
+    /// <summary>
+    /// Creates RS03 raw-sector parity (.ecc file or augmented .iso) for <see cref="SourceImagePath"/>.
+    /// </summary>
+    public AsyncRelayCommand CreateRs03ParityCommand { get; }
+
     #endregion
 
     /// <summary>
@@ -981,6 +1087,10 @@ public class ImageStudioViewModel : ObservableObject, IDisposable
         ExtractAllCommand = new AsyncRelayCommand(
             async p => await ExtractAllEntriesAsync(p as string),
             _ => !IsBusy && LastBrowseResult != null && (LastBrowseResult.FileCount > 0 || LastBrowseResult.DirectoryCount > 0));
+        CreateRs03ParityCommand = new AsyncRelayCommand(
+            async _ => await CreateRs03ParityForSourceAsync(),
+            _ => !IsBusy && !string.IsNullOrWhiteSpace(SourceImagePath) &&
+                 string.Equals(Path.GetExtension(SourceImagePath), ".iso", StringComparison.OrdinalIgnoreCase));
         CancelCommand = new RelayCommand(_ => CancelActiveOperation(), _ => IsBusy);
 
         foreach (var r in _deviceService.GetRecorders())
@@ -1279,6 +1389,70 @@ public class ImageStudioViewModel : ObservableObject, IDisposable
         }
 
         StatusMessage = $"Loaded image '{Path.GetFileName(path)}' ({DetectedImageFormat}).";
+    }
+
+    /// <summary>
+    /// Creates RS03 raw-sector parity (.ecc file or augmented .iso) for <see cref="SourceImagePath"/>.
+    /// </summary>
+    public async Task<Rs03CreateResult?> CreateRs03ParityForSourceAsync(CancellationToken ct = default)
+    {
+        if (string.IsNullOrWhiteSpace(SourceImagePath) || !File.Exists(SourceImagePath))
+        {
+            StatusMessage = Strings.StatusImageStudioSourceDiscImageFileDoesNot;
+            return null;
+        }
+        if (!string.Equals(Path.GetExtension(SourceImagePath), ".iso", StringComparison.OrdinalIgnoreCase))
+        {
+            StatusMessage = "RS03 parity creation currently supports .iso images.";
+            return null;
+        }
+
+        Rs03Mode mode = UseRs03AugmentedMode ? Rs03Mode.AugmentedImage : Rs03Mode.EccFile;
+        var st = SelectedRecorder?.QueryMediaStatus();
+        DiscMediaType? mediaType = st is { MediaPresent: true } ? st.MediaType : null;
+        if (mediaType.HasValue)
+        {
+            var guard = Rs03MediaGuard.Evaluate(mediaType.Value, mode, AllowRewritableRs03Augmented);
+            if (!guard.IsAllowed)
+            {
+                StatusMessage = guard.BlockingReason!;
+                AppendLog(guard.BlockingReason!);
+                return null;
+            }
+        }
+
+        IsBusy = true;
+        try
+        {
+            var result = await Rs03Codec.CreateAsync(
+                SourceImagePath,
+                new Rs03CreateOptions
+                {
+                    Mode = mode,
+                    MediaType = mediaType,
+                    AllowRewritableAugmented = AllowRewritableRs03Augmented,
+                    Overwrite = true
+                },
+                cancellationToken: ct);
+            LastRs03Result = result;
+            if (mode == Rs03Mode.AugmentedImage)
+            {
+                InspectImage();
+            }
+            StatusMessage = result.Summary;
+            AppendLog(result.Summary);
+            return result;
+        }
+        catch (Exception ex)
+        {
+            StatusMessage = $"RS03 parity creation failed: {ex.Message}";
+            AppendLog(StatusMessage);
+            return null;
+        }
+        finally
+        {
+            IsBusy = false;
+        }
     }
 
     private void BrowseImage()
@@ -1765,6 +1939,54 @@ public class ImageStudioViewModel : ObservableObject, IDisposable
             string? bookTypeNote = null;
             if (ext == ".iso")
             {
+                var recorderStatus = recorder.QueryMediaStatus();
+                Rs03Mode targetRs03Mode = UseRs03AugmentedMode ? Rs03Mode.AugmentedImage : Rs03Mode.EccFile;
+
+                if (CreateRs03Parity)
+                {
+                    bool alreadyHasEcc = !UseRs03AugmentedMode && File.Exists(SourceImagePath + ".ecc");
+                    bool alreadyAugmented = UseRs03AugmentedMode && Rs03Codec.TryInspectAugmentedImage(SourceImagePath, out _, out _);
+                    if (!alreadyHasEcc && !alreadyAugmented)
+                    {
+                        var guard = recorderStatus.MediaPresent
+                            ? Rs03MediaGuard.Evaluate(recorderStatus.MediaType, targetRs03Mode, AllowRewritableRs03Augmented)
+                            : new Rs03MediaGuardResult(true, false, null, null);
+                        if (!guard.IsAllowed)
+                        {
+                            StatusMessage = guard.BlockingReason!;
+                            var blocked = BurnOperationResult.Failed(guard.BlockingReason!);
+                            LastBurnResult = blocked;
+                            return blocked;
+                        }
+
+                        var rs03 = await Rs03Codec.CreateAsync(
+                            SourceImagePath,
+                            new Rs03CreateOptions
+                            {
+                                Mode = targetRs03Mode,
+                                MediaType = recorderStatus.MediaPresent ? recorderStatus.MediaType : null,
+                                AllowRewritableAugmented = AllowRewritableRs03Augmented,
+                                Overwrite = true
+                            },
+                            cancellationToken: linkedToken);
+                        LastRs03Result = rs03;
+                        InspectImage();
+                        AppendLog(rs03.Summary);
+                    }
+                }
+
+                if (recorderStatus.MediaPresent && Rs03Codec.TryInspectAugmentedImage(SourceImagePath, out _, out _))
+                {
+                    var augGuard = Rs03MediaGuard.Evaluate(recorderStatus.MediaType, Rs03Mode.AugmentedImage, AllowRewritableRs03Augmented);
+                    if (!augGuard.IsAllowed)
+                    {
+                        StatusMessage = augGuard.BlockingReason!;
+                        var blocked = BurnOperationResult.Failed(augGuard.BlockingReason!);
+                        LastBurnResult = blocked;
+                        return blocked;
+                    }
+                }
+
                 hasPictureZone = DiscArtSidecarInfo.TryReadPictureZone(SourceImagePath, out SectorRange pictureZone, out _);
                 var dataService = directEngine != null ? new DataBurnService(directEngine, _bookTypeService) : _dataBurnService;
                 var dataResult = await dataService.BurnIsoFileAsync(

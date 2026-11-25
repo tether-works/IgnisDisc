@@ -5,6 +5,7 @@ using System.Net.Http;
 using CdBurner.App.Mvvm;
 using CdBurner.Core.Abstractions;
 using CdBurner.Core.Archival;
+using CdBurner.Core.Archival.Rs03;
 using CdBurner.Core.Burning;
 using CdBurner.Core.Compilation;
 using CdBurner.Core.Iso;
@@ -30,6 +31,8 @@ public sealed record ArchiveMediaOption(string Name, DiscMediaType MediaType);
 public sealed class ArchiveDiscRow : ObservableObject
 {
     private string? _stagedPath;
+    private string? _stagedIsoPath;
+    private string? _stagedEccPath;
     private string _status = "Planned";
 
     /// <summary>
@@ -59,6 +62,20 @@ public sealed class ArchiveDiscRow : ObservableObject
     {
         get => _stagedPath;
         set => SetProperty(ref _stagedPath, value);
+    }
+
+    /// <summary>Optional ISO image file built alongside this staged disc when RS03 parity is enabled.</summary>
+    public string? StagedIsoPath
+    {
+        get => _stagedIsoPath;
+        set => SetProperty(ref _stagedIsoPath, value);
+    }
+
+    /// <summary>Optional standalone RS03 .ecc parity file built for <see cref="StagedIsoPath"/>.</summary>
+    public string? StagedEccPath
+    {
+        get => _stagedEccPath;
+        set => SetProperty(ref _stagedEccPath, value);
     }
 
     /// <summary>
@@ -156,7 +173,99 @@ public class ArchiveViewModel : ObservableObject
     public ArchiveMediaOption SelectedMedia
     {
         get => _selectedMedia;
-        set => SetProperty(ref _selectedMedia, value);
+        set
+        {
+            if (SetProperty(ref _selectedMedia, value))
+            {
+                RefreshRs03RewritableWarning();
+            }
+        }
+    }
+
+    private bool _useRs03Parity;
+    private bool _useRs03AugmentedMode;
+    private bool _allowRewritableRs03Augmented;
+    private string? _rs03RewritableWarning;
+
+    /// <summary>
+    /// Opt-in: generates RS03 raw-sector parity alongside PAR2 (off by default; PAR2 remains the primary mounted recovery format).
+    /// </summary>
+    public bool UseRs03Parity
+    {
+        get => _useRs03Parity;
+        set
+        {
+            if (SetProperty(ref _useRs03Parity, value))
+            {
+                RefreshRs03RewritableWarning();
+            }
+        }
+    }
+
+    /// <summary>
+    /// Opt-in when <see cref="UseRs03Parity"/> is enabled: builds an RS03-augmented .iso padded to disc capacity instead of a standalone .ecc file.
+    /// </summary>
+    public bool UseRs03AugmentedMode
+    {
+        get => _useRs03AugmentedMode;
+        set
+        {
+            if (SetProperty(ref _useRs03AugmentedMode, value))
+            {
+                RefreshRs03RewritableWarning();
+            }
+        }
+    }
+
+    /// <summary>Explicitly overrides the rewritable-media guard for RS03 augmented images.</summary>
+    public bool AllowRewritableRs03Augmented
+    {
+        get => _allowRewritableRs03Augmented;
+        set
+        {
+            if (SetProperty(ref _allowRewritableRs03Augmented, value))
+            {
+                RefreshRs03RewritableWarning();
+            }
+        }
+    }
+
+    /// <summary>Explicit warning shown when RS03 augmented mode targets rewritable media.</summary>
+    public string? Rs03RewritableWarning
+    {
+        get => _rs03RewritableWarning;
+        private set => SetProperty(ref _rs03RewritableWarning, value);
+    }
+
+    private void RefreshRs03RewritableWarning()
+    {
+        if (!_useRs03Parity || !_useRs03AugmentedMode)
+        {
+            Rs03RewritableWarning = null;
+            return;
+        }
+
+        var mediaGuard = Rs03MediaGuard.Evaluate(SelectedMedia.MediaType, Rs03Mode.AugmentedImage, _allowRewritableRs03Augmented);
+        if (mediaGuard.IsRewritableMedia)
+        {
+            Rs03RewritableWarning = mediaGuard.WarningMessage;
+            return;
+        }
+
+        try
+        {
+            var st = SelectedRecorder?.QueryMediaStatus();
+            if (st is { MediaPresent: true } && st.MediaType.IsRewritable())
+            {
+                Rs03RewritableWarning = Rs03MediaGuard.Evaluate(st.MediaType, Rs03Mode.AugmentedImage, _allowRewritableRs03Augmented).WarningMessage;
+                return;
+            }
+        }
+        catch
+        {
+        }
+
+        Rs03RewritableWarning = null;
     }
 
     /// <summary>
@@ -273,6 +382,7 @@ public class ArchiveViewModel : ObservableObject
             {
                 VerifyDriveCommand?.RaiseCanExecuteChanged();
                 BurnDiscCommand?.RaiseCanExecuteChanged();
+                RefreshRs03RewritableWarning();
             }
         }
     }
@@ -746,6 +856,30 @@ public class ArchiveViewModel : ObservableObject
 
         try
         {
+            if (UseRs03Parity)
+            {
+                Rs03Mode rs03Mode = UseRs03AugmentedMode ? Rs03Mode.AugmentedImage : Rs03Mode.EccFile;
+                var mediaGuard = Rs03MediaGuard.Evaluate(plan.MediaType, rs03Mode, AllowRewritableRs03Augmented);
+                if (!mediaGuard.IsAllowed)
+                {
+                    StatusMessage = mediaGuard.BlockingReason!;
+                    return false;
+                }
+                if (SelectedRecorder != null)
+                {
+                    var st = SelectedRecorder.QueryMediaStatus();
+                    if (st.MediaPresent)
+                    {
+                        var driveGuard = Rs03MediaGuard.Evaluate(st.MediaType, rs03Mode, AllowRewritableRs03Augmented);
+                        if (!driveGuard.IsAllowed)
+                        {
+                            StatusMessage = driveGuard.BlockingReason!;
+                            return false;
+                        }
+                    }
+                }
+            }
+
             string? par2Path = Par2Runner.FindPar2Executable(_customPar2Path);
             if (plan.RedundancyPercent > 0 && par2Path == null)
             {
@@ -753,10 +887,14 @@ public class ArchiveViewModel : ObservableObject
                 return false;
             }
 
+            ArchivePlan effectivePlan = UseRs03Parity && UseRs03AugmentedMode && plan.FillFreeSpace
+                ? plan with { FillFreeSpace = false, RedundancyPercent = Math.Min(plan.RedundancyPercent, 5) }
+                : plan;
+
             var progressHandler = new Progress<string>(msg =>
             {
                 StatusMessage = msg;
-                if (plan.Discs.Count > 0)
+                if (effectivePlan.Discs.Count > 0)
                 {
                     int idx = msg.IndexOf("Staging disc ", StringComparison.OrdinalIgnoreCase);
                     if (idx >= 0)
@@ -765,18 +903,45 @@ public class ArchiveViewModel : ObservableObject
                         int slash = msg.IndexOf('/', start);
                         if (slash > start && int.TryParse(msg[start..slash], out int discNum))
                         {
-                            Progress = Math.Clamp((double)(discNum - 1) / plan.Discs.Count * 100.0, 0, 100);
+                            Progress = Math.Clamp((double)(discNum - 1) / effectivePlan.Discs.Count * 100.0, 0, 100);
                         }
                     }
                 }
             });
 
-            var stagedDiscs = await ArchiveStager.StageAsync(plan, stagingRoot, par2Path, progressHandler, token).ConfigureAwait(true);
+            var stagedDiscs = await ArchiveStager.StageAsync(effectivePlan, stagingRoot, par2Path, progressHandler, token).ConfigureAwait(true);
 
             for (int i = 0; i < stagedDiscs.Count && i < Discs.Count; i++)
             {
                 Discs[i].StagedPath = stagedDiscs[i];
                 Discs[i].Status = "Staged";
+
+                if (UseRs03Parity)
+                {
+                    string isoPath = Path.Combine(stagingRoot, $"disc{Discs[i].DiscNumber:D2}.iso");
+                    string label = ArchiveManifest.VolumeLabel(effectivePlan.SetId, Discs[i].DiscNumber);
+                    var root = CompilationFolderImporter.ImportAsRoot(stagedDiscs[i], strict: true);
+                    await IsoUdfImageBuilder.BuildToFileAsync(
+                        root,
+                        isoPath,
+                        new IsoBuildOptions(VolumeLabel: label, IncludeIso9660: true, IncludeJoliet: true, IncludeUdf: true),
+                        cancellationToken: token).ConfigureAwait(true);
+
+                    var rs03Result = await Rs03Codec.CreateAsync(
+                        isoPath,
+                        new Rs03CreateOptions
+                        {
+                            Mode = UseRs03AugmentedMode ? Rs03Mode.AugmentedImage : Rs03Mode.EccFile,
+                            MediaType = effectivePlan.MediaType,
+                            AllowRewritableAugmented = AllowRewritableRs03Augmented,
+                            Overwrite = true
+                        },
+                        cancellationToken: token).ConfigureAwait(true);
+
+                    Discs[i].StagedIsoPath = isoPath;
+                    Discs[i].StagedEccPath = rs03Result.EccFilePath;
+                    Discs[i].Status = UseRs03AugmentedMode ? "Staged (RS03 augmented .iso)" : "Staged (+ RS03 .ecc)";
+                }
             }
 
             Progress = 100.0;
@@ -907,7 +1072,23 @@ public class ArchiveViewModel : ObservableObject
                 }
             });
 
-            var result = await burnService.BurnCompilationAsync(SelectedRecorder, root, burnOptions, buildOptions, progressHandler, token).ConfigureAwait(true);
+            DataBurnResult result;
+            if (UseRs03Parity && UseRs03AugmentedMode && !string.IsNullOrWhiteSpace(row.StagedIsoPath) && File.Exists(row.StagedIsoPath))
+            {
+                var targetStatus = SelectedRecorder.QueryMediaStatus();
+                var burnGuard = Rs03MediaGuard.Evaluate(targetStatus.MediaType, Rs03Mode.AugmentedImage, AllowRewritableRs03Augmented);
+                if (!burnGuard.IsAllowed)
+                {
+                    StatusMessage = burnGuard.BlockingReason!;
+                    row.Status = "Blocked: Rewritable media";
+                    return DataBurnResult.Failed(burnGuard.BlockingReason!);
+                }
+                result = await burnService.BurnIsoFileAsync(SelectedRecorder, row.StagedIsoPath, burnOptions, progressHandler, token).ConfigureAwait(true);
+            }
+            else
+            {
+                result = await burnService.BurnCompilationAsync(SelectedRecorder, root, burnOptions, buildOptions, progressHandler, token).ConfigureAwait(true);
+            }
             progressHandler.Close(); // a late progress report must not overwrite the final status line
 
             if (result.Success)

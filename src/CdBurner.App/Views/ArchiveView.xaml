@@ -139,6 +139,37 @@
                                 VerticalAlignment="Center" />
                     </WrapPanel>
 
+                    <!-- Opt-in RS03 Raw-Sector Parity -->
+                    <StackPanel Margin="0,0,0,10">
+                        <WrapPanel Orientation="Horizontal" VerticalAlignment="Center">
+                            <CheckBox Content="Also generate RS03 raw-sector parity (opt-in; external dvdisaster interop unverified)"
+                                      AutomationProperties.Name="Also generate RS03 raw-sector parity"
+                                      IsChecked="{Binding UseRs03Parity}"
+                                      ToolTip="PAR2 remains the primary mounted-filesystem default. Opt in to build standalone RS03 .ecc parity or an augmented write-once .iso alongside."
+                                      Margin="0,2,16,2"
+                                      VerticalAlignment="Center" />
+                            <CheckBox Content="Augment .iso to disc capacity (write-once media only)"
+                                      AutomationProperties.Name="Augment .iso to disc capacity"
+                                      IsChecked="{Binding UseRs03AugmentedMode}"
+                                      IsEnabled="{Binding UseRs03Parity}"
+                                      ToolTip="Pads discNN.iso with RS03 layers to full CD/DVD/BD capacity. Avoid on rewritable media (DVD+RW, BD-RE), which can truncate past the filesystem boundary."
+                                      Margin="0,2,16,2"
+                                      VerticalAlignment="Center" />
+                            <CheckBox Content="Allow augmented RS03 on rewritable media"
+                                      AutomationProperties.Name="Allow augmented RS03 on rewritable media"
+                                      IsChecked="{Binding AllowRewritableRs03Augmented}"
+                                      Visibility="{Binding Rs03RewritableWarning, Converter={StaticResource NullToVis}}"
+                                      Margin="0,2,0,2"
+                                      VerticalAlignment="Center" />
+                        </WrapPanel>
+                        <TextBlock Text="{Binding Rs03RewritableWarning}"
+                                   Visibility="{Binding Rs03RewritableWarning, Converter={StaticResource NullToVis}}"
+                                   Foreground="#E6A100"
+                                   FontSize="11.5"
+                                   TextWrapping="Wrap"
+                                   Margin="0,4,0,0" />
+                    </StackPanel>
+
                     <!-- Staging Folder -->
                     <Grid Margin="0,0,0,12">
                         <Grid.ColumnDefinitions>
