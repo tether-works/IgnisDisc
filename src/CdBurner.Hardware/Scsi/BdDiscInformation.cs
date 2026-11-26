@@ -5,10 +5,16 @@ namespace CdBurner.Hardware.Scsi;
 /// <summary>
 /// The BD Disc Information a drive returns for READ DISC STRUCTURE with media type 1 and format code 00h (MMC-6 6.22.3.3.1,
 /// Tables 441 to 443): a 4-byte header (data length 4,098 on a full reply, two reserved bytes) followed by 112-byte DI
-/// units. Within a unit: bytes 0-1 "DI", byte 2 the DI format, byte 3 the number of layers the unit applies to, bytes 8-10
-/// the disc type ("BDR" for BD-R, "BDW" for BD-RE, "BDO" for BD-ROM), bytes 100-105 the disc manufacturer ID, 106-108 the
-/// media type ID and 111 the product revision. The layer count is read from byte 3 as the table names it; it is
-/// advisory, so the writer checks it against the capacity the drive reports instead of trusting it alone.
+/// units. Within a unit: bytes 0-1 "DI", byte 2 the DI format, bytes 8-10 the disc type ("BDR" for BD-R, "BDW" for
+/// BD-RE, "BDO" for BD-ROM), byte 12 the layer structure, bytes 100-105 the disc manufacturer ID, 106-108 the media type
+/// ID and 111 the product revision.
+/// <para>
+/// The layer count is the high nibble of byte 12. Measured on a real drive (LG BP50NB40, 2026-11-26): byte 12 was 0x14
+/// on a single-layer BD-RE and 0x12 on a single-layer BD-R (high nibble 1 = one layer; low nibble 4 rewritable, 2
+/// recordable). Byte 3 is not the layer count: it was 0x10 on the BD-RE (2 units returned) and 0x28 on the BD-R (5 units
+/// returned), i.e. bits 7-3 hold the number of DI units in the block. A multi-layer disc has not been read yet, so the
+/// count is advisory: the writer checks it against the capacity the drive reports instead of trusting it alone.
+/// </para>
 /// </summary>
 public sealed record BdDiscInformation(string DiscType, int LayerCount, int UnitCount, string ManufacturerId, string MediaTypeId)
 {
@@ -23,6 +29,9 @@ public sealed record BdDiscInformation(string DiscType, int LayerCount, int Unit
 
     /// <summary>The most layers any Blu-ray disc has (BDXL quad layer).</summary>
     public const int MaxLayers = 4;
+
+    /// <summary>Byte of a DI unit whose high nibble is the number of recording layers.</summary>
+    public const int LayerStructureByte = 12;
 
     public bool IsRecordable => DiscType == "BDR";
     public bool IsRewritable => DiscType == "BDW";
@@ -55,9 +64,10 @@ public sealed record BdDiscInformation(string DiscType, int LayerCount, int Unit
                 manufacturer = Ascii(unit.Slice(100, 6));
                 mediaType = Ascii(unit.Slice(106, 3));
             }
-            if (unit[3] is >= 1 and <= MaxLayers)
+            int count = unit[LayerStructureByte] >> 4;
+            if (count is >= 1 and <= MaxLayers)
             {
-                layers = Math.Max(layers, unit[3]);
+                layers = Math.Max(layers, count);
             }
         }
         return type is null ? null : new BdDiscInformation(type, layers, units, manufacturer, mediaType);

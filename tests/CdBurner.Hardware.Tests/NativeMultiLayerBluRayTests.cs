@@ -120,8 +120,10 @@ public sealed class NativeMultiLayerBluRayTests : IDisposable
         {
             int at = 4 + 112 * i;
             r[at] = (byte)'D'; r[at + 1] = (byte)'I';
-            r[at + 3] = layers;
+            r[at + 3] = (byte)(units << 3);  // units in the block, as a real drive sets it
+            r[at + 5] = (byte)i;
             Encoding.ASCII.GetBytes(discType).CopyTo(r, at + 8);
+            r[at + 12] = (byte)((layers << 4) | (discType == "BDW" ? 0x04 : 0x02));
             Encoding.ASCII.GetBytes("VERBAT").CopyTo(r, at + 100);
             Encoding.ASCII.GetBytes("IMr").CopyTo(r, at + 106);
         }
@@ -155,6 +157,56 @@ public sealed class NativeMultiLayerBluRayTests : IDisposable
 
         Assert.Null(BdDiscInformation.Parse(noId));
         Assert.Null(BdDiscInformation.Parse(new byte[100]));
+    }
+
+    // First DI unit of each disc as an LG BP50NB40 (firmware 1.02) returned it on 2026-11-26.
+    private const string RealBdReUnit =
+        "4449011001006300424457021401000001000000000000000002000000194E7E01EC6464282828281E1E1E1E00000000545077040478781D" +
+        "545077040478781D545077040478781D5060606020202020202020202000000000B8B8B8B8B8B8B8B8B80000434D434D4147434E32000000";
+    private const string RealBdRUnit =
+        "4449012800006200424452011201000001000000000000000002000000194E7E01EC6464282828281E1E1E1E000000006366720404321E96" +
+        "800000000008080808101010104800480048004800480048004800480048004800480048008080A0C0E00000564552424154494D657DA300";
+
+    private static byte[] RealReply(string unitHex, int units)
+    {
+        byte[] unit = Convert.FromHexString(unitHex);
+        byte[] r = new byte[BdDiscInformation.FullReplyLength];
+        r[0] = 0x10; r[1] = 0x02; // data length 4,098, as the drive sent it
+        for (int i = 0; i < units; i++)
+        {
+            unit.CopyTo(r, BdDiscInformation.HeaderLength + i * BdDiscInformation.UnitLength);
+        }
+        return r;
+    }
+
+    [Theory]
+    [InlineData(RealBdReUnit, 2, "BDW", "CMCMAG", "CN2")]
+    [InlineData(RealBdRUnit, 5, "BDR", "VERBAT", "IMe")]
+    public void RealSingleLayerDiscs_ReadAsOneLayer_NotAsTheirByte3(string unitHex, int units, string type, string maker, string media)
+    {
+        // Byte 3 is 0x10 / 0x28 on these discs (units in the block, bits 7-3); reading it as a layer count gave none.
+        var info = BdDiscInformation.Parse(RealReply(unitHex, units));
+
+        Assert.NotNull(info);
+        Assert.Equal(type, info!.DiscType);
+        Assert.Equal(1, info.LayerCount);
+        Assert.Equal(units, info.UnitCount);
+        Assert.Equal(maker, info.ManufacturerId);
+        Assert.Equal(media, info.MediaTypeId);
+    }
+
+    [Fact]
+    public void SimulatedDiscInformation_IsLaidOutLikeTheRealDrive()
+    {
+        var drive = BlankBdR(BdR50, layers: 2);
+        byte[] reply = new byte[BdDiscInformation.FullReplyLength];
+        var r = drive.ExecuteCommand(MmcCommandBuilder.BuildReadDiscStructureCdb(0x00, (ushort)reply.Length, mediaType: 1),
+            reply, ScsiPassThroughNative.SCSI_IOCTL_DATA_IN, TimeSpan.FromSeconds(1));
+
+        Assert.True(r.IsSuccess);
+        Assert.Equal(2 << 3, reply[4 + 3]);   // units in the block, not the layer count
+        Assert.Equal(0x22, reply[4 + 12]);    // two layers, recordable
+        Assert.Equal(2, BdDiscInformation.Parse(reply)!.LayerCount);
     }
 
     [Fact]

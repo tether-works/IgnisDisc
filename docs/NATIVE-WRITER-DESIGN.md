@@ -276,11 +276,13 @@ speed in kB over 1,000 ms), then `SET CD SPEED` if the drive refuses that.
 - *Multi-layer Blu-ray* (built 2026-11-24, simulator only, never tried on a real disc). BD-R DL (50 GB), BDXL triple
   and quad layer (100 and 128 GB) and multi-layer BD-RE report the same profiles as single-layer discs (41h and 43h), so
   the writer path is the same; what is new: (1) `READ DISC STRUCTURE` media type 1, format 00h (BD Disc Information,
-  MMC-6 Tables 441 to 443: 4-byte header, 112-byte DI units, byte 3 = layers the unit applies to, disc type "BDR" or
-  "BDW" at bytes 8 to 10) gives the layer count; it is advisory, and a drive that does not answer leaves the count
-  unknown. Per-layer capacities are the READ FORMAT CAPACITIES / READ TRACK INFORMATION capacity split evenly in whole
-  64 KiB clusters (the BD specifications give equal layers: 2 x 12,219,392, 3 x 16,292,864, 4 x 15,625,216 sectors).
-  The byte-3 reading is an assumption from the table's wording, to be checked on a real disc. (2) Formatting on request
+  MMC-6 Tables 441 to 443: 4-byte header, 112-byte DI units, disc type "BDR" or "BDW" at bytes 8 to 10, layer count
+  in the high nibble of byte 12) gives the layer count; it is advisory, and a drive that does not answer leaves the
+  count unknown. Per-layer capacities are the READ FORMAT CAPACITIES / READ TRACK INFORMATION capacity split evenly in
+  whole 64 KiB clusters (the BD specifications give equal layers: 2 x 12,219,392, 3 x 16,292,864, 4 x 15,625,216
+  sectors). The count was first read from byte 3; real single-layer discs showed that byte to be something else (next
+  item), and since 2026-11-26 it comes from byte 12, which read one layer on both. No multi-layer disc has been read
+  yet. (2) Formatting on request
   (`NativeDataWriteRequest.BdFormat`, `NativeDataBurnEngine.BdFormat`): BD-R type 32h (full format with spare areas) or
   00h (the drive's default), sub-type 01b (SRM without POW), sent as `READ FORMAT CAPACITIES` offered it, only to a blank
   unformatted disc; BD-RE type 00h (default, as before), 30h (spare areas, sub-type 00b) or 31h (no spare areas, only
@@ -291,10 +293,11 @@ speed in kB over 1,000 ms), then `SET CD SPEED` if the drive refuses that.
 - *First Blu-ray writer, read-only* (LG BP50NB40, 2026-11-26, "Test hardware" below). Open questions for the paths
   above: with a new, unformatted BD-RE loaded the drive reports 0x0041 **not current**, so the gate stops before
   `FORMAT UNIT`; and it offers format 00h with 0x003000 in the type-dependent field, not the 2,048 the writer sends.
-  Neither has been tried on a disc. The byte-3 reading of the DI units does not hold on this drive: two single-layer
-  discs gave 0x10 (BD-RE, 2 units returned) and 0x28 (BD-R, 5 units returned), which fits bits 7 to 3 being the number
-  of DI units in the block, so the layer count comes out unknown. Byte 12 read 0x14 (BD-RE) and 0x12 (BD-R): a high
-  nibble of 1 on both, which may be the layer count; not confirmed without a multi-layer disc.
+  Neither has been tried on a disc. DI unit byte 3 is not the layer count: single-layer discs gave 0x10 (BD-RE, 2
+  units returned) and 0x28 (BD-R, 5 units returned), which fits bits 7 to 3 being the number of DI units in the block,
+  so the byte-3 reading gave "layer count unknown". Byte 12 read 0x14 (BD-RE) and 0x12 (BD-R): high nibble 1 = one
+  layer, low nibble 4 rewritable and 2 recordable. The parser and the simulator now use byte 12, with these captured
+  units as test data.
 - *DVD+R DL layer break* (built 2026-11-11; first real disc 2026-11-14, results table). The first WRITE after the break
   is set waits for the drive's calibration of both layers: 61.3 s on the GP60NB50 with a Verbatim DVD+R DL (23 s on a
   DVD+R), so the first WRITE of every run of writes gets a 4-minute timeout and the others 60 s. Written like DVD+R, with the layer break set first, as
@@ -471,7 +474,7 @@ Results:
 | 2026-11-22 | GP60NB50 | fourth blank FORNET CD-R from the same spindle | The 0.35 to 0.90 ladder placed from the third disc's turn table, `disc-art burn --native --speed 10` | Written: 371,366 sectors with the lead-in, 10.1x, 899 s with the check; read-back passed (1,979 sectors needed the careful re-read). Mapped afterwards (3,239 rpm): 21,269.2587 turns from address 2,000 to 344,000, the same spiral as the second disc (21,269.2697; 0.6 degrees sd apart) and 102 turns from the first and third. The four discs, in the order they came off the spindle, alternate between the two spirals, as discs from a two-cavity mould stacked in turn would. The table used was of the other kind, so this disc's spokes are wound up too. Fitted pitch differs by 2.1 % and start by 0.3 % between the kinds, which one groove written at two densities cannot give, so these are two grooves, not two ways of writing. |
 | 2026-11-22 | GP60NB50 | fifth blank FORNET CD-R, the next one off the same spindle | The same ladder image again (placed from the third disc's turn table), `disc-art burn --native --speed 10`, to test the prediction that the discs alternate | Written: 371,366 sectors with the lead-in, 10.1x, 889 s with the check; read-back passed (806 sectors needed the careful re-read). Mapped afterwards (3,239 rpm): 21,167.3434 turns from address 2,000 to 344,000. **Prediction held:** this is the spiral of the first and third discs (third: 21,167.3460, so 0.0026 turn or 0.9 degrees apart at the end, 0.9 degrees sd along the disc), 102 turns from the second and fourth. Five discs in spindle order: kind 1, 2, 1, 2, 1. First CD-R whose picture was placed from a table that fits it; it was a picture burn on kind 1, so the kind does not follow what is burned. |
 
-Media on hand: CD-RW, CD-R, DVD-R, DVD+RW, DVD+R, DVD-RW (Ritek), DVD+R DL (Verbatim, used 2026-11-14), BD-R (Verbatim) and BD-RE (CMC Magnetics). M-DISC BD-R not probed yet. No DVD-RAM, BD-R DL or BDXL yet.
+Media on hand: CD-RW, CD-R, DVD-R, DVD+RW, DVD+R, DVD-RW (Ritek), DVD+R DL (Verbatim, used 2026-11-14), BD-R and M-DISC BD-R (Verbatim) and BD-RE (CMC Magnetics). No DVD-RAM, BD-R DL or BDXL yet.
 
 Second DVD writer, Lite-On iHAS124 (internal SATA, firmware CL9E), connected 2026-11-19, probed read-only the same
 day, and used for its first CD-R data burns on 2026-11-20 (rows above). On 2026-11-21 it was probed read-only with a blank DVD-R, DVD+R, DVD-RW and CD-RW (write speeds 16x, 12x, 8x, 6x on DVD-R and DVD+R, 2x on DVD-RW, 10x on CD-RW; ready 10 to 18 s after `load`; each blank reads as one sector). No DVD or audio disc has been written on it. It names itself `ATAPI` / `iHAS124   F` in INQUIRY, lists CD-R/RW, DVD±R, DVD±RW
@@ -491,10 +494,15 @@ unformatted BD-RE. Buffer 2,048 KB.
 |---|---|---|---|---|
 | new BD-RE, CMC Magnetics CMCMAG-CN2 (BD-RE version 2, one layer) | 43h | no (0040h neither) | 2x, 8,991 kB/s | unformatted; 00h: 11,826,176, 0x003000; 01h: 11,564,032, 0x000800; 30h: 11,826,176 / 11,564,032 / 12,088,320 with 0x003000 / 0x005000 / 0x001000; 31h: 12,219,392, 0x000800 |
 | blank BD-R, Verbatim VERBAT-IMe (BD-R version 1, one layer) | 41h | yes | 6x CAV, 26,974 kB/s; 2x CLV, 8,991 kB/s | unformatted; 00h: 11,826,176, 0x003000; 32h: 11,826,176 / 5,796,864 / 12,088,320, all 0x000000 |
+| blank Verbatim M-DISC BD-R 25 GB | the same as the line above, byte for byte (media ID VERBAT-IMe, Disc Information units, speeds, format list) | | | |
+
+The drive cannot tell this M-DISC BD-R from a plain Verbatim BD-R: every answer read was identical, so the media ID
+does not show that a disc is M-DISC.
 
 - The current/maximum capacity descriptor holds 20,480 (BD-RE) and 200,704 (BD-R) where MMC puts the block length,
   so a size worked out from that field is 10 and 98 times too large; `media-info` showed a formatted capacity of
-  250 GB for the 25 GB BD-RE.
+  250 GB for the 25 GB BD-RE. Since 2026-11-26 the size uses 2,048-byte blocks and the drive's figure is kept only as
+  `reportedBlockLength`.
 - `READ CAPACITY`: 3/31/00 on the unformatted BD-RE; last LBA 0 on the blank BD-R (the one-sector answer the iHAS124
   gives for blank DVDs). `READ TRACK INFORMATION` on the BD-R: next writable address 0, 12,219,392 blocks free,
   packet size 32.

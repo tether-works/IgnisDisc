@@ -15,6 +15,9 @@ public static class MmcMediaReport
     public const byte OpCodeGetPerformance = 0xAC;
     public const byte PerformanceTypeWriteSpeed = 0x03;
 
+    /// <summary>Bytes per block on every optical disc READ FORMAT CAPACITIES is read for here.</summary>
+    public const int OpticalBlockLength = 2048;
+
     /// <summary>READ FORMAT CAPACITIES (MMC-6 §6.24): 10 bytes, allocation length in bytes 7–8.</summary>
     public static byte[] BuildReadFormatCapacitiesCdb(ushort allocationLength = 252)
     {
@@ -76,7 +79,12 @@ public static class MmcMediaReport
             return null;
         }
 
-        int blockLength = (current[5] << 16) | (current[6] << 8) | current[7];
+        // Every disc this report is read for (CD-RW, DVD+RW, DVD-RW, DVD-RAM, BD-R, BD-RE) has 2,048-byte blocks. Some
+        // drives put something else in this field for an unformatted Blu-ray disc (an LG BP50NB40: 20,480 and 200,704),
+        // which would make the size 10 to 98 times too large; keep the drive's figure only as a note.
+        int reportedBlockLength = (current[5] << 16) | (current[6] << 8) | current[7];
+        int blockLength = OpticalBlockLength;
+        int? oddBlockLength = reportedBlockLength == OpticalBlockLength ? null : reportedBlockLength;
 
         var formats = new List<FormattableCapacity>();
         for (int offset = 12; offset + 8 <= end; offset += 8)
@@ -88,7 +96,7 @@ public static class MmcMediaReport
                 TypeParameter: (d[5] << 16) | (d[6] << 8) | d[7]));
         }
 
-        return new FormattedCapacityInfo(blocks, blockLength, state, formats);
+        return new FormattedCapacityInfo(blocks, blockLength, state, formats, oddBlockLength);
     }
 
     /// <summary>

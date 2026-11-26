@@ -3496,26 +3496,30 @@ public sealed class VirtualMmcDrive : IScsiTransport
     {
         if (IsBluRay && (cdb[1] & 0x0F) == 1 && cdb[7] == 0x00)
         {
-            // MMC-6 Table 441: 4-byte header (data length 4,098), then the DI units of the PIC zone, 112 bytes each. A unit
-            // carries "DI", the DI format, the layer count in byte 3, the disc type at 8-10 ("BDR" / "BDW"), the media ID
-            // (manufacturer at 100-105, media type at 106-108) and a product revision at 111.
+            // MMC-6 Table 441: 4-byte header (data length 4,098), then the DI units of the PIC zone, 112 bytes each. Laid
+            // out as a real drive returned them (LG BP50NB40, 2026-11-26): "DI", the DI format, byte 3 = the number of
+            // units in the block in bits 7-3, byte 5 = the unit's sequence number, the disc type at 8-10 ("BDR" /
+            // "BDW"), byte 12 = layer count in the high nibble and 2 (BD-R) or 4 (BD-RE) in the low nibble, the media
+            // ID (manufacturer at 100-105, media type at 106-108) and a product revision at 111.
             if (RejectsBdDiscInformation)
             {
                 return Sense(0x05, 0x24, 0x00);
             }
             byte[] di = new byte[BdDiscInformation.FullReplyLength];
             BinaryPrimitives.WriteUInt16BigEndian(di, BdDiscInformation.FullReplyLength - 2);
-            int units = Math.Clamp(BdLayerCount, 1, BdDiscInformation.MaxLayers);
+            int layers = Math.Clamp(BdLayerCount, 1, BdDiscInformation.MaxLayers);
+            int units = layers;
+            bool rewritable = Profile == NativeTaoDataWriter.ProfileBdRe;
             for (int i = 0; i < units; i++)
             {
                 var unit = di.AsSpan(BdDiscInformation.HeaderLength + i * BdDiscInformation.UnitLength, BdDiscInformation.UnitLength);
                 unit[0] = (byte)'D';
                 unit[1] = (byte)'I';
                 unit[2] = 0x01;
-                unit[3] = (byte)Math.Clamp(BdLayerCount, 1, BdDiscInformation.MaxLayers);
-                unit[4] = (byte)i;
-                unit[5] = BdDiscInformation.UnitLength;
-                System.Text.Encoding.ASCII.GetBytes(Profile == NativeTaoDataWriter.ProfileBdRe ? "BDW" : "BDR").CopyTo(unit[8..]);
+                unit[3] = (byte)(units << 3);
+                unit[5] = (byte)i;
+                System.Text.Encoding.ASCII.GetBytes(rewritable ? "BDW" : "BDR").CopyTo(unit[8..]);
+                unit[BdDiscInformation.LayerStructureByte] = (byte)((layers << 4) | (rewritable ? 0x04 : 0x02));
                 System.Text.Encoding.ASCII.GetBytes("SIMDSC").CopyTo(unit[100..]);
                 System.Text.Encoding.ASCII.GetBytes("000").CopyTo(unit[106..]);
             }

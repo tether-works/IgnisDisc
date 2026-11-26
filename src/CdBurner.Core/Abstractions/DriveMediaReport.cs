@@ -18,14 +18,20 @@ public sealed record FormattableCapacity(byte FormatType, long Blocks, int TypeP
 
 /// <summary>Result of READ FORMAT CAPACITIES.</summary>
 /// <param name="Blocks">Current (formatted) or maximum (unformatted) size in blocks.</param>
-/// <param name="BlockLength">Bytes per block (2048 for DVD and BD).</param>
+/// <param name="BlockLength">Bytes per block (2048 for CD, DVD and BD).</param>
 /// <param name="State">Whether <paramref name="Blocks"/> is a formatted size or the unformatted maximum.</param>
 /// <param name="Formats">Formats the drive could apply, in the drive's order.</param>
+/// <param name="ReportedBlockLength">
+/// What the drive put in the descriptor's block length field when that was not 2,048, else null. An LG BP50NB40 put
+/// 20,480 there for an unformatted BD-RE and 200,704 for a blank BD-R (2026-11-26); <paramref name="BlockLength"/>
+/// stays 2,048 so <see cref="Bytes"/> is the disc's real size.
+/// </param>
 public sealed record FormattedCapacityInfo(
     long Blocks,
     int BlockLength,
     FormattedCapacityState State,
-    IReadOnlyList<FormattableCapacity> Formats)
+    IReadOnlyList<FormattableCapacity> Formats,
+    int? ReportedBlockLength = null)
 {
     public long Bytes => Blocks * BlockLength;
 

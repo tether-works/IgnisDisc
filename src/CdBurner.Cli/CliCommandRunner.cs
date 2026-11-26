@@ -544,6 +544,7 @@ public static partial class CliCommandRunner
                     state = formatted.StateName,
                     blocks = formatted.Blocks,
                     blockLength = formatted.BlockLength,
+                    reportedBlockLength = formatted.ReportedBlockLength,
                     bytes = formatted.Bytes,
                     formats = formatted.Formats.Select(f => new
                     {

@@ -98,6 +98,46 @@ public class MmcMediaReportTests
         Assert.Equal(0x003000, info.Formats[0].TypeParameter);
     }
 
+    // Captured 2026-11-26 from an LG BP50NB40 (1.02): a new CMC Magnetics BD-RE and a blank Verbatim BD-R. The block
+    // length field of the current/maximum descriptor holds 0x005000 (20,480) and 0x031000 (200,704), not 2,048.
+    private static readonly byte[] Bp50NewBdReFormatCapacities = Convert.FromHexString(
+        "0000003800BA74000100500000B4740000003000" + "00B0740004000800" + "00B47400C0003000" + "00B07400C0005000" +
+        "00B87400C0001000" + "00BA7400C4000800");
+    private static readonly byte[] Bp50BlankBdRFormatCapacities = Convert.FromHexString(
+        "0000002800BA74000103100000B4740000003000" + "00B47400C8000000" + "00587400C8000000" + "00B87400C8000000");
+
+    [Fact]
+    public void CapturedNewBdRe_WithAnOddBlockLengthField_GivesThe25GbSize()
+    {
+        var info = MmcMediaReport.ParseFormatCapacities(Bp50NewBdReFormatCapacities)!;
+
+        Assert.Equal(FormattedCapacityState.Unformatted, info.State);
+        Assert.Equal(12_219_392, info.Blocks);
+        Assert.Equal(2048, info.BlockLength);
+        Assert.Equal(20_480, info.ReportedBlockLength);
+        Assert.Equal(12_219_392L * 2048, info.Bytes);   // 25.0 GB, not 250 GB
+        Assert.Equal(new byte[] { 0x00, 0x01, 0x30, 0x30, 0x30, 0x31 }, info.Formats.Select(f => f.FormatType));
+        Assert.Equal(0x003000, info.Formats[0].TypeParameter);
+        Assert.Equal(11_826_176, info.Formats[0].Blocks);
+    }
+
+    [Fact]
+    public void CapturedBlankBdR_WithAnOddBlockLengthField_GivesThe25GbSize()
+    {
+        var info = MmcMediaReport.ParseFormatCapacities(Bp50BlankBdRFormatCapacities)!;
+
+        Assert.Equal(200_704, info.ReportedBlockLength);
+        Assert.Equal(12_219_392L * 2048, info.Bytes);
+        Assert.Equal(new byte[] { 0x00, 0x32, 0x32, 0x32 }, info.Formats.Select(f => f.FormatType));
+        Assert.Equal(new long[] { 11_826_176, 11_826_176, 5_796_864, 12_088_320 }, info.Formats.Select(f => f.Blocks));
+    }
+
+    [Fact]
+    public void A2048ByteBlockLength_IsNotFlaggedAsOdd()
+    {
+        Assert.Null(MmcMediaReport.ParseFormatCapacities(Gp60CdRwFormatCapacities)!.ReportedBlockLength);
+    }
+
     [Fact]
     public void NoMediaOrShortReplies_GiveNothing()
     {
