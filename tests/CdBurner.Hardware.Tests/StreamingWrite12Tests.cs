@@ -199,6 +199,44 @@ public sealed class StreamingWrite12Tests : IDisposable
         Assert.True(seenDrive!.StreamingWrite12CommandCount > 0);
     }
 
+    [Fact]
+    public void Simulator_RefusesAStreamingWriteThatIsNotWholeClusters_LikeTheBp50nb40()
+    {
+        var drive = CreateBdReDrive(formatted: true);
+        byte[] data = new byte[27 * 2048];
+
+        var partial = drive.ExecuteCommand(NativeWriteCommands.BuildWrite12(0, 27, streaming: true), data,
+            ScsiPassThroughNative.SCSI_IOCTL_DATA_OUT, TimeSpan.FromSeconds(5));
+        var plain = drive.ExecuteCommand(NativeWriteCommands.BuildWrite10(0, 27), data,
+            ScsiPassThroughNative.SCSI_IOCTL_DATA_OUT, TimeSpan.FromSeconds(5));
+
+        Assert.True(partial.SenseInfo is { SenseKey: 0x05, Asc: 0x24 }, "a 27-sector streaming WRITE (12) must be refused");
+        Assert.True(plain.IsSuccess, "the same 27 sectors without the Streaming bit are accepted");
+    }
+
+    [Theory]
+    [InlineData(1_947)] // ends 27 sectors into a cluster, like the 3,644,283-sector film image of 2026-11-26
+    [InlineData(1_000)]
+    [InlineData(1_024)] // already whole clusters: no padding
+    public void StreamingBdRe_PadsToWholeClusters_SoEveryWrite12IsAccepted(int imageSectors)
+    {
+        var drive = CreateBdReDrive(formatted: true);
+        byte[] image = CreateImage(imageSectors);
+        var writer = new NativeTaoDataWriter(drive, sleep: _ => { });
+
+        var result = writer.Write(new NativeDataWriteRequest(new MemoryStream(image), 0, image.Length, TestWrite: false, CloseDisc: true)
+        {
+            StreamingWrite = true
+        });
+
+        Assert.True(result.Success, result.Message);
+        Assert.True(result.StreamingWriteUsed);
+        Assert.All(drive.Write12Log, w => Assert.True(w.Lba % 32 == 0 && w.Count % 32 == 0, $"WRITE(12) {w.Lba}+{w.Count}"));
+        int padded = (image.Length / 2048 + 31) / 32 * 32;
+        Assert.Equal(padded, drive.Write12Log.Sum(w => w.Count));
+        Assert.True(drive.DataDiscImage!.AsSpan(0, image.Length).SequenceEqual(image));
+    }
+
     private static VirtualMmcDrive CreateBdReDrive(bool formatted) => new()
     {
         Profile = NativeTaoDataWriter.ProfileBdRe,

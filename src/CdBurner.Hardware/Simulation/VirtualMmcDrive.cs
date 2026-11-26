@@ -199,6 +199,46 @@ public sealed class VirtualMmcDrive : IScsiTransport
     public bool BdReFormatted { get; set; } = true;
 
     /// <summary>
+    /// BD-RE, as the LG BP50NB40 answers a new disc (2026-11-26): while <see cref="BdReFormatted"/> is false, GET
+    /// CONFIGURATION lists BD Write (0x0041) but not as current, and READ CAPACITY fails with 3/31/00 (medium format
+    /// corrupted). Once FORMAT UNIT has run the feature is current again.
+    /// </summary>
+    public bool BdWriteNotCurrentUntilFormatted { get; set; }
+
+    /// <summary>
+    /// BD-RE and DVD-RAM: a WRITE (12) with the Streaming bit that does not start and end on a whole error-correction
+    /// block (32 sectors on Blu-ray, 16 on DVD-RAM) fails with 5/24/00, as the LG BP50NB40 did. On by default.
+    /// </summary>
+    public bool RejectsPartialBlockStreamingWrite { get; set; } = true;
+
+    /// <summary>BD-RE: BD Write (0x0041) stays listed but not current even after formatting (a drive that will not write it).</summary>
+    public bool BdWriteStaysNotCurrent { get; set; }
+
+    /// <summary>
+    /// BD-RE: the type-dependent parameters FORMAT UNIT type 00h is accepted with; any other answers 5/26/00. The default
+    /// is libburn's block length 0x000800. Which one the BP50NB40 takes is settled on its first real format.
+    /// </summary>
+    public int[] AcceptedBdReDefaultTypeParameters { get; set; } = { 0x000800 };
+
+    /// <summary>
+    /// The READ FORMAT CAPACITIES reply the LG BP50NB40 gave for a new CMC Magnetics BD-RE (CMCMAG-CN2), byte for byte
+    /// (2026-11-26): current/maximum 12,219,392 blocks, unformatted, block length 20,480; then 00h 11,826,176 / 0x003000,
+    /// 01h 11,564,032 / 0x000800, 30h 11,826,176 / 0x003000, 30h 11,564,032 / 0x005000, 30h 12,088,320 / 0x001000 and
+    /// 31h 12,219,392 / 0x000800.
+    /// </summary>
+    public static byte[] Bp50nb40NewBdReFormatCapacities() => Convert.FromHexString(
+        "00000038" + "00BA7400" + "01005000" +
+        "00B47400" + "00003000" +
+        "00B07400" + "04000800" +
+        "00B47400" + "C0003000" +
+        "00B07400" + "C0005000" +
+        "00B87400" + "C0001000" +
+        "00BA7400" + "C4000800");
+
+    private bool BdWriteCurrent => IsBluRay && OffersBdWrite && Profile != NativeTaoDataWriter.ProfileBdRom && !BdWriteStaysNotCurrent &&
+        !(BdWriteNotCurrentUntilFormatted && Profile == NativeTaoDataWriter.ProfileBdRe && !BdReFormatted);
+
+    /// <summary>
     /// Blu-ray: layers the disc has, as READ DISC STRUCTURE format 00h reports them in each DI unit's byte 3. A multi-layer
     /// disc keeps profile 41h (BD-R) or 43h (BD-RE); only this and the capacity tell it apart from a single-layer one.
     /// </summary>
@@ -1104,6 +1144,10 @@ public sealed class VirtualMmcDrive : IScsiTransport
 
     private ScsiExecutionResult ReadCapacity10(Span<byte> data)
     {
+        if (BdWriteNotCurrentUntilFormatted && Profile == NativeTaoDataWriter.ProfileBdRe && !BdReFormatted)
+        {
+            return Sense(0x03, 0x31, 0x00);
+        }
         int total = RecordedSectorCount();
         uint lastLba = total > 0 ? (uint)(total - 1) : 0u;
         byte[] r = new byte[8];
@@ -1433,7 +1477,10 @@ public sealed class VirtualMmcDrive : IScsiTransport
             byte flags = (byte)((OffersBufferUnderrunFree ? 0x40 : 0) | 0x20 | (OffersTestWrite ? 0x04 : 0) | 0x02 | (OffersRwSubchannel ? 0x01 : 0));
             Add(MmcCommandBuilder.FeatureCdMastering, flags, cd);
         }
-        Add(MmcCommandBuilder.FeatureBdWrite, 0, IsBluRay && OffersBdWrite && Profile != NativeTaoDataWriter.ProfileBdRom);
+        if (OffersBdWrite)
+        {
+            Add(MmcCommandBuilder.FeatureBdWrite, 0, BdWriteCurrent); // a drive that only reads Blu-ray does not list it
+        }
         // DVD-R/-RW Write: BUF bit 6, RDL bit 3 (DVD-R DL), Test Write bit 2, DVD-RW bit 1 (MMC-5 feature 002Fh).
         Add(MmcCommandBuilder.FeatureDvdRecordableWrite,
             (byte)((OffersBufferUnderrunFree ? 0x40 : 0) | 0x08 | (OffersTestWrite ? 0x04 : 0) | (Profile == NativeTaoDataWriter.ProfileDvdMinusRwSequential ? 0x02 : 0)),
@@ -3247,6 +3294,16 @@ public sealed class VirtualMmcDrive : IScsiTransport
             lba = BinaryPrimitives.ReadInt32BigEndian(cdb.Slice(2, 4));
             count = BinaryPrimitives.ReadUInt16BigEndian(cdb.Slice(7, 2));
         }
+        if (streaming && RejectsPartialBlockStreamingWrite)
+        {
+            // Streaming skips the drive's read-modify-write, so a partial error-correction block is refused (the LG
+            // BP50NB40 answered a 27-sector streaming WRITE (12) on BD-RE with 5/24/00, 2026-11-26).
+            int block = IsBluRay ? NativeTaoDataWriter.BdClusterSectors : NativeTaoDataWriter.DvdRamEccBlockSectors;
+            if (lba % block != 0 || count % block != 0)
+            {
+                return Sense(0x05, 0x24, 0x00);
+            }
+        }
         if (Profile == NativeTaoDataWriter.ProfileDvdMinusRwRestricted)
         {
             // 32 KiB alignment; a partly formatted disc takes nothing past its formatted part; the intermediate
@@ -3325,15 +3382,16 @@ public sealed class VirtualMmcDrive : IScsiTransport
         }
         if (Profile == NativeTaoDataWriter.ProfileBdRe)
         {
-            // Format 00h (the default) with the block length 2,048 in the type parameter, as libburn sends it; 30h (spare
-            // areas, type parameter = spare area size) and 31h (no spare areas, type parameter = block length) as MMC-6
-            // Table 242 lists them. Blocks, as offered by READ FORMAT CAPACITIES, never exceed the disc.
+            // Format 00h (the default) with one of AcceptedBdReDefaultTypeParameters (libburn's block length 2,048 unless
+            // set); 30h (spare areas, type parameter = spare area size) and 31h (no spare areas, type parameter = block
+            // length) as MMC-6 Table 242 lists them. Blocks, as offered by READ FORMAT CAPACITIES, never exceed the disc.
             uint bdBlocks = BinaryPrimitives.ReadUInt32BigEndian(list.Slice(4, 4));
             byte bdType = list.Length >= 12 ? (byte)(list[8] >> 2) : (byte)0xFF;
+            int bdTypeParameter = list.Length >= 12 ? (list[9] << 16) | (list[10] << 8) | list[11] : -1;
             bool typeOk = bdType switch
             {
-                NativeWriteCommands.FormatTypeDefault or NativeWriteCommands.FormatTypeBdReNoSpareAreas
-                    => list[9] == 0 && list[10] == 0x08 && list[11] == 0,
+                NativeWriteCommands.FormatTypeDefault => AcceptedBdReDefaultTypeParameters.Contains(bdTypeParameter),
+                NativeWriteCommands.FormatTypeBdReNoSpareAreas => bdTypeParameter == 0x000800,
                 NativeWriteCommands.FormatTypeBdReSpareAreas => true,
                 _ => false
             };

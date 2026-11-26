@@ -58,6 +58,9 @@ public sealed partial class NativeTaoDataWriter
     /// <summary>One 32 KiB ECC block, as libburn and growisofs send.</summary>
     public const ushort DvdMinimumSectorsPerWrite = 16;
 
+    /// <summary>DVD error-correction block: 16 sectors (32 KiB), the unit a streaming WRITE (12) to DVD-RAM must cover.</summary>
+    public const int DvdRamEccBlockSectors = 16;
+
     /// <summary>Sectors a second at DVD 1x (1,385,000 bytes / 2,048).</summary>
     private const double DvdSectorsPerSecondAt1x = 1_385_000.0 / SectorSize;
 
@@ -411,7 +414,9 @@ public sealed partial class NativeTaoDataWriter
         StreamingWriteUsed = state.StreamingWriteUsed,
         BdLayerCount = state.BdLayerCount,
         BdLayerSectors = state.BdLayerSectors,
-        BdFormatTypeSent = state.BdFormatTypeSent
+        BdFormatTypeSent = state.BdFormatTypeSent,
+        BdFormatTypeParameterSent = state.BdFormatTypeParameterSent,
+        FormatWait = state.FormatWait
     };
 
     /// <summary>

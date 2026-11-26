@@ -8,8 +8,9 @@ public static class MDiscIdentifier
 {
     /// <summary>
     /// Media ID prefixes that belong to M-DISC media. Millenniata made only M-DISC, so its whole code counts.
-    /// Verbatim-made M-DISC BD-R carries Verbatim's own codes; add those here only once read from a real disc, so an
-    /// ordinary Verbatim BD-R is never called archival.
+    /// Verbatim-made M-DISC BD-R carries Verbatim's own codes: read from a real disc on an LG BP50NB40 (2026-11-26) it
+    /// gives VERBAT-IMe, the same media ID and Disc Information as a plain Verbatim BD-R. So VERBAT-IMe is never added:
+    /// a Verbatim M-DISC BD-R cannot be told apart by the drive, and an ordinary Verbatim BD-R must not be called archival.
     /// </summary>
     public static IReadOnlyList<string> KnownMediaIdPrefixes { get; } = ["MILLEN"];
 

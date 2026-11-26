@@ -141,6 +141,12 @@ public sealed record NativeDataWriteResult
     /// <summary>Blu-ray: the FORMAT UNIT type sent before writing; null when none was sent.</summary>
     public byte? BdFormatTypeSent { get; init; }
 
+    /// <summary>Blu-ray: the 24-bit type-dependent parameter of the FORMAT UNIT the drive accepted; null when none was sent.</summary>
+    public uint? BdFormatTypeParameterSent { get; init; }
+
+    /// <summary>How long the drive stayed not ready after FORMAT UNIT (Immed) until TEST UNIT READY passed; null when no format ran.</summary>
+    public TimeSpan? FormatWait { get; init; }
+
     /// <summary>The drive's kB/s for 1x on this disc: 176.4 on CD (audio units, as drives count), 1,385 on DVD, 4,495.5 on
     /// Blu-ray.</summary>
     public double OneXKiloBytesPerSecond => IsBluRay ? 4495.5 : IsDvd ? 1385.0 : 176.4;
@@ -236,7 +242,11 @@ public sealed partial class NativeTaoDataWriter
                 IsDvd = state.IsDvd,
                 IsBluRay = state.IsBluRay,
                 Layer0Sectors = state.Layer0Sectors,
-                WriteMode = state.WriteMode
+                WriteMode = state.WriteMode,
+                StreamingWriteUsed = state.StreamingWriteUsed,
+                BdFormatTypeSent = state.BdFormatTypeSent,
+                BdFormatTypeParameterSent = state.BdFormatTypeParameterSent,
+                FormatWait = state.FormatWait
             };
         }
     }
@@ -1269,6 +1279,9 @@ public sealed partial class NativeTaoDataWriter
         public int? BdLayerCount;
         public IReadOnlyList<long> BdLayerSectors = Array.Empty<long>();
         public byte? BdFormatTypeSent;
+        public uint? BdFormatTypeParameterSent;
+        public bool BdWriteCheckAfterFormat;
+        public TimeSpan? FormatWait;
         public string WriteMode = "track-at-once, mode 1";
         public bool StreamingWriteUsed;
         public bool StreamingWriteFallback;

@@ -17,7 +17,8 @@ namespace CdBurner.Hardware.NativeWriting;
 /// FORMAT CAPACITIES; 2 KiB alignment; no close command.</item>
 /// </list>
 /// Both need the drive's BD Write feature (0x0041) to be current: a drive that only reads Blu-ray still reports the
-/// disc's profile. Random recording mode (42h) and BD-ROM are refused. Multi-layer discs (BD-R DL, BDXL, multi-layer BD-RE)
+/// disc's profile. One exception: a new, unformatted BD-RE on which the drive lists 0x0041 but not as current (the LG
+/// BP50NB40 does this until the disc is formatted) is formatted first and the feature checked again before any WRITE. Random recording mode (42h) and BD-ROM are refused. Multi-layer discs (BD-R DL, BDXL, multi-layer BD-RE)
 /// report the same profiles and go the same way; the layer count comes from READ DISC STRUCTURE (BD Disc Information).
 /// </summary>
 public sealed partial class NativeTaoDataWriter
@@ -49,14 +50,56 @@ public sealed partial class NativeTaoDataWriter
         var bdWrite = ReadFeature(MmcCommandBuilder.FeatureBdWrite);
         if (!bdWrite.Current)
         {
-            state.UnsupportedDisc = true;
-            throw Stop("The drive does not offer Blu-ray writing for this disc (feature 0x0041 is not current); it may only read Blu-ray.");
+            // An LG BP50NB40 lists 0x0041 but keeps it (and BD Read, 0x0040) not current on a new, unformatted BD-RE, and
+            // answers READ CAPACITY with 3/31/00: the disc has no format yet. That disc goes on to FORMAT UNIT, and the
+            // feature is checked again once the format is done, before the first WRITE.
+            if (profile == ProfileBdRe && bdWrite.Present && IsUnformattedBdRe())
+            {
+                state.BdWriteCheckAfterFormat = true;
+                _note("Feature 0x0041 (BD Write) is listed but not current on this unformatted BD-RE; it is checked again after formatting.");
+            }
+            else
+            {
+                state.UnsupportedDisc = true;
+                throw Stop("The drive does not offer Blu-ray writing for this disc (feature 0x0041 is not current); it may only read Blu-ray.");
+            }
         }
         ReadBdLayers(state);
         return profile == ProfileBdRe
             ? RunOverwritable(request, OverwritableKind.BdRe, progress, ct, clock, state)
             : RunBdR(request, progress, ct, clock, state);
     }
+
+    /// <summary>READ FORMAT CAPACITIES says the disc is unformatted (current/maximum descriptor type 01b).</summary>
+    private bool IsUnformattedBdRe() =>
+        MmcMediaReport.Query(_transport, ShortTimeout).FormattedCapacity is { State: FormattedCapacityState.Unformatted };
+
+    /// <summary>
+    /// After formatting a BD-RE whose BD Write feature was not current before: GET CONFIGURATION again, and stop before the
+    /// first WRITE if 0x0041 is still not current. The disc is formatted by then, so the stop says so.
+    /// </summary>
+    private void CheckBdWriteAfterFormat(RunState state)
+    {
+        if (!state.BdWriteCheckAfterFormat)
+        {
+            return;
+        }
+        if (!ReadFeature(MmcCommandBuilder.FeatureBdWrite).Current)
+        {
+            throw Stop("The BD-RE was formatted, but the drive still does not offer Blu-ray writing for it (feature 0x0041 is not current). No data was written; the disc is now formatted and empty.");
+        }
+        _note("Feature 0x0041 (BD Write) is current after formatting.");
+    }
+
+    /// <summary>
+    /// The type-dependent parameter to send with BD-RE format type 00h. The drive's own READ FORMAT CAPACITIES descriptor is
+    /// copied when it gives one: on the BP50NB40 it is 0x003000, the spare area in 64 KiB clusters (12,288 x 32 = 393,216
+    /// sectors, exactly the difference between the disc's 12,219,392 blocks and the 11,826,176 offered for 00h; the 30h
+    /// offers 0x001000 and 0x005000 fit the same rule). MMC asks for a descriptor as READ FORMAT CAPACITIES reported it.
+    /// libburn instead sends the block length 0x000800 (MMC-5 Table 253) for 00h; that is the fallback when the drive
+    /// gives 0 or refuses the copied value.
+    /// </summary>
+    internal static uint BdReDefaultTypeParameter(int offered) => offered > 0 ? (uint)offered : NativeWriteCommands.BdBlockLengthTypeParameter;
 
     /// <summary>Sectors in a disc's data area, rounded up to whole 64 KiB clusters, in 64-bit so no step overflows an int.</summary>
     internal static long AlignToBdCluster(long sectors) => (sectors + BdClusterSectors - 1) / BdClusterSectors * BdClusterSectors;

@@ -125,10 +125,15 @@ public sealed partial class NativeTaoDataWriter
                     }
                     formatType = wanted;
                     formatBlocks = (uint)Math.Min(uint.MaxValue, offer.Blocks);
-                    bdReTypeParameter = wanted == NativeWriteCommands.FormatTypeBdReSpareAreas ? (uint)offer.TypeParameter : 0x000800;
+                    bdReTypeParameter = wanted switch
+                    {
+                        NativeWriteCommands.FormatTypeBdReSpareAreas => (uint)offer.TypeParameter,
+                        NativeWriteCommands.FormatTypeDefault => BdReDefaultTypeParameter(offer.TypeParameter),
+                        _ => NativeWriteCommands.BdBlockLengthTypeParameter
+                    };
                     formatCapacity = offer.Blocks;
                     mayHoldData = false;
-                    _note($"Not formatted; format {wanted:X2}h offered with {offer.Blocks} blocks.");
+                    _note($"Not formatted; format {wanted:X2}h offered with {offer.Blocks} blocks, type-dependent parameter 0x{offer.TypeParameter:X6}.");
                 }
                 else
                 {
@@ -199,14 +204,24 @@ public sealed partial class NativeTaoDataWriter
         {
             PlanBdLayers(state, capacity);
         }
-        int sectors = kind == OverwritableKind.DvdMinusRwRestricted
-            ? (state.ImageSectors + WriteParametersPage.DvdPacketBlocks - 1) / WriteParametersPage.DvdPacketBlocks * WriteParametersPage.DvdPacketBlocks
-            : state.ImageSectors;
+        // Streaming WRITE(12) (BD-RE, DVD-RAM) turns off the drive's read-modify-write, so every WRITE must cover whole
+        // error-correction blocks: 32 sectors on Blu-ray, 16 on DVD-RAM. The LG BP50NB40 refused a last streaming WRITE of
+        // 27 sectors with 5/24/00 (2026-11-26) after accepting a last plain WRITE (10) of 18. So the track is padded.
+        bool useStreamingWrite = request.StreamingWrite && kind is OverwritableKind.BdRe or OverwritableKind.DvdRam;
+        int alignment = kind switch
+        {
+            OverwritableKind.DvdMinusRwRestricted => WriteParametersPage.DvdPacketBlocks,
+            OverwritableKind.BdRe when useStreamingWrite => BdClusterSectors,
+            OverwritableKind.DvdRam when useStreamingWrite => DvdRamEccBlockSectors,
+            _ => 1
+        };
+        int sectors = (int)((state.ImageSectors + (long)alignment - 1) / alignment * alignment);
         if (sectors > capacity)
         {
             throw Stop($"The image ({state.ImageSectors:N0} sectors) does not fit on this disc ({capacity:N0} sectors).");
         }
-        _note($"Writing {sectors} sectors from LBA 0" + (sectors > state.ImageSectors ? $" ({sectors - state.ImageSectors} padding to a whole 32 KiB block)" : "") +
+        _note($"Writing {sectors} sectors from LBA 0" +
+              (sectors > state.ImageSectors ? $" ({sectors - state.ImageSectors} padding to a whole {alignment * SectorSize / 1024} KiB block)" : "") +
               $"; the disc holds {capacity}.");
 
         // 4. Speed from the drive's own list.
@@ -220,13 +235,23 @@ public sealed partial class NativeTaoDataWriter
             byte[] parameters = kind switch
             {
                 OverwritableKind.DvdPlusRw => NativeWriteCommands.BuildDvdPlusRwFormatParameters(restart: dvdPlusRwRestart),
-                OverwritableKind.BdRe when type == NativeWriteCommands.FormatTypeDefault => NativeWriteCommands.BuildBdReDefaultFormatParameters(formatBlocks),
+                OverwritableKind.BdRe when type == NativeWriteCommands.FormatTypeDefault => NativeWriteCommands.BuildBdReDefaultFormatParameters(formatBlocks, bdReTypeParameter),
                 OverwritableKind.BdRe => NativeWriteCommands.BuildBdFormatParameters(type, NativeWriteCommands.FormatSubTypeBdReNoCertification,
                     formatBlocks, bdReTypeParameter),
                 OverwritableKind.DvdRam => NativeWriteCommands.BuildDvdRamFormatParameters(formatBlocks),
                 _ => NativeWriteCommands.BuildDvdMinusRwExpandParameters()
             };
             var format = _transport.ExecuteCommand(NativeWriteCommands.BuildFormatUnit(), parameters, ScsiPassThroughNative.SCSI_IOCTL_DATA_OUT, ShortTimeout);
+            if (!format.IsSuccess && kind == OverwritableKind.BdRe && type == NativeWriteCommands.FormatTypeDefault &&
+                bdReTypeParameter != NativeWriteCommands.BdBlockLengthTypeParameter && format.SenseInfo is { SenseKey: 0x05 })
+            {
+                // ILLEGAL REQUEST: the drive did not run the command, so nothing changed. Try libburn's block length once.
+                _note($"FORMAT UNIT 00h with type parameter 0x{bdReTypeParameter:X6} refused ({Describe(format)}); trying the block length 0x000800.");
+                bdReTypeParameter = NativeWriteCommands.BdBlockLengthTypeParameter;
+                format = _transport.ExecuteCommand(NativeWriteCommands.BuildFormatUnit(),
+                    NativeWriteCommands.BuildBdReDefaultFormatParameters(formatBlocks, bdReTypeParameter),
+                    ScsiPassThroughNative.SCSI_IOCTL_DATA_OUT, ShortTimeout);
+            }
             if (!format.IsSuccess)
             {
                 throw Stop($"The drive refused to format the {name}: {Describe(format)}");
@@ -236,22 +261,30 @@ public sealed partial class NativeTaoDataWriter
             if (kind == OverwritableKind.BdRe)
             {
                 state.BdFormatTypeSent = type;
+                state.BdFormatTypeParameterSent = bdReTypeParameter;
             }
-            _note($"FORMAT UNIT type {type:X2}h{(dvdPlusRwRestart ? " (restart)" : "")} sent.");
+            _note($"FORMAT UNIT type {type:X2}h{(dvdPlusRwRestart ? " (restart)" : "")}" +
+                  (kind == OverwritableKind.BdRe ? $", {formatBlocks:N0} blocks, type parameter 0x{bdReTypeParameter:X6}" : "") + " sent.");
+            var formatClock = Stopwatch.StartNew();
             WaitForFormat(kind == OverwritableKind.DvdRam ? DvdRamFormatTimeout : FlushTimeout, ct, state, reporter);
+            state.FormatWait = formatClock.Elapsed;
             state.FormattingInProgress = false;
+            _note($"The drive was not ready for {formatClock.Elapsed.TotalSeconds:F1} s after FORMAT UNIT.");
+            if (kind == OverwritableKind.BdRe)
+            {
+                CheckBdWriteAfterFormat(state);
+            }
         }
 
         // 6. The data, in 64 KiB WRITEs from LBA 0 (WRITE(12) with Streaming bit 0x80 when opted in for BD-RE / DVD-RAM).
-        bool useStreamingWrite = request.StreamingWrite && kind is OverwritableKind.BdRe or OverwritableKind.DvdRam;
         if (useStreamingWrite)
         {
-            _note($"Streaming write enabled on {name}: sending WRITE(12) with Streaming bit (0x80).");
+            _note($"Streaming write enabled on {name}: sending WRITE(12) with Streaming bit (0x80), whole {alignment}-sector blocks only.");
         }
         byte[]? alignedClosingAvdp = TryBuildAlignedClosingAvdp(request, state.ImageSectors, sectors, startLba: 0);
         request.Image.Position = request.StartPosition;
         var writing = Stopwatch.StartNew();
-        WriteTrack(request, 0, sectors, DvdSectorsPerWrite, state, reporter, ct, DvdMinimumSectorsPerWrite,
+        WriteTrack(request, 0, sectors, DvdSectorsPerWrite, state, reporter, ct, Math.Max(DvdMinimumSectorsPerWrite, alignment),
             lastSectorOverride: alignedClosingAvdp, streamingWrite: useStreamingWrite);
         writing.Stop();
 

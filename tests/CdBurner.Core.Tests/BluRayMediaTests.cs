@@ -205,6 +205,21 @@ public class BluRayMediaTests
         Assert.Equal(expected, new CdBurner.Core.Abstractions.MediaStatusDto { MediaManufacturerId = mediaId }.IsMDisc);
     }
 
+    /// <summary>
+    /// Measured 2026-11-26 on an LG BP50NB40: a plain Verbatim BD-R and a Verbatim M-DISC BD-R both answer with this
+    /// media ID (and identical BD Disc Information), so the drive cannot tell them apart. The code must stay "not
+    /// M-DISC", or every ordinary Verbatim BD-R would be called archival.
+    /// </summary>
+    [Theory]
+    [InlineData("VERBAT-IMe (Mitsubishi Chemical Corp. (Verbatim))")]
+    [InlineData("VERBAT-IMe")]
+    [InlineData("VERBATIMe")]
+    public void VerbatimBdRMediaId_IsNotMDisc_BecauseVerbatimMDiscReadsTheSame(string mediaId)
+    {
+        Assert.False(MDiscIdentifier.IsMDisc(mediaId));
+        Assert.DoesNotContain(MDiscIdentifier.KnownMediaIdPrefixes, p => mediaId.StartsWith(p, StringComparison.OrdinalIgnoreCase));
+    }
+
     [Theory]
     [InlineData(DiscMediaType.BdRe)]
     [InlineData(DiscMediaType.BdReDualLayer)]

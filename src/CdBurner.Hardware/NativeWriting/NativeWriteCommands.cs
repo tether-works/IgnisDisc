@@ -164,21 +164,17 @@ public static class NativeWriteCommands
     /// <summary>FORMAT UNIT format type 00h: the drive's default size (on BD-RE, quick formatting with spare areas).</summary>
     public const byte FormatTypeDefault = 0x00;
 
+    /// <summary>The block length 2,048 as a 24-bit type-dependent parameter (libburn's value for format types 00h, 01h and 31h).</summary>
+    public const uint BdBlockLengthTypeParameter = 0x000800;
+
     /// <summary>
     /// FORMAT UNIT parameter list for a BD-RE with format type 00h: FOV | Immed (0x82), descriptor length 8, the number
-    /// of blocks the drive offered for type 00h in READ FORMAT CAPACITIES, type 00h in byte 8, and the block length
-    /// 2,048 (0x000800) in bytes 9–11, as libburn's mmc_format_unit sets for types 00h, 01h and 31h.
+    /// of blocks the drive offered for type 00h in READ FORMAT CAPACITIES, type 00h in byte 8, and the type-dependent
+    /// parameter in bytes 9–11: by default the block length 2,048 (0x000800), as libburn's mmc_format_unit sets for types
+    /// 00h, 01h and 31h; the writer passes the drive's offered value when it gives one.
     /// </summary>
-    public static byte[] BuildBdReDefaultFormatParameters(uint blocks)
-    {
-        byte[] list = new byte[12];
-        list[1] = 0x82;
-        list[3] = 8;
-        BinaryPrimitives.WriteUInt32BigEndian(list.AsSpan(4, 4), blocks);
-        list[8] = FormatTypeDefault << 2;
-        list[10] = 0x08;
-        return list;
-    }
+    public static byte[] BuildBdReDefaultFormatParameters(uint blocks, uint typeParameter = BdBlockLengthTypeParameter) =>
+        BuildBdFormatParameters(FormatTypeDefault, 0, blocks, typeParameter);
 
     /// <summary>FORMAT UNIT format type 30h (MMC-6 Table 242): BD-RE full format with spare areas.</summary>
     public const byte FormatTypeBdReSpareAreas = 0x30;
