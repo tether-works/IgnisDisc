@@ -502,8 +502,15 @@ public class PhysicalDriveSafetyTests
         Assert.True(audioRes.Success, audioRes.Message);
 
         int session2Start = drive.NextSessionAddress!.Value;
-        byte[] dataImage = new byte[400 * 2048];
-        new Random(42).NextBytes(dataImage);
+        // An added session must be an ISO 9660 image laid out for its own start address (the writer checks sector 16).
+        byte[] payload = new byte[360 * 2048];
+        new Random(42).NextBytes(payload);
+        var root = CompilationDirectory.CreateRoot();
+        root.AddFile(new CompilationFile("DATA.BIN", () => new MemoryStream(payload)));
+        using var iso = new MemoryStream();
+        IsoUdfImageBuilder.Build(root, iso, new IsoBuildOptions(VolumeLabel: "EXTRA", IncludeUdf: false), session2Start);
+        byte[] dataImage = iso.ToArray();
+        int dataSectors = dataImage.Length / 2048;
         var dataRes = new NativeTaoDataWriter(drive, sleep: _ => { }).Write(
             new NativeDataWriteRequest(new MemoryStream(dataImage), 0, dataImage.Length, TestWrite: false, CloseDisc: true, SessionStartLba: session2Start));
         Assert.True(dataRes.Success, dataRes.Message);
@@ -513,14 +520,14 @@ public class PhysicalDriveSafetyTests
         var verify = await CdBurner.Hardware.Scsi.PhysicalSectorReader.ReadDataSectorsAsync(
             drive,
             session2Start,
-            400,
+            dataSectors,
             CdBurner.Hardware.Scsi.DriveCacheBypass.RecentlyWritten,
             (_, _) => { readCount++; return ValueTask.CompletedTask; },
             null,
             CancellationToken.None);
 
         Assert.True(verify.Success, verify.ErrorMessage);
-        Assert.Equal(400, readCount);
+        Assert.Equal(dataSectors, readCount);
         Assert.NotNull(verify.Note);
         Assert.DoesNotContain("so 0 MB", verify.Note);
         // Every READ(10) issued during flush/verify stayed in Session 2 data track (never hit audio/gap < session2Start).
