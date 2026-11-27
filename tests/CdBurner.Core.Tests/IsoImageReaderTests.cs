@@ -158,6 +158,14 @@ public class IsoImageReaderTests
         byte[] crossBoundary = new byte[3];
         fileStream.ReadExactly(crossBoundary);
         Assert.Equal(new byte[] { 0xA1, 0xB2, 0xC3 }, crossBoundary);
+
+        // The sector-to-file map covers both extents and not the gap between them.
+        var map = Images.LbaFileExtentMap.FromIsoReader(reader);
+        Assert.Equal(2, map.Count);
+        Assert.All(map, e => Assert.Equal("/HUGE.BIN", e.FilePath));
+        Assert.Contains(map, e => e.ContainsLba(extent1Lba) && e.ContainsLba(extent1Lba + (int)(extent1Size / 2048) - 1));
+        Assert.Contains(map, e => e.ContainsLba(extent2Lba + 100_000));
+        Assert.DoesNotContain(map, e => e.ContainsLba(extent1Lba + (int)(extent1Size / 2048) + 10));
     }
 
     [Fact]

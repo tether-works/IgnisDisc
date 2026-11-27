@@ -60,7 +60,14 @@ public class LbaFileExtentMap
     }
 
     /// <summary>
-    /// Builds a list of LBA file extents from an ISO image stream.
+    /// Builds a list of LBA file extents from a disc image stream: from its UDF file system when it has one, plus any
+    /// ISO 9660 / Joliet file UDF did not list.
+    /// <para>
+    /// UDF comes first because it is the only complete description on many discs: a Blu-ray image may have no
+    /// ISO 9660 tree at all, and where it has one, a file of 4 GiB or more is recorded there with its size cut to
+    /// just under 4 GiB, so a sector further into the file would map to no file.
+    /// </para>
+    /// Throws when the stream holds neither a readable UDF tree nor an ISO 9660 volume.
     /// </summary>
     public static IReadOnlyList<LbaFileExtentMap> FromIsoStream(Stream isoStream, int sessionStartLba = 0)
     {
@@ -68,8 +75,39 @@ public class LbaFileExtentMap
         long originalPos = isoStream.CanSeek ? isoStream.Position : 0;
         try
         {
-            using var reader = IsoImageReader.FromStream(isoStream, leaveOpen: true, sessionStartLba);
-            return FromIsoReader(reader);
+            var map = new List<LbaFileExtentMap>();
+            var udfRoot = isoStream.CanSeek ? UdfTreeReader.TryRead(isoStream, skipped: null, sessionStartLba) : null;
+            if (udfRoot != null)
+            {
+                AddFiles(udfRoot, map);
+            }
+
+            IReadOnlyList<LbaFileExtentMap> isoMap;
+            try
+            {
+                if (isoStream.CanSeek)
+                {
+                    isoStream.Position = originalPos;
+                }
+                using var reader = IsoImageReader.FromStream(isoStream, leaveOpen: true, sessionStartLba);
+                isoMap = FromIsoReader(reader);
+            }
+            catch (Exception ex) when (map.Count > 0 && ex is InvalidDataException or IOException or ArgumentException or OverflowException)
+            {
+                // UDF-only image (no ISO 9660 descriptor) or a damaged ISO 9660 tree: the UDF map is the answer.
+                return map;
+            }
+
+            if (map.Count == 0)
+            {
+                return isoMap;
+            }
+
+            // On a bridge disc both trees name the same data; keep UDF's entry (full name, true size) and add only
+            // ISO 9660 files whose data UDF did not list (for example an entry UDF could not read).
+            var udfStarts = new HashSet<int>(map.Select(e => e.StartLba));
+            map.AddRange(isoMap.Where(e => !udfStarts.Contains(e.StartLba)));
+            return map;
         }
         finally
         {
@@ -81,7 +119,9 @@ public class LbaFileExtentMap
     }
 
     /// <summary>
-    /// Builds a list of LBA file extents from an <see cref="IsoImageReader"/>.
+    /// Builds a list of LBA file extents from an <see cref="IsoImageReader"/>'s ISO 9660 / Joliet tree. A file stored
+    /// as several ISO 9660 extents (multi-extent, used for files of 4 GiB or more) gets one entry per extent, so
+    /// the gap between extents belongs to no file. Empty files own no sectors and are left out.
     /// </summary>
     public static IReadOnlyList<LbaFileExtentMap> FromIsoReader(IsoImageReader reader)
     {
@@ -89,10 +129,42 @@ public class LbaFileExtentMap
         var map = new List<LbaFileExtentMap>();
         foreach (var file in reader.AllFiles)
         {
-            int sectors = OpticalConstants.BytesToSectors(file.SizeBytes, OpticalConstants.DataSectorSize);
-            map.Add(new LbaFileExtentMap(file.VirtualPath, file.StartLba, sectors, file.SizeBytes));
+            AddFile(file, map);
         }
         return map;
+    }
+
+    private static void AddFiles(IsoDirectoryEntry directory, List<LbaFileExtentMap> map)
+    {
+        foreach (var file in directory.Files)
+        {
+            AddFile(file, map);
+        }
+        foreach (var sub in directory.SubDirectories)
+        {
+            AddFiles(sub, map);
+        }
+    }
+
+    private static void AddFile(IsoFileEntry file, List<LbaFileExtentMap> map)
+    {
+        if (file.SizeBytes <= 0)
+        {
+            return; // an empty file has no data sectors; its recorded LBA may be the next file's
+        }
+
+        if (file.Extents is { Count: > 1 } extents)
+        {
+            foreach (var (startLba, sizeBytes) in extents)
+            {
+                int extentSectors = OpticalConstants.BytesToSectors(sizeBytes, OpticalConstants.DataSectorSize);
+                map.Add(new LbaFileExtentMap(file.VirtualPath, startLba, extentSectors, file.SizeBytes));
+            }
+            return;
+        }
+
+        int sectors = OpticalConstants.BytesToSectors(file.SizeBytes, OpticalConstants.DataSectorSize);
+        map.Add(new LbaFileExtentMap(file.VirtualPath, file.StartLba, sectors, file.SizeBytes));
     }
 
     public override string ToString() => $"{FilePath} [LBA {StartLba}..{EndLba}, {SectorCount} sectors, {FileSizeBytes} B]";
@@ -126,12 +198,35 @@ public class VerificationResult
     public int TotalSectorsVerified { get; init; }
 
     /// <summary>
-    /// List of all LBA addresses where data differed or an unrecovered read error occurred.
+    /// Every LBA that failed verification, in LBA order: <see cref="UnreadableLbas"/> and <see cref="DifferingLbas"/>
+    /// together. A sector that failed the first read but read correctly on the second (see
+    /// <see cref="RecoveredOnRereadLbas"/>) is not in this list.
     /// </summary>
     public IReadOnlyList<int> MismatchedLbas { get; init; } = Array.Empty<int>();
 
     /// <summary>
-    /// Compilation file paths corresponding to mismatched or unreadable LBAs.
+    /// LBAs the drive could not read at all (an unrecovered read error), on the first read and again on the second.
+    /// The verifier compared zeros for these, so they say nothing about what the disc holds there.
+    /// </summary>
+    public IReadOnlyList<int> UnreadableLbas { get; init; } = Array.Empty<int>();
+
+    /// <summary>
+    /// LBAs the drive read without error but whose bytes differ from the image, after a second read.
+    /// </summary>
+    public IReadOnlyList<int> DifferingLbas { get; init; } = Array.Empty<int>();
+
+    /// <summary>
+    /// LBAs that were unreadable or different on the first read but matched the image when read again from the disc
+    /// surface after moving the drive's read head away: a passing read hiccup, not bad data. They do not fail the
+    /// verification.
+    /// </summary>
+    public IReadOnlyList<int> RecoveredOnRereadLbas { get; init; } = Array.Empty<int>();
+
+    /// <summary>Number of sectors that failed the first read but matched on the second (<see cref="RecoveredOnRereadLbas"/>).</summary>
+    public int TransientSectorCount => RecoveredOnRereadLbas.Count;
+
+    /// <summary>
+    /// Image file paths that own a sector in <see cref="MismatchedLbas"/>.
     /// </summary>
     public IReadOnlyList<string> CorruptedFiles { get; init; } = Array.Empty<string>();
 
@@ -334,6 +429,39 @@ internal sealed class Crc32Algorithm
 public class DiscVerificationService
 {
     /// <summary>
+    /// At most this many failed sectors get a second read (each keeps its expected 2 KiB in memory until then); past
+    /// it the disc is badly damaged and the rest are reported from the first read.
+    /// </summary>
+    public const int MaxSectorsToReread = 4096;
+
+    /// <summary>Failed sectors this close together are read again as one run.</summary>
+    private const int RereadMergeGapSectors = 32;
+
+    /// <summary>
+    /// A sector that failed the first read. <see cref="Expected"/> and the read bytes are kept only for sectors that
+    /// will be read a second time (null past <see cref="MaxSectorsToReread"/>, or for raw reads).
+    /// </summary>
+    private sealed class FailedSector(int lba, bool unreadable, byte[]? expected, byte[]? firstRead)
+    {
+        public int Lba { get; } = lba;
+        public byte[]? Expected { get; } = expected;
+        public bool FirstReadUnreadable { get; } = unreadable;
+        public byte[]? FirstRead { get; } = firstRead;
+
+        /// <summary>State after the latest read: unreadable, or the bytes read (null when not kept).</summary>
+        public bool Unreadable { get; set; } = unreadable;
+        public byte[]? Read { get; set; } = firstRead;
+
+        public bool Reread { get; set; }
+        public bool Recovered { get; set; }
+
+        /// <summary>The disc gave something else on the second read than on the first.</summary>
+        public bool ChangedOnReread =>
+            Recovered || Unreadable != FirstReadUnreadable
+            || (Read != null && FirstRead != null && !Read.AsSpan().SequenceEqual(FirstRead));
+    }
+
+    /// <summary>
     /// Verifies a recorded disc sector-by-sector against an expected image stream.
     /// <paramref name="strict"/> forces every read from the disc; null follows <see cref="VerifyPreferences.StrictByDefault"/>.
     /// Without it only the stretches that can still sit in the drive's memory are forced.
@@ -400,8 +528,11 @@ public class DiscVerificationService
         }
 
         var sw = Stopwatch.StartNew();
-        var mismatchedLbas = new List<int>();
-        var corruptedFiles = new List<string>();
+
+        // Sectors that failed the first read, in LBA order. Raw 2,352-byte reads are not read a second time: their
+        // cache flush can reload the tray, and a second read would repeat it for every run of failed sectors.
+        var failed = new List<FailedSector>();
+        bool secondReadEnabled = !raw2352Mode;
 
         var expectedCrc = new Crc32Algorithm();
         var actualCrc = new Crc32Algorithm();
@@ -443,6 +574,16 @@ public class DiscVerificationService
             actualSha.AppendData(actual);
         }
 
+        void RecordFailure(int lba, ReadOnlySpan<byte> read, bool unreadable)
+        {
+            bool keep = secondReadEnabled && failed.Count < MaxSectorsToReread;
+            failed.Add(new FailedSector(
+                lba,
+                unreadable,
+                keep ? expectedBuffer.ToArray() : null,
+                keep && !unreadable ? read.ToArray() : null));
+        }
+
         var readOutcome = await BatchedSectorReader.ReadRangeAsync(
             engine,
             recorder,
@@ -455,16 +596,14 @@ public class DiscVerificationService
                 await ReadNextExpectedSectorAsync().ConfigureAwait(false);
                 if (!data.Span.SequenceEqual(expectedBuffer))
                 {
-                    mismatchedLbas.Add(lba);
-                    MapCorruptedLba(lba, fileMap, corruptedFiles);
+                    RecordFailure(lba, data.Span, unreadable: false);
                 }
                 AppendActual(data.Span);
             },
             onUnreadable: async lba =>
             {
                 await ReadNextExpectedSectorAsync().ConfigureAwait(false);
-                mismatchedLbas.Add(lba);
-                MapCorruptedLba(lba, fileMap, corruptedFiles);
+                RecordFailure(lba, ReadOnlySpan<byte>.Empty, unreadable: true);
                 AppendActual(zeroBuffer);
                 return true;
             },
@@ -483,6 +622,14 @@ public class DiscVerificationService
             readFromDisc: true,
             strict: strict ?? VerifyPreferences.StrictByDefault).ConfigureAwait(false);
 
+        // Second read of every failed sector, from the disc surface, before anything is called a failure.
+        var secondReadErrors = new List<string>();
+        var toReread = failed.Where(f => f.Expected != null).ToList();
+        if (toReread.Count > 0)
+        {
+            await RereadFailedSectorsAsync(recorder, engine, totalSectors, toReread, secondReadErrors, progress, sw, ct).ConfigureAwait(false);
+        }
+
         progress?.Report(new BurnProgressSnapshot
         {
             ElapsedTime = sw.Elapsed,
@@ -490,6 +637,14 @@ public class DiscVerificationService
             TotalLba = totalSectors,
             CurrentActionDescription = "Completed"
         });
+
+        var stillFailed = failed.Where(f => !f.Recovered).ToList();
+        var mismatchedLbas = stillFailed.Select(f => f.Lba).ToList();
+        var unreadableLbas = stillFailed.Where(f => f.Unreadable).Select(f => f.Lba).ToList();
+        var differingLbas = stillFailed.Where(f => !f.Unreadable).Select(f => f.Lba).ToList();
+        var recoveredLbas = failed.Where(f => f.Recovered).Select(f => f.Lba).ToList();
+        int notReread = failed.Count(f => !f.Reread);
+        var corruptedFiles = MapCorruptedFiles(mismatchedLbas, fileMap);
 
         uint expCrcVal = expectedCrc.GetCurrentHashAsUInt32();
         uint actCrcVal = actualCrc.GetCurrentHashAsUInt32();
@@ -503,6 +658,18 @@ public class DiscVerificationService
         string expSha = Convert.ToHexString(expectedSha.GetHashAndReset());
         string actSha = Convert.ToHexString(actualSha.GetHashAndReset());
 
+        // The "actual" hashes above describe the first read. When the second read changed what the disc gave, they
+        // are worked out again from the final reads.
+        if (failed.Count > 0 && stillFailed.Count == 0)
+        {
+            // Every sector finally read back exactly as the image: the disc's hashes are the image's.
+            (actCrcVal, actCrc, actMd5, actSha) = (expCrcVal, expCrc, expMd5, expSha);
+        }
+        else if (failed.Any(f => f.ChangedOnReread) && failed.All(f => f.Expected != null) && expectedStream.CanSeek)
+        {
+            (actCrcVal, actCrc, actMd5, actSha) = await HashFinalReadsAsync(expectedStream, totalSectors, sectorSize, stillFailed, ct).ConfigureAwait(false);
+        }
+
         bool isMatch = mismatchedLbas.Count == 0 && string.Equals(expSha, actSha, StringComparison.OrdinalIgnoreCase);
 
         return new VerificationResult
@@ -510,6 +677,9 @@ public class DiscVerificationService
             IsMatch = isMatch,
             TotalSectorsVerified = totalSectors,
             MismatchedLbas = mismatchedLbas,
+            UnreadableLbas = unreadableLbas,
+            DifferingLbas = differingLbas,
+            RecoveredOnRereadLbas = recoveredLbas,
             CorruptedFiles = corruptedFiles,
             ExpectedCrc32 = expCrc,
             ActualCrc32 = actCrc,
@@ -520,7 +690,10 @@ public class DiscVerificationService
             ExpectedCrc32Value = expCrcVal,
             ActualCrc32Value = actCrcVal,
             TotalTime = sw.Elapsed,
-            ErrorMessage = isMatch ? null : $"Verification failed: {mismatchedLbas.Count} sector mismatch(es) detected.",
+            ErrorMessage = isMatch
+                ? null
+                : DescribeFailure(mismatchedLbas.Count, unreadableLbas.Count, differingLbas.Count, recoveredLbas.Count,
+                    notReread, secondReadEnabled, corruptedFiles, secondReadErrors),
             MediaSurfaceReadbackEnforced = readOutcome.MediaSurfaceReadbackEnforced,
             ReadbackNote = readOutcome.ReadbackNote
         };
@@ -582,18 +755,201 @@ public class DiscVerificationService
         }
     }
 
-    private static void MapCorruptedLba(int lba, IReadOnlyList<LbaFileExtentMap>? fileMap, List<string> corruptedFiles)
+    /// <summary>
+    /// Reads every failed sector again from the disc surface (FUA on every read), run by run, each run after a
+    /// one-sector read at the far end of the disc. A sector the drive could not read because of a passing tracking or
+    /// focus upset usually reads fine once the read head has to find the spot afresh; real damage fails again.
+    /// Updates each <see cref="FailedSector"/> in place.
+    /// </summary>
+    private static async Task RereadFailedSectorsAsync(
+        IDiscRecorderBackend recorder,
+        IBurnEngineBackend engine,
+        int totalSectors,
+        List<FailedSector> sectors,
+        List<string> errors,
+        IProgress<BurnProgressSnapshot>? progress,
+        Stopwatch sw,
+        CancellationToken ct)
     {
-        if (fileMap == null) return;
-        foreach (var extent in fileMap)
+        var byLba = sectors.ToDictionary(f => f.Lba);
+        int index = 0;
+        while (index < sectors.Count)
         {
-            if (extent.ContainsLba(lba))
+            ct.ThrowIfCancellationRequested();
+
+            int runStart = sectors[index].Lba;
+            int runEnd = runStart;
+            int next = index + 1;
+            while (next < sectors.Count && sectors[next].Lba - runEnd <= RereadMergeGapSectors)
             {
-                if (!corruptedFiles.Contains(extent.FilePath, StringComparer.OrdinalIgnoreCase))
+                runEnd = sectors[next].Lba;
+                next++;
+            }
+
+            int farLba = runStart >= totalSectors / 2 ? 0 : totalSectors - 1;
+            try
+            {
+                if (farLba < runStart || farLba > runEnd)
                 {
-                    corruptedFiles.Add(extent.FilePath);
+                    await BatchedSectorReader.ReadRangeAsync(
+                        engine, recorder, farLba, 1, raw2352Mode: false, maxRetriesPerSector: 0,
+                        onSector: (_, _) => ValueTask.CompletedTask,
+                        onUnreadable: _ => ValueTask.FromResult(true),
+                        cancellationToken: ct, readFromDisc: true, strict: true).ConfigureAwait(false);
+                }
+
+                await BatchedSectorReader.ReadRangeAsync(
+                    engine, recorder, runStart, runEnd - runStart + 1, raw2352Mode: false, maxRetriesPerSector: 1,
+                    onSector: (lba, data) =>
+                    {
+                        if (byLba.TryGetValue(lba, out var sector))
+                        {
+                            sector.Reread = true;
+                            sector.Recovered = sector.Expected is { } expected && data.Span.SequenceEqual(expected);
+                            sector.Unreadable = false;
+                            sector.Read = sector.Recovered ? null : data.ToArray();
+                        }
+                        return ValueTask.CompletedTask;
+                    },
+                    onUnreadable: lba =>
+                    {
+                        if (byLba.TryGetValue(lba, out var sector))
+                        {
+                            sector.Reread = true;
+                            sector.Recovered = false;
+                            sector.Unreadable = true;
+                            sector.Read = null;
+                        }
+                        return ValueTask.FromResult(true);
+                    },
+                    cancellationToken: ct, readFromDisc: true, strict: true).ConfigureAwait(false);
+            }
+            catch (Exception ex) when (ex is not OperationCanceledException)
+            {
+                // The sectors keep their first-read result; the report says the second read could not run.
+                errors.Add($"The second read of sectors {runStart}-{runEnd} failed: {ex.Message}");
+            }
+
+            index = next;
+            progress?.Report(new BurnProgressSnapshot
+            {
+                ElapsedTime = sw.Elapsed,
+                CurrentLba = index,
+                TotalLba = sectors.Count,
+                CurrentActionDescription = "RereadingFailedSectors"
+            });
+        }
+    }
+
+    /// <summary>
+    /// CRC-32, MD5 and SHA-256 of what the disc finally gave: the image's bytes, except for the sectors that still
+    /// failed (zeros where unreadable, the bytes read where they differ).
+    /// </summary>
+    private static async Task<(uint Crc, string CrcHex, string Md5, string Sha256)> HashFinalReadsAsync(
+        Stream expectedStream,
+        int totalSectors,
+        int sectorSize,
+        List<FailedSector> stillFailed,
+        CancellationToken ct)
+    {
+        var finalBytes = stillFailed.ToDictionary(f => f.Lba, f => f.Unreadable ? null : f.Read);
+        var crc = new Crc32Algorithm();
+        using var md5 = IncrementalHash.CreateHash(HashAlgorithmName.MD5);
+        using var sha = IncrementalHash.CreateHash(HashAlgorithmName.SHA256);
+        byte[] sector = new byte[sectorSize];
+        byte[] zeros = new byte[sectorSize];
+
+        expectedStream.Position = 0;
+        for (int lba = 0; lba < totalSectors; lba++)
+        {
+            int filled = 0;
+            while (filled < sectorSize)
+            {
+                int read = await expectedStream.ReadAsync(sector.AsMemory(filled, sectorSize - filled), ct).ConfigureAwait(false);
+                if (read == 0) break;
+                filled += read;
+            }
+            if (filled < sectorSize)
+            {
+                Array.Clear(sector, filled, sectorSize - filled);
+            }
+
+            ReadOnlySpan<byte> bytes = finalBytes.TryGetValue(lba, out var final) ? (final ?? zeros) : sector;
+            crc.Append(bytes);
+            md5.AppendData(bytes);
+            sha.AppendData(bytes);
+        }
+
+        return (crc.GetCurrentHashAsUInt32(), crc.GetCurrentHashAsHexString(),
+            Convert.ToHexString(md5.GetHashAndReset()), Convert.ToHexString(sha.GetHashAndReset()));
+    }
+
+    private static string DescribeFailure(
+        int failedCount,
+        int unreadableCount,
+        int differingCount,
+        int recoveredCount,
+        int notReread,
+        bool secondReadEnabled,
+        IReadOnlyList<string> corruptedFiles,
+        IReadOnlyList<string> secondReadErrors)
+    {
+        var text = new System.Text.StringBuilder();
+        text.Append($"Verification failed: {failedCount} sector(s) bad");
+        text.Append(secondReadEnabled && notReread < failedCount ? " after a second read" : string.Empty);
+        text.Append($" ({unreadableCount} could not be read, {differingCount} read back different data from the image).");
+        if (recoveredCount > 0)
+        {
+            text.Append($" {recoveredCount} other sector(s) failed the first read but matched the image on the second.");
+        }
+        if (secondReadEnabled && notReread > 0)
+        {
+            text.Append($" {notReread} sector(s) were not read a second time");
+            text.Append(failedCount + recoveredCount > MaxSectorsToReread
+                ? $" (only the first {MaxSectorsToReread:N0} are)."
+                : ".");
+        }
+        if (corruptedFiles.Count > 0)
+        {
+            text.Append($" Affected file(s): {string.Join(", ", corruptedFiles.Take(10))}{(corruptedFiles.Count > 10 ? ", ..." : string.Empty)}.");
+        }
+        foreach (string error in secondReadErrors)
+        {
+            text.Append(' ').Append(error).Append('.');
+        }
+        return text.ToString();
+    }
+
+    /// <summary>The image files that own any of <paramref name="lbas"/> (in LBA order), each named once.</summary>
+    private static List<string> MapCorruptedFiles(IReadOnlyList<int> lbas, IReadOnlyList<LbaFileExtentMap>? fileMap)
+    {
+        var files = new List<string>();
+        if (fileMap == null || fileMap.Count == 0 || lbas.Count == 0)
+        {
+            return files;
+        }
+
+        var seen = new HashSet<string>(StringComparer.OrdinalIgnoreCase);
+        LbaFileExtentMap? last = null;
+        foreach (int lba in lbas)
+        {
+            // Failed sectors usually come in runs inside one file: check the last match before searching the map.
+            if (last != null && last.ContainsLba(lba))
+            {
+                continue;
+            }
+            foreach (var extent in fileMap)
+            {
+                if (extent.ContainsLba(lba))
+                {
+                    last = extent;
+                    if (seen.Add(extent.FilePath))
+                    {
+                        files.Add(extent.FilePath);
+                    }
                 }
             }
         }
+        return files;
     }
 }

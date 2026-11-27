@@ -3998,6 +3998,12 @@ public static partial class CliCommandRunner
                 totalSectorsVerified = result.TotalSectorsVerified,
                 mismatchedLbaCount = result.MismatchedLbas.Count,
                 mismatchedLbas = result.MismatchedLbas,
+                unreadableLbaCount = result.UnreadableLbas.Count,
+                unreadableLbas = result.UnreadableLbas,
+                differingLbaCount = result.DifferingLbas.Count,
+                differingLbas = result.DifferingLbas,
+                recoveredOnRereadLbaCount = result.RecoveredOnRereadLbas.Count,
+                recoveredOnRereadLbas = result.RecoveredOnRereadLbas,
                 corruptedFiles = result.CorruptedFiles,
                 expectedSha256 = result.ExpectedSha256,
                 actualSha256 = result.ActualSha256,
@@ -4023,12 +4029,24 @@ public static partial class CliCommandRunner
             stdout.WriteLine($"  Actual SHA-256:          {result.ActualSha256}");
             stdout.WriteLine($"  Media Readback Enforced: {(result.MediaSurfaceReadbackEnforced ? "Yes" : "No")}");
             if (result.ReadbackNote != null) stdout.WriteLine($"  Readback Note:           {result.ReadbackNote}");
+            if (result.TransientSectorCount > 0)
+            {
+                stdout.WriteLine($"  Good on Second Read:     {result.TransientSectorCount:N0} sector(s) failed the first read but matched the image when read again");
+            }
             stdout.WriteLine($"  Duration:                {result.TotalTime}");
             return 0;
         }
 
         stderr.WriteLine("Disc verification FAILED:");
-        stderr.WriteLine($"  Mismatches:              {result.MismatchedLbas.Count} sector(s)");
+        stderr.WriteLine($"  Bad Sectors:             {result.MismatchedLbas.Count} ({result.UnreadableLbas.Count} unreadable, {result.DifferingLbas.Count} different from the image)");
+        if (result.TransientSectorCount > 0)
+        {
+            stderr.WriteLine($"  Good on Second Read:     {result.TransientSectorCount:N0} other sector(s)");
+        }
+        if (result.ErrorMessage != null)
+        {
+            stderr.WriteLine($"  Details:                 {result.ErrorMessage}");
+        }
         if (result.CorruptedFiles.Count > 0)
         {
             stderr.WriteLine($"  Corrupted Files:         {string.Join(", ", result.CorruptedFiles)}");

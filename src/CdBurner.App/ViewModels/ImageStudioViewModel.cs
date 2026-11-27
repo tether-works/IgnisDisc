@@ -2670,12 +2670,15 @@ public class ImageStudioViewModel : ObservableObject, IDisposable
             }
             else if (result.IsMatch)
             {
-                VerificationStatusText = $"Verification PASSED: SHA-256 Checksums match bit-for-bit ({result.TotalSectorsVerified:N0} sectors verified).";
+                VerificationStatusText = $"Verification PASSED: SHA-256 Checksums match bit-for-bit ({result.TotalSectorsVerified:N0} sectors verified)." +
+                    (result.TransientSectorCount > 0
+                        ? $" {result.TransientSectorCount:N0} sector(s) failed the first read but matched on a second read."
+                        : string.Empty);
                 BurnProgress = 100.0;
             }
             else
             {
-                VerificationStatusText = $"Verification FAILED: {result.MismatchedLbas.Count} sector mismatch(es). {result.ErrorMessage}";
+                VerificationStatusText = result.ErrorMessage ?? $"Verification FAILED: {result.MismatchedLbas.Count} sector(s) bad.";
             }
 
             return result;

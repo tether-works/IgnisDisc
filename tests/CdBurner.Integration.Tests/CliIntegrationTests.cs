@@ -1385,6 +1385,47 @@ public sealed class CliIntegrationTests : IDisposable
         Assert.True(strictDoc.RootElement.GetProperty("isMatch").GetBoolean());
     }
 
+    [Fact]
+    public async Task Verify_Json_SeparatesUnreadableFromDifferingSectors_AndNamesTheirFiles()
+    {
+        string inputFolder = CreateSampleDataFolder("VerifySplitSource");
+        string iso = Path.Combine(_tempDir, "verify_split.iso");
+        await CliCommandRunner.RunAsync(new[] { "build-iso", "--input", inputFolder, "--output", iso }, new StringWriter(), new StringWriter(), _deviceService, _burnEngine);
+
+        using var medium = VirtualDiscMedium.CreateBlankCdRw700();
+        _recorder.InsertMedia(medium);
+        await CliCommandRunner.RunAsync(new[] { "burn-iso", "--drive", "VDRV-01", "--iso", iso }, new StringWriter(), new StringWriter(), _deviceService, _burnEngine);
+
+        CdBurner.Core.Iso.IsoFileEntry[] files;
+        using (var reader = CdBurner.Core.Iso.IsoImageReader.FromFile(iso))
+        {
+            files = reader.AllFiles.Where(f => f.SizeBytes > 0).OrderBy(f => f.StartLba).ToArray();
+        }
+        Assert.True(files.Length >= 2, "the sample folder needs two non-empty files");
+        int unreadable = files[0].StartLba;
+        int differing = files[^1].StartLba;
+        medium.SimulatedBadLbas.Add(unreadable);
+        medium.WriteSector(differing, Enumerable.Repeat((byte)0xAA, 2048).ToArray());
+
+        var (verifyOut, verifyErr) = CreateStringWriters();
+        int code = await CliCommandRunner.RunAsync(
+            new[] { "verify", "--drive", "VDRV-01", "--iso", iso, "--json" }, verifyOut, verifyErr, _deviceService, _burnEngine);
+
+        Assert.Equal(1, code);
+        using var doc = ParseJsonOutput(verifyOut);
+        var root = doc.RootElement;
+        Assert.False(root.GetProperty("isMatch").GetBoolean());
+        Assert.Equal(new[] { unreadable }, root.GetProperty("unreadableLbas").EnumerateArray().Select(e => e.GetInt32()));
+        Assert.Equal(1, root.GetProperty("unreadableLbaCount").GetInt32());
+        Assert.Equal(new[] { differing }, root.GetProperty("differingLbas").EnumerateArray().Select(e => e.GetInt32()));
+        Assert.Equal(1, root.GetProperty("differingLbaCount").GetInt32());
+        Assert.Equal(new[] { unreadable, differing }, root.GetProperty("mismatchedLbas").EnumerateArray().Select(e => e.GetInt32()));
+        Assert.Equal(0, root.GetProperty("recoveredOnRereadLbaCount").GetInt32());
+        var named = root.GetProperty("corruptedFiles").EnumerateArray().Select(e => e.GetString()).ToList();
+        Assert.Contains(files[0].VirtualPath, named);
+        Assert.Contains(files[^1].VirtualPath, named);
+    }
+
     #endregion
 
     #region 11. Error handling and invalid argument tests

@@ -363,6 +363,13 @@ public sealed class VirtualMmcDrive : IScsiTransport
     public HashSet<int> ReadErrorLbas { get; } = new();
 
     /// <summary>
+    /// Data-disc sectors that read with a passing fault, like a tracking or focus upset: a READ (10) that covers one
+    /// fails with 3/11/00 while its count is above zero, and each such failed command lowers the count by one. At
+    /// zero the sector reads normally.
+    /// </summary>
+    public Dictionary<int, int> TransientReadErrorLbas { get; } = new();
+
+    /// <summary>
     /// Raw 2,352-byte corrupted CD sectors keyed by LBA. Cooked READ(10) always fails with 3/11/00 on these LBAs,
     /// while raw READ CD returns the stored 2,352-byte frame only when Mode Page 0x01 enables TB=1 and DCR=1.
     /// </summary>
@@ -1880,6 +1887,21 @@ public sealed class VirtualMmcDrive : IScsiTransport
         return false;
     }
 
+    /// <summary>True when the read covers a <see cref="TransientReadErrorLbas"/> sector with failures left; uses one up.</summary>
+    private bool ConsumeTransientReadError(int lba, int count)
+    {
+        bool failed = false;
+        foreach (var (bad, left) in TransientReadErrorLbas.ToArray())
+        {
+            if (left > 0 && bad >= lba && bad < lba + count)
+            {
+                TransientReadErrorLbas[bad] = left - 1;
+                failed = true;
+            }
+        }
+        return failed;
+    }
+
     private bool HasCorruptedRawInRange(int lba, int count)
     {
         if (CorruptedRawSectors.Count == 0)
@@ -2300,7 +2322,7 @@ public sealed class VirtualMmcDrive : IScsiTransport
         {
             return Sense(0x05, 0x21, 0x00);
         }
-        if (HasReadErrorInRange(lba, count) || HasCorruptedRawInRange(lba, count))
+        if (HasReadErrorInRange(lba, count) || HasCorruptedRawInRange(lba, count) || ConsumeTransientReadError(lba, count))
         {
             return Sense(0x03, 0x11, 0x00);
         }
