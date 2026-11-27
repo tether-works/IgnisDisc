@@ -970,7 +970,35 @@ public class Imapi2BurnEngine : IBurnEngineBackend, ISecureAudioReader
         }
     }
 
+    /// <summary>
+    /// How many times exclusive access is asked for before giving up. Windows looks at a disc for a few seconds after it
+    /// is mounted (2026-11-26: an erase right after a Blu-ray burn was refused once, then accepted 10 s later).
+    /// </summary>
+    public int ExclusiveAccessAttempts { get; set; } = 5;
+
+    /// <summary>Pause between those attempts.</summary>
+    public TimeSpan ExclusiveAccessRetryDelay { get; set; } = TimeSpan.FromSeconds(1);
+
     private bool TryAcquireExclusiveLock(IDiscRecorderBackend recorder, IDiscRecorder2 comRecorder)
+    {
+        for (int attempt = 1; ; attempt++)
+        {
+            if (TryAcquireExclusiveLockOnce(recorder, comRecorder))
+            {
+                return true;
+            }
+            if (attempt >= Math.Max(1, ExclusiveAccessAttempts))
+            {
+                return false;
+            }
+            if (ExclusiveAccessRetryDelay > TimeSpan.Zero)
+            {
+                Thread.Sleep(ExclusiveAccessRetryDelay); // on the MTA burn worker, never the UI thread
+            }
+        }
+    }
+
+    private bool TryAcquireExclusiveLockOnce(IDiscRecorderBackend recorder, IDiscRecorder2 comRecorder)
     {
         if (recorder is ImapiDiscRecorder)
         {

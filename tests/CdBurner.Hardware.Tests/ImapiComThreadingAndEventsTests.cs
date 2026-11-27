@@ -56,7 +56,7 @@ public class ImapiComThreadingAndEventsTests
         // Case 1: Custom backend returns false from AcquireExclusiveAccess
         var deniedBackend = new LockDeniedRecorderBackend();
         var provider1 = new TrackingImapiComProvider(new TrackingComRecorder("MTA1"), new List<string>());
-        var engine1 = new Imapi2BurnEngine(provider1);
+        var engine1 = new Imapi2BurnEngine(provider1) { ExclusiveAccessRetryDelay = TimeSpan.Zero };
 
         using var iso = new MemoryStream(new byte[2 * OpticalConstants.DataSectorSize]);
         var dataRes1 = await engine1.BurnDataStreamAsync(deniedBackend, iso, new DataBurnOptions(), null, CancellationToken.None);
@@ -70,9 +70,10 @@ public class ImapiComThreadingAndEventsTests
         var mtaRecorder = new TrackingComRecorder("MTA2") { ThrowOnAcquireExclusive = true };
         var provider2 = new TrackingImapiComProvider(mtaRecorder, new List<string>());
         using var imapiRec = new ImapiDiscRecorder(staRecorder, "SIM-LOCKED", provider2);
-        var engine2 = new Imapi2BurnEngine(provider2);
+        var engine2 = new Imapi2BurnEngine(provider2) { ExclusiveAccessRetryDelay = TimeSpan.Zero };
 
         var dataRes2 = await engine2.BurnDataStreamAsync(imapiRec, iso, new DataBurnOptions(), null, CancellationToken.None);
+        Assert.Equal(engine2.ExclusiveAccessAttempts, mtaRecorder.AcquireAttempts); // asked again before giving up
         Assert.False(dataRes2.Success);
         Assert.Contains("exclusive access", dataRes2.ErrorMessage, StringComparison.OrdinalIgnoreCase);
         Assert.Null(provider2.FormatData.AttachedRecorder);
@@ -101,6 +102,25 @@ public class ImapiComThreadingAndEventsTests
         Assert.Contains("exclusive access", eraseRes.ErrorMessage, StringComparison.OrdinalIgnoreCase);
         Assert.Null(provider2.FormatErase.AttachedRecorder);
         Assert.Equal(0, mtaRecorder.ReleaseCount);
+    }
+
+    [Fact]
+    public async Task Imapi2BurnEngine_Erase_WaitsOutALockAnotherProgramHoldsBriefly()
+    {
+        // Measured 2026-11-26: an erase straight after a Blu-ray burn was refused (Windows was still looking at the new
+        // disc), and the same erase 10 s later worked. Two refusals, then the lock is granted.
+        var staRecorder = new TrackingComRecorder("STA");
+        var mtaRecorder = new TrackingComRecorder("MTA") { RefuseAcquireTimes = 2 };
+        var provider = new TrackingImapiComProvider(mtaRecorder, new List<string>());
+        using var imapiRec = new ImapiDiscRecorder(staRecorder, "SIM-BUSY", provider);
+        var engine = new Imapi2BurnEngine(provider) { ExclusiveAccessRetryDelay = TimeSpan.Zero };
+
+        var result = await engine.EraseMediaAsync(imapiRec, fullErase: false, null, CancellationToken.None);
+
+        Assert.DoesNotContain("exclusive access", result.ErrorMessage ?? "", StringComparison.OrdinalIgnoreCase);
+        Assert.Equal(3, mtaRecorder.AcquireAttempts);
+        Assert.Equal(1, mtaRecorder.AcquireCount);
+        Assert.Equal(1, mtaRecorder.ReleaseCount);
     }
 
     [Fact]
@@ -503,10 +523,15 @@ public class ImapiComThreadingAndEventsTests
 
         public void EjectMedia() { CallCount++; EjectCount++; _events?.Add($"Recorder:{_tag}:EjectMedia"); }
         public void CloseTray() { CallCount++; }
+        /// <summary>Refuse this many requests for exclusive access, then grant them (a lock another program holds briefly).</summary>
+        public int RefuseAcquireTimes { get; set; }
+        public int AcquireAttempts { get; private set; }
+
         public void AcquireExclusiveAccess(bool force, string client)
         {
             CallCount++;
-            if (ThrowOnAcquireExclusive)
+            AcquireAttempts++;
+            if (ThrowOnAcquireExclusive || AcquireAttempts <= RefuseAcquireTimes)
             {
                 throw new COMException("Locked by another app", unchecked((int)0xC0AA0207));
             }
