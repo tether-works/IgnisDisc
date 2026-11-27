@@ -377,7 +377,11 @@ public static class BdavTsMuxer
         {
             0x00, 0x01, 0xC1, 0x00, 0x00,                                   // program 1, version 0, current, section 0 of 0
             (byte)(0xE0 | (streams.VideoPid >> 8)), (byte)streams.VideoPid, // PCR PID
-            0xF0, 0x06, 0x05, 0x04, (byte)'H', (byte)'D', (byte)'M', (byte)'V', // program info: registration descriptor "HDMV"
+            // Program info, as Blu-ray streams carry it: the registration descriptor "HDMV" (tag 05h) and the copy
+            // control descriptor (tag 88h, 0F FF FC FC: no copy restriction), 12 bytes.
+            0xF0, 0x0C,
+            0x05, 0x04, (byte)'H', (byte)'D', (byte)'M', (byte)'V',
+            0x88, 0x04, 0x0F, 0xFF, 0xFC, 0xFC,
         };
         void Es(byte type, ushort pid)
         {

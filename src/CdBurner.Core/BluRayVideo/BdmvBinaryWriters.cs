@@ -65,6 +65,21 @@ public static class BdmvBinaryWriters
     /// <summary>The 45 kHz clock of playlists and clip information.</summary>
     public const long Clock45k = 45_000;
 
+    /// <summary>The highest transport rate of a Blu-ray main clip, 48 Mbit/s, in bytes per second.</summary>
+    public const uint BluRayMaxRecordingRateBytesPerSecond = 48_000_000 / 8;
+
+    /// <summary>The length field of every StreamCodingInfo in clip information (21 bytes follow it).</summary>
+    public const byte StreamCodingInfoLength = 21;
+
+    /// <summary>The length field of every playlist stream entry (9 bytes follow it).</summary>
+    public const byte StreamEntryLength = 9;
+
+    private static void WriteNoIsrc(BeWriter w)
+    {
+        w.Ascii("000000000000");     // ISRC: country 2, owner 3, year 2, serial 5 characters
+        w.Zeros(4);                  // reserved
+    }
+
     /// <summary>Version tag of the files for a disc type.</summary>
     public static string VersionFor(BdmvDiscTarget target) => target == BdmvDiscTarget.Avchd ? "0100" : "0200";
 
@@ -347,11 +362,17 @@ public static class BdmvBinaryWriters
         w.PatchU16(lengthAt, (ushort)(w.Position - lengthAt - 2));
     }
 
+    /// <summary>
+    /// A stream entry is always 10 bytes: length 9, stream type 1 (an elementary stream of the play item's clip), the
+    /// PID and 6 reserved bytes. The fields of the other stream types share that space, so a player may step over
+    /// entries by the fixed size rather than by the length byte; a shorter entry misaligns the whole table for it.
+    /// </summary>
     private static void WriteStreamEntry(BeWriter w, ushort pid)
     {
-        w.U8(3);                     // entry length
-        w.U8(1);                     // stream type 1: elementary stream of the play item's clip
+        w.U8(StreamEntryLength);
+        w.U8(1);                     // stream type 1
         w.U16(pid);
+        w.Zeros(6);                  // reserved
     }
 
     private static byte AudioCodingType(BdmvAudioCodec codec) => codec == BdmvAudioCodec.Lpcm ? (byte)0x80 : (byte)0x81;
@@ -384,12 +405,14 @@ public static class BdmvBinaryWriters
         w.U8(1);                     // clip stream type 1: movie clip
         w.U8(1);                     // application type 1: main TS of a movie
         w.U32(0);                    // 31 reserved bits, no ATC delta
-        w.U32(facts.RecordingRateBytesPerSecond);
+        // TS_recording_rate is the rate the player must be able to read the clip at, so a Blu-ray clip states the
+        // format's maximum transport rate (48 Mbit/s), as reference authoring tools do, not the film's average.
+        w.U32(target == BdmvDiscTarget.BluRay ? BluRayMaxRecordingRateBytesPerSecond : facts.RecordingRateBytesPerSecond);
         w.U32((uint)facts.SourcePackets);
         w.Zeros(128);
-        w.U16(30);                   // TS type info block
-        w.U8(0);
-        w.Ascii("M2TS");
+        w.U16(30);                   // TS type info block: validity flags, format identifier, 9 + 16 bytes reserved
+        w.U8(0x80);
+        w.Ascii("HDMV");
         w.Zeros(25);
         w.PatchU32(clipInfoAt, (uint)(w.Position - clipInfoAt - 4));
 
@@ -419,28 +442,33 @@ public static class BdmvBinaryWriters
         w.U32(0);                    // SPN_program_sequence_start
         w.U16(streams.PmtPid);
         w.U8((byte)(2 + streams.Subtitles.Count));
-        w.U8(1);                     // stream groups
+        w.U8(0);                     // reserved
 
+        // Every StreamCodingInfo is 22 bytes: length 21, five bytes that depend on the stream type, a 12-character
+        // ISRC ("0" when there is none) and 4 reserved bytes.
         w.U16(streams.VideoPid);
-        w.U8(5);
+        w.U8(StreamCodingInfoLength);
         w.U8(0x1B);
         w.U8((byte)(((int)streams.VideoFormat << 4) | (int)streams.FrameRate));
         w.U8(0x30);                  // 16:9
-        w.U16(0);
+        w.U16(0);                    // no HDR
+        WriteNoIsrc(w);
 
         w.U16(streams.AudioPid);
-        w.U8(5);
+        w.U8(StreamCodingInfoLength);
         w.U8(AudioCodingType(streams.AudioCodec));
         w.U8((byte)((streams.AudioFormatCode << 4) | 1));
         w.Ascii(Language(streams.AudioLanguage));
+        WriteNoIsrc(w);
 
         foreach (var (pid, language) in streams.Subtitles)
         {
             w.U16(pid);
-            w.U8(5);
+            w.U8(StreamCodingInfoLength);
             w.U8(0x90);
             w.Ascii(Language(language));
             w.U8(0);
+            WriteNoIsrc(w);
         }
         w.PatchU32(progAt, (uint)(w.Position - progAt - 4));
 

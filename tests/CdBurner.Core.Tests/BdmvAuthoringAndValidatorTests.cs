@@ -1,6 +1,7 @@
 using System.Buffers.Binary;
 using CdBurner.Core.BluRayVideo;
 using CdBurner.Core.DvdVideo;
+using CdBurner.Core.Iso;
 using CdBurner.Core.Subtitles;
 using Xunit;
 
@@ -269,6 +270,70 @@ public sealed class BdmvAuthoringAndValidatorTests : IDisposable
         Assert.Throws<InvalidDataException>(() => BdavTsMuxer.Mux(input, new MemoryStream(), streams, [], BdmvFrameRate.Fps23976));
     }
 
+    // ----- record sizes hardware players rely on ------------------------------------------------------------------
+    // Reference: tsMuxer (open-source Blu-ray muxer whose discs play on consoles and stand-alone players), tsPacket.cpp:
+    // stream_entry = length 9 (type, PID, 6 reserved), StreamCodingInfo = length 21 (5 type bytes, ISRC, 4 reserved),
+    // TS type info = length 30, validity 80h, "HDMV". A player may step over these records by their fixed size.
+
+    private static BdmvClipStreams OneVideoOneAc3() => new(
+        BdmvClipStreams.PrimaryVideoPid, BdmvClipStreams.PrimaryAudioPid, 6, BdmvAudioCodec.Ac3, "eng",
+        Array.Empty<(ushort, string)>(), BdmvClipStreams.ProgramMapPid, BdmvVideoFormat.Hd1080p, BdmvFrameRate.Fps23976);
+
+    [Fact]
+    public void PlaylistStreamTable_UsesTenByteStreamEntries()
+    {
+        byte[] mpls = BdmvBinaryWriters.WritePlaylist(BdmvDiscTarget.BluRay, "00000", 66_754, 503_820_004, OneVideoOneAc3(), 0);
+        int stn = 0x3A + 4 + 2 + 2 + 2 + 2 + 5 + 4 + 2 + 1 + 4 + 4 + 8 + 1 + 1 + 2; // play list header, play item fields
+        string expected =
+            "002E" + "0000" +                          // STN length 46, reserved
+            "0101000000000000" + "00000000" +          // 1 video, 1 audio, no other streams; reserved
+            "09" + "01" + "1011" + "000000000000" +    // video entry: length 9, type 1, PID 1011h, 6 reserved
+            "05" + "1B" + "61" + "000000" +            // H.264, 1080p at 23.976
+            "09" + "01" + "1100" + "000000000000" +    // audio entry
+            "05" + "81" + "61" + "656E67";             // AC-3, multichannel 48 kHz, "eng"
+        Assert.Equal(expected, Convert.ToHexString(mpls.AsSpan(stn, 2 + 46)));
+    }
+
+    [Fact]
+    public void ClipInfo_UsesTheHdmvTypeBlock_TheMaximumRate_AndTwentyTwoByteStreamCodingInfo()
+    {
+        var facts = new BdmvStreamFacts(32, 66_754, 70_000, 1_948_722, new[] { new BdmvEntryPoint(133_508, 0) });
+        byte[] clpi = BdmvBinaryWriters.WriteClipInfo(BdmvDiscTarget.BluRay, OneVideoOneAc3(), facts);
+
+        Assert.Equal("005B8D80", Convert.ToHexString(clpi.AsSpan(52, 4)));          // 6,000,000 B/s = 48 Mbit/s
+        Assert.Equal("001E" + "80" + "48444D56", Convert.ToHexString(clpi.AsSpan(188, 7))); // length 30, valid, "HDMV"
+
+        int prog = (int)BinaryPrimitives.ReadUInt32BigEndian(clpi.AsSpan(12));
+        string isrc = "303030303030303030303030";
+        string expected =
+            "0001" + "00000000" + "0100" + "02" + "00" +      // reserved, 1 program, starts at packet 0, PMT 0100h, 2 streams, reserved
+            "1011" + "15" + "1B" + "61" + "30" + "0000" + isrc + "00000000" +   // video: 16:9, no HDR
+            "1100" + "15" + "81" + "61" + "656E67" + isrc + "00000000";         // audio
+        Assert.Equal(expected, Convert.ToHexString(clpi.AsSpan(prog + 4, expected.Length / 2)));
+    }
+
+    [Fact]
+    public async Task Validator_RejectsTheShortRecordsAndTheM2tsTypeBlock()
+    {
+        var (result, root) = await AuthorAsync(new BdmvAuthoringOptions { VolumeLabel = "TEST_BD" });
+        Assert.True(result.Success, result.ErrorMessage);
+        var tree = ReadTree(root);
+
+        // The layout written before 2026-11-27, which two game consoles closed on: a 3-byte stream entry length and
+        // an "M2TS" type block. (Only the length byte is changed: enough to show the check is live.)
+        byte[] mpls = tree["BDMV/PLAYLIST/00000.mpls"];
+        int entry = mpls.AsSpan().IndexOf(new byte[] { 0x09, 0x01, 0x10, 0x11 });
+        mpls[entry] = 3;
+        tree["BDMV/BACKUP/PLAYLIST/00000.mpls"] = mpls;
+        byte[] clpi = tree["BDMV/CLIPINF/00000.clpi"];
+        "M2TS"u8.CopyTo(clpi.AsSpan(191));
+        tree["BDMV/BACKUP/CLIPINF/00000.clpi"] = clpi;
+
+        var validation = BdmvStructuralValidator.Validate(tree, avchd: false);
+        Assert.Contains(validation.Errors, e => e.Contains("stream entry 0 has length 3"));
+        Assert.Contains(validation.Errors, e => e.Contains("TS type info block"));
+    }
+
     // ----- whole trees ------------------------------------------------------------------------------------------
 
     [Fact]
@@ -295,6 +360,29 @@ public sealed class BdmvAuthoringAndValidatorTests : IDisposable
         Assert.Equal(4, clip.EntryPoints);
         Assert.Equal(validation.Scans["00000"].Packets, clip.SourcePackets);
         Assert.Equal("INDX0200", System.Text.Encoding.ASCII.GetString(tree["BDMV/index.bdmv"], 0, 8));
+
+        // The empty folders of a Blu-ray disc are there, and reach the UDF 2.50 image.
+        string[] folders = ["BDMV/AUXDATA", "BDMV/BDJO", "BDMV/JAR", "BDMV/META", "BDMV/BACKUP/BDJO", "BDMV/BACKUP/JAR"];
+        foreach (string folder in folders)
+        {
+            Assert.True(Directory.Exists(Path.Combine(root, folder)), $"{folder} missing");
+        }
+        string iso = Path.Combine(_dir, "test_bd.iso");
+        await BdmvAuthoringService.BuildImageAsync(root, iso, new BdmvAuthoringOptions { VolumeLabel = "TEST_BD" });
+        using var image = File.OpenRead(iso);
+        var udf = UdfTreeReader.TryRead(image);
+        Assert.NotNull(udf);
+        var bdmv = udf.SubDirectories.Single(d => d.Name == "BDMV");
+        foreach (string folder in folders)
+        {
+            string[] parts = folder.Split('/')[1..];
+            var dir = bdmv;
+            foreach (string part in parts)
+            {
+                dir = dir.SubDirectories.SingleOrDefault(d => d.Name == part);
+                Assert.True(dir != null, $"{folder} missing from the image");
+            }
+        }
     }
 
     [Fact]

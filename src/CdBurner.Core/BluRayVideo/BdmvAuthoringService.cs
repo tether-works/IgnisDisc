@@ -40,6 +40,15 @@ public sealed class BdmvAuthoringService
     /// <summary>File extension of the stream file (<c>.m2ts</c>, or <c>.MTS</c> for AVCHD).</summary>
     public static string StreamExtension(BdmvDiscTarget target) => target == BdmvDiscTarget.Avchd ? ".MTS" : ".m2ts";
 
+    /// <summary>
+    /// The folders under <c>BDMV</c>, empty ones included. A Blu-ray disc also carries the (empty) <c>AUXDATA</c>,
+    /// <c>BDJO</c>, <c>JAR</c> and <c>META</c> folders and the backups of <c>BDJO</c> and <c>JAR</c>, as reference
+    /// authoring tools write them; an AVCHD disc carries <c>AUXDATA</c>.
+    /// </summary>
+    public static IReadOnlyList<string> BdmvFolders(BdmvDiscTarget target) => target == BdmvDiscTarget.Avchd
+        ? ["AUXDATA", "PLAYLIST", "CLIPINF", "STREAM", "BACKUP/PLAYLIST", "BACKUP/CLIPINF"]
+        : ["AUXDATA", "BDJO", "JAR", "META", "PLAYLIST", "CLIPINF", "STREAM", "BACKUP/BDJO", "BACKUP/JAR", "BACKUP/PLAYLIST", "BACKUP/CLIPINF"];
+
     /// <summary>File extension of the clip information (<c>.clpi</c>, or <c>.CPI</c> for AVCHD).</summary>
     public static string ClipInfoExtension(BdmvDiscTarget target) => target == BdmvDiscTarget.Avchd ? ".CPI" : ".clpi";
 
@@ -149,8 +158,7 @@ public sealed class BdmvAuthoringService
         Directory.CreateDirectory(tempDir);
         try
         {
-            string[] folders = ["PLAYLIST", "CLIPINF", "STREAM", "BACKUP/PLAYLIST", "BACKUP/CLIPINF"];
-            foreach (string folder in folders)
+            foreach (string folder in BdmvFolders(options.Target))
             {
                 Directory.CreateDirectory(Path.Combine(bdmv, folder.Replace('/', Path.DirectorySeparatorChar)));
             }

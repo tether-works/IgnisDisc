@@ -189,6 +189,13 @@ internal sealed class BdmvStructuralValidator
 
         uint sourcePackets = U32(clpi, 56);
         Expect(U32(clpi, 52) > 0, $"{name}: TS recording rate set");
+        if (Version == "0200")
+        {
+            Expect(U32(clpi, 52) == 6_000_000, $"{name}: a Blu-ray clip states the 48 Mbit/s maximum transport rate, not {U32(clpi, 52)} B/s");
+        }
+        // TS type info block right after the 128 reserved bytes: length 30, validity 80h, format identifier "HDMV".
+        Expect(U16(clpi, 188) == 30 && clpi[190] == 0x80 && System.Text.Encoding.ASCII.GetString(clpi, 191, 4) == "HDMV",
+            $"{name}: TS type info block is length 30, validity 80h, \"HDMV\"");
         Expect(stream.Length == (long)sourcePackets * 192, $"{name}: ClipInfo packet count x 192 equals the stream file size");
         Expect(stream.Length % 6144 == 0, $"{name}: stream file is a whole number of 6,144-byte aligned units");
 
@@ -217,10 +224,13 @@ internal sealed class BdmvStructuralValidator
         int streams = clpi[pr + 12];
         int sp = pr + 14;
         var listed = new Dictionary<ushort, byte>();
+        Expect(clpi[pr + 13] == 0, $"{name}: the byte after the stream count is reserved (0)");
         for (int i = 0; i < streams; i++)
         {
             ushort pid = U16(clpi, sp);
             int len = clpi[sp + 2];
+            // Fixed 22-byte StreamCodingInfo: length 21 = 5 type-specific bytes, 12-character ISRC, 4 reserved.
+            Expect(len == 21, $"{name}: StreamCodingInfo of PID {pid:X} has length {len} (want 21)");
             listed[pid] = clpi[sp + 3];
             sp += 3 + len;
         }
@@ -379,6 +389,11 @@ internal sealed class BdmvStructuralValidator
                 {
                     int infoLength = ((data[sec + 10] & 0x0F) << 8) | data[sec + 11];
                     scan.PcrPid = (ushort)(((data[sec + 8] & 0x1F) << 8) | data[sec + 9]);
+                    var programInfo = data.AsSpan(sec + 12, infoLength);
+                    Expect(programInfo.IndexOf(new byte[] { 0x05, 0x04, (byte)'H', (byte)'D', (byte)'M', (byte)'V' }) >= 0,
+                        $"{name}: PMT program info has the HDMV registration descriptor");
+                    Expect(programInfo.IndexOf(new byte[] { 0x88, 0x04, 0x0F, 0xFF, 0xFC, 0xFC }) >= 0,
+                        $"{name}: PMT program info has the copy control descriptor (88h)");
                     int es = sec + 12 + infoLength;
                     int end = sec + 3 + sectionLength - 4;
                     while (es + 5 <= end)
@@ -534,8 +549,11 @@ internal sealed class BdmvStructuralValidator
                 var pids = new List<(ushort Pid, byte Coding)>();
                 for (int s = 0; s < video + audio + pg; s++)
                 {
+                    // Fixed 10-byte entries (length 9: type, PID, 6 reserved), as written by reference authoring
+                    // tools whose discs play on hardware players; a player may step by the fixed size.
                     int entryLength = mpls[sp];
-                    Expect(entryLength == 3 && mpls[sp + 1] == 1, $"{label}: stream entry {s}");
+                    Expect(entryLength == 9 && mpls[sp + 1] == 1, $"{label}: stream entry {s} has length {entryLength}, type {mpls[sp + 1]} (want 9, 1)");
+                    Expect(mpls.AsSpan(sp + 4, 6).IndexOfAnyExcept((byte)0) < 0, $"{label}: stream entry {s} reserved bytes are zero");
                     ushort pid = U16(mpls, sp + 2);
                     sp += 1 + entryLength;
                     int attrLength = mpls[sp];
