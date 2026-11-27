@@ -221,7 +221,7 @@
         </div>
         <div class="cell" id="blu-ray-video-bdmv-and-avchd-authoring">
           <h3 class="spec-module-title">Blu-ray Video (BDMV) and AVCHD authoring</h3>
-          <p class="feature-detail-status">PHYSICAL <span class="badge-na">[ N/A ]</span> · VIRTUAL <span class="badge-pass">[ PASS ]</span></p>
+          <p class="feature-detail-status">PHYSICAL <span class="badge-warn">[ PARTIAL ]</span> · VIRTUAL <span class="badge-pass">[ PASS ]</span></p>
           <ul class="spec-module-list feature-detail-notes">
             <li><code>author-bdmv</code> and the <em>Blu-ray Video (BDMV)</em> mode of the DVD-Video screen make a <code>BDMV</code> + <code>CERTIFICATE</code> folder, or a UDF 2.50 <code>.iso</code>, without burning anything.</li>
             <li>Requires an <code>ffmpeg.exe</code> with the libx264 encoder: the 1-click download installs the full build, which has it (until 2026-11-26 it installed an LGPL build without libx264; Settings and <code>ignisdisc-cli tools</code> now say when the installed build lacks it), or give one with <code>--ffmpeg</code>.</li>
@@ -229,7 +229,8 @@
             <li>H.264 High profile level 4.1 with x264's Blu-ray constraints and AC-3 or LPCM audio; IgnisDisc then writes the 192-byte BDAV packets with arrival times, <code>index.bdmv</code>, <code>MovieObject.bdmv</code>, one playlist and clip information per movie (with the entry-point map), the <code>BACKUP</code> copies and <code>CERTIFICATE/id.bdmv</code>; subtitles from an <code>.srt</code> file or speech recognition become picture-based (PGS) tracks.</li>
             <li>AVCHD uses the 8.3 names (<code>.MTS</code>, <code>.CPI</code>, <code>.MPL</code>) and version 0100 files for DVD-R / DVD+R DL.</li>
             <li>Checked in the test suite with a separate binary reader of the format (file tags, address and length fields, packet arrival times, continuity counters, tables with CRC, playlist times against clip information, the entry-point map against the stream, subtitle segments) and by reading every file back from the UDF 2.50 image, on streams from FFmpeg and from a hand-built transport stream.</li>
-            <li>Not tested on any Blu-ray or AVCHD player or with a real disc, and not written to a disc by IgnisDisc: no player compatibility is claimed.</li>
+            <li>Burned once (2026-11-26): a 3 h 6 min 4K HDR film, tone-mapped to a 21.8 GB UDF 2.50 image and written to a BD-RE with the direct writer; the read-back passed and Windows read every file of the disc identical to the image.</li>
+            <li>Not yet tested on any Blu-ray or AVCHD player: no player compatibility is claimed.</li>
             <li>No menus, no AACS or BD-J, one video and one audio stream per movie, subtitles limited to the .srt text drawn by IgnisDisc, and the AVCHD private-data extension is not written</li>
           </ul>
         </div>
