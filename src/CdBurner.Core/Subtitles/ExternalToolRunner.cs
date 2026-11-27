@@ -76,6 +76,8 @@ public sealed class ProcessToolRunner : IExternalToolRunner
             throw new InvalidOperationException($"Could not start {executablePath}.");
         }
 
+        // Conversions run for an hour on every core; below normal keeps the rest of the PC responsive.
+        CdBurner.Core.Utilities.BackgroundPriority.TryLower(process);
         process.BeginOutputReadLine();
         process.BeginErrorReadLine();
 

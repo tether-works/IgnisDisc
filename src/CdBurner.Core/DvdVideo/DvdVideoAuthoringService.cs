@@ -1572,6 +1572,8 @@ public sealed class DvdVideoAuthoringService
             return (false, initialDurationSeconds);
         }
 
+        // The DVD conversion uses every core for a long time; below normal keeps the rest of the PC responsive.
+        CdBurner.Core.Utilities.BackgroundPriority.TryLower(proc);
         using var killReg = cancellationToken.Register(() =>
         {
             try
