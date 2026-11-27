@@ -25,11 +25,10 @@ public sealed class NativeAudioBurnEngine : IBurnEngineBackend, IAudioDiscVerifi
 
     private readonly string _logDirectory;
 
-    /// <param name="logDirectory">Where command logs go; defaults to %LOCALAPPDATA%\IgnisDisc\logs.</param>
+    /// <param name="logDirectory">Where command logs go; defaults to <see cref="NativeLogDirectory.Default"/>.</param>
     public NativeAudioBurnEngine(string? logDirectory = null)
     {
-        _logDirectory = logDirectory ?? Path.Combine(
-            Environment.GetFolderPath(Environment.SpecialFolder.LocalApplicationData), "IgnisDisc", "logs");
+        _logDirectory = logDirectory ?? NativeLogDirectory.Default;
     }
 
     /// <summary>

@@ -21,12 +21,11 @@ public sealed class NativeDataBurnEngine : IBurnEngineBackend, IWriterMediaStatu
     private readonly string _logDirectory;
 
     /// <param name="fallback">Engine for discs the direct writer does not cover, and for reading and erasing.</param>
-    /// <param name="logDirectory">Where command logs go; defaults to %LOCALAPPDATA%\IgnisDisc\logs.</param>
+    /// <param name="logDirectory">Where command logs go; defaults to <see cref="NativeLogDirectory.Default"/>.</param>
     public NativeDataBurnEngine(IBurnEngineBackend? fallback = null, string? logDirectory = null)
     {
         _fallback = fallback ?? new CompositeBurnEngine();
-        _logDirectory = logDirectory ?? Path.Combine(
-            Environment.GetFolderPath(Environment.SpecialFolder.LocalApplicationData), "IgnisDisc", "logs");
+        _logDirectory = logDirectory ?? NativeLogDirectory.Default;
     }
 
     /// <summary>Run a laser-off test write before the real one (see <see cref="NativeAudioBurnEngine.TestWriteFirst"/>).</summary>
