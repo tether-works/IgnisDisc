@@ -4,8 +4,12 @@ namespace CdBurner.Core.Iso;
 /// Configuration options for compiling an optical disc filesystem image (ISO 9660 / Joliet / UDF Bridge).
 /// </summary>
 /// <param name="VolumeLabel">Disc volume label (up to 32 characters in ISO 9660 / Joliet).</param>
-/// <param name="IncludeIso9660">Whether to include the standard ISO 9660 Primary Volume Descriptor and Level 1/2 directory tree.</param>
-/// <param name="IncludeJoliet">Whether to include Microsoft Joliet UCS-2BE Supplementary Volume Descriptor and directory tree.</param>
+/// <param name="IncludeIso9660">Whether to include the standard ISO 9660 Primary Volume Descriptor and Level 1/2 directory tree.
+/// When false the image is UDF-only: no CD001 descriptors, path tables or ISO directories (and so no Joliet); the UDF
+/// recognition sequence starts at sector 16. Needs <paramref name="IncludeUdf"/>, and cannot be combined with an El Torito
+/// boot configuration, CD-ROM XA or an appended session.</param>
+/// <param name="IncludeJoliet">Whether to include Microsoft Joliet UCS-2BE Supplementary Volume Descriptor and directory tree.
+/// Ignored (not written) when <paramref name="IncludeIso9660"/> is false, since Joliet is an ISO 9660 descriptor.</param>
 /// <param name="IncludeUdf">Whether to include ECMA-167 / UDF bridge descriptors (BEA01, NSR02/NSR03, TEA01, AVDP at LBA 256).</param>
 /// <param name="UdfRevision">UDF revision to write, as BCD: 0x0102 (default; the most widely readable, and the one
 /// DVD-Video requires), 0x0150, 0x0200, 0x0201, 0x0250 or 0x0260. 2.00 and later use NSR03 and Extended File

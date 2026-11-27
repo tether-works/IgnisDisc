@@ -351,6 +351,33 @@ public static class IsoUdfImageBuilder
 
         public static LayoutContext Create(CompilationDirectory root, IsoBuildOptions options, int sessionStartLba = 0)
         {
+            if (!options.IncludeIso9660)
+            {
+                // A UDF-only image: every CD001 descriptor, path table and ISO directory extent is left out.
+                if (!options.IncludeUdf)
+                {
+                    throw new ArgumentException(
+                        "An image needs at least one file system: turning off ISO 9660 also requires UDF to be on.", nameof(options));
+                }
+                if (options.BootConfiguration != null)
+                {
+                    throw new ArgumentException(
+                        "El Torito boot needs ISO 9660 (its boot record is an ISO 9660 volume descriptor): keep ISO 9660 on for a bootable disc.", nameof(options));
+                }
+                if (sessionStartLba != 0)
+                {
+                    throw new ArgumentException(
+                        "An appended session needs ISO 9660 (UDF is only written in the first session): keep ISO 9660 on.", nameof(options));
+                }
+                if (options.CdRomXa)
+                {
+                    throw new ArgumentException(
+                        "CD-ROM XA marks an ISO 9660 volume: keep ISO 9660 on, or turn CD-ROM XA off.", nameof(options));
+                }
+                // Joliet is an ISO 9660 supplementary descriptor, so it cannot exist without ISO 9660: drop it.
+                options = options with { IncludeJoliet = false };
+            }
+
             var ctx = new LayoutContext(root, options, sessionStartLba);
 
             // 1. Build hierarchy of layout nodes
@@ -413,7 +440,10 @@ public static class IsoUdfImageBuilder
             }
 
             // 2c. Build ECMA-119 §9.4 path table sequences ordered by (ParentDirNumber, encoded Directory Identifier)
-            ctx.IsoPathTableEntries.AddRange(BuildPathTableEntries(rootLayout, isJoliet: false));
+            if (options.IncludeIso9660)
+            {
+                ctx.IsoPathTableEntries.AddRange(BuildPathTableEntries(rootLayout, isJoliet: false));
+            }
             if (options.IncludeJoliet)
             {
                 ctx.JolietPathTableEntries.AddRange(BuildPathTableEntries(rootLayout, isJoliet: true));
@@ -422,7 +452,9 @@ public static class IsoUdfImageBuilder
             // 3. Pre-calculate extent sector requirements for each directory
             foreach (var dir in ctx.BfsDirectories)
             {
-                dir.IsoSectorCount = CalculateDirectorySectors(dir, isJoliet: false, XaSystemUseLength(options, isJoliet: false));
+                dir.IsoSectorCount = options.IncludeIso9660
+                    ? CalculateDirectorySectors(dir, isJoliet: false, XaSystemUseLength(options, isJoliet: false))
+                    : 0;
                 if (options.IncludeJoliet)
                 {
                     dir.JolietSectorCount = CalculateDirectorySectors(dir, isJoliet: true, systemUseLength: 0);
@@ -430,8 +462,11 @@ public static class IsoUdfImageBuilder
             }
 
             // 4. Calculate Path Table lengths
-            ctx.IsoPathTableBytesLength = CalculatePathTableBytesLength(ctx.IsoPathTableEntries, isJoliet: false);
-            ctx.IsoPathTableSectors = Math.Max(1, (ctx.IsoPathTableBytesLength + SectorSize - 1) / SectorSize);
+            if (options.IncludeIso9660)
+            {
+                ctx.IsoPathTableBytesLength = CalculatePathTableBytesLength(ctx.IsoPathTableEntries, isJoliet: false);
+                ctx.IsoPathTableSectors = Math.Max(1, (ctx.IsoPathTableBytesLength + SectorSize - 1) / SectorSize);
+            }
 
             if (options.IncludeJoliet)
             {
@@ -512,19 +547,22 @@ public static class IsoUdfImageBuilder
 
             // 5. Assign LBA sectors sequentially
             int currentLba = sessionStartLba + 16;
-            ctx.PvdLba = currentLba++; // sessionStartLba + 16
-
-            if (options.BootConfiguration != null)
+            if (options.IncludeIso9660)
             {
-                ctx.BootRecordLba = currentLba++;
-            }
+                ctx.PvdLba = currentLba++; // sessionStartLba + 16
 
-            if (options.IncludeJoliet)
-            {
-                ctx.JolietSvdLba = currentLba++;
-            }
+                if (options.BootConfiguration != null)
+                {
+                    ctx.BootRecordLba = currentLba++;
+                }
 
-            ctx.TerminatorLba = currentLba++;
+                if (options.IncludeJoliet)
+                {
+                    ctx.JolietSvdLba = currentLba++;
+                }
+
+                ctx.TerminatorLba = currentLba++;
+            }
 
             if (ctx.UdfEnabled)
             {
@@ -552,10 +590,13 @@ public static class IsoUdfImageBuilder
             }
 
             // Assign Path Table LBAs
-            ctx.IsoPathTableL_Lba = currentLba;
-            currentLba += ctx.IsoPathTableSectors;
-            ctx.IsoPathTableM_Lba = currentLba;
-            currentLba += ctx.IsoPathTableSectors;
+            if (options.IncludeIso9660)
+            {
+                ctx.IsoPathTableL_Lba = currentLba;
+                currentLba += ctx.IsoPathTableSectors;
+                ctx.IsoPathTableM_Lba = currentLba;
+                currentLba += ctx.IsoPathTableSectors;
+            }
 
             if (options.IncludeJoliet)
             {
@@ -749,7 +790,7 @@ public static class IsoUdfImageBuilder
         /// </summary>
         private static bool IsArchiveLayout(LayoutContext ctx, DirectoryLayoutNode rootLayout, int sessionStartLba)
         {
-            if (sessionStartLba != 0 || ctx.AllFiles.Any(f => f.SourceFile.ImportedStartLba.HasValue))
+            if (!ctx.Options.IncludeIso9660 || sessionStartLba != 0 || ctx.AllFiles.Any(f => f.SourceFile.ImportedStartLba.HasValue))
             {
                 return false;
             }
@@ -1321,24 +1362,27 @@ public static class IsoUdfImageBuilder
         // how the layout engine orders regions (e.g. ISO metadata placed after the UDF VDS on large trees).
         var metadata = new List<(int Lba, byte[] Data)>();
 
-        byte[] primaryDescriptor = BuildPrimaryVolumeDescriptor(ctx);
-        metadata.Add((ctx.PvdLba, primaryDescriptor));
-        foreach (int copyLba in ctx.DescriptorCopyLbas)
+        if (ctx.Options.IncludeIso9660)
         {
-            metadata.Add((copyLba, primaryDescriptor));
-        }
+            byte[] primaryDescriptor = BuildPrimaryVolumeDescriptor(ctx);
+            metadata.Add((ctx.PvdLba, primaryDescriptor));
+            foreach (int copyLba in ctx.DescriptorCopyLbas)
+            {
+                metadata.Add((copyLba, primaryDescriptor));
+            }
 
-        if (ctx.Options.BootConfiguration != null)
-        {
-            metadata.Add((ctx.BootRecordLba, ElToritoCatalogBuilder.BuildBootRecordVolumeDescriptor((uint)ctx.BootCatalogLba)));
-        }
+            if (ctx.Options.BootConfiguration != null)
+            {
+                metadata.Add((ctx.BootRecordLba, ElToritoCatalogBuilder.BuildBootRecordVolumeDescriptor((uint)ctx.BootCatalogLba)));
+            }
 
-        if (ctx.Options.IncludeJoliet)
-        {
-            metadata.Add((ctx.JolietSvdLba, BuildJolietVolumeDescriptor(ctx)));
-        }
+            if (ctx.Options.IncludeJoliet)
+            {
+                metadata.Add((ctx.JolietSvdLba, BuildJolietVolumeDescriptor(ctx)));
+            }
 
-        metadata.Add((ctx.TerminatorLba, BuildVolumeDescriptorTerminator()));
+            metadata.Add((ctx.TerminatorLba, BuildVolumeDescriptorTerminator()));
+        }
 
         if (ctx.UdfEnabled)
         {
@@ -1347,8 +1391,11 @@ public static class IsoUdfImageBuilder
             metadata.Add((ctx.Tea01Lba, BuildUdfExtendedAreaDescriptor("TEA01")));
         }
 
-        metadata.Add((ctx.IsoPathTableL_Lba, BuildPathTable(ctx.IsoPathTableEntries, ctx.IsoPathTableSectors, isJoliet: false, isBigEndian: false)));
-        metadata.Add((ctx.IsoPathTableM_Lba, BuildPathTable(ctx.IsoPathTableEntries, ctx.IsoPathTableSectors, isJoliet: false, isBigEndian: true)));
+        if (ctx.Options.IncludeIso9660)
+        {
+            metadata.Add((ctx.IsoPathTableL_Lba, BuildPathTable(ctx.IsoPathTableEntries, ctx.IsoPathTableSectors, isJoliet: false, isBigEndian: false)));
+            metadata.Add((ctx.IsoPathTableM_Lba, BuildPathTable(ctx.IsoPathTableEntries, ctx.IsoPathTableSectors, isJoliet: false, isBigEndian: true)));
+        }
 
         if (ctx.Options.IncludeJoliet)
         {
@@ -1358,7 +1405,10 @@ public static class IsoUdfImageBuilder
 
         foreach (var dir in ctx.BfsDirectories)
         {
-            metadata.Add((dir.IsoLba, BuildDirectoryExtent(ctx, dir, isJoliet: false)));
+            if (ctx.Options.IncludeIso9660)
+            {
+                metadata.Add((dir.IsoLba, BuildDirectoryExtent(ctx, dir, isJoliet: false)));
+            }
             if (ctx.Options.IncludeJoliet)
             {
                 metadata.Add((dir.JolietLba, BuildDirectoryExtent(ctx, dir, isJoliet: true)));

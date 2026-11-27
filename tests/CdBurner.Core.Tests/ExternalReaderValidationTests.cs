@@ -96,6 +96,100 @@ public class ExternalReaderValidationTests : IDisposable
         AssertAllFilesReadable(udf, expectFullNames: true);
     }
 
+    [Theory]
+    [InlineData((ushort)0x0102)]
+    [InlineData((ushort)0x0201)]
+    [InlineData((ushort)0x0250)]
+    public void UdfOnlyImage_HasNoIso9660Descriptors_AndIsFullyReadable(ushort udfRevision)
+    {
+        CreateMixedTree();
+        // Joliet is left at its default (on): without ISO 9660 it is dropped, not written.
+        using var image = BuildImage(new IsoBuildOptions(
+            VolumeLabel: "EXTVAL", IncludeIso9660: false, IncludeUdf: true, UdfRevision: udfRevision));
+
+        Assert.Equal(0, image.Length % 2048);
+
+        // No sector of the volume recognition area (16-31) may carry the ECMA-119 identifier CD001 (bytes 1-5).
+        byte[] cd001 = "CD001"u8.ToArray();
+        byte[] sector = new byte[2048];
+        var identifiers = new List<string>();
+        for (int lba = 16; lba < 32; lba++)
+        {
+            image.Position = lba * 2048L;
+            image.ReadExactly(sector);
+            Assert.False(sector.AsSpan(1, 5).SequenceEqual(cd001), $"Sector {lba} holds a CD001 descriptor.");
+            if (sector.AsSpan(1, 5).ToArray().All(b => b >= 'A' && b <= 'Z' || b >= '0' && b <= '9'))
+            {
+                identifiers.Add(System.Text.Encoding.ASCII.GetString(sector, 1, 5));
+            }
+        }
+
+        // ECMA-167 part 2: the recognition sequence starts at sector 16 with BEA01, then NSR02/NSR03, then TEA01.
+        Assert.Equal(
+            ["BEA01", udfRevision >= 0x0200 ? "NSR03" : "NSR02", "TEA01"],
+            identifiers);
+
+        image.Position = 0;
+        Assert.True(UdfReader.Detect(image));
+        image.Position = 0;
+        using (var udf = new UdfReader(image))
+        {
+            AssertAllFilesReadable(udf, expectFullNames: true);
+        }
+
+        image.Position = 0;
+        var root = UdfTreeReader.TryRead(image);
+        Assert.NotNull(root);
+        var treeFiles = new List<string>();
+        void Walk(IsoDirectoryEntry dir, string prefix)
+        {
+            foreach (var child in dir.Children)
+            {
+                if (child is IsoDirectoryEntry sub) Walk(sub, prefix + sub.Name + "/");
+                else treeFiles.Add(prefix + child.Name);
+            }
+        }
+        Walk(root!, "");
+        var sourceFiles = Directory.GetFiles(_sourceDir, "*", SearchOption.AllDirectories)
+            .Select(f => Path.GetRelativePath(_sourceDir, f).Replace(Path.DirectorySeparatorChar, '/'))
+            .Order(StringComparer.Ordinal).ToList();
+        Assert.Equal(sourceFiles, treeFiles.Order(StringComparer.Ordinal).ToList());
+
+        image.Position = 0;
+        var map = CdBurner.Core.Images.LbaFileExtentMap.FromIsoStream(image);
+        foreach (string src in Directory.GetFiles(_sourceDir, "*", SearchOption.AllDirectories))
+        {
+            long size = new FileInfo(src).Length;
+            if (size == 0) continue;
+            string rel = "/" + Path.GetRelativePath(_sourceDir, src).Replace(Path.DirectorySeparatorChar, '/');
+            var entry = map.SingleOrDefault(m => string.Equals(m.FilePath.Replace('\\', '/'), rel, StringComparison.Ordinal));
+            Assert.True(entry != null, $"Not mapped: {rel}");
+            Assert.Equal(size, entry!.FileSizeBytes);
+        }
+    }
+
+    [Fact]
+    public void UdfOnlyImage_IsRefusedWithoutUdf()
+    {
+        CreateMixedTree();
+        var ex = Assert.Throws<ArgumentException>(() =>
+            BuildImage(new IsoBuildOptions(VolumeLabel: "EXTVAL", IncludeIso9660: false, IncludeUdf: false)));
+        Assert.Contains("UDF", ex.Message);
+        Assert.Contains("ISO 9660", ex.Message);
+    }
+
+    [Fact]
+    public void UdfOnlyImage_IsRefusedWithElToritoBoot()
+    {
+        CreateMixedTree();
+        var boot = new ElToritoBootConfiguration(new BootCatalogEntrySpec(
+            BootPlatformId.X86Bios, BootEmulationType.NoEmulation, 0, 4, () => new MemoryStream(new byte[2048])));
+        var ex = Assert.Throws<ArgumentException>(() =>
+            BuildImage(new IsoBuildOptions(VolumeLabel: "EXTVAL", IncludeIso9660: false, IncludeUdf: true, BootConfiguration: boot)));
+        Assert.Contains("El Torito", ex.Message);
+        Assert.Contains("ISO 9660", ex.Message);
+    }
+
     [Fact]
     public void UdfBridgeImage_JolietAndIso9660_AreReadableByIndependentReader()
     {
