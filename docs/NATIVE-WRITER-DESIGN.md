@@ -27,8 +27,8 @@
 identical: two tracks with CD-Text on a CD-RW, and four tracks on a CD-R with CD-Text, catalog and ISRC codes,
 pre-emphasis and copy bits, audio in pre-gaps and audio in front of track 1. A mixed-mode CD (a data track, then two
 audio tracks) has been written on a CD-RW and read back identical, and again on a CD-R with the write-offset
-correction on (2026-11-21, results table). Audio writes and DVD writes have run on one drive model only (a second drive, the
-Lite-On iHAS124, has written a data CD-R); no disc has
+correction on (2026-11-21, results table). Audio and DVD writes have run on one drive model only (the LG GP60NB50; a second drive, the
+Lite-On iHAS124, has written a data CD-R, and a third drive, the LG BP50NB40, has written a single-layer BD-RE); no disc has
 been played in a stand-alone CD player yet.
 
 Data discs have also run on the same drive (results table): Track-at-Once on CD-RW (24 MB and 690 MB, every sector read
@@ -36,7 +36,7 @@ back); a DVD-R written in one pass, a DVD-R left open and given a second session
 write; a used and a new DVD+RW; a DVD+R finalized by the drive; three added sessions on a CD-RW, a CD-R and a DVD+R and
 four on a DVD-R, every file of every session identical; a 60 s DVD-Video test disc on a DVD+RW, read back and decoded
 in full; and a dual-layer DVD+R with the layer break where IgnisDisc was told to put it (the Ubuntu 26.04 image, 6.5 GB,
-SHA-256 of the disc equal to the image). Also real: a two-film DVD-9 on a dual-layer DVD+R with the break on the second film's first cell, played on an Xbox Series X across the layer change. Real since 2026-11-15: DVD-RW closed (Disc-At-Once), left open (incremental) and in restricted overwrite mode (expanded with 13h). A second session added to a real DVD-RW the same day. Still simulator only: DVD-RAM, dual-layer DVD-R, Blu-ray, CD-R overburning, DVD+R book type (bitsetting), DVD-RW test write, a Mode 2 / XA data track in a mixed-mode CD, the open audio session with a data
+SHA-256 of the disc equal to the image). Also real: a two-film DVD-9 on a dual-layer DVD+R with the break on the second film's first cell, played on an Xbox Series X across the layer change. Real since 2026-11-15: DVD-RW closed (Disc-At-Once), left open (incremental) and in restricted overwrite mode (expanded with 13h). A second session added to a real DVD-RW the same day. Real since 2026-11-26 (LG BP50NB40): single-layer BD-RE formatted from new (`FORMAT UNIT` 00h) and written (6.6 GB), then written over twice with `--streaming` `WRITE (12)` (7.5 GB and a 21.8 GB UDF 2.50 image, at 2.07x vs 0.88x without streaming), every file identical. Still simulator only: DVD-RAM, dual-layer DVD-R, BD-R (single-layer and M-DISC BD-R) and multi-layer Blu-ray (BD-R DL, BDXL, multi-layer BD-RE), CD-R overburning, DVD+R book type (bitsetting), DVD-RW test write, a Mode 2 / XA data track in a mixed-mode CD, the open audio session with a data
 session after it (CD-Extra) and copying an Enhanced CD whole, the Audio CD recovery session, the radial spread of archive recovery data, the archive
 `HEALTH.json` certificates, `eject` and `load` on any tray other than the Lite-On iHAS124's motorised one (where `eject` opened the tray when clear and returned `4/53/00` when blocked, and `load` closed it, 2026-11-19 to 21), CD picture tracks added after a base `.cue`, and the picture-disc options not covered by the burns noted below: `disc-art burn` (including
 the two-session burn of a picture with the files at the outer edge on DVD-R and DVD+R, the rim header drawn on calibrated CD, DVD and BD-R picture discs, and the experimental audio CD
@@ -264,7 +264,7 @@ speed in kB over 1,000 ms), then `SET CD SPEED` if the drive refuses that.
   2,048 in its type parameter, whether it accepts DCRT, how long it stays "format in progress", and whether its
   2/04/04 answers carry the progress bytes. Both: no test write, same leave-to-replace rule. The size is the format
   capacity; the track size is used only when the drive reports no format information.
-- *Blu-ray* (built 2026-11-11, simulator only; `NativeTaoDataWriter.BluRay.cs`). Both need the BD Write feature
+- *Blu-ray* (built 2026-11-11; single-layer BD-RE run on real hardware 2026-11-26, BD-R and multi-layer discs simulator only; `NativeTaoDataWriter.BluRay.cs`). Both need the BD Write feature
   (0x0041) current: a drive that only reads Blu-ray still reports the disc's profile. BD-R in sequential recording
   mode (profile 41h) goes the DVD+R way (cookbook: "very similar to DVD+R"): no mode page, no test write (MMC has
   none for Blu-ray), the image padded to whole 64 KiB clusters, `WRITE (10)` from the next writable address,
@@ -290,7 +290,7 @@ speed in kB over 1,000 ms), then `SET CD SPEED` if the drive refuses that.
   (3) Sector counts and capacities that can pass 2^31 bytes (a 128 GB disc is 128,001,769,472 bytes) are 64-bit;
   addresses stay 32-bit, as the 62.5 million sectors of the largest disc fit. The simulator refuses a BD-R `WRITE`
   that does not start and end on a 32-sector cluster.
-- *First Blu-ray writer, read-only* (LG BP50NB40, 2026-11-26, "Test hardware" below). Open questions for the paths
+- *First Blu-ray writer probe and first real BD-RE burns* (LG BP50NB40, 2026-11-26, "Test hardware" below). Open questions for the paths
   above: with a new, unformatted BD-RE loaded the drive reports 0x0041 **not current**, so the gate stopped before
   `FORMAT UNIT`; and it offers format 00h with 0x003000 in the type-dependent field, not the 2,048 the writer sent.
   Both settled on a real disc the same day (results table): the gate now lets an unformatted BD-RE with 0x0041 listed
@@ -495,8 +495,9 @@ and DVD±R DL profiles (no DVD-RAM, no Blu-ray), and reports a motorised tray wi
 closed the open tray by itself and the drive came ready. For a FORNET CD-R its write speed list holds a single
 entry, 16x CLV, where the GP60NB50 offers 24x, 16x and 10x.
 
-Blu-ray writer, LG BP50NB40 (external slim USB 2.0, bus powered), connected 2026-11-26 and probed read-only: nothing
-has been written with it. INQUIRY `HL-DT-ST` / `BP50NB40` / `1.02`; its USB bridge reports vendor ID 5917h, product
+Blu-ray writer, LG BP50NB40 (external slim USB 2.0, bus powered), connected 2026-11-26, probed read-only, and used the same day
+for the first single-layer BD-RE burns (with the direct writer, plain and `--streaming`, and with Windows' writer; rows above).
+No CD, DVD, BD-R or multi-layer Blu-ray disc has been written on it yet. INQUIRY `HL-DT-ST` / `BP50NB40` / `1.02`; its USB bridge reports vendor ID 5917h, product
 13FDh. Profiles BD-R (41h, 42h), BD-RE (43h), BD-ROM, DVD-RAM, DVD±R, DVD±RW, DVD±R DL, CD-R and CD-RW. Removable
 Medium: tray, Load 0, Eject 1, a spring tray like the GP60NB50's. The BD Read and BD Write features list BD-RE class 0
 versions 2 and 3 and BD-R class 0 versions 1 and 2. Real Time Streaming (0107h) has Stream Writing set, so the drive
