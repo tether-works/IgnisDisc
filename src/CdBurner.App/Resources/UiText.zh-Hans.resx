@@ -68,9 +68,9 @@
   <data name="UiSettingsTemporaryScratchISOStagingDirectory2" xml:space="preserve"><value>临时工作 / ISO 暂存目录</value></data>
   <data name="UiSettingsFFmpegTranscoderExecutablePathDVDVideo" xml:space="preserve"><value>FFmpeg 转码器可执行文件路径（DVD-Video）：</value></data>
   <data name="UiSettingsFFmpegTranscoderExecutablePath" xml:space="preserve"><value>FFmpeg 转码器可执行文件路径</value></data>
-  <data name="UiSettingsInstallFFmpeg1ClickLGPL" xml:space="preserve"><value>⬇ 安装 FFmpeg（一键，LGPL）</value></data>
-  <data name="UiSettingsInstallFFmpeg1ClickLGPL2" xml:space="preserve"><value>安装 FFmpeg（一键，LGPL）</value></data>
-  <data name="UiSettingsDownloadsTheOfficialLGPLWindowsBuild" xml:space="preserve"><value>将 FFmpeg 官方 LGPL Windows 版及其许可证下载到 %LOCALAPPDATA%\Programs\ffmpeg</value></data>
+  <data name="UiSettingsInstallFFmpeg1ClickLGPL" xml:space="preserve"><value>⬇ 安装 FFmpeg（一键）</value></data>
+  <data name="UiSettingsInstallFFmpeg1ClickLGPL2" xml:space="preserve"><value>安装 FFmpeg（一键）</value></data>
+  <data name="UiSettingsDownloadsTheOfficialLGPLWindowsBuild" xml:space="preserve"><value>将 FFmpeg 官方完整版 Windows 版（Blu-ray Video 和 HDR 影片需要）及其许可证下载到 %LOCALAPPDATA%\Programs\ffmpeg，并用公布的 SHA-256 校验</value></data>
   <data name="UiSettingsPAR2ArchiveRecoveryToolPar2cmdline" xml:space="preserve"><value>PAR2 归档恢复工具（par2cmdline）：</value></data>
   <data name="UiSettingsInstallPar21Click" xml:space="preserve"><value>⬇ 安装 par2（一键）</value></data>
   <data name="UiSettingsInstallPar21Click2" xml:space="preserve"><value>安装 par2（一键）</value></data>

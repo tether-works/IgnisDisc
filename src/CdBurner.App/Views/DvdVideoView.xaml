@@ -351,7 +351,7 @@
                                 AutomationProperties.Name="Install FFmpeg (1-Click)"
                                 Command="{Binding InstallFfmpegCommand}"
                                 Visibility="{Binding IsFfmpegMissing, Converter={StaticResource BoolToVis}}"
-                                ToolTip="Downloads the official LGPL Windows build of FFmpeg into %LOCALAPPDATA%\Programs\ffmpeg for automatic video transcoding"
+                                ToolTip="Downloads the official full Windows build of FFmpeg into %LOCALAPPDATA%\Programs\ffmpeg for automatic video transcoding"
                                 Padding="10,3"
                                 FontSize="11.5"
                                 Margin="0,2,0,2"

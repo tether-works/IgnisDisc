@@ -4548,7 +4548,7 @@ public static partial class CliCommandRunner
         stdout.WriteLine("  tools [--ffmpeg <path>] [--par2 <path>] [--json]");
         stdout.WriteLine("      Reports whether optional tools (ffmpeg, par2, subtitle tool) are installed and their versions.");
         stdout.WriteLine("  install-ffmpeg [--dir <folder>] [--plan-only] [--overwrite] [--json]");
-        stdout.WriteLine("      Downloads and extracts the LGPL Windows FFmpeg build into %LOCALAPPDATA%\\Programs\\ffmpeg (or --dir).");
+        stdout.WriteLine("      Downloads the full Windows FFmpeg build (libx264 for Blu-ray Video, zimg for HDR movies), checks it against the SHA-256 its publisher lists, into %LOCALAPPDATA%\\Programs\\ffmpeg (or --dir).");
         stdout.WriteLine("  install-par2 [--dir <folder>] [--plan-only] [--overwrite] [--json]");
         stdout.WriteLine("      Downloads and verifies par2cmdline-turbo by SHA-256 into %LOCALAPPDATA%\\Programs\\par2cmdline (or --dir).");
         stdout.WriteLine("  check-update [--json]");
@@ -4707,7 +4707,7 @@ public static partial class CliCommandRunner
             stdout.WriteLine("  tools [--ffmpeg <path>] [--par2 <path>] [--json]");
             stdout.WriteLine("      Checks installed optional tools (ffmpeg, par2 with update check, whisper.cpp subtitle tool).");
             stdout.WriteLine("  install-ffmpeg [--dir <folder>] [--plan-only] [--overwrite] [--json]");
-            stdout.WriteLine("      Downloads and extracts the LGPL Windows FFmpeg build into %LOCALAPPDATA%\\Programs\\ffmpeg (or --dir).");
+            stdout.WriteLine("      Downloads the full Windows FFmpeg build (libx264 for Blu-ray Video, zimg for HDR movies), checks it against the SHA-256 its publisher lists, into %LOCALAPPDATA%\\Programs\\ffmpeg (or --dir).");
             stdout.WriteLine("  install-par2 [--dir <folder>] [--plan-only] [--overwrite] [--json]");
             stdout.WriteLine("      Downloads and verifies par2cmdline-turbo by SHA-256 into %LOCALAPPDATA%\\Programs\\par2cmdline (or --dir).");
             stdout.WriteLine("  check-update [--json]");

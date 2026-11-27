@@ -68,9 +68,9 @@
   <data name="UiSettingsTemporaryScratchISOStagingDirectory2" xml:space="preserve"><value>一時作業／ISO準備フォルダー</value></data>
   <data name="UiSettingsFFmpegTranscoderExecutablePathDVDVideo" xml:space="preserve"><value>FFmpegトランスコーダーの実行ファイルのパス（DVD-Video）:</value></data>
   <data name="UiSettingsFFmpegTranscoderExecutablePath" xml:space="preserve"><value>FFmpegトランスコーダーの実行ファイルのパス</value></data>
-  <data name="UiSettingsInstallFFmpeg1ClickLGPL" xml:space="preserve"><value>⬇ FFmpegをインストール（ワンクリック・LGPL）</value></data>
-  <data name="UiSettingsInstallFFmpeg1ClickLGPL2" xml:space="preserve"><value>FFmpegをインストール（ワンクリック・LGPL）</value></data>
-  <data name="UiSettingsDownloadsTheOfficialLGPLWindowsBuild" xml:space="preserve"><value>FFmpegの公式LGPL版Windowsビルドとそのライセンスを %LOCALAPPDATA%\Programs\ffmpeg にダウンロードします</value></data>
+  <data name="UiSettingsInstallFFmpeg1ClickLGPL" xml:space="preserve"><value>⬇ FFmpegをインストール（ワンクリック）</value></data>
+  <data name="UiSettingsInstallFFmpeg1ClickLGPL2" xml:space="preserve"><value>FFmpegをインストール（ワンクリック）</value></data>
+  <data name="UiSettingsDownloadsTheOfficialLGPLWindowsBuild" xml:space="preserve"><value>FFmpegの公式フルビルド（Blu-ray VideoとHDR映画に必要）とそのライセンスを %LOCALAPPDATA%\Programs\ffmpeg にダウンロードし、公開されたSHA-256で確認します</value></data>
   <data name="UiSettingsPAR2ArchiveRecoveryToolPar2cmdline" xml:space="preserve"><value>PAR2アーカイブ回復ツール（par2cmdline）:</value></data>
   <data name="UiSettingsInstallPar21Click" xml:space="preserve"><value>⬇ par2をインストール（ワンクリック）</value></data>
   <data name="UiSettingsInstallPar21Click2" xml:space="preserve"><value>par2をインストール（ワンクリック）</value></data>

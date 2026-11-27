@@ -108,7 +108,7 @@ La grabación reemplazará todo el contenido del disco. ¿Continuar?</value></da
   <data name="StatusDvdVideoAuthoringDvdVideoIsoImage" xml:space="preserve"><value>Creando la imagen ISO de DVD-Video...</value></data>
   <data name="StatusDvdVideoBuildingTheDiscImageToPlace" xml:space="preserve"><value>Creando la imagen de disco para colocar el cambio de capa...</value></data>
   <data name="StatusDvdVideoCancellingDvdVideoOperation" xml:space="preserve"><value>Cancelando la operación de DVD-Video...</value></data>
-  <data name="StatusDvdVideoDownloadingFfmpegLgpl" xml:space="preserve"><value>Descargando FFmpeg (LGPL)...</value></data>
+  <data name="StatusDvdVideoDownloadingFfmpegLgpl" xml:space="preserve"><value>Descargando FFmpeg (versión completa)...</value></data>
   <data name="StatusDvdVideoDvdVideoBurnCancelled" xml:space="preserve"><value>Grabación del DVD-Video cancelada.</value></data>
   <data name="StatusDvdVideoDvdVideoBurnCancelledByUser" xml:space="preserve"><value>Grabación del DVD-Video cancelada por el usuario.</value></data>
   <data name="StatusDvdVideoDvdVideoIsoBuildCancelled" xml:space="preserve"><value>Creación de la ISO de DVD-Video cancelada.</value></data>

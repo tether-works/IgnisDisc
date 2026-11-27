@@ -108,7 +108,7 @@ IgnisDisc Optical Studio 是依据 GNU 通用公共许可证第 3 版或更高�
   <data name="StatusDvdVideoAuthoringDvdVideoIsoImage" xml:space="preserve"><value>正在制作 DVD-Video ISO 映像...</value></data>
   <data name="StatusDvdVideoBuildingTheDiscImageToPlace" xml:space="preserve"><value>正在构建光盘映像以放置换层点...</value></data>
   <data name="StatusDvdVideoCancellingDvdVideoOperation" xml:space="preserve"><value>正在取消 DVD-Video 操作...</value></data>
-  <data name="StatusDvdVideoDownloadingFfmpegLgpl" xml:space="preserve"><value>正在下载 FFmpeg（LGPL）...</value></data>
+  <data name="StatusDvdVideoDownloadingFfmpegLgpl" xml:space="preserve"><value>正在下载 FFmpeg（完整版）...</value></data>
   <data name="StatusDvdVideoDvdVideoBurnCancelled" xml:space="preserve"><value>DVD-Video 刻录已取消。</value></data>
   <data name="StatusDvdVideoDvdVideoBurnCancelledByUser" xml:space="preserve"><value>DVD-Video 刻录已被用户取消。</value></data>
   <data name="StatusDvdVideoDvdVideoIsoBuildCancelled" xml:space="preserve"><value>DVD-Video ISO 构建已取消。</value></data>

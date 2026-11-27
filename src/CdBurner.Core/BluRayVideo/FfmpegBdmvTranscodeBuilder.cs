@@ -37,7 +37,9 @@ public static class FfmpegBdmvTranscodeBuilder
     };
 
     /// <summary>The arguments for one movie (each one string, no quoting needed).</summary>
-    public static IReadOnlyList<string> Build(string inputPath, string outputTsPath, BdmvAuthoringOptions options)
+    /// <param name="toneMapFilter">For an HDR source, <see cref="DvdVideo.HdrToneMapping.ToneMapFilter"/>: run after the
+    /// picture is scaled down and before the bars are added. Null for SDR.</param>
+    public static IReadOnlyList<string> Build(string inputPath, string outputTsPath, BdmvAuthoringOptions options, string? toneMapFilter = null)
     {
         ArgumentException.ThrowIfNullOrWhiteSpace(inputPath);
         ArgumentException.ThrowIfNullOrWhiteSpace(outputTsPath);
@@ -75,6 +77,7 @@ public static class FfmpegBdmvTranscodeBuilder
 
         string filter =
             $"scale={width}:{height}:force_original_aspect_ratio=decrease," +
+            (string.IsNullOrEmpty(toneMapFilter) ? "" : toneMapFilter + ",") +
             $"pad={width}:{height}:(ow-iw)/2:(oh-ih)/2,setsar=1,fps={fraction},format=yuv420p";
 
         var args = new List<string>

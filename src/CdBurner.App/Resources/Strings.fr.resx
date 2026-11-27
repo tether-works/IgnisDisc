@@ -108,7 +108,7 @@ La gravure remplacera tout le contenu du disque. Continuer ?</value></data>
   <data name="StatusDvdVideoAuthoringDvdVideoIsoImage" xml:space="preserve"><value>Création de l'image ISO DVD-Vidéo...</value></data>
   <data name="StatusDvdVideoBuildingTheDiscImageToPlace" xml:space="preserve"><value>Création de l'image de disque pour placer le changement de couche...</value></data>
   <data name="StatusDvdVideoCancellingDvdVideoOperation" xml:space="preserve"><value>Annulation de l'opération DVD-Vidéo...</value></data>
-  <data name="StatusDvdVideoDownloadingFfmpegLgpl" xml:space="preserve"><value>Téléchargement de FFmpeg (LGPL)...</value></data>
+  <data name="StatusDvdVideoDownloadingFfmpegLgpl" xml:space="preserve"><value>Téléchargement de FFmpeg (version complète)...</value></data>
   <data name="StatusDvdVideoDvdVideoBurnCancelled" xml:space="preserve"><value>Gravure du DVD-Vidéo annulée.</value></data>
   <data name="StatusDvdVideoDvdVideoBurnCancelledByUser" xml:space="preserve"><value>Gravure du DVD-Vidéo annulée par l'utilisateur.</value></data>
   <data name="StatusDvdVideoDvdVideoIsoBuildCancelled" xml:space="preserve"><value>Création de l'ISO DVD-Vidéo annulée.</value></data>

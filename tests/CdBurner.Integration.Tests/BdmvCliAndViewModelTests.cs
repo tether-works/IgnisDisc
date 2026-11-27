@@ -43,6 +43,11 @@ public sealed class BdmvCliAndViewModelTests : IDisposable
                 onOutputLine?.Invoke(" A....D pcm_bluray           PCM for Blu-ray");
                 return Task.FromResult(0);
             }
+            if (CdBurner.Core.DvdVideo.HdrToneMapping.IsProbe(arguments))
+            {
+                onOutputLine?.Invoke("  Stream #0:0: Video: h264 (High), yuv420p(tv, bt709, progressive), 1920x1080, 25 fps");
+                return Task.FromResult(1); // FFmpeg exits 1 when given no output
+            }
             File.WriteAllBytes(arguments[^1], SyntheticTransportStream.Create(96));
             return Task.FromResult(0);
         }
@@ -246,7 +251,7 @@ public sealed class BdmvCliAndViewModelTests : IDisposable
 
         string built = await vm.BuildBdmvImageAsync(Path.Combine(_dir, "avchd.iso"));
         Assert.NotEqual(string.Empty, built);
-        var args = string.Join(' ', runner.Calls.Single(c => !c.Contains("-encoders")));
+        var args = string.Join(' ', runner.Calls.Single(c => c.Contains("-c:v")));
         Assert.Contains("pcm_bluray", args);
         var udf = new UdfTestWalker(File.ReadAllBytes(built));
         Assert.Contains("/BDMV/STREAM/00000.MTS", udf.Files.Keys);

@@ -959,11 +959,37 @@ public sealed class DvdVideoAuthoringService
                                !string.IsNullOrEmpty(ffmpegExe);
 
             var probedDurations = new double[titleCount];
+            var toneMapFilters = new string?[titleCount];
             if (ffmpegReady)
             {
                 for (int i = 0; i < titleCount; i++)
                 {
-                    probedDurations[i] = await ProbeVideoDurationSecondsAsync(ffmpegExe!, analyzed.MovieFilePaths[i], cancellationToken).ConfigureAwait(false);
+                    var probed = await ProbeMovieAsync(ffmpegExe!, analyzed.MovieFilePaths[i], cancellationToken).ConfigureAwait(false);
+                    probedDurations[i] = probed.Seconds;
+                    toneMapFilters[i] = HdrToneMapping.ToneMapFilter(probed.Color);
+                    if (toneMapFilters[i] != null)
+                    {
+                        logNotes.Add($"'{Path.GetFileName(analyzed.MovieFilePaths[i])}': HDR ({probed.Color.Transfer}) source, tone-mapped to standard range (BT.709).");
+                    }
+                }
+
+                // HDR passed through without zscale/tonemap would look washed out: stop rather than author that.
+                if (toneMapFilters.Any(f => f != null))
+                {
+                    var filterLines = new List<string>();
+                    await new CdBurner.Core.Subtitles.ProcessToolRunner().RunAsync(ffmpegExe!, ["-hide_banner", "-filters"],
+                        Path.GetTempPath(), filterLines.Add, cancellationToken).ConfigureAwait(false);
+                    if (!HdrToneMapping.FilterListingHasToneMapping(filterLines))
+                    {
+                        return new DvdAuthoringResult
+                        {
+                            Success = false,
+                            ErrorMessage = "The movie is HDR video, and this FFmpeg build has no zscale and tonemap filters to convert it; " +
+                                           "without them the picture would look washed out. Use an FFmpeg build with zimg (the 1-click download has it).",
+                            InputKind = analyzed.Kind,
+                            LogNotes = logNotes
+                        };
+                    }
                 }
             }
 
@@ -1083,6 +1109,7 @@ public sealed class DvdVideoAuthoringService
                             ? FfmpegDvdTranscodeBuilder.ForPal(moviePath, tempVob, options.AspectRatio)
                             : FfmpegDvdTranscodeBuilder.ForNtsc(moviePath, tempVob, options.AspectRatio))
                             .WithScaleAndPadFilter(true)
+                            .WithToneMapFilter(toneMapFilters[i])
                             .WithVideoBitrate(targetVideoBitrateKbps, targetMaxVideoBitrateKbps)
                             .WithAudio("ac3", options.AudioBitrateKbps);
 
@@ -1443,12 +1470,19 @@ public sealed class DvdVideoAuthoringService
         return await ProbeVideoDurationSecondsAsync(ffmpegExe, moviePath, cancellationToken).ConfigureAwait(false);
     }
 
-    private static async Task<double> ProbeVideoDurationSecondsAsync(
+    private static async Task<double> ProbeVideoDurationSecondsAsync(string ffmpegExe, string moviePath, CancellationToken cancellationToken) =>
+        (await ProbeMovieAsync(ffmpegExe, moviePath, cancellationToken).ConfigureAwait(false)).Seconds;
 
+    /// <summary>
+    /// The running time and the colour coding of a movie, both from one FFmpeg input report (<c>-hide_banner -i</c>).
+    /// 0 seconds and SDR when FFmpeg cannot be run or cannot read the file.
+    /// </summary>
+    private static async Task<(double Seconds, VideoColorInfo Color)> ProbeMovieAsync(
         string ffmpegExe,
         string moviePath,
         CancellationToken cancellationToken)
     {
+        var sdr = new VideoColorInfo(VideoTransfer.Sdr, null);
         try
         {
             var psi = new ProcessStartInfo
@@ -1464,7 +1498,7 @@ public sealed class DvdVideoAuthoringService
             psi.ArgumentList.Add(moviePath);
 
             using var proc = Process.Start(psi);
-            if (proc == null) return 0;
+            if (proc == null) return (0, sdr);
 
             using var cts = CancellationTokenSource.CreateLinkedTokenSource(cancellationToken);
             cts.CancelAfter(TimeSpan.FromSeconds(5));
@@ -1488,10 +1522,7 @@ public sealed class DvdVideoAuthoringService
 
             string stderr = errTask.IsCompletedSuccessfully ? errTask.Result : string.Empty;
             var match = FfmpegDurationRegex.Match(stderr);
-            if (match.Success)
-            {
-                return ParseHms(match);
-            }
+            return (match.Success ? ParseHms(match) : 0, HdrToneMapping.ParseFfmpegInputReport(stderr.Split('\n')));
         }
         catch (OperationCanceledException) when (cancellationToken.IsCancellationRequested)
         {
@@ -1501,7 +1532,7 @@ public sealed class DvdVideoAuthoringService
         {
         }
 
-        return 0;
+        return (0, sdr);
     }
 
     private static async Task<(bool Success, double DurationSeconds)> RunFfmpegTranscodeWithProgressAsync(

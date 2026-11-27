@@ -568,6 +568,21 @@ public class DvdVideoMasteringTests
     }
 
     [Fact]
+    public void FfmpegBuilder_HdrSource_IsToneMappedAtDvdSize_BeforeTheBars()
+    {
+        string tone = HdrToneMapping.ToneMapFilter(new VideoColorInfo(VideoTransfer.Pq, "bt2020nc"))!;
+        var args = FfmpegDvdTranscodeBuilder.ForNtsc("in.mkv", "out.vob", DvdAspectRatio.Widescreen16x9)
+            .WithScaleAndPadFilter(true).WithToneMapFilter(tone).BuildArgumentList().ToList();
+        string vf = args[args.IndexOf("-vf") + 1];
+
+        int fit = vf.IndexOf("scale=854:480:force_original_aspect_ratio=decrease", StringComparison.Ordinal);
+        int map = vf.IndexOf("tonemap=tonemap=hable", StringComparison.Ordinal);
+        int pad = vf.IndexOf("pad=854:480", StringComparison.Ordinal);
+        Assert.True(fit >= 0 && fit < map && map < pad, vf);
+        Assert.DoesNotContain("tonemap", FfmpegDvdTranscodeBuilder.BuildScaleAndPadFilter(DvdVideoStandard.Ntsc, DvdAspectRatio.Widescreen16x9));
+    }
+
+    [Fact]
     public void FfmpegBuilder_Pal_GeneratesDeterministicArgumentsWith16x9()
     {
         string input = @"C:\Media\Movie.mp4";

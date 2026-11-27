@@ -68,9 +68,9 @@
   <data name="UiSettingsTemporaryScratchISOStagingDirectory2" xml:space="preserve"><value>Carpeta temporal de trabajo / preparación de ISO</value></data>
   <data name="UiSettingsFFmpegTranscoderExecutablePathDVDVideo" xml:space="preserve"><value>Ruta del ejecutable del transcodificador FFmpeg (DVD-Video):</value></data>
   <data name="UiSettingsFFmpegTranscoderExecutablePath" xml:space="preserve"><value>Ruta del ejecutable del transcodificador FFmpeg</value></data>
-  <data name="UiSettingsInstallFFmpeg1ClickLGPL" xml:space="preserve"><value>⬇ Instalar FFmpeg (1 clic, LGPL)</value></data>
-  <data name="UiSettingsInstallFFmpeg1ClickLGPL2" xml:space="preserve"><value>Instalar FFmpeg (1 clic, LGPL)</value></data>
-  <data name="UiSettingsDownloadsTheOfficialLGPLWindowsBuild" xml:space="preserve"><value>Descarga la compilación oficial LGPL de FFmpeg para Windows y su licencia en %LOCALAPPDATA%\Programs\ffmpeg</value></data>
+  <data name="UiSettingsInstallFFmpeg1ClickLGPL" xml:space="preserve"><value>⬇ Instalar FFmpeg (1 clic)</value></data>
+  <data name="UiSettingsInstallFFmpeg1ClickLGPL2" xml:space="preserve"><value>Instalar FFmpeg (1 clic)</value></data>
+  <data name="UiSettingsDownloadsTheOfficialLGPLWindowsBuild" xml:space="preserve"><value>Descarga la compilación oficial completa de FFmpeg para Windows (necesaria para Blu-ray Video y películas HDR) y su licencia en %LOCALAPPDATA%\Programs\ffmpeg, comprobada con su SHA-256 publicado</value></data>
   <data name="UiSettingsPAR2ArchiveRecoveryToolPar2cmdline" xml:space="preserve"><value>Herramienta de recuperación de archivos PAR2 (par2cmdline):</value></data>
   <data name="UiSettingsInstallPar21Click" xml:space="preserve"><value>⬇ Instalar par2 (1 clic)</value></data>
   <data name="UiSettingsInstallPar21Click2" xml:space="preserve"><value>Instalar par2 (1 clic)</value></data>

@@ -163,7 +163,9 @@ public sealed class FfmpegDvdTranscodeBuilder
     /// 720 pixels wide. Before, the source was fitted to 720×480 as pixels and then labelled 16:9, so a 4:3 video
     /// played a third too wide.
     /// </summary>
-    public static string BuildScaleAndPadFilter(DvdVideoStandard standard, DvdAspectRatio aspectRatio)
+    /// <param name="toneMapFilter">For an HDR source, <see cref="HdrToneMapping.ToneMapFilter"/>, run once the picture is
+    /// down to DVD size and before the bars are added; null for SDR.</param>
+    public static string BuildScaleAndPadFilter(DvdVideoStandard standard, DvdAspectRatio aspectRatio, string? toneMapFilter = null)
     {
         int height = standard == DvdVideoStandard.Ntsc ? 480 : 576;
         int canvasWidth = aspectRatio == DvdAspectRatio.Standard4x3
@@ -172,8 +174,18 @@ public sealed class FfmpegDvdTranscodeBuilder
         // A source without a pixel shape (sar 0) is taken as square. Commas inside expressions are escaped for the filtergraph.
         return "scale=trunc(iw*if(gt(sar\\,0)\\,sar\\,1)/2)*2:ih,setsar=1," +
                $"scale={canvasWidth}:{height}:force_original_aspect_ratio=decrease," +
+               (string.IsNullOrEmpty(toneMapFilter) ? "" : toneMapFilter + ",") +
                $"pad={canvasWidth}:{height}:(ow-iw)/2:(oh-ih)/2," +
                $"scale=720:{height},format=yuv420p";
+    }
+
+    /// <summary>HDR sources: the tone-mapping filters (<see cref="HdrToneMapping.ToneMapFilter"/>); null for SDR.</summary>
+    public string? ToneMapFilter { get; set; }
+
+    public FfmpegDvdTranscodeBuilder WithToneMapFilter(string? toneMapFilter)
+    {
+        ToneMapFilter = toneMapFilter;
+        return this;
     }
 
     public FfmpegDvdTranscodeBuilder WithAspectRatio(DvdAspectRatio aspectRatio)
@@ -342,7 +354,7 @@ public sealed class FfmpegDvdTranscodeBuilder
         if (EnableScaleAndPadFilter)
         {
             args.Add("-vf");
-            args.Add(BuildScaleAndPadFilter(Standard, AspectRatio));
+            args.Add(BuildScaleAndPadFilter(Standard, AspectRatio, ToneMapFilter));
         }
 
         // Optional custom video bitrates

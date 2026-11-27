@@ -443,7 +443,7 @@ public class SettingsViewModel : ObservableObject
     #region Commands
 
     /// <summary>
-    /// Downloads and installs the official LGPL build of FFmpeg into <c>%LOCALAPPDATA%\Programs\ffmpeg</c>.
+    /// Downloads and installs the official full build of FFmpeg into <c>%LOCALAPPDATA%\Programs\ffmpeg</c>, replacing an older one.
     /// </summary>
     public AsyncRelayCommand InstallFfmpegCommand { get; }
 
@@ -537,9 +537,13 @@ public class SettingsViewModel : ObservableObject
         string? resolvedFfmpeg = FfmpegLocator.FindFfmpegExecutable(
             string.IsNullOrWhiteSpace(_ffmpegExecutablePath) ? null : _ffmpegExecutablePath);
         IsFfmpegInstalled = !string.IsNullOrEmpty(resolvedFfmpeg);
-        FfmpegStatusText = IsFfmpegInstalled
-            ? $"Installed: {resolvedFfmpeg}"
-            : "Not found — click 'Install FFmpeg (1-Click)' to download the LGPL build automatically.";
+        // An older 1-click install (the LGPL build) has no libx264: say so, and the button replaces it with the full build.
+        string? ffmpegMissing = IsFfmpegInstalled ? FfmpegCapabilities.Query(resolvedFfmpeg!)?.MissingDescription : null;
+        FfmpegStatusText = !IsFfmpegInstalled
+            ? "Not found — click 'Install FFmpeg (1-Click)' to download the full build automatically."
+            : ffmpegMissing == null
+                ? $"Installed: {resolvedFfmpeg}"
+                : $"Installed: {resolvedFfmpeg}, but it has {ffmpegMissing}. Click 'Install FFmpeg (1-Click)' to replace it with the full build.";
 
         string? resolvedPar2 = Par2Runner.FindPar2Executable();
         IsPar2Installed = !string.IsNullOrEmpty(resolvedPar2);
@@ -801,7 +805,7 @@ public class SettingsViewModel : ObservableObject
     }
 
     /// <summary>
-    /// Downloads and extracts the LGPL Windows build of FFmpeg, updates <see cref="FfmpegExecutablePath"/>, and persists settings.
+    /// Downloads and extracts the full Windows build of FFmpeg, updates <see cref="FfmpegExecutablePath"/>, and persists settings.
     /// </summary>
     public async Task<ToolInstallResult> InstallFfmpegAsync(
         string? targetDirectory = null,
@@ -832,7 +836,7 @@ public class SettingsViewModel : ObservableObject
             {
                 FfmpegExecutablePath = result.ExecutablePath;
                 SaveSettings();
-                StatusMessage = $"FFmpeg (LGPL) installed: {result.ExecutablePath}";
+                StatusMessage = $"{ExternalToolInstallerService.FfmpegDisplayName} installed: {result.ExecutablePath}";
             }
             else
             {

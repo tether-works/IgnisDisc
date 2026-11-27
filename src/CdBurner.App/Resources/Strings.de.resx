@@ -108,7 +108,7 @@ Beim Brennen wird alles auf der Disc ersetzt. Fortfahren?</value></data>
   <data name="StatusDvdVideoAuthoringDvdVideoIsoImage" xml:space="preserve"><value>DVD-Video-ISO-Abbild wird erstellt...</value></data>
   <data name="StatusDvdVideoBuildingTheDiscImageToPlace" xml:space="preserve"><value>Disc-Abbild wird erstellt, um den Schichtwechsel zu setzen...</value></data>
   <data name="StatusDvdVideoCancellingDvdVideoOperation" xml:space="preserve"><value>DVD-Video-Vorgang wird abgebrochen...</value></data>
-  <data name="StatusDvdVideoDownloadingFfmpegLgpl" xml:space="preserve"><value>FFmpeg (LGPL) wird heruntergeladen...</value></data>
+  <data name="StatusDvdVideoDownloadingFfmpegLgpl" xml:space="preserve"><value>FFmpeg (Vollversion) wird heruntergeladen...</value></data>
   <data name="StatusDvdVideoDvdVideoBurnCancelled" xml:space="preserve"><value>DVD-Video-Brennvorgang abgebrochen.</value></data>
   <data name="StatusDvdVideoDvdVideoBurnCancelledByUser" xml:space="preserve"><value>DVD-Video-Brennvorgang vom Benutzer abgebrochen.</value></data>
   <data name="StatusDvdVideoDvdVideoIsoBuildCancelled" xml:space="preserve"><value>Erstellung des DVD-Video-ISO abgebrochen.</value></data>

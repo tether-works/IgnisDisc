@@ -389,13 +389,17 @@ public static partial class CliCommandRunner
 
         if (cmd.IsJson)
         {
+            FfmpegCapabilities? ffmpegCaps = ffmpegPath != null ? FfmpegCapabilities.Query(ffmpegPath) : null;
             WriteJsonResult(stdout, new
             {
                 success = true,
                 ffmpeg = new
                 {
                     available = ffmpegPath != null,
-                    path = ffmpegPath
+                    path = ffmpegPath,
+                    hasLibx264 = ffmpegCaps?.HasLibx264,
+                    hasToneMapping = ffmpegCaps?.HasToneMapping,
+                    missing = ffmpegCaps?.MissingDescription
                 },
                 par2 = new
                 {
@@ -421,11 +425,20 @@ public static partial class CliCommandRunner
         stdout.WriteLine(LegalBanner.VersionNotice);
         stdout.WriteLine();
         stdout.WriteLine("Optional External Tools:");
-        stdout.WriteLine($"  ffmpeg:        {(ffmpegPath != null ? $"available ({ffmpegPath})" : "not found (install with: ignisdisc-cli install-ffmpeg)")}");
+        stdout.WriteLine($"  ffmpeg:        {(ffmpegPath != null ? $"available ({ffmpegPath}){DescribeMissing(ffmpegPath)}" : "not found (install with: ignisdisc-cli install-ffmpeg)")}");
         stdout.WriteLine($"  par2:          {(par2Path != null ? par2Description : "not found (install with: ignisdisc-cli install-par2)")}");
         stdout.WriteLine($"  subtitle tool: {(whisper != null ? whisper.Describe() : "not found (install with: ignisdisc-cli install-subtitle-tool)")}");
         return 0;
     }
+
+    /// <summary>
+    /// " — but it has no libx264 ..." with the fix, for an FFmpeg that lacks something the video features need; empty
+    /// when nothing is missing or the build could not be asked.
+    /// </summary>
+    private static string DescribeMissing(string? ffmpegPath) =>
+        ffmpegPath != null && FfmpegCapabilities.Query(ffmpegPath)?.MissingDescription is string missing
+            ? $" — but it has {missing}; replace it with the full build: ignisdisc-cli install-ffmpeg --overwrite"
+            : "";
 
     internal static async Task<int> HandleInstallFfmpegAsync(
         CommandLineArgs cmd,
@@ -452,17 +465,23 @@ public static partial class CliCommandRunner
                     tool = "ffmpeg",
                     installDirectory = targetDir,
                     targetExecutable = targetExe,
-                    downloadUrl = downloadUrlOverride ?? ExternalToolInstallerService.DefaultFfmpegLgplWin64Url,
+                    downloadUrl = downloadUrlOverride ?? ExternalToolInstallerService.DefaultFfmpegWin64Url,
+                    checksumsUrl = downloadUrlOverride == null ? ExternalToolInstallerService.DefaultFfmpegChecksumsUrl : null,
                     alreadyInstalled = existing != null,
-                    existingPath = existing
+                    existingPath = existing,
+                    existingMissing = existing == null ? null : FfmpegCapabilities.Query(existing)?.MissingDescription
                 });
                 return 0;
             }
 
             stdout.WriteLine($"FFmpeg install plan:");
             stdout.WriteLine($"  Directory: {targetDir}");
-            stdout.WriteLine($"  Source:    {downloadUrlOverride ?? ExternalToolInstallerService.DefaultFfmpegLgplWin64Url}");
-            stdout.WriteLine($"  Installed: {existing ?? "no"}");
+            stdout.WriteLine($"  Source:    {downloadUrlOverride ?? ExternalToolInstallerService.DefaultFfmpegWin64Url}");
+            if (downloadUrlOverride == null)
+            {
+                stdout.WriteLine($"  Checked:   against the SHA-256 in {ExternalToolInstallerService.DefaultFfmpegChecksumsUrl}");
+            }
+            stdout.WriteLine($"  Installed: {existing ?? "no"}{DescribeMissing(existing)}");
             return 0;
         }
 

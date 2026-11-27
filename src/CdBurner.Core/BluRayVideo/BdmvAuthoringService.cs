@@ -224,7 +224,8 @@ public sealed class BdmvAuthoringService
         }
         if (!listing.Contains("libx264", StringComparison.Ordinal))
         {
-            return "This FFmpeg build has no libx264 encoder, which Blu-ray compliant H.264 needs. Install the full FFmpeg build from the Tools page.";
+            return "This FFmpeg build has no libx264 encoder, which Blu-ray compliant H.264 needs (older 1-click installs got a build without it). " +
+                   "Click 'Install FFmpeg (1-Click)' in Settings, or run 'ignisdisc-cli install-ffmpeg --overwrite', to replace it with the full build.";
         }
         if (options.AudioCodec == BdmvAudioCodec.Lpcm && !listing.Contains("pcm_bluray", StringComparison.Ordinal))
         {
@@ -253,7 +254,22 @@ public sealed class BdmvAuthoringService
         string tsPath = Path.Combine(tempDir, clipName + ".ts");
         var (width, height) = BdmvBinaryWriters.VideoSize(options.VideoFormat);
 
-        var args = FfmpegBdmvTranscodeBuilder.Build(input, tsPath, options);
+        // An HDR movie (BT.2020, PQ or HLG) is tone-mapped to standard range; passed through it would look washed out.
+        var color = await HdrToneMapping.ProbeAsync(ToolRunner, ffmpeg, input, tempDir, cancellationToken).ConfigureAwait(false);
+        string? toneMap = HdrToneMapping.ToneMapFilter(color);
+        if (toneMap != null)
+        {
+            var filterLines = new List<string>();
+            await ToolRunner.RunAsync(ffmpeg, ["-hide_banner", "-filters"], tempDir, filterLines.Add, cancellationToken).ConfigureAwait(false);
+            if (!HdrToneMapping.FilterListingHasToneMapping(filterLines))
+            {
+                throw new InvalidDataException(
+                    $"'{Path.GetFileName(input)}' is HDR video, and this FFmpeg build has no zscale and tonemap filters to convert it; " +
+                    "without them the picture would look washed out. Use an FFmpeg build with zimg (the full builds have it).");
+            }
+            notes.Add($"'{Path.GetFileName(input)}': HDR ({color.Transfer}) source, tone-mapped to standard range (BT.709).");
+        }
+        var args = FfmpegBdmvTranscodeBuilder.Build(input, tsPath, options, toneMap);
         var tail = new Queue<string>();
         int exit = await ToolRunner.RunAsync(ffmpeg, args, tempDir, line =>
         {

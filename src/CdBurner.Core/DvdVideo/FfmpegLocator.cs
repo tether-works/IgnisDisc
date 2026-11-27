@@ -54,8 +54,11 @@ public static class FfmpegLocator
         string? managedInstallDirectory,
         string? pathEnvironment)
     {
-        // 1. Explicit custom path
-        if (!string.IsNullOrWhiteSpace(customPath))
+        // 1. Explicit custom path. Only a full path counts: the settings default is the bare name "ffmpeg.exe", and a
+        //    relative name resolves against whatever folder the program was started in. Taken as a path, it picked a
+        //    2021 ffmpeg.exe someone had copied into the application folder over the current 1-click install
+        //    (2026-11-26), so a bare name now means "find it" and goes through the order below.
+        if (!string.IsNullOrWhiteSpace(customPath) && Path.IsPathFullyQualified(customPath))
         {
             try
             {

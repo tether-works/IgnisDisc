@@ -29,6 +29,14 @@ public sealed class BdmvAuthoringAndValidatorTests : IDisposable
     {
         public List<IReadOnlyList<string>> Calls { get; } = new();
 
+        /// <summary>The video stream line the input report gives (FFmpeg's own wording); SDR H.264 unless set.</summary>
+        public string VideoStreamLine { get; init; } = "  Stream #0:0: Video: h264 (High), yuv420p(tv, bt709, progressive), 1920x1080, 25 fps";
+
+        /// <summary>False makes an FFmpeg build without the zimg filters.</summary>
+        public bool HasZscale { get; init; } = true;
+
+        public IReadOnlyList<string> Encode => Calls.Single(c => c.Contains("-c:v"));
+
         public Task<int> RunAsync(string executablePath, IReadOnlyList<string> arguments, string workingDirectory, Action<string>? onOutputLine, CancellationToken cancellationToken)
         {
             Calls.Add(arguments.ToList());
@@ -38,6 +46,22 @@ public sealed class BdmvAuthoringAndValidatorTests : IDisposable
                 onOutputLine?.Invoke(" A....D ac3                  ATSC A/52A (AC-3)");
                 onOutputLine?.Invoke(" A....D pcm_bluray           PCM signed 16|20|24-bit big-endian for Blu-ray media");
                 return Task.FromResult(0);
+            }
+            if (arguments.Contains("-filters"))
+            {
+                onOutputLine?.Invoke(" .S tonemap           V->V       Conversion to/from different dynamic ranges.");
+                if (HasZscale)
+                {
+                    onOutputLine?.Invoke(" .S zscale            V->V       Apply resizing, colorspace and bit depth conversion.");
+                }
+                return Task.FromResult(0);
+            }
+            if (HdrToneMapping.IsProbe(arguments))
+            {
+                onOutputLine?.Invoke("Input #0, matroska,webm, from 'movie.mkv':");
+                onOutputLine?.Invoke(VideoStreamLine);
+                onOutputLine?.Invoke("At least one output file must be specified");
+                return Task.FromResult(1); // FFmpeg exits 1 when given no output
             }
             File.WriteAllBytes(arguments[^1], SyntheticTransportStream.Create(frames));
             return Task.FromResult(0);
@@ -346,7 +370,7 @@ public sealed class BdmvAuthoringAndValidatorTests : IDisposable
         var options = new BdmvAuthoringOptions { CustomFfmpegPath = FakeFfmpegExe() };
         var result = await new BdmvAuthoringService { ToolRunner = fake }.AuthorAsync([MakeMovie()], Path.Combine(_dir, "cmd"), options);
         Assert.True(result.Success, result.ErrorMessage);
-        var args = fake.Calls.Single(c => !c.Contains("-encoders"));
+        var args = fake.Encode;
         string joined = string.Join(' ', args);
         Assert.Contains("bluray-compat=1", joined);
         Assert.Contains("open-gop=0", joined);
@@ -355,6 +379,83 @@ public sealed class BdmvAuthoringAndValidatorTests : IDisposable
         Assert.Contains("fps=24000/1001", joined);
         Assert.Contains("-streamid 0:4113 -streamid 1:4352", joined);   // 0x1011 and 0x1100
         Assert.Contains("-c:a ac3", joined);
+        Assert.DoesNotContain("tonemap", joined);                        // SDR source: no tone mapping
+        Assert.DoesNotContain(fake.Calls, c => c.Contains("-filters"));
+    }
+
+    // ----- HDR sources ----------------------------------------------------------------------------------------
+
+    /// <summary>FFmpeg's own report line for a 4K HDR10 film (2026-11-26).</summary>
+    private const string Hdr10Line = "  Stream #0:0: Video: hevc (Main 10), yuv420p10le(tv, bt2020nc/bt2020/smpte2084), 3840x1608 [SAR 1:1 DAR 160:67], 23.98 fps, 23.98 tbr, 1k tbn (default)";
+
+    [Theory]
+    [InlineData(Hdr10Line, VideoTransfer.Pq, "bt2020nc")]
+    [InlineData("  Stream #0:0: Video: hevc (Main 10), yuv420p10le(tv, bt2020nc/bt2020/arib-std-b67), 3840x2160, 50 fps", VideoTransfer.Hlg, "bt2020nc")]
+    [InlineData("  Stream #0:0(eng): Video: hevc (Main 10), yuv420p10le(tv, bt2020c/bt2020/smpte2084, progressive), 3840x2160", VideoTransfer.Pq, "bt2020c")]
+    [InlineData("  Stream #0:0: Video: h264 (High), yuv420p(tv, bt709, progressive), 1920x1080, 25 fps", VideoTransfer.Sdr, null)]
+    [InlineData("  Stream #0:0: Video: mpeg4 (Simple Profile), yuv420p, 640x480, 25 fps", VideoTransfer.Sdr, null)]
+    public void InputReport_GivesTheTransferAndMatrix(string line, VideoTransfer transfer, string? matrix)
+    {
+        var info = HdrToneMapping.ParseFfmpegInputReport(["Input #0, matroska,webm, from 'm.mkv':", "  Duration: 03:06:35.54", line,
+            "  Stream #0:1(eng): Audio: eac3, 48000 Hz, 7.1, fltp, 1024 kb/s (default)"]);
+        Assert.Equal(transfer, info.Transfer);
+        Assert.Equal(matrix, info.Matrix);
+    }
+
+    [Fact]
+    public void InputReport_WithoutVideo_IsSdr() =>
+        Assert.False(HdrToneMapping.ParseFfmpegInputReport(["  Stream #0:0: Audio: flac, 44100 Hz, stereo"]).IsHdr);
+
+    [Fact]
+    public void ToneMapFilter_ConvertsPqAndHlg_AndLeavesSdrAlone()
+    {
+        Assert.Null(HdrToneMapping.ToneMapFilter(new VideoColorInfo(VideoTransfer.Sdr, null)));
+        string pq = HdrToneMapping.ToneMapFilter(new VideoColorInfo(VideoTransfer.Pq, "bt2020nc"))!;
+        Assert.StartsWith("zscale=tin=smpte2084:min=bt2020nc:pin=bt2020:rin=tv:t=linear:npl=100,", pq);
+        Assert.Contains("zscale=p=bt709,tonemap=tonemap=hable:desat=0,zscale=t=bt709:m=bt709:r=tv", pq);
+        Assert.Contains("tin=arib-std-b67:min=bt2020nc", HdrToneMapping.ToneMapFilter(new VideoColorInfo(VideoTransfer.Hlg, null)));
+    }
+
+    [Fact]
+    public void FilterListing_NeedsBothZscaleAndTonemap()
+    {
+        string[] full = [" .S tonemap           V->V       Conversion to/from different dynamic ranges.",
+                         " .S zscale            V->V       Apply resizing, colorspace and bit depth conversion.",
+                         " .. tonemap_opencl    V->V       Perform HDR to SDR conversion with tonemapping."];
+        Assert.True(HdrToneMapping.FilterListingHasToneMapping(full));
+        Assert.False(HdrToneMapping.FilterListingHasToneMapping([full[0], full[2]])); // tonemap_opencl is not zscale
+    }
+
+    [Fact]
+    public async Task HdrMovie_IsToneMappedAfterScalingAndBeforeTheBars()
+    {
+        var fake = new FakeFfmpeg(40) { VideoStreamLine = Hdr10Line };
+        var options = new BdmvAuthoringOptions { CustomFfmpegPath = FakeFfmpegExe() };
+
+        var result = await new BdmvAuthoringService { ToolRunner = fake }.AuthorAsync([MakeMovie()], Path.Combine(_dir, "hdr"), options);
+
+        Assert.True(result.Success, result.ErrorMessage);
+        string vf = fake.Encode[fake.Encode.ToList().IndexOf("-vf") + 1];
+        int scale = vf.IndexOf("scale=1920:1080:force_original_aspect_ratio=decrease", StringComparison.Ordinal);
+        int tone = vf.IndexOf("tonemap=tonemap=hable", StringComparison.Ordinal);
+        int pad = vf.IndexOf("pad=1920:1080", StringComparison.Ordinal);
+        Assert.True(scale >= 0 && scale < tone && tone < pad, vf);
+        Assert.Contains("tin=smpte2084:min=bt2020nc", vf);
+        Assert.Contains(result.LogNotes, n => n.Contains("tone-mapped"));
+    }
+
+    [Fact]
+    public async Task HdrMovie_WithAnFfmpegWithoutZscale_StopsBeforeEncoding()
+    {
+        var fake = new FakeFfmpeg(40) { VideoStreamLine = Hdr10Line, HasZscale = false };
+        var options = new BdmvAuthoringOptions { CustomFfmpegPath = FakeFfmpegExe() };
+
+        var result = await new BdmvAuthoringService { ToolRunner = fake }.AuthorAsync([MakeMovie()], Path.Combine(_dir, "nozimg"), options);
+
+        Assert.False(result.Success);
+        Assert.Contains("HDR", result.ErrorMessage);
+        Assert.Contains("washed out", result.ErrorMessage);
+        Assert.DoesNotContain(fake.Calls, c => c.Contains("-c:v"));
     }
 
     [Fact]

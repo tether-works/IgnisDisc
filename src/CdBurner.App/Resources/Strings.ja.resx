@@ -108,7 +108,7 @@ IgnisDisc Optical Studioは、GNU General Public License バージョン3以降�
   <data name="StatusDvdVideoAuthoringDvdVideoIsoImage" xml:space="preserve"><value>DVD-Video ISOイメージをオーサリングしています...</value></data>
   <data name="StatusDvdVideoBuildingTheDiscImageToPlace" xml:space="preserve"><value>層切り替え位置を設定するためにディスクイメージを作成しています...</value></data>
   <data name="StatusDvdVideoCancellingDvdVideoOperation" xml:space="preserve"><value>DVD-Video処理をキャンセルしています...</value></data>
-  <data name="StatusDvdVideoDownloadingFfmpegLgpl" xml:space="preserve"><value>FFmpeg（LGPL）をダウンロードしています...</value></data>
+  <data name="StatusDvdVideoDownloadingFfmpegLgpl" xml:space="preserve"><value>FFmpeg（フルビルド）をダウンロードしています...</value></data>
   <data name="StatusDvdVideoDvdVideoBurnCancelled" xml:space="preserve"><value>DVD-Videoの書き込みをキャンセルしました。</value></data>
   <data name="StatusDvdVideoDvdVideoBurnCancelledByUser" xml:space="preserve"><value>DVD-Videoの書き込みがユーザーによってキャンセルされました。</value></data>
   <data name="StatusDvdVideoDvdVideoIsoBuildCancelled" xml:space="preserve"><value>DVD-Video ISOの作成をキャンセルしました。</value></data>

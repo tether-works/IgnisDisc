@@ -26,10 +26,19 @@ public sealed record ToolInstallResult(
 public static class ExternalToolInstallerService
 {
     /// <summary>
-    /// Official BtbN LGPL v2.1 Windows x64 FFmpeg release archive URL.
+    /// Official BtbN Windows x64 FFmpeg build, "gpl" variant: the full build. It has the libx264 encoder that Blu-ray Video
+    /// and AVCHD need and the zimg filters for HDR movies; the "lgpl" variant installed before 2026-11-26 has no libx264,
+    /// because x264 is GPL software. IgnisDisc is GPL-3.0-or-later, and the user downloads FFmpeg from BtbN.
     /// </summary>
-    public const string DefaultFfmpegLgplWin64Url =
-        "https://github.com/BtbN/FFmpeg-Builds/releases/download/latest/ffmpeg-master-latest-win64-lgpl.zip";
+    public const string DefaultFfmpegWin64Url =
+        "https://github.com/BtbN/FFmpeg-Builds/releases/download/latest/ffmpeg-master-latest-win64-gpl.zip";
+
+    /// <summary>The SHA-256 list BtbN publishes in the same release (<c>&lt;hash&gt;  &lt;file name&gt;</c> per line).</summary>
+    public const string DefaultFfmpegChecksumsUrl =
+        "https://github.com/BtbN/FFmpeg-Builds/releases/download/latest/checksums.sha256";
+
+    /// <summary>How the installed FFmpeg is named in messages.</summary>
+    public const string FfmpegDisplayName = "FFmpeg (full build)";
 
     /// <summary>
     /// par2cmdline-turbo release installed by <see cref="InstallPar2Async"/>. par2cmdline-turbo
@@ -89,34 +98,122 @@ public static class ExternalToolInstallerService
     }
 
     /// <summary>
-    /// Downloads and extracts the LGPL Windows build of <c>ffmpeg.exe</c> (and its companion license text)
-    /// into the specified or default per-user directory.
+    /// Downloads and extracts the full Windows build of <c>ffmpeg.exe</c> (and its license text) into the specified or
+    /// default per-user directory, replacing an older one there.
     /// </summary>
-    public static Task<ToolInstallResult> InstallFfmpegAsync(
+    /// <remarks>
+    /// BtbN publishes FFmpeg as a rolling "latest" release, so no hash can be pinned in IgnisDisc. Instead the release's
+    /// own <c>checksums.sha256</c> is read first and the archive must match it before anything is unpacked. If BtbN
+    /// replaced the release between the two reads the hashes differ; the list is then read again once. With
+    /// <paramref name="downloadUrlOverride"/> (tests, mirrors) only <paramref name="expectedSha256Override"/> is checked.
+    /// </remarks>
+    public static async Task<ToolInstallResult> InstallFfmpegAsync(
         string? targetDirectory = null,
         HttpClient? httpClient = null,
         string? downloadUrlOverride = null,
         IProgress<string>? progress = null,
-        CancellationToken cancellationToken = default)
+        CancellationToken cancellationToken = default,
+        string? expectedSha256Override = null)
     {
         string installDir = string.IsNullOrWhiteSpace(targetDirectory)
             ? GetDefaultFfmpegInstallDirectory()
             : Path.GetFullPath(targetDirectory);
-        string url = string.IsNullOrWhiteSpace(downloadUrlOverride)
-            ? DefaultFfmpegLgplWin64Url
-            : downloadUrlOverride;
+        bool official = string.IsNullOrWhiteSpace(downloadUrlOverride);
+        string url = official ? DefaultFfmpegWin64Url : downloadUrlOverride!;
 
-        return DownloadAndExtractToolAsync(
-            toolDisplayName: "FFmpeg (LGPL)",
-            executableFileName: "ffmpeg.exe",
-            licenseOutputFileName: "ffmpeg-LICENSE.txt",
-            downloadUrl: url,
-            // BtbN publishes FFmpeg only as a rolling "latest" build, so there is no fixed hash to pin.
-            expectedSha256: null,
-            installDirectory: installDir,
-            httpClient: httpClient,
-            progress: progress,
-            cancellationToken: cancellationToken);
+        bool ownsClient = httpClient == null;
+        HttpClient client = httpClient ?? CreateDefaultHttpClient();
+        try
+        {
+            for (int attempt = 1; ; attempt++)
+            {
+                string? expected = string.IsNullOrWhiteSpace(expectedSha256Override) ? null : expectedSha256Override.Trim();
+                if (expected == null && official)
+                {
+                    progress?.Report("Reading the published SHA-256 of the FFmpeg build...");
+                    expected = await FetchPublishedSha256Async(client, DefaultFfmpegChecksumsUrl, Path.GetFileName(new Uri(url).AbsolutePath), cancellationToken)
+                        .ConfigureAwait(false);
+                    if (expected == null)
+                    {
+                        return new ToolInstallResult(false, null, null,
+                            "Could not read the SHA-256 that BtbN publishes for the FFmpeg build, so it was not downloaded. Nothing was installed.");
+                    }
+                }
+
+                var result = await DownloadAndExtractToolAsync(
+                    toolDisplayName: FfmpegDisplayName,
+                    executableFileName: "ffmpeg.exe",
+                    licenseOutputFileName: "ffmpeg-LICENSE.txt",
+                    downloadUrl: url,
+                    expectedSha256: expected,
+                    installDirectory: installDir,
+                    httpClient: client,
+                    progress: progress,
+                    cancellationToken: cancellationToken).ConfigureAwait(false);
+                bool hashMismatch = !result.Success && result.ErrorMessage?.StartsWith("Refused ", StringComparison.Ordinal) == true;
+                if (hashMismatch && official && expectedSha256Override == null && attempt == 1)
+                {
+                    progress?.Report("The FFmpeg release changed during the download; reading its SHA-256 again...");
+                    continue;
+                }
+                return result;
+            }
+        }
+        finally
+        {
+            if (ownsClient)
+            {
+                client.Dispose();
+            }
+        }
+    }
+
+    /// <summary>
+    /// The SHA-256 for <paramref name="fileName"/> in a published checksum list (<c>sha256sum</c> format:
+    /// 64 hex digits, spaces, an optional <c>*</c>, the file name), or null when it is not listed.
+    /// </summary>
+    public static string? FindSha256InChecksumList(string checksumList, string fileName)
+    {
+        ArgumentNullException.ThrowIfNull(checksumList);
+        foreach (string raw in checksumList.Split('\n'))
+        {
+            string line = raw.Trim();
+            int space = line.IndexOf(' ');
+            if (space != 64)
+            {
+                continue;
+            }
+            string hash = line[..64];
+            string name = line[space..].Trim().TrimStart('*');
+            if (IsSha256Hex(hash) && string.Equals(name, fileName, StringComparison.Ordinal))
+            {
+                return hash.ToLowerInvariant();
+            }
+        }
+        return null;
+    }
+
+    private static async Task<string?> FetchPublishedSha256Async(HttpClient client, string checksumsUrl, string fileName, CancellationToken ct)
+    {
+        try
+        {
+            using var request = new HttpRequestMessage(HttpMethod.Get, checksumsUrl);
+            if (!client.DefaultRequestHeaders.UserAgent.Any())
+            {
+                request.Headers.UserAgent.ParseAdd(DefaultUserAgent);
+            }
+            using var response = await client.SendAsync(request, ct).ConfigureAwait(false);
+            if (!response.IsSuccessStatusCode)
+            {
+                return null;
+            }
+            string text = await response.Content.ReadAsStringAsync(ct).ConfigureAwait(false);
+            return FindSha256InChecksumList(text, fileName);
+        }
+        catch (Exception ex) when (ex is HttpRequestException or TaskCanceledException && !ct.IsCancellationRequested)
+        {
+            return null;
+        }
     }
 
     /// <summary>
@@ -408,7 +505,7 @@ public static class ExternalToolInstallerService
                            $"{expectedSha256.ToLowerInvariant()}. Nothing was installed.";
                 }
 
-                progress?.Report($"{displayName}: SHA-256 matches the pinned release.");
+                progress?.Report($"{displayName}: SHA-256 matches the expected {expectedSha256.ToLowerInvariant()}.");
             }
 
             complete = true;

@@ -69,4 +69,17 @@ public sealed class FfmpegLocatorOrderTests : IDisposable
 
         Assert.Equal(custom, FfmpegLocator.FindFfmpegExecutable(custom, _appDir, _managedDir, _pathDir));
     }
+
+    [Theory]
+    [InlineData("ffmpeg.exe")]          // the settings default
+    [InlineData(@"bin\ffmpeg.exe")]
+    public void ABareNameSetting_IsNotAPath_SoTheOneClickCopyStillWins(string setting)
+    {
+        // Taken as a path, a bare name resolves against the working directory: started from the application folder,
+        // the app then used a 2021 ffmpeg.exe found there instead of the current 1-click install (2026-11-26).
+        Place(_appDir);
+        string managed = Place(_managedDir);
+
+        Assert.Equal(managed, FfmpegLocator.FindFfmpegExecutable(setting, _appDir, _managedDir, _pathDir));
+    }
 }

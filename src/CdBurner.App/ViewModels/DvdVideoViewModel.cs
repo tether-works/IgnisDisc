@@ -1391,7 +1391,7 @@ public partial class DvdVideoViewModel : ObservableObject
     }
 
     /// <summary>
-    /// Downloads and extracts the LGPL Windows build of FFmpeg into per-user storage and enables video transcoding.
+    /// Downloads and extracts the full Windows build of FFmpeg into per-user storage and enables video transcoding.
     /// </summary>
     public async Task<ToolInstallResult> InstallFfmpegAsync(
         string? targetDirectory = null,
@@ -1422,7 +1422,7 @@ public partial class DvdVideoViewModel : ObservableObject
                 CustomFfmpegPath = result.ExecutablePath;
                 RefreshFfmpegStatus();
                 BurnProgress = 100.0;
-                StatusMessage = $"FFmpeg (LGPL) installed: {result.ExecutablePath}";
+                StatusMessage = $"{ExternalToolInstallerService.FfmpegDisplayName} installed: {result.ExecutablePath}";
             }
             else
             {

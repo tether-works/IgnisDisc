@@ -108,7 +108,7 @@ Burning will replace everything on the disc. Continue?</value></data>
   <data name="StatusDvdVideoAuthoringDvdVideoIsoImage" xml:space="preserve"><value>Authoring DVD-Video ISO image...</value></data>
   <data name="StatusDvdVideoBuildingTheDiscImageToPlace" xml:space="preserve"><value>Building the disc image to place the layer break...</value></data>
   <data name="StatusDvdVideoCancellingDvdVideoOperation" xml:space="preserve"><value>Cancelling DVD-Video operation...</value></data>
-  <data name="StatusDvdVideoDownloadingFfmpegLgpl" xml:space="preserve"><value>Downloading FFmpeg (LGPL)...</value></data>
+  <data name="StatusDvdVideoDownloadingFfmpegLgpl" xml:space="preserve"><value>Downloading FFmpeg (full build)...</value></data>
   <data name="StatusDvdVideoDvdVideoBurnCancelled" xml:space="preserve"><value>DVD-Video burn cancelled.</value></data>
   <data name="StatusDvdVideoDvdVideoBurnCancelledByUser" xml:space="preserve"><value>DVD-Video burn cancelled by user.</value></data>
   <data name="StatusDvdVideoDvdVideoIsoBuildCancelled" xml:space="preserve"><value>DVD-Video ISO build cancelled.</value></data>

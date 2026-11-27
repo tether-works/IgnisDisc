@@ -14,8 +14,9 @@ Windows components used at runtime but **not** redistributed: IMAPIv2 (`imapi2.d
 
 ## ffmpeg (optional, 1-click install available)
 
-DVD-Video transcoding calls an external `ffmpeg.exe` as a separate program. It is **not** bundled by default.
-You can download and install the official LGPL Windows build with 1 click from the **DVD-Video** or **Settings** workspace (installed per-user into `%LOCALAPPDATA%\Programs\ffmpeg\ffmpeg.exe` alongside `ffmpeg-LICENSE.txt`), or point IgnisDisc to an existing `ffmpeg.exe`.
+DVD-Video and Blu-ray Video transcoding call an external `ffmpeg.exe` as a separate program. It is **not** bundled by default.
+You can download and install the official full Windows build (BtbN's "gpl" variant) with 1 click from the **DVD-Video** or **Settings** workspace, or with `ignisdisc-cli install-ffmpeg` (installed per-user into `%LOCALAPPDATA%\Programs\ffmpeg\ffmpeg.exe` alongside `ffmpeg-LICENSE.txt`), or point IgnisDisc to an existing `ffmpeg.exe`.
+The full build is used because Blu-ray Video needs the libx264 encoder, which is GPL software and missing from LGPL builds (the 1-click download installed the LGPL build until 2026-11-26). The user downloads it from BtbN's GitHub releases; IgnisDisc, itself GPL-3.0-or-later, does not redistribute it.
 If a release bundles it (via `scripts/Build-Installer.ps1 -FfmpegPath ... -FfmpegLicensePath ...`), that build's
 license text ships as `ffmpeg-LICENSE.txt` next to it. ffmpeg is licensed under the LGPL v2.1+ (or GPL v2+ for
 GPL-enabled builds); see https://ffmpeg.org/legal.html. Prefer an LGPL build, record exactly which build you shipped

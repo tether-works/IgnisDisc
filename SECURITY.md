@@ -53,8 +53,9 @@ it:
   is off. `--no-ctdb-repair` skips both.
 - **Optional tool downloads** (only when you click *Install FFmpeg (1-Click)* or *Install par2 (1-Click)*): the
   program is downloaded from its project's GitHub releases. The par2cmdline-turbo archive's SHA-256 is pinned in
-  IgnisDisc and any other download is refused before it is unpacked; ffmpeg comes from BtbN's rolling `latest` LGPL
-  build, which has no fixed hash to pin.
+  IgnisDisc and any other download is refused before it is unpacked. ffmpeg comes from BtbN's rolling `latest` full
+  ("gpl") build, which has no fixed hash IgnisDisc could pin; instead the `checksums.sha256` BtbN publishes in the same
+  release is read first, and an archive that does not match it is refused before it is unpacked.
 - **Subtitle tool download** (only when you click *Install subtitle tool (1-Click)* or run
   `install-subtitle-tool`): whisper.cpp 1.9.5 is downloaded from `github.com/ggml-org/whisper.cpp` releases and one
   speech model from `huggingface.co/ggerganov/whisper.cpp` at a fixed revision. Every file's SHA-256 is pinned in
