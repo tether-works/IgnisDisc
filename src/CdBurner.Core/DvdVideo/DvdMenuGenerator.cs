@@ -315,15 +315,16 @@ public static class DvdMenuGenerator
                     using var cts = CancellationTokenSource.CreateLinkedTokenSource(cancellationToken);
                     cts.CancelAfter(TimeSpan.FromSeconds(15));
 
+                    var stdOutTask = proc.StandardOutput.ReadToEndAsync(cts.Token);
+                    var stdErrTask = proc.StandardError.ReadToEndAsync(cts.Token);
                     try
                     {
-                        var stdOutTask = proc.StandardOutput.ReadToEndAsync(cts.Token);
-                        var stdErrTask = proc.StandardError.ReadToEndAsync(cts.Token);
                         await Task.WhenAll(stdOutTask, stdErrTask, proc.WaitForExitAsync(cts.Token)).ConfigureAwait(false);
                     }
                     catch
                     {
                         CdBurner.Core.Utilities.ProcessAndFileCleanup.KillTreeAndWait(proc);
+                        try { await Task.WhenAll(stdOutTask, stdErrTask).ConfigureAwait(false); } catch { }
                         throw;
                     }
 

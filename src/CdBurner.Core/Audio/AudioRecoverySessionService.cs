@@ -117,16 +117,7 @@ public sealed class StagedRecoverySessionIso : IDisposable
         }
         _disposed = true;
         IsoStream.Dispose();
-        try
-        {
-            if (Directory.Exists(_stagingDirectory))
-            {
-                Directory.Delete(_stagingDirectory, recursive: true);
-            }
-        }
-        catch
-        {
-        }
+        CdBurner.Core.Utilities.ProcessAndFileCleanup.TryDeleteDirectoryWithRetry(_stagingDirectory);
     }
 }
 
@@ -326,10 +317,7 @@ public static class AudioRecoverySessionService
             string scratchDir = Path.Combine(stageRoot, "_par2_scratch");
             progress?.Report($"Generating PAR2 recovery data ({layout.RecoveryBlocks:N0} recovery blocks, {layout.BlockSize / 1024} KiB block size)...");
             await Par2Runner.CreateAsync(par2Path, stageRoot, layout, scratchDir, cancellationToken).ConfigureAwait(false);
-            if (Directory.Exists(scratchDir))
-            {
-                Directory.Delete(scratchDir, recursive: true);
-            }
+            CdBurner.Core.Utilities.ProcessAndFileCleanup.TryDeleteDirectoryWithRetry(scratchDir);
 
             string recoveryDir = Path.Combine(stageRoot, ArchiveManifest.RecoveryFolderName);
             string toleranceSummary = RecoverySessionBudget.DescribeTolerance(layout);
@@ -384,16 +372,7 @@ public static class AudioRecoverySessionService
         }
         catch
         {
-            try
-            {
-                if (Directory.Exists(stageRoot))
-                {
-                    Directory.Delete(stageRoot, recursive: true);
-                }
-            }
-            catch
-            {
-            }
+            CdBurner.Core.Utilities.ProcessAndFileCleanup.TryDeleteDirectoryWithRetry(stageRoot);
             throw;
         }
     }
@@ -574,16 +553,7 @@ public static class AudioRecoverySessionService
         }
         finally
         {
-            try
-            {
-                if (Directory.Exists(tempWork))
-                {
-                    Directory.Delete(tempWork, recursive: true);
-                }
-            }
-            catch
-            {
-            }
+            CdBurner.Core.Utilities.ProcessAndFileCleanup.TryDeleteDirectoryWithRetry(tempWork);
         }
     }
 
@@ -637,16 +607,7 @@ public static class AudioRecoverySessionService
         }
         finally
         {
-            try
-            {
-                if (Directory.Exists(tempWork))
-                {
-                    Directory.Delete(tempWork, recursive: true);
-                }
-            }
-            catch
-            {
-            }
+            CdBurner.Core.Utilities.ProcessAndFileCleanup.TryDeleteDirectoryWithRetry(tempWork);
         }
     }
 

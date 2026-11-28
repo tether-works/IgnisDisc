@@ -1527,7 +1527,7 @@ public class AudioCdRipperService
                             FlacFileCodec.WriteFlacFromWavFile(wavImagePath, tempFlacPath, albumTags, cdText?.Songwriter, cdText?.Composer);
                         }
 
-                        File.Move(tempFlacPath, finalImagePath, overwrite: true);
+                        CdBurner.Core.Utilities.ProcessAndFileCleanup.MoveFileWithRetry(tempFlacPath, finalImagePath, overwrite: true);
                     }
                     finally
                     {
@@ -1539,6 +1539,9 @@ public class AudioCdRipperService
                     keepWav = true;
                 }
 
+                string? writtenRipLogPath = null;
+                try
+                {
                 if (cueSheetPath != null)
                 {
                     var cueTracks = new List<CueTrack>(audioOrder.Count);
@@ -1634,15 +1637,30 @@ public class AudioCdRipperService
                 if (options.WriteRipLog)
                 {
                     string logFileName = ResolveLogFileName(options.RipLogFileName, cdText?.AlbumTitle, stem);
-                    string ripLogPath = Path.Combine(outputDirectory, logFileName);
+                    writtenRipLogPath = Path.Combine(outputDirectory, logFileName);
                     await RipLogFormatter.WriteToFileAsync(
-                        ripLogPath,
+                        writtenRipLogPath,
                         new RipLogContext(ripResult, OutputFormatLabel: AudioRipFormats.DisplayName(options.ImageFormat)),
                         cancellationToken).ConfigureAwait(false);
-                    ripResult = WithRipLogPath(ripResult, ripLogPath);
+                    ripResult = WithRipLogPath(ripResult, writtenRipLogPath);
                 }
 
                 return ripResult;
+                }
+                catch (OperationCanceledException)
+                {
+                    keepWav = false;
+                    TryDeleteFile(finalImagePath);
+                    if (cueSheetPath != null)
+                    {
+                        TryDeleteFile(cueSheetPath);
+                    }
+                    if (writtenRipLogPath != null)
+                    {
+                        TryDeleteFile(writtenRipLogPath);
+                    }
+                    throw;
+                }
             }
             finally
             {
@@ -2049,7 +2067,7 @@ public class AudioCdRipperService
         try
         {
             RedBookPcmDspProcessor.ApplyDeEmphasisToWavFile(wavPath, tempPath);
-            File.Move(tempPath, wavPath, overwrite: true);
+            CdBurner.Core.Utilities.ProcessAndFileCleanup.MoveFileWithRetry(tempPath, wavPath, overwrite: true);
         }
         finally
         {

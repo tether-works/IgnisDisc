@@ -1486,6 +1486,7 @@ public sealed class DvdVideoAuthoringService
             psi.ArgumentList.Add("-i");
             psi.ArgumentList.Add(moviePath);
 
+            cancellationToken.ThrowIfCancellationRequested();
             using var proc = Process.Start(psi);
             if (proc == null) return (0, sdr);
 
@@ -1502,11 +1503,13 @@ public sealed class DvdVideoAuthoringService
             catch (OperationCanceledException) when (cancellationToken.IsCancellationRequested)
             {
                 CdBurner.Core.Utilities.ProcessAndFileCleanup.KillTreeAndWait(proc);
+                try { await Task.WhenAll(outTask, errTask).ConfigureAwait(false); } catch { }
                 throw;
             }
             catch
             {
                 CdBurner.Core.Utilities.ProcessAndFileCleanup.KillTreeAndWait(proc);
+                try { await Task.WhenAll(outTask, errTask).ConfigureAwait(false); } catch { }
             }
 
             string stderr = errTask.IsCompletedSuccessfully ? errTask.Result : string.Empty;
@@ -1555,6 +1558,7 @@ public sealed class DvdVideoAuthoringService
             psi.ArgumentList.Add(arg);
         }
 
+        cancellationToken.ThrowIfCancellationRequested();
         using var proc = Process.Start(psi);
         if (proc == null)
         {

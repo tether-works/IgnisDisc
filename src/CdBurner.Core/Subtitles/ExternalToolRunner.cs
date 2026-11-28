@@ -53,24 +53,6 @@ public sealed class ProcessToolRunner : IExternalToolRunner
         }
 
         using var process = new Process { StartInfo = startInfo };
-        object lineLock = new();
-        void Forward(object? sender, DataReceivedEventArgs e)
-        {
-            if (e.Data == null || onOutputLine == null)
-            {
-                return;
-            }
-
-            // Both streams raise events on pool threads; the callback sees one line at a time.
-            lock (lineLock)
-            {
-                onOutputLine(e.Data);
-            }
-        }
-
-        process.OutputDataReceived += Forward;
-        process.ErrorDataReceived += Forward;
-
         if (!process.Start())
         {
             throw new InvalidOperationException($"Could not start {executablePath}.");
@@ -78,21 +60,43 @@ public sealed class ProcessToolRunner : IExternalToolRunner
 
         // Conversions run for an hour on every core; below normal keeps the rest of the PC responsive.
         CdBurner.Core.Utilities.BackgroundPriority.TryLower(process);
-        process.BeginOutputReadLine();
-        process.BeginErrorReadLine();
+
+        object lineLock = new();
+        Task outTask = DrainLinesAsync(process.StandardOutput, onOutputLine, lineLock, cancellationToken);
+        Task errTask = DrainLinesAsync(process.StandardError, onOutputLine, lineLock, cancellationToken);
 
         try
         {
-            await process.WaitForExitAsync(cancellationToken).ConfigureAwait(false);
+            await Task.WhenAll(outTask, errTask, process.WaitForExitAsync(cancellationToken)).ConfigureAwait(false);
         }
-        catch (OperationCanceledException)
+        catch
         {
             CdBurner.Core.Utilities.ProcessAndFileCleanup.KillTreeAndWait(process);
+            try { await Task.WhenAll(outTask, errTask).ConfigureAwait(false); } catch { }
             throw;
         }
 
-        // The parameterless wait flushes the last asynchronous output lines.
-        process.WaitForExit();
         return process.ExitCode;
+    }
+
+    private static async Task DrainLinesAsync(
+        StreamReader reader,
+        Action<string>? onOutputLine,
+        object lineLock,
+        CancellationToken cancellationToken)
+    {
+        while (await reader.ReadLineAsync(cancellationToken).ConfigureAwait(false) is { } line)
+        {
+            if (onOutputLine == null)
+            {
+                continue;
+            }
+
+            // Both streams are drained concurrently; the callback sees one line at a time.
+            lock (lineLock)
+            {
+                onOutputLine(line);
+            }
+        }
     }
 }

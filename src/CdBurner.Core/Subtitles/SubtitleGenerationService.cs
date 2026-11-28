@@ -174,8 +174,7 @@ public sealed class SubtitleGenerationService
         FileStream jobLock;
         try
         {
-            jobLock = new FileStream(Path.Combine(entryDir, "job.lock"), FileMode.OpenOrCreate, FileAccess.ReadWrite,
-                FileShare.None, 1, FileOptions.DeleteOnClose);
+            jobLock = CdBurner.Core.Utilities.ProcessAndFileCleanup.OpenDeleteOnCloseLockFile(Path.Combine(entryDir, "job.lock"));
         }
         catch (IOException)
         {
@@ -187,7 +186,7 @@ public sealed class SubtitleGenerationService
         {
             if (Directory.Exists(workDir))
             {
-                Directory.Delete(workDir, recursive: true);
+                CdBurner.Core.Utilities.ProcessAndFileCleanup.DeleteDirectoryWithRetry(workDir, recursive: true);
             }
 
             Directory.CreateDirectory(workDir);
@@ -313,7 +312,7 @@ public sealed class SubtitleGenerationService
             try
             {
                 await File.WriteAllTextAsync(tempSrt, SrtCueList.Format(cues), new UTF8Encoding(false), cancellationToken).ConfigureAwait(false);
-                File.Move(tempSrt, srtPath, overwrite: true);
+                CdBurner.Core.Utilities.ProcessAndFileCleanup.MoveFileWithRetry(tempSrt, srtPath, overwrite: true);
             }
             finally
             {

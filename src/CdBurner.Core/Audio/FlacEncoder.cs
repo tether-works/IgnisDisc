@@ -182,32 +182,10 @@ public static class FlacEncoder
         {
             await Task.WhenAll(outTask, errTask, proc.WaitForExitAsync(cancellationToken)).ConfigureAwait(false);
         }
-        catch (OperationCanceledException) when (cancellationToken.IsCancellationRequested)
-        {
-            try
-            {
-                if (!proc.HasExited)
-                {
-                    proc.Kill(entireProcessTree: true);
-                }
-            }
-            catch
-            {
-            }
-            throw;
-        }
         catch
         {
-            try
-            {
-                if (!proc.HasExited)
-                {
-                    proc.Kill(entireProcessTree: true);
-                }
-            }
-            catch
-            {
-            }
+            CdBurner.Core.Utilities.ProcessAndFileCleanup.KillTreeAndWait(proc);
+            try { await Task.WhenAll(outTask, errTask).ConfigureAwait(false); } catch { }
             throw;
         }
 
@@ -387,14 +365,11 @@ public static class FlacEncoder
         try
         {
             File.WriteAllBytes(tempPath, updated);
-            File.Move(tempPath, flacFilePath, overwrite: true);
+            CdBurner.Core.Utilities.ProcessAndFileCleanup.MoveFileWithRetry(tempPath, flacFilePath, overwrite: true);
         }
         finally
         {
-            if (File.Exists(tempPath))
-            {
-                File.Delete(tempPath);
-            }
+            CdBurner.Core.Utilities.ProcessAndFileCleanup.TryDeleteFileWithRetry(tempPath);
         }
     }
 

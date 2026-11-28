@@ -537,7 +537,7 @@ public class DataBurnPipelineTests
         using var cts = new CancellationTokenSource();
         var progress = new ThreadSafeListProgress<BurnProgressSnapshot>();
 
-        var burnProgress = new Progress<BurnProgressSnapshot>(snap =>
+        var burnProgress = new InlineProgress<BurnProgressSnapshot>(snap =>
         {
             progress.Report(snap);
             // Cancel as soon as WritingData begins
@@ -658,4 +658,9 @@ public class DataBurnPipelineTests
     }
 
     #endregion
+
+    private sealed class InlineProgress<T>(Action<T> handler) : IProgress<T>
+    {
+        public void Report(T value) => handler(value);
+    }
 }

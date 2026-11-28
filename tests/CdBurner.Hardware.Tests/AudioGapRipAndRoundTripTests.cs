@@ -524,7 +524,7 @@ public sealed class AudioGapRipAndRoundTripTests : IDisposable
         // 2. Cancel mid-rip: partial .wav file must be deleted cleanly in finally/catch
         string cancelDir = Path.Combine(_dir, "rip-cancel");
         using var cts = new CancellationTokenSource();
-        var progress = new Progress<BurnProgressSnapshot>(_ => cts.Cancel());
+        var progress = new InlineProgress<BurnProgressSnapshot>(_ => cts.Cancel());
         await Assert.ThrowsAnyAsync<OperationCanceledException>(() =>
             ripper.RipAudioCdAsync(
                 recorder,
@@ -539,5 +539,10 @@ public sealed class AudioGapRipAndRoundTripTests : IDisposable
                 progress,
                 cts.Token));
         Assert.Empty(Directory.GetFiles(cancelDir, "*.wav"));
+    }
+
+    private sealed class InlineProgress<T>(Action<T> handler) : IProgress<T>
+    {
+        public void Report(T value) => handler(value);
     }
 }

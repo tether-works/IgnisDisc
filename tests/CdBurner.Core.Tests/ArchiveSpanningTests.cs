@@ -275,7 +275,7 @@ public sealed class ArchiveSpanningTests : IDisposable
             DiscMediaType.CdR, 0, "cancelset", ceilingSectorsOverride: 20);
 
         using var cts = new CancellationTokenSource();
-        var progress = new Progress<string>(msg =>
+        var progress = new InlineProgress<string>(msg =>
         {
             if (msg.Contains("copying b.bin", StringComparison.Ordinal))
             {
@@ -286,6 +286,11 @@ public sealed class ArchiveSpanningTests : IDisposable
         await Assert.ThrowsAnyAsync<OperationCanceledException>(() =>
             ArchiveStager.StageAsync(plan, staging, par2Path: null, progress, cts.Token));
         Assert.Empty(Directory.EnumerateFileSystemEntries(staging));
+    }
+
+    private sealed class InlineProgress<T>(Action<T> handler) : IProgress<T>
+    {
+        public void Report(T value) => handler(value);
     }
 
     // ---- CATALOG.JSON and INDEX.HTML on staged discs ----

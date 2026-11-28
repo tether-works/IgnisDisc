@@ -243,7 +243,7 @@ public static class Par2Runner
             foreach (var file in Directory.EnumerateFiles(scratchDirectory, "*.par2"))
             {
                 string dest = Path.Combine(recoveryFolder, Path.GetFileName(file));
-                File.Move(file, dest, overwrite: true);
+                CdBurner.Core.Utilities.ProcessAndFileCleanup.MoveFileWithRetry(file, dest, overwrite: true);
             }
         }
         catch
@@ -264,16 +264,17 @@ public static class Par2Runner
 
             foreach (var file in Directory.EnumerateFiles(scratchDirectory, "*.par2"))
             {
-                try
-                {
-                    File.Delete(file);
-                }
-                catch (IOException) { }
-                catch (UnauthorizedAccessException) { }
+                CdBurner.Core.Utilities.ProcessAndFileCleanup.TryDeleteFileWithRetry(file);
             }
         }
-        catch (IOException) { }
-        catch (UnauthorizedAccessException) { }
+        catch (IOException ex)
+        {
+            Trace.TraceWarning($"Could not enumerate scratch PAR2 files in '{scratchDirectory}': {ex.Message}");
+        }
+        catch (UnauthorizedAccessException ex)
+        {
+            Trace.TraceWarning($"Could not enumerate scratch PAR2 files in '{scratchDirectory}': {ex.Message}");
+        }
     }
 
     /// <summary>
@@ -353,7 +354,7 @@ public static class Par2Runner
                     cancellationToken.ThrowIfCancellationRequested();
 
                     string held = volume + HeldVolumeSuffix;
-                    File.Move(volume, held);
+                    CdBurner.Core.Utilities.ProcessAndFileCleanup.MoveFileWithRetry(volume, held, overwrite: false);
                     int retryExitCode;
                     bool attemptThrew = true;
                     try
@@ -372,11 +373,12 @@ public static class Par2Runner
                         {
                             if (File.Exists(held) && !File.Exists(volume))
                             {
-                                File.Move(held, volume);
+                                CdBurner.Core.Utilities.ProcessAndFileCleanup.MoveFileWithRetry(held, volume, overwrite: false);
                             }
                         }
                         catch (Exception ex) when (attemptThrew && ex is IOException or UnauthorizedAccessException)
                         {
+                            Trace.TraceWarning($"Could not restore held PAR2 volume '{held}': {ex.Message}");
                         }
                     }
 
@@ -411,7 +413,7 @@ public static class Par2Runner
             string volume = held[..^HeldVolumeSuffix.Length];
             if (!File.Exists(volume))
             {
-                File.Move(held, volume);
+                CdBurner.Core.Utilities.ProcessAndFileCleanup.MoveFileWithRetry(held, volume, overwrite: false);
             }
         }
     }
@@ -451,7 +453,7 @@ public static class Par2Runner
         foreach (var (backup, original) in FindNewBackups(folderRoot, filesBefore))
         {
             // Overwrite any partial/0-byte file par2 may have started writing before failing or timing out.
-            File.Move(backup, original, overwrite: true);
+            CdBurner.Core.Utilities.ProcessAndFileCleanup.MoveFileWithRetry(backup, original, overwrite: true);
         }
     }
 

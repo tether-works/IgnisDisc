@@ -175,8 +175,7 @@ public static class WhisperToolInstaller
         try
         {
             // Only one install at a time (the app and the command line could both start one).
-            installLock = new FileStream(Path.Combine(root, LockFileName), FileMode.OpenOrCreate, FileAccess.ReadWrite,
-                FileShare.None, 1, FileOptions.DeleteOnClose);
+            installLock = ProcessAndFileCleanup.OpenDeleteOnCloseLockFile(Path.Combine(root, LockFileName));
         }
         catch (IOException)
         {
@@ -324,14 +323,25 @@ public static class WhisperToolInstaller
             await File.WriteAllTextAsync(Path.Combine(stagingDir, WhisperLocator.BuildMarkerFileName),
                 WhisperLocator.FormatBuildMarker(plan.Build), cancellationToken).ConfigureAwait(false);
 
-            Action<string, string> moveDir = MoveDirectoryOverride.Value ?? Directory.Move;
+            Action<string, string>? overrideMove = MoveDirectoryOverride.Value;
             string? backupDir = null;
             if (Directory.Exists(binDir))
             {
                 string candidateBackup = binDir + ".old." + Guid.NewGuid().ToString("N")[..8];
                 try
                 {
-                    moveDir(binDir, candidateBackup);
+                    if (overrideMove != null)
+                    {
+                        ProcessAndFileCleanup.RetryOnTransientIo(() =>
+                        {
+                            overrideMove(binDir, candidateBackup);
+                            return true;
+                        }, maxAttempts: 10);
+                    }
+                    else
+                    {
+                        ProcessAndFileCleanup.MoveDirectoryWithRetry(binDir, candidateBackup);
+                    }
                     backupDir = candidateBackup;
                 }
                 catch (Exception ex) when (ex is IOException or UnauthorizedAccessException)
@@ -342,7 +352,14 @@ public static class WhisperToolInstaller
 
             try
             {
-                moveDir(stagingDir, binDir);
+                if (overrideMove != null)
+                {
+                    overrideMove(stagingDir, binDir);
+                }
+                else
+                {
+                    ProcessAndFileCleanup.MoveDirectoryWithRetry(stagingDir, binDir);
+                }
             }
             catch (Exception ex) when (ex is IOException or UnauthorizedAccessException)
             {
@@ -350,11 +367,7 @@ public static class WhisperToolInstaller
                 {
                     try
                     {
-                        CdBurner.Core.Utilities.ProcessAndFileCleanup.RetryOnTransientIo(() =>
-                        {
-                            Directory.Move(backupDir, binDir);
-                            return true;
-                        });
+                        ProcessAndFileCleanup.MoveDirectoryWithRetry(backupDir, binDir);
                         backupDir = null;
                     }
                     catch (Exception restoreEx) when (restoreEx is IOException or UnauthorizedAccessException)
@@ -367,14 +380,14 @@ public static class WhisperToolInstaller
 
             if (backupDir != null)
             {
-                CdBurner.Core.Utilities.ProcessAndFileCleanup.TryDeleteDirectoryWithRetry(backupDir);
+                ProcessAndFileCleanup.TryDeleteDirectoryWithRetry(backupDir);
             }
             return null;
         }
         finally
         {
-            CdBurner.Core.Utilities.ProcessAndFileCleanup.TryDeleteFileWithRetry(zipPath);
-            CdBurner.Core.Utilities.ProcessAndFileCleanup.TryDeleteDirectoryWithRetry(stagingDir);
+            ProcessAndFileCleanup.TryDeleteFileWithRetry(zipPath);
+            ProcessAndFileCleanup.TryDeleteDirectoryWithRetry(stagingDir);
         }
     }
 
@@ -387,7 +400,7 @@ public static class WhisperToolInstaller
             client, model.Url, partPath, model.Sha256, $"{kind} {model.FileName}", progress, cancellationToken).ConfigureAwait(false);
         if (error == null)
         {
-            File.Move(partPath, targetPath, overwrite: true);
+            ProcessAndFileCleanup.MoveFileWithRetry(partPath, targetPath, overwrite: true);
         }
 
         return error;

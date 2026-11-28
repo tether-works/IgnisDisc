@@ -217,7 +217,7 @@ public sealed class BdmvAuthoringService
         }
         finally
         {
-            try { Directory.Delete(tempDir, recursive: true); } catch (IOException) { } catch (UnauthorizedAccessException) { }
+            CdBurner.Core.Utilities.ProcessAndFileCleanup.TryDeleteDirectoryWithRetry(tempDir);
         }
     }
 

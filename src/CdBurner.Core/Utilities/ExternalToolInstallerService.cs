@@ -365,7 +365,7 @@ public static class ExternalToolInstallerService
                 }
             }
 
-            File.Move(tempExePath, targetExePath, overwrite: true);
+            ProcessAndFileCleanup.MoveFileWithRetry(tempExePath, targetExePath, overwrite: true);
             progress?.Report($"{toolDisplayName} installed at {targetExePath}.");
 
             return new ToolInstallResult(true, targetExePath, extractedLicensePath, null);
@@ -385,16 +385,7 @@ public static class ExternalToolInstallerService
                 client.Dispose();
             }
 
-            try
-            {
-                if (File.Exists(tempZipPath))
-                {
-                    File.Delete(tempZipPath);
-                }
-            }
-            catch
-            {
-            }
+            ProcessAndFileCleanup.TryDeleteFileWithRetry(tempZipPath);
         }
     }
 
@@ -520,22 +511,8 @@ public static class ExternalToolInstallerService
         }
     }
 
-    internal static void TryDeleteFile(string path)
-    {
-        try
-        {
-            if (File.Exists(path))
-            {
-                File.Delete(path);
-            }
-        }
-        catch (IOException)
-        {
-        }
-        catch (UnauthorizedAccessException)
-        {
-        }
-    }
+    internal static void TryDeleteFile(string path) =>
+        ProcessAndFileCleanup.TryDeleteFileWithRetry(path);
 
     private static HttpClient CreateDefaultHttpClient()
     {

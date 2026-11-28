@@ -615,17 +615,7 @@ public sealed class DiscCopyService
         {
             if (!options.KeepStagedImage)
             {
-                try
-                {
-                    if (Directory.Exists(tempDir))
-                    {
-                        Directory.Delete(tempDir, recursive: true);
-                    }
-                }
-                catch
-                {
-                    // Ignore temp cleanup errors
-                }
+                CdBurner.Core.Utilities.ProcessAndFileCleanup.TryDeleteDirectoryWithRetry(tempDir);
             }
         }
     }

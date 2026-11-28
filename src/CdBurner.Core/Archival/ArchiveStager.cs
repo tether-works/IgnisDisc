@@ -132,6 +132,7 @@ public static class ArchiveStager
                     }
 
                     progress?.Report($"Staging disc {disc.DiscNumber}/{plan.Discs.Count}: copying {file.RelativePath}");
+                    cancellationToken.ThrowIfCancellationRequested();
                     File.Copy(file.FullPath, destFilePath, overwrite: false);
 
                     DateTime lastWriteUtc = File.GetLastWriteTimeUtc(file.FullPath);

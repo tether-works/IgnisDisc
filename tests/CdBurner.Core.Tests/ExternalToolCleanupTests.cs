@@ -638,6 +638,75 @@ public sealed class ExternalToolCleanupTests : IDisposable
     }
 
     [Fact]
+    public async Task ProcessAndFileCleanup_KillTreeAndWait_WaitsForNestedGrandchildHoldingFileLock()
+    {
+        string startedFlag = Path.Combine(_tempDir, "nested_tree_started.flag");
+        string lockFile = Path.Combine(_tempDir, "nested_tree_grandchild.lock");
+        string innerScript = Path.Combine(_tempDir, "nested_inner.cmd");
+        string outerScript = Path.Combine(_tempDir, "nested_outer.cmd");
+
+        File.WriteAllText(innerScript, string.Join("\r\n",
+            "@echo off",
+            $"echo started> \"{startedFlag}\"",
+            $"(ping -n 30 127.0.0.1 >nul) > \"{lockFile}\""));
+        File.WriteAllText(outerScript, string.Join("\r\n",
+            "@echo off",
+            $"cmd /c \"{innerScript}\""));
+
+        var psi = new ProcessStartInfo("cmd.exe")
+        {
+            UseShellExecute = false,
+            CreateNoWindow = true,
+            RedirectStandardOutput = true,
+            RedirectStandardError = true
+        };
+        psi.ArgumentList.Add("/c");
+        psi.ArgumentList.Add(outerScript);
+
+        using var proc = Process.Start(psi)!;
+        await WaitForFlagAsync(startedFlag);
+
+        ProcessAndFileCleanup.KillTreeAndWait(proc);
+
+        Assert.True(proc.HasExited);
+        File.Delete(lockFile);
+    }
+
+    [Fact]
+    public async Task FlacEncoder_CancelledWhileFfmpegRunning_KillsProcessTreeAndReleasesOutputFile()
+    {
+        string inputWav = Path.Combine(_tempDir, "source.wav");
+        File.WriteAllBytes(inputWav, new byte[64]);
+        string outputFlac = Path.Combine(_tempDir, "encoded.flac");
+        string startedFlag = Path.Combine(_tempDir, "flac_started.flag");
+        string fakeFfmpeg = Path.Combine(_tempDir, "fake_ffmpeg_flac.cmd");
+
+        File.WriteAllText(fakeFfmpeg, string.Join("\r\n",
+            "@echo off",
+            "setlocal",
+            "set \"LASTARG=\"",
+            ":loop",
+            "if \"%~1\"==\"\" goto done",
+            "set \"LASTARG=%~1\"",
+            "shift",
+            "goto loop",
+            ":done",
+            $"echo started> \"{startedFlag}\"",
+            "(ping -n 30 127.0.0.1 >nul) > \"%LASTARG%\""));
+
+        using var cts = new CancellationTokenSource();
+        var tags = new AudioTrackTags("Track", "Artist", "Album", 1, 1);
+        Task encodeTask = FlacEncoder.EncodeAsync(fakeFfmpeg, inputWav, outputFlac, tags, cts.Token);
+
+        await WaitForFlagAsync(startedFlag);
+        cts.Cancel();
+
+        await Assert.ThrowsAnyAsync<OperationCanceledException>(() => encodeTask);
+        // Must succeed immediately without a sharing violation once EncodeAsync has waited for the tree to exit.
+        File.Delete(outputFlac);
+    }
+
+    [Fact]
     public async Task ProcessAndFileCleanup_TryDeleteWithRetry_DeletesAfterBriefReleaseAndLogsPersistentLeak()
     {
         string transientDir = Path.Combine(_tempDir, "transient_lock_dir");

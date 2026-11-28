@@ -46,7 +46,7 @@ public static class ProcessAndFileCleanup
                         process.Kill(entireProcessTree: true);
                     }
                 }
-                catch (Exception ex) when (ex is InvalidOperationException or Win32Exception or NotSupportedException)
+                catch (Exception ex) when (ex is InvalidOperationException or Win32Exception or NotSupportedException or ObjectDisposedException)
                 {
                 }
 
@@ -62,8 +62,8 @@ public static class ProcessAndFileCleanup
                 {
                 }
 
-                // A child spawned just before Kill() might not have been in the initial snapshot; pick it up if its
-                // start time falls inside the root process's lifetime.
+                // A child or grandchild spawned just before Kill() might not have been in the initial snapshot; repeat
+                // discovery until every level of the tree has exited or the deadline expires.
                 if (OperatingSystem.IsWindows() && rootPid > 0 && rootStartTime.HasValue)
                 {
                     DateTime? rootExitTime = TryGetExitTime(process);
@@ -71,6 +71,22 @@ public static class ProcessAndFileCleanup
                 }
 
                 WaitAndDisposeDescendants(descendants, deadline);
+
+                if (OperatingSystem.IsWindows() && rootPid > 0 && rootStartTime.HasValue)
+                {
+                    for (int pass = 0; pass < 4 && RemainingTimeoutMs(deadline) > 0; pass++)
+                    {
+                        int beforeCount = descendants.Count;
+                        DateTime? rootExitTime = TryGetExitTime(process);
+                        MergeNewDescendants(descendants, rootPid, rootStartTime.Value, rootExitTime);
+                        if (descendants.Count == beforeCount)
+                        {
+                            break;
+                        }
+
+                        WaitAndDisposeDescendants(descendants, deadline);
+                    }
+                }
             }
             finally
             {
@@ -220,6 +236,57 @@ public static class ProcessAndFileCleanup
     }
 
     /// <summary>
+    /// Moves <paramref name="sourceDirectory"/> to <paramref name="destinationDirectory"/>, retrying briefly on
+    /// transient Windows sharing or access violations (for example while a scanner briefly holds a freshly unpacked
+    /// executable or library inside the directory).
+    /// </summary>
+    public static void MoveDirectoryWithRetry(string sourceDirectory, string destinationDirectory, int maxAttempts = 10, int initialDelayMs = 15)
+    {
+        ArgumentException.ThrowIfNullOrWhiteSpace(sourceDirectory);
+        ArgumentException.ThrowIfNullOrWhiteSpace(destinationDirectory);
+
+        for (int attempt = 0; attempt < maxAttempts; attempt++)
+        {
+            try
+            {
+                Directory.Move(sourceDirectory, destinationDirectory);
+                return;
+            }
+            catch (Exception ex) when ((ex is IOException or UnauthorizedAccessException) && attempt < maxAttempts - 1)
+            {
+                Thread.Sleep(Math.Min(250, initialDelayMs << Math.Min(attempt, 4)));
+            }
+        }
+    }
+
+    /// <summary>
+    /// Opens an exclusive <see cref="FileOptions.DeleteOnClose"/> lock file at <paramref name="path"/>, retrying
+    /// briefly when Windows reports <see cref="UnauthorizedAccessException"/> because a previous handle's
+    /// delete-on-close is still pending (<c>STATUS_DELETE_PENDING</c>). Active lock contention raises
+    /// <see cref="IOException"/> immediately without retrying.
+    /// </summary>
+    public static FileStream OpenDeleteOnCloseLockFile(string path, int maxAttempts = 8, int initialDelayMs = 15)
+    {
+        ArgumentException.ThrowIfNullOrWhiteSpace(path);
+
+        for (int attempt = 0; attempt < maxAttempts; attempt++)
+        {
+            try
+            {
+                return new FileStream(path, FileMode.OpenOrCreate, FileAccess.ReadWrite,
+                    FileShare.None, 1, FileOptions.DeleteOnClose);
+            }
+            catch (UnauthorizedAccessException) when (attempt < maxAttempts - 1)
+            {
+                Thread.Sleep(Math.Min(200, initialDelayMs << Math.Min(attempt, 4)));
+            }
+        }
+
+        return new FileStream(path, FileMode.OpenOrCreate, FileAccess.ReadWrite,
+            FileShare.None, 1, FileOptions.DeleteOnClose);
+    }
+
+    /// <summary>
     /// Opens <paramref name="path"/> with bounded retries on transient sharing or access violations.
     /// </summary>
     public static T RetryOnTransientIo<T>(Func<T> operation, int maxAttempts = 6, int initialDelayMs = 15)
@@ -267,28 +334,34 @@ public static class ProcessAndFileCleanup
             return result;
         }
 
-        CollectDescendants(rootPid, rootStartTime.Value, upperBoundTime: null, result, seenPids: new HashSet<int> { rootPid });
+        CollectDescendants([rootPid], rootPid, rootStartTime.Value, upperBoundTime: null, result, seenPids: new HashSet<int> { rootPid });
         return result;
     }
 
     private static void MergeNewDescendants(List<Process> existing, int rootPid, DateTime rootStartTime, DateTime? rootExitTime)
     {
         var seen = new HashSet<int> { rootPid };
+        var seedPids = new List<int>(existing.Count + 1) { rootPid };
         foreach (Process p in existing)
         {
             try
             {
-                seen.Add(p.Id);
+                int pid = p.Id;
+                if (seen.Add(pid))
+                {
+                    seedPids.Add(pid);
+                }
             }
             catch (Exception ex) when (ex is InvalidOperationException or ObjectDisposedException)
             {
             }
         }
 
-        CollectDescendants(rootPid, rootStartTime, rootExitTime, existing, seen);
+        CollectDescendants(seedPids, rootPid, rootStartTime, rootExitTime, existing, seen);
     }
 
     private static void CollectDescendants(
+        IReadOnlyList<int> seedPids,
         int rootPid,
         DateTime rootStartTime,
         DateTime? upperBoundTime,
@@ -317,8 +390,11 @@ public static class ProcessAndFileCleanup
             list.Add(pid);
         }
 
-        var queue = new Queue<int>();
-        queue.Enqueue(rootPid);
+        var queue = new Queue<int>(seedPids.Count);
+        foreach (int seed in seedPids)
+        {
+            queue.Enqueue(seed);
+        }
 
         while (queue.Count > 0)
         {
@@ -345,17 +421,37 @@ public static class ProcessAndFileCleanup
                         continue;
                     }
 
-                    DateTime childStart = child.StartTime;
-                    if (childStart < rootStartTime)
+                    DateTime? childStart = null;
+                    try
                     {
-                        child.Dispose();
-                        continue;
+                        childStart = child.StartTime;
+                    }
+                    catch (Win32Exception)
+                    {
+                        // A descendant already in kernel teardown can reject StartTime queries; if it has not yet
+                        // finished exiting, keep it so WaitAndDisposeDescendants waits until its handles close.
+                        if (HasExitedSafe(child))
+                        {
+                            child.Dispose();
+                            continue;
+                        }
                     }
 
-                    if (upperBoundTime.HasValue && childStart > upperBoundTime.Value)
+                    if (childStart.HasValue)
                     {
-                        child.Dispose();
-                        continue;
+                        if (childStart.Value < rootStartTime)
+                        {
+                            child.Dispose();
+                            continue;
+                        }
+
+                        // Only direct children of rootPid are bounded by rootExitTime; a child process can spawn a
+                        // grandchild while the child is still exiting after rootPid has already terminated.
+                        if (current == rootPid && upperBoundTime.HasValue && childStart.Value > upperBoundTime.Value)
+                        {
+                            child.Dispose();
+                            continue;
+                        }
                     }
 
                     result.Add(child);
