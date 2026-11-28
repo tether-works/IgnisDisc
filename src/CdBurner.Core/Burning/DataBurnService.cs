@@ -1,4 +1,5 @@
 global using DataBurnStatus = CdBurner.Core.Abstractions.BurnStatus;
+using System.Diagnostics;
 using System.Security.Cryptography;
 using CdBurner.Core.Abstractions;
 using CdBurner.Core.Compilation;
@@ -589,7 +590,7 @@ public class DataBurnService
     /// system is parsed from its own sectors, so bad sectors are reported with the files that own them, and when the
     /// disc carries a root SHA256SUMS/BLAKE3SUMS every listed file is checked against it in the same pass.
     /// </summary>
-    private async Task<(bool Success, string? ErrorMessage, string? Note)> VerifyBurnedDiscAsync(
+    private Task<(bool Success, string? ErrorMessage, string? Note)> VerifyBurnedDiscAsync(
         IDiscRecorderBackend recorder,
         Stream sourceStream,
         int sectorCount,
@@ -597,99 +598,23 @@ public class DataBurnService
         int startLba,
         bool strict,
         IProgress<BurnProgressSnapshot>? progress,
-        CancellationToken cancellationToken)
-    {
-        var notes = new List<string>();
-
-        // 1. The file system and hash lists, read from the disc's own sectors (small random reads, off this thread).
-        var (fileMap, manifestCheck, manifestError) = await Task.Run(
-            () => ReadDiscLayout(recorder, startLba, sectorCount, strict, cancellationToken), cancellationToken).ConfigureAwait(false);
-        using var _ = manifestCheck;
-        if (manifestError != null)
-        {
-            return (false, manifestError, null);
-        }
-
-        // 2. One pass over the disc: compare every sector with the image and feed the hash-list check.
-        if (sourceStream.CanSeek)
-        {
-            sourceStream.Position = initialStreamPosition;
-        }
-
-        byte[] expected = new byte[OpticalConstants.DataSectorSize];
-        var mismatchedLbas = new List<int>();
-        var ripResult = await _burnEngine.ReadSectorsForVerifyAsync(
+        CancellationToken cancellationToken) =>
+        VerifySectorRangesAsync(
             recorder,
-            startLba,
+            sourceStream,
             sectorCount,
-            sectorConsumer: async (lba, sectorData) =>
-            {
-                int read = await ReadSectorFullyAsync(sourceStream, expected, cancellationToken).ConfigureAwait(false);
-                if (read < expected.Length)
-                {
-                    Array.Clear(expected, read, expected.Length - read);
-                }
-                if (!sectorData.Span.SequenceEqual(expected))
-                {
-                    mismatchedLbas.Add(lba);
-                }
-                manifestCheck?.AddSector(lba, sectorData.Span);
-            },
+            initialStreamPosition,
+            startLba,
+            [(0, sectorCount)],
+            strict,
             progress,
-            cancellationToken,
-            strict).ConfigureAwait(false);
-
-        if (ripResult.Note != null)
-        {
-            notes.Add(ripResult.Note);
-        }
-
-        if (!ripResult.Success)
-        {
-            if (ripResult.Exception is OperationCanceledException oce)
-            {
-                throw oce;
-            }
-            string where = ripResult.BadSectorsList.Count > 0 ? DescribeFiles(ripResult.BadSectorsList, fileMap) : string.Empty;
-            return (false, (ripResult.ErrorMessage ?? "Failed to read burned sectors during verification.") + where, null);
-        }
-
-        if (mismatchedLbas.Count > 0)
-        {
-            return (false,
-                $"Verification failed: {mismatchedLbas.Count} sector(s) on the disc differ from the image, starting at sector {mismatchedLbas[0]}." +
-                DescribeFiles(mismatchedLbas, fileMap), null);
-        }
-
-        if (manifestCheck != null)
-        {
-            var check = manifestCheck.Finish();
-            string lists = string.Join(" and ", check.ManifestNames);
-            if (!check.Passed)
-            {
-                var bad = check.MismatchedFiles.Concat(check.MissingFiles.Select(p => p + " (missing)")).ToList();
-                if (bad.Count == 0 && check.FilesNotLookedUp > 0)
-                {
-                    return (false,
-                        $"Verification failed: {check.FilesNotLookedUp} file(s) listed in {lists} could not be looked up in the disc's UDF file system.",
-                        null);
-                }
-                return (false,
-                    $"Verification failed: {bad.Count} file(s) on the disc do not match its {lists}: " +
-                    string.Join(", ", bad.Take(10)) + (bad.Count > 10 ? ", ..." : "") +
-                    (check.FilesNotLookedUp > 0 ? $" ({check.FilesNotLookedUp} additional file(s) could not be looked up)" : "") + ".", null);
-            }
-            notes.Add($"All {check.FilesChecked} file(s) match the disc's {lists}.");
-        }
-
-        return (true, null, notes.Count > 0 ? string.Join(" ", notes) : null);
-    }
+            cancellationToken);
 
     /// <summary>
     /// Compares every sector outside the picture zone <c>[picStartRel, picEndRel)</c> against the image and checks any
     /// root SHA256SUMS/BLAKE3SUMS manifest without reading back or comparing the picture zone itself.
     /// </summary>
-    private async Task<(bool Success, string? ErrorMessage, string? Note)> VerifyNonPictureRangesAsync(
+    private Task<(bool Success, string? ErrorMessage, string? Note)> VerifyNonPictureRangesAsync(
         IDiscRecorderBackend recorder,
         Stream sourceStream,
         int sectorCount,
@@ -701,15 +626,6 @@ public class DataBurnService
         IProgress<BurnProgressSnapshot>? progress,
         CancellationToken cancellationToken)
     {
-        var notes = new List<string>();
-        var (fileMap, manifestCheck, manifestError) = await Task.Run(
-            () => ReadDiscLayout(recorder, startLba, sectorCount, strict, cancellationToken), cancellationToken).ConfigureAwait(false);
-        using var _ = manifestCheck;
-        if (manifestError != null)
-        {
-            return (false, manifestError, null);
-        }
-
         var ranges = new List<(int OffsetRel, int Count)>(2);
         if (picStartRel > 0)
         {
@@ -720,60 +636,173 @@ public class DataBurnService
             ranges.Add((picEndRel, sectorCount - picEndRel));
         }
 
-        byte[] expected = new byte[OpticalConstants.DataSectorSize];
-        var mismatchedLbas = new List<int>();
-        string? cacheNote = null;
+        return VerifySectorRangesAsync(
+            recorder,
+            sourceStream,
+            sectorCount,
+            initialStreamPosition,
+            startLba,
+            ranges,
+            strict,
+            progress,
+            cancellationToken);
+    }
 
+    private async Task<(bool Success, string? ErrorMessage, string? Note)> VerifySectorRangesAsync(
+        IDiscRecorderBackend recorder,
+        Stream sourceStream,
+        int sectorCount,
+        long initialStreamPosition,
+        int startLba,
+        IReadOnlyList<(int OffsetRel, int Count)> ranges,
+        bool strict,
+        IProgress<BurnProgressSnapshot>? progress,
+        CancellationToken cancellationToken)
+    {
+        var notes = new List<string>();
+        var sw = Stopwatch.StartNew();
+
+        // 1. The file system and hash lists, read from the disc's own sectors (small random reads, off this thread).
+        var (fileMap, manifestCheck, manifestError) = await Task.Run(
+            () => ReadDiscLayout(recorder, startLba, sectorCount, strict, cancellationToken), cancellationToken).ConfigureAwait(false);
+        using var _ = manifestCheck;
+        if (manifestError != null)
+        {
+            return (false, manifestError, null);
+        }
+
+        byte[] expected = new byte[OpticalConstants.DataSectorSize];
+        var failed = new List<SectorRereadHelper.FailedSector>();
+        string? cacheNote = null;
+        int totalSectorsToVerify = ranges.Sum(r => r.Count);
+        int completedBeforeRange = 0;
+
+        async ValueTask ReadNextExpectedSectorAsync()
+        {
+            int read = await ReadSectorFullyAsync(sourceStream, expected, cancellationToken).ConfigureAwait(false);
+            if (read < expected.Length)
+            {
+                Array.Clear(expected, read, expected.Length - read);
+            }
+        }
+
+        void RecordFailure(int lba, ReadOnlySpan<byte> read, bool unreadable)
+        {
+            bool keep = failed.Count < SectorRereadHelper.MaxSectorsToReread;
+            failed.Add(new SectorRereadHelper.FailedSector(
+                lba,
+                unreadable,
+                keep ? expected.ToArray() : null,
+                keep && !unreadable ? read.ToArray() : null));
+        }
+
+        // 2. One pass over each range: compare every sector with the image, record failures, and feed the hash-list check.
         foreach (var (offsetRel, count) in ranges)
         {
+            if (count <= 0)
+            {
+                continue;
+            }
+
             if (sourceStream.CanSeek)
             {
                 sourceStream.Position = initialStreamPosition + (long)offsetRel * OpticalConstants.DataSectorSize;
             }
 
-            var ripResult = await _burnEngine.ReadSectorsForVerifyAsync(
+            int rangeOffset = completedBeforeRange;
+            var readOutcome = await BatchedSectorReader.ReadRangeAsync(
+                _burnEngine,
                 recorder,
                 startLba + offsetRel,
                 count,
-                sectorConsumer: async (lba, sectorData) =>
+                raw2352Mode: false,
+                maxRetriesPerSector: 1,
+                onSector: async (lba, sectorData) =>
                 {
-                    int read = await ReadSectorFullyAsync(sourceStream, expected, cancellationToken).ConfigureAwait(false);
-                    if (read < expected.Length)
-                    {
-                        Array.Clear(expected, read, expected.Length - read);
-                    }
+                    await ReadNextExpectedSectorAsync().ConfigureAwait(false);
                     if (!sectorData.Span.SequenceEqual(expected))
                     {
-                        mismatchedLbas.Add(lba);
+                        RecordFailure(lba, sectorData.Span, unreadable: false);
                     }
-                    manifestCheck?.AddSector(lba, sectorData.Span);
+                    manifestCheck?.AddSector(lba, expected);
                 },
-                progress,
-                cancellationToken,
-                strict).ConfigureAwait(false);
-
-            if (cacheNote == null && ripResult.Note != null)
-            {
-                cacheNote = ripResult.Note;
-                notes.Add(ripResult.Note);
-            }
-
-            if (!ripResult.Success)
-            {
-                if (ripResult.Exception is OperationCanceledException oce)
+                onUnreadable: async lba =>
                 {
-                    throw oce;
-                }
-                string where = ripResult.BadSectorsList.Count > 0 ? DescribeFiles(ripResult.BadSectorsList, fileMap) : string.Empty;
-                return (false, (ripResult.ErrorMessage ?? "Failed to read burned sectors during verification.") + where, null);
+                    await ReadNextExpectedSectorAsync().ConfigureAwait(false);
+                    RecordFailure(lba, ReadOnlySpan<byte>.Empty, unreadable: true);
+                    manifestCheck?.AddSector(lba, expected);
+                    return true;
+                },
+                onProgress: progress == null ? null : done => progress.Report(new BurnProgressSnapshot
+                {
+                    ElapsedTime = sw.Elapsed,
+                    CurrentLba = rangeOffset + done,
+                    TotalLba = totalSectorsToVerify,
+                    CurrentActionDescription = "VerifyingSectors",
+                    BufferLevelPercent = 100.0,
+                    CurrentSpeedMultiplier = 24.0,
+                    CurrentBytesPerSecond = 24 * OpticalConstants.CdData1XBytesPerSec
+                }),
+                cancellationToken: cancellationToken,
+                readFromDisc: true,
+                strict: strict).ConfigureAwait(false);
+
+            completedBeforeRange += count;
+            if (cacheNote == null && readOutcome.ReadbackNote != null)
+            {
+                cacheNote = readOutcome.ReadbackNote;
+                notes.Add(cacheNote);
             }
         }
 
-        if (mismatchedLbas.Count > 0)
+        // 3. Second read of any failed sectors from the disc surface after seeking away.
+        var secondReadErrors = new List<string>();
+        var toReread = failed.Where(f => f.Expected != null).ToList();
+        if (toReread.Count > 0 && totalSectorsToVerify > 0)
+        {
+            int firstVerifiedLba = startLba + ranges[0].OffsetRel;
+            int lastVerifiedLba = startLba + ranges[^1].OffsetRel + ranges[^1].Count - 1;
+            await SectorRereadHelper.RereadFailedSectorsAsync(
+                recorder,
+                _burnEngine,
+                firstVerifiedLba,
+                lastVerifiedLba,
+                toReread,
+                secondReadErrors,
+                progress == null ? null : (done, total) => progress.Report(new BurnProgressSnapshot
+                {
+                    ElapsedTime = sw.Elapsed,
+                    CurrentLba = done,
+                    TotalLba = total,
+                    CurrentActionDescription = "RereadingFailedSectors"
+                }),
+                cancellationToken).ConfigureAwait(false);
+        }
+
+        var stillFailed = failed.Where(f => !f.Recovered).ToList();
+        var unreadableLbas = stillFailed.Where(f => f.Unreadable).Select(f => f.Lba).ToList();
+        var differingLbas = stillFailed.Where(f => !f.Unreadable).Select(f => f.Lba).ToList();
+        int recoveredCount = failed.Count(f => f.Recovered);
+        int notReread = failed.Count(f => !f.Reread);
+
+        if (stillFailed.Count > 0)
         {
             return (false,
-                $"Verification failed: {mismatchedLbas.Count} sector(s) on the disc differ from the image, starting at sector {mismatchedLbas[0]}." +
-                DescribeFiles(mismatchedLbas, fileMap), null);
+                SectorRereadHelper.DescribeFailure(
+                    stillFailed.Count,
+                    unreadableLbas,
+                    differingLbas,
+                    recoveredCount,
+                    notReread,
+                    secondReadEnabled: true,
+                    fileMap,
+                    secondReadErrors),
+                null);
+        }
+
+        if (recoveredCount > 0)
+        {
+            notes.Add($"{recoveredCount} sector(s) failed the first read but matched the image on the second.");
         }
 
         if (manifestCheck != null)
@@ -843,28 +872,6 @@ public class DataBurnService
                 return (map, null, $"Verification failed: the hash list on the disc could not be read ({ex.Message}).");
             }
         }
-    }
-
-    private static string DescribeFiles(IReadOnlyList<int> lbas, IReadOnlyList<LbaFileExtentMap>? fileMap)
-    {
-        if (fileMap == null || fileMap.Count == 0)
-        {
-            return string.Empty;
-        }
-        var files = new List<string>();
-        foreach (int lba in lbas)
-        {
-            foreach (var extent in fileMap)
-            {
-                if (extent.SectorCount > 0 && extent.ContainsLba(lba) && !files.Contains(extent.FilePath))
-                {
-                    files.Add(extent.FilePath);
-                }
-            }
-        }
-        return files.Count == 0
-            ? " The damage is in the file system area, outside any file."
-            : " Affected file(s): " + string.Join(", ", files.Take(10)) + (files.Count > 10 ? ", ..." : "") + ".";
     }
 
     private static async ValueTask<int> ReadSectorFullyAsync(Stream stream, byte[] buffer, CancellationToken cancellationToken)

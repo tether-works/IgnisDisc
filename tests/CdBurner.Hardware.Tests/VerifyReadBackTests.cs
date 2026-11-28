@@ -463,4 +463,130 @@ public class VerifyReadBackTests
         Assert.Equal(4, result.FilesChecked);
         Assert.Equal(new[] { "SHA256SUMS", "BLAKE3SUMS" }, result.ManifestNames);
     }
+
+    private static void AssertSecondReadAfterSeekAway(VirtualMmcDrive drive, int lba, int totalSectors)
+    {
+        int far = lba >= totalSectors / 2 ? 0 : totalSectors - 1;
+        var log = drive.Read10Log;
+        int seekAway = log.FindLastIndex(r => r.Lba == far && r.Count == 1);
+        Assert.True(seekAway >= 0, $"no one-sector read at the far end (LBA {far}) before the second read");
+        Assert.True(log[seekAway].Fua, "the seek-away read was not forced from the disc");
+        var after = log.Skip(seekAway + 1).Where(r => lba >= r.Lba && lba < r.Lba + r.Count).ToList();
+        Assert.NotEmpty(after);
+        Assert.All(after, r => Assert.True(r.Fua, $"second read of LBA {r.Lba} had no FUA"));
+    }
+
+    [Fact]
+    public async Task BurnVerify_TransientReadError_RecoversOnSecondRead_PassesWithManifestsAndNote()
+    {
+        byte[] image = BuildImage(manifests: true);
+        int hiccup = FirstLbaOf(image, "/Docs/report.pdf") + 10;
+        var drive = new VirtualMmcDrive();
+        drive.TransientReadErrorLbas[hiccup] = 8;
+
+        var result = await BurnAndVerify(new MmcDataEngine(drive), image);
+
+        Assert.True(result.Success, result.ErrorMessage);
+        Assert.True(result.Verified);
+        Assert.Equal(0, drive.TransientReadErrorLbas[hiccup]);
+        Assert.Contains("1 sector(s) failed the first read but matched the image on the second", result.VerificationNote);
+        Assert.Contains("All 4 file(s) match the disc's SHA256SUMS and BLAKE3SUMS", result.VerificationNote);
+        AssertSecondReadAfterSeekAway(drive, hiccup, image.Length / 2048);
+    }
+
+    [Fact]
+    public async Task BurnVerify_ReadErrorAtLba_ContinuesPastError_AndFailsNamingUnreadableSectorAndFile()
+    {
+        byte[] image = BuildImage();
+        int bad = FirstLbaOf(image, "/Docs/report.pdf") + 3;
+        int sectors = image.Length / 2048;
+        var drive = new VirtualMmcDrive { ReadErrorAtLba = bad };
+
+        var result = await BurnAndVerify(new MmcDataEngine(drive), image);
+
+        Assert.False(result.Success);
+        Assert.Contains("1 could not be read", result.ErrorMessage);
+        Assert.Contains("Unreadable:", result.ErrorMessage);
+        Assert.Contains($"sector {bad}", result.ErrorMessage);
+        Assert.Contains("/Docs/report.pdf", result.ErrorMessage);
+        Assert.DoesNotContain("/a.bin", result.ErrorMessage);
+        Assert.Contains("after a second read", result.ErrorMessage);
+        AssertSecondReadAfterSeekAway(drive, bad, sectors);
+        Assert.Contains(drive.Read10Log, r => r.Lba > bad && r.Lba + r.Count == sectors);
+    }
+
+    [Fact]
+    public async Task BurnVerify_ReadBackDifferenceAtLba_FailsNamingSectorAsDifferentDataAndFile()
+    {
+        byte[] image = BuildImage();
+        int bad = FirstLbaOf(image, "/a.bin") + 10;
+        var drive = new VirtualMmcDrive { ReadBackDifferenceAtLba = bad };
+
+        var result = await BurnAndVerify(new MmcDataEngine(drive), image);
+
+        Assert.False(result.Success);
+        Assert.Contains("1 read back different data", result.ErrorMessage);
+        Assert.Contains("Different data:", result.ErrorMessage);
+        Assert.Contains($"sector {bad}", result.ErrorMessage);
+        Assert.Contains("/a.bin", result.ErrorMessage);
+        Assert.DoesNotContain("/Docs/report.pdf", result.ErrorMessage);
+        AssertSecondReadAfterSeekAway(drive, bad, image.Length / 2048);
+    }
+
+    [Fact]
+    public async Task BurnVerify_UnreadableAndDifferingAndTransientSectors_ReportsEachSeparatelyWithItsFile()
+    {
+        byte[] image = BuildImage();
+        int hiccup = FirstLbaOf(image, "/Docs/notes.txt");
+        int unreadable = FirstLbaOf(image, "/Docs/report.pdf") + 3;
+        int differing = FirstLbaOf(image, "/a.bin") + 10;
+        var drive = new VirtualMmcDrive
+        {
+            ReadErrorAtLba = unreadable,
+            ReadBackDifferenceAtLba = differing
+        };
+        drive.TransientReadErrorLbas[hiccup] = 8;
+
+        var result = await BurnAndVerify(new MmcDataEngine(drive), image);
+
+        Assert.False(result.Success);
+        Assert.Contains("1 could not be read, 1 read back different data", result.ErrorMessage);
+        Assert.Contains("1 other sector(s) failed the first read but matched the image on the second", result.ErrorMessage);
+        Assert.Contains($"Unreadable: sector {unreadable}", result.ErrorMessage);
+        Assert.Contains("/Docs/report.pdf", result.ErrorMessage);
+        Assert.Contains($"Different data: sector {differing}", result.ErrorMessage);
+        Assert.Contains("/a.bin", result.ErrorMessage);
+        Assert.DoesNotContain("/Docs/notes.txt", result.ErrorMessage);
+    }
+
+    [Fact]
+    public async Task BurnVerify_PictureZone_TransientReadErrorInFiles_PassesWithBothNotes()
+    {
+        byte[] image = BuildImage();
+        int filesStart = FirstLbaOf(image, "/a.bin");
+        Assert.True(filesStart > 16);
+        int hiccup = FirstLbaOf(image, "/Docs/report.pdf") + 4;
+        var drive = new VirtualMmcDrive();
+        drive.TransientReadErrorLbas[hiccup] = 8;
+
+        using var recorder = new VirtualDiscRecorder();
+        using var medium = VirtualDiscMedium.CreateBlankCdR700();
+        recorder.InsertMedia(medium);
+        var result = await new DataBurnService(new MmcDataEngine(drive)).BurnStreamAsync(
+            recorder,
+            new MemoryStream(image),
+            new DataBurnOptions
+            {
+                VerifyAfterBurn = true,
+                PictureZone = new SectorRange(0, filesStart)
+            });
+
+        Assert.True(result.Success, result.ErrorMessage);
+        Assert.True(result.Verified);
+        Assert.True(result.HasPictureZone);
+        Assert.True(result.FilesCompared);
+        Assert.False(result.PictureAreaCompared);
+        Assert.Contains("1 sector(s) failed the first read but matched the image on the second", result.VerificationNote);
+        Assert.Contains("Picture area was not compared", result.VerificationNote);
+    }
 }
