@@ -57,17 +57,8 @@ public static class FfmpegProcess
         }
         catch
         {
-            try
-            {
-                if (!proc.HasExited)
-                {
-                    proc.Kill(entireProcessTree: true);
-                }
-            }
-            catch (InvalidOperationException)
-            {
-                // The process ended between the check and the kill.
-            }
+            CdBurner.Core.Utilities.ProcessAndFileCleanup.KillTreeAndWait(proc);
+            try { await Task.WhenAll(outTask, errTask).ConfigureAwait(false); } catch { }
             throw;
         }
 

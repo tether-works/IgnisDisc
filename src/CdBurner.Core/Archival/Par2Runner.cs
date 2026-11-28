@@ -548,23 +548,8 @@ public static class Par2Runner
             errTask.IsCompletedSuccessfully ? errTask.Result : string.Empty);
     }
 
-    private static void KillProcessTreeSafe(Process proc)
-    {
-        try
-        {
-            if (!proc.HasExited)
-            {
-                proc.Kill(entireProcessTree: true);
-                proc.WaitForExit(5000);
-            }
-        }
-        catch (InvalidOperationException)
-        {
-        }
-        catch (System.ComponentModel.Win32Exception)
-        {
-        }
-    }
+    private static void KillProcessTreeSafe(Process proc) =>
+        CdBurner.Core.Utilities.ProcessAndFileCleanup.KillTreeAndWait(proc);
 }
 
 /// <summary>
@@ -630,16 +615,7 @@ internal sealed class ShortPathAlias : IDisposable
             int timeoutMs = JunctionTimeoutMsOverride.Value ?? 10_000;
             if (!proc.WaitForExit(timeoutMs))
             {
-                try
-                {
-                    if (!proc.HasExited)
-                    {
-                        proc.Kill(entireProcessTree: true);
-                        proc.WaitForExit(5_000);
-                    }
-                }
-                catch (InvalidOperationException) { }
-                catch (System.ComponentModel.Win32Exception) { }
+                CdBurner.Core.Utilities.ProcessAndFileCleanup.KillTreeAndWait(proc);
                 TryDeleteJunction(link);
                 return null;
             }
@@ -718,7 +694,7 @@ internal sealed class ShortPathAlias : IDisposable
         {
             if (Directory.Exists(link) && new DirectoryInfo(link).Attributes.HasFlag(FileAttributes.ReparsePoint))
             {
-                Directory.Delete(link, recursive: false);
+                CdBurner.Core.Utilities.ProcessAndFileCleanup.TryDeleteDirectoryWithRetry(link, recursive: false);
             }
         }
         catch (IOException) { }

@@ -421,16 +421,7 @@ public static class DiscFillPicture
             }
             catch (OperationCanceledException)
             {
-                try
-                {
-                    if (!process.HasExited)
-                    {
-                        process.Kill(entireProcessTree: true);
-                        process.WaitForExit(5000);
-                    }
-                }
-                catch (InvalidOperationException) { }
-                catch (System.ComponentModel.Win32Exception) { }
+                CdBurner.Core.Utilities.ProcessAndFileCleanup.KillTreeAndWait(process);
                 try { await Task.WhenAll(stderr, stdout).ConfigureAwait(false); } catch { }
                 cancellationToken.ThrowIfCancellationRequested();
                 return (null, "No picture fill: FFmpeg took longer than a minute to take a frame. The disc is burned without the picture.");
@@ -454,7 +445,7 @@ public static class DiscFillPicture
         {
             if (!succeeded)
             {
-                try { if (File.Exists(outputPng)) File.Delete(outputPng); } catch (IOException) { } catch (UnauthorizedAccessException) { }
+                CdBurner.Core.Utilities.ProcessAndFileCleanup.TryDeleteFileWithRetry(outputPng);
             }
         }
     }

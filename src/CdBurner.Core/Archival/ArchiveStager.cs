@@ -206,16 +206,7 @@ public static class ArchiveStager
                     }
                     finally
                     {
-                        try
-                        {
-                            if (Directory.Exists(scratchDir))
-                            {
-                                Directory.Delete(scratchDir, recursive: true);
-                            }
-                        }
-                        catch
-                        {
-                        }
+                        CdBurner.Core.Utilities.ProcessAndFileCleanup.TryDeleteDirectoryWithRetry(scratchDir);
                     }
                 }
 
@@ -249,16 +240,7 @@ public static class ArchiveStager
         {
             foreach (string dir in createdDiscDirs)
             {
-                try
-                {
-                    if (Directory.Exists(dir))
-                    {
-                        Directory.Delete(dir, recursive: true);
-                    }
-                }
-                catch
-                {
-                }
+                CdBurner.Core.Utilities.ProcessAndFileCleanup.TryDeleteDirectoryWithRetry(dir);
             }
             throw;
         }
@@ -268,7 +250,7 @@ public static class ArchiveStager
             {
                 if (Directory.Exists(parentScratch) && !Directory.EnumerateFileSystemEntries(parentScratch).Any())
                 {
-                    Directory.Delete(parentScratch, recursive: false);
+                    CdBurner.Core.Utilities.ProcessAndFileCleanup.TryDeleteDirectoryWithRetry(parentScratch, recursive: false);
                 }
             }
             catch
@@ -379,7 +361,7 @@ public static class ArchiveStager
                     $"The disc image would take {image:N0} sectors with its recovery data, more than the {ceilingSectors:N0} allowed.");
             }
 
-            Directory.Delete(recoveryFolder, recursive: true);
+            CdBurner.Core.Utilities.ProcessAndFileCleanup.DeleteDirectoryWithRetry(recoveryFolder, recursive: true);
             layout = layout with { RecoveryBlocks = layout.RecoveryBlocks - fewer };
         }
     }
@@ -532,16 +514,7 @@ public static class ArchiveStager
                     }
                     finally
                     {
-                        try
-                        {
-                            if (Directory.Exists(scratchDir))
-                            {
-                                Directory.Delete(scratchDir, recursive: true);
-                            }
-                        }
-                        catch
-                        {
-                        }
+                        CdBurner.Core.Utilities.ProcessAndFileCleanup.TryDeleteDirectoryWithRetry(scratchDir);
                     }
                 }
 

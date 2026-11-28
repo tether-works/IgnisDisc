@@ -71,14 +71,7 @@ public sealed record FfmpegCapabilities(bool HasLibx264, bool HasToneMapping)
             Task<string> stderr = proc.StandardError.ReadToEndAsync();
             if (!proc.WaitForExit(timeout))
             {
-                try
-                {
-                    proc.Kill(entireProcessTree: true);
-                }
-                catch (InvalidOperationException)
-                {
-                    // Exited between the wait and the kill.
-                }
+                CdBurner.Core.Utilities.ProcessAndFileCleanup.KillTreeAndWait(proc);
                 return null;
             }
             proc.WaitForExit();

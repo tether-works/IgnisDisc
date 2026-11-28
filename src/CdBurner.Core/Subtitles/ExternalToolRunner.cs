@@ -87,19 +87,7 @@ public sealed class ProcessToolRunner : IExternalToolRunner
         }
         catch (OperationCanceledException)
         {
-            try
-            {
-                if (!process.HasExited)
-                {
-                    process.Kill(entireProcessTree: true);
-                    // Give the tool a moment to release its files so the caller can delete them.
-                    process.WaitForExit(5000);
-                }
-            }
-            catch (Exception ex) when (ex is InvalidOperationException or System.ComponentModel.Win32Exception)
-            {
-            }
-
+            CdBurner.Core.Utilities.ProcessAndFileCleanup.KillTreeAndWait(process);
             throw;
         }
 

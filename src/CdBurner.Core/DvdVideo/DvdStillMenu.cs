@@ -1120,16 +1120,7 @@ public static class DvdStillMenu
             }
             catch
             {
-                try
-                {
-                    if (!proc.HasExited)
-                    {
-                        proc.Kill(entireProcessTree: true);
-                        proc.WaitForExit(5000);
-                    }
-                }
-                catch (InvalidOperationException) { }
-                catch (System.ComponentModel.Win32Exception) { }
+                CdBurner.Core.Utilities.ProcessAndFileCleanup.KillTreeAndWait(proc);
                 try { await Task.WhenAll(err, outp).ConfigureAwait(false); } catch { }
                 throw;
             }
@@ -1148,7 +1139,7 @@ public static class DvdStillMenu
         }
         finally
         {
-            try { Directory.Delete(work, recursive: true); } catch (IOException) { } catch (UnauthorizedAccessException) { }
+            CdBurner.Core.Utilities.ProcessAndFileCleanup.TryDeleteDirectoryWithRetry(work);
         }
     }
 

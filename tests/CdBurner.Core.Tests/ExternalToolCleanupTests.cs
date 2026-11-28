@@ -8,6 +8,7 @@ using CdBurner.Core.Archival;
 using CdBurner.Core.Audio;
 using CdBurner.Core.DvdVideo;
 using CdBurner.Core.Subtitles;
+using CdBurner.Core.Utilities;
 
 namespace CdBurner.Core.Tests;
 
@@ -590,6 +591,99 @@ public sealed class ExternalToolCleanupTests : IDisposable
             ShortPathAlias.JunctionTimeoutMsOverride.Value = null;
             ShortPathAlias.JunctionProcessStartInfoOverride.Value = null;
         }
+    }
+
+    [Fact]
+    public async Task ProcessAndFileCleanup_KillTreeAndWait_WaitsForDescendantProcessHoldingFileLock()
+    {
+        string startedFlag = Path.Combine(_tempDir, "tree_started.flag");
+        string lockFile = Path.Combine(_tempDir, "tree_child.lock");
+        string script = Path.Combine(_tempDir, "spawn_child.cmd");
+        File.WriteAllText(script, string.Join("\r\n",
+            "@echo off",
+            $"echo started> \"{startedFlag}\"",
+            $"(ping -n 30 127.0.0.1 >nul) > \"{lockFile}\""));
+
+        var psi = new ProcessStartInfo("cmd.exe")
+        {
+            UseShellExecute = false,
+            CreateNoWindow = true,
+            RedirectStandardOutput = true,
+            RedirectStandardError = true
+        };
+        psi.ArgumentList.Add("/c");
+        psi.ArgumentList.Add(script);
+
+        using var proc = Process.Start(psi)!;
+        await WaitForFlagAsync(startedFlag);
+
+        // Concurrent KillTreeAndWait calls must both block until the whole tree has exited and closed handles.
+        var traceMessages = new List<string>();
+        using var listener = new CapturingTraceListener(traceMessages);
+        Trace.Listeners.Add(listener);
+        try
+        {
+            await Task.WhenAll(
+                Task.Run(() => ProcessAndFileCleanup.KillTreeAndWait(proc)),
+                Task.Run(() => ProcessAndFileCleanup.KillTreeAndWait(proc)));
+        }
+        finally
+        {
+            Trace.Listeners.Remove(listener);
+        }
+
+        Assert.True(proc.HasExited);
+        Assert.Empty(traceMessages);
+        File.Delete(lockFile);
+    }
+
+    [Fact]
+    public async Task ProcessAndFileCleanup_TryDeleteWithRetry_DeletesAfterBriefReleaseAndLogsPersistentLeak()
+    {
+        string transientDir = Path.Combine(_tempDir, "transient_lock_dir");
+        Directory.CreateDirectory(transientDir);
+        string transientFile = Path.Combine(transientDir, "held.tmp");
+        var held = new FileStream(transientFile, FileMode.Create, FileAccess.ReadWrite, FileShare.None);
+
+        var releaser = Task.Run(async () =>
+        {
+            await Task.Delay(50).ConfigureAwait(false);
+            held.Dispose();
+        });
+
+        bool deletedAfterRelease = ProcessAndFileCleanup.TryDeleteDirectoryWithRetry(transientDir, recursive: true, maxAttempts: 8, initialDelayMs: 15);
+        await releaser;
+        Assert.True(deletedAfterRelease);
+        Assert.False(Directory.Exists(transientDir));
+
+        string persistentFile = Path.Combine(_tempDir, "still_locked.tmp");
+        using var persistentLock = new FileStream(persistentFile, FileMode.Create, FileAccess.ReadWrite, FileShare.None);
+        var traceMessages = new List<string>();
+        using var listener = new CapturingTraceListener(traceMessages);
+        Trace.Listeners.Add(listener);
+        try
+        {
+            bool deletedWhileLocked = ProcessAndFileCleanup.TryDeleteFileWithRetry(persistentFile, maxAttempts: 2, initialDelayMs: 5);
+            Assert.False(deletedWhileLocked);
+            Assert.Contains(traceMessages, m => m.Contains("Could not delete temporary file", StringComparison.Ordinal));
+        }
+        finally
+        {
+            Trace.Listeners.Remove(listener);
+        }
+    }
+
+    private sealed class CapturingTraceListener(List<string> messages) : TraceListener
+    {
+        public override void Write(string? message)
+        {
+            if (message != null)
+            {
+                lock (messages) messages.Add(message);
+            }
+        }
+
+        public override void WriteLine(string? message) => Write(message);
     }
 
     private sealed class StubSubtitleRunner(string ffmpeg, string cli) : IExternalToolRunner

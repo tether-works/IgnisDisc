@@ -290,7 +290,7 @@ public static class WhisperToolInstaller
             progress?.Report("Unpacking whisper.cpp...");
             if (Directory.Exists(stagingDir))
             {
-                Directory.Delete(stagingDir, recursive: true);
+                CdBurner.Core.Utilities.ProcessAndFileCleanup.DeleteDirectoryWithRetry(stagingDir, recursive: true);
             }
 
             Directory.CreateDirectory(stagingDir);
@@ -350,11 +350,16 @@ public static class WhisperToolInstaller
                 {
                     try
                     {
-                        Directory.Move(backupDir, binDir);
+                        CdBurner.Core.Utilities.ProcessAndFileCleanup.RetryOnTransientIo(() =>
+                        {
+                            Directory.Move(backupDir, binDir);
+                            return true;
+                        });
                         backupDir = null;
                     }
                     catch (Exception restoreEx) when (restoreEx is IOException or UnauthorizedAccessException)
                     {
+                        System.Diagnostics.Trace.TraceWarning($"Could not restore '{backupDir}' to '{binDir}': {restoreEx.Message}");
                     }
                 }
                 return $"Cannot replace the installed whisper.cpp: {ex.Message}";
@@ -362,32 +367,14 @@ public static class WhisperToolInstaller
 
             if (backupDir != null)
             {
-                try
-                {
-                    if (Directory.Exists(backupDir))
-                    {
-                        Directory.Delete(backupDir, recursive: true);
-                    }
-                }
-                catch (Exception ex) when (ex is IOException or UnauthorizedAccessException)
-                {
-                }
+                CdBurner.Core.Utilities.ProcessAndFileCleanup.TryDeleteDirectoryWithRetry(backupDir);
             }
             return null;
         }
         finally
         {
-            ExternalToolInstallerService.TryDeleteFile(zipPath);
-            try
-            {
-                if (Directory.Exists(stagingDir))
-                {
-                    Directory.Delete(stagingDir, recursive: true);
-                }
-            }
-            catch (Exception ex) when (ex is IOException or UnauthorizedAccessException)
-            {
-            }
+            CdBurner.Core.Utilities.ProcessAndFileCleanup.TryDeleteFileWithRetry(zipPath);
+            CdBurner.Core.Utilities.ProcessAndFileCleanup.TryDeleteDirectoryWithRetry(stagingDir);
         }
     }
 

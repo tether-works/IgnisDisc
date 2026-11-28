@@ -447,31 +447,9 @@ public sealed class SubtitleGenerationService
         int.Parse(m.Groups["m"].Value, CultureInfo.InvariantCulture) * 60 +
         double.Parse(m.Groups["s"].Value, CultureInfo.InvariantCulture));
 
-    private static void TryDeleteFile(string path)
-    {
-        try
-        {
-            if (File.Exists(path))
-            {
-                File.Delete(path);
-            }
-        }
-        catch (Exception ex) when (ex is IOException or UnauthorizedAccessException)
-        {
-        }
-    }
+    private static void TryDeleteFile(string path) =>
+        CdBurner.Core.Utilities.ProcessAndFileCleanup.TryDeleteFileWithRetry(path);
 
-    private static void TryDeleteDirectory(string dir)
-    {
-        try
-        {
-            if (Directory.Exists(dir))
-            {
-                Directory.Delete(dir, recursive: true);
-            }
-        }
-        catch (Exception ex) when (ex is IOException or UnauthorizedAccessException)
-        {
-        }
-    }
+    private static void TryDeleteDirectory(string dir) =>
+        CdBurner.Core.Utilities.ProcessAndFileCleanup.TryDeleteDirectoryWithRetry(dir);
 }

@@ -408,7 +408,7 @@ public sealed class DvdVideoAuthoringService
                     }
                     catch
                     {
-                        try { Directory.Delete(workDir, recursive: true); } catch (IOException) { } catch (UnauthorizedAccessException) { }
+                        CdBurner.Core.Utilities.ProcessAndFileCleanup.TryDeleteDirectoryWithRetry(workDir);
                         throw;
                     }
                 }
@@ -493,30 +493,21 @@ public sealed class DvdVideoAuthoringService
             }
             catch
             {
-                try
-                {
-                    if (!proc.HasExited)
-                    {
-                        proc.Kill(entireProcessTree: true);
-                        proc.WaitForExit(5000);
-                    }
-                }
-                catch (InvalidOperationException) { }
-                catch (System.ComponentModel.Win32Exception) { }
+                CdBurner.Core.Utilities.ProcessAndFileCleanup.KillTreeAndWait(proc);
                 try { await Task.WhenAll(err, outp).ConfigureAwait(false); } catch { }
-                try { if (File.Exists(pngPath)) File.Delete(pngPath); } catch (IOException) { } catch (UnauthorizedAccessException) { }
+                CdBurner.Core.Utilities.ProcessAndFileCleanup.TryDeleteFileWithRetry(pngPath);
                 throw;
             }
             bool ok = proc.ExitCode == 0 && File.Exists(pngPath) && new FileInfo(pngPath).Length > 0;
             if (!ok)
             {
-                try { if (File.Exists(pngPath)) File.Delete(pngPath); } catch (IOException) { } catch (UnauthorizedAccessException) { }
+                CdBurner.Core.Utilities.ProcessAndFileCleanup.TryDeleteFileWithRetry(pngPath);
             }
             return ok;
         }
         catch (Exception ex) when (ex is System.ComponentModel.Win32Exception or IOException)
         {
-            try { if (File.Exists(pngPath)) File.Delete(pngPath); } catch (IOException) { } catch (UnauthorizedAccessException) { }
+            CdBurner.Core.Utilities.ProcessAndFileCleanup.TryDeleteFileWithRetry(pngPath);
             return false;
         }
     }
@@ -527,7 +518,7 @@ public sealed class DvdVideoAuthoringService
         {
             return;
         }
-        try { Directory.Delete(Path.GetDirectoryName(idxPath)!, recursive: true); } catch (IOException) { } catch (UnauthorizedAccessException) { }
+        CdBurner.Core.Utilities.ProcessAndFileCleanup.TryDeleteDirectoryWithRetry(Path.GetDirectoryName(idxPath));
     }
 
     /// <summary>
@@ -1059,7 +1050,7 @@ public sealed class DvdVideoAuthoringService
                 {
                     if (stills != null)
                     {
-                        try { Directory.Delete(stills, recursive: true); } catch (IOException) { } catch (UnauthorizedAccessException) { }
+                        CdBurner.Core.Utilities.ProcessAndFileCleanup.TryDeleteDirectoryWithRetry(stills);
                     }
                 }
             }
@@ -1144,6 +1135,7 @@ public sealed class DvdVideoAuthoringService
                         if (ffmpegReady)
                         {
                             (transcodeSuccess, detectedDurationSeconds) = await TranscodeAsync(preparedSubtitles).ConfigureAwait(false);
+                            cancellationToken.ThrowIfCancellationRequested();
                             if (!transcodeSuccess && preparedSubtitles.Count > 0)
                             {
                                 // Some FFmpeg builds fail to mux large subtitle pictures; the film matters more than its subtitles.
@@ -1153,14 +1145,15 @@ public sealed class DvdVideoAuthoringService
                                     DeleteSubtitleFiles(sub.VobSubIndexPath);
                                 }
                                 preparedSubtitles.Clear();
-                                try { if (File.Exists(tempVob)) File.Delete(tempVob); } catch (IOException) { } catch (UnauthorizedAccessException) { }
+                                CdBurner.Core.Utilities.ProcessAndFileCleanup.TryDeleteFileWithRetry(tempVob);
                                 (transcodeSuccess, detectedDurationSeconds) = await TranscodeAsync(preparedSubtitles).ConfigureAwait(false);
+                                cancellationToken.ThrowIfCancellationRequested();
                             }
                         }
                     }
                     catch (OperationCanceledException)
                     {
-                        try { if (File.Exists(tempVob)) File.Delete(tempVob); } catch { }
+                        CdBurner.Core.Utilities.ProcessAndFileCleanup.TryDeleteFileWithRetry(tempVob);
                         throw;
                     }
                     catch (Exception ex) when (ex is IOException or System.ComponentModel.Win32Exception or InvalidOperationException)
@@ -1210,14 +1203,10 @@ public sealed class DvdVideoAuthoringService
                     var vobParts = DvdIfoGenerator.SplitVobFileIfOversized(tempVob, videoTsDir, setNum);
 
                     // Clean up temp transcode file
-                    try
+                    if (File.Exists(tempVob) && !vobParts.Contains(tempVob, StringComparer.OrdinalIgnoreCase))
                     {
-                        if (File.Exists(tempVob) && !vobParts.Contains(tempVob, StringComparer.OrdinalIgnoreCase))
-                        {
-                            File.Delete(tempVob);
-                        }
+                        CdBurner.Core.Utilities.ProcessAndFileCleanup.TryDeleteFileWithRetry(tempVob);
                     }
-                    catch { }
 
                     int totalVobSecs = 0;
                     for (int p = 0; p < vobParts.Count; p++)
@@ -1308,7 +1297,7 @@ public sealed class DvdVideoAuthoringService
                     {
                         DeleteSubtitleFiles(sub.VobSubIndexPath);
                     }
-                    try { if (File.Exists(tempVob)) File.Delete(tempVob); } catch (IOException) { } catch (UnauthorizedAccessException) { }
+                    CdBurner.Core.Utilities.ProcessAndFileCleanup.TryDeleteFileWithRetry(tempVob);
                 }
             }
 
@@ -1512,12 +1501,12 @@ public sealed class DvdVideoAuthoringService
             }
             catch (OperationCanceledException) when (cancellationToken.IsCancellationRequested)
             {
-                try { if (!proc.HasExited) proc.Kill(entireProcessTree: true); } catch { }
+                CdBurner.Core.Utilities.ProcessAndFileCleanup.KillTreeAndWait(proc);
                 throw;
             }
             catch
             {
-                try { if (!proc.HasExited) proc.Kill(entireProcessTree: true); } catch { }
+                CdBurner.Core.Utilities.ProcessAndFileCleanup.KillTreeAndWait(proc);
             }
 
             string stderr = errTask.IsCompletedSuccessfully ? errTask.Result : string.Empty;
@@ -1574,19 +1563,7 @@ public sealed class DvdVideoAuthoringService
 
         // The DVD conversion uses every core for a long time; below normal keeps the rest of the PC responsive.
         CdBurner.Core.Utilities.BackgroundPriority.TryLower(proc);
-        using var killReg = cancellationToken.Register(() =>
-        {
-            try
-            {
-                if (!proc.HasExited)
-                {
-                    proc.Kill(entireProcessTree: true);
-                }
-            }
-            catch
-            {
-            }
-        });
+        using var killReg = cancellationToken.Register(() => CdBurner.Core.Utilities.ProcessAndFileCleanup.KillTreeAndWait(proc));
 
         double durationSec = initialDurationSeconds;
         long lastReportTick = 0;
@@ -1710,7 +1687,7 @@ public sealed class DvdVideoAuthoringService
                     if (Stopwatch.GetElapsedTime(Interlocked.Read(ref lastOutput)) > noOutputTimeout && !HasExitedSafe(proc))
                     {
                         Volatile.Write(ref stalled, true);
-                        try { proc.Kill(entireProcessTree: true); } catch (InvalidOperationException) { } catch (System.ComponentModel.Win32Exception) { }
+                        CdBurner.Core.Utilities.ProcessAndFileCleanup.KillTreeAndWait(proc);
                         return;
                     }
                 }
@@ -1727,16 +1704,7 @@ public sealed class DvdVideoAuthoringService
         }
         catch
         {
-            try
-            {
-                if (!HasExitedSafe(proc))
-                {
-                    proc.Kill(entireProcessTree: true);
-                    proc.WaitForExit(5000);
-                }
-            }
-            catch (InvalidOperationException) { }
-            catch (System.ComponentModel.Win32Exception) { }
+            CdBurner.Core.Utilities.ProcessAndFileCleanup.KillTreeAndWait(proc);
             try { await Task.WhenAll(stdOutTask, stdErrTask).ConfigureAwait(false); } catch { }
             throw;
         }
@@ -1751,6 +1719,8 @@ public sealed class DvdVideoAuthoringService
             {
             }
         }
+
+        cancellationToken.ThrowIfCancellationRequested();
 
         if (Volatile.Read(ref stalled))
         {

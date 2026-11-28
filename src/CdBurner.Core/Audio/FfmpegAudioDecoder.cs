@@ -125,7 +125,7 @@ public static class FfmpegAudioDecoder
         using var timeoutCts = CancellationTokenSource.CreateLinkedTokenSource(cancellationToken);
         timeoutCts.CancelAfter(timeout);
 
-        using var killReg = timeoutCts.Token.Register(() => KillProcessTreeSafe(proc));
+        using var killReg = timeoutCts.Token.Register(() => CdBurner.Core.Utilities.ProcessAndFileCleanup.KillTreeAndWait(proc));
 
         // stderr is read on its own task so a full pipe cannot stall ffmpeg while stdout is being read.
         var errTask = proc.StandardError.ReadToEndAsync(timeoutCts.Token);
@@ -140,6 +140,14 @@ public static class FfmpegAudioDecoder
             else
             {
                 proc.StandardOutput.BaseStream.CopyTo(ms);
+            }
+
+            if (timeoutCts.IsCancellationRequested)
+            {
+                CdBurner.Core.Utilities.ProcessAndFileCleanup.KillTreeAndWait(proc);
+                try { errTask.GetAwaiter().GetResult(); } catch { }
+                cancellationToken.ThrowIfCancellationRequested();
+                throw new TimeoutException($"ffmpeg timed out while decoding '{Path.GetFileName(inputPath)}' after {timeout.TotalSeconds:F0}s.");
             }
 
             proc.WaitForExit();
@@ -160,33 +168,16 @@ public static class FfmpegAudioDecoder
         }
         catch (OperationCanceledException) when (!cancellationToken.IsCancellationRequested && timeoutCts.IsCancellationRequested)
         {
-            KillProcessTreeSafe(proc);
+            CdBurner.Core.Utilities.ProcessAndFileCleanup.KillTreeAndWait(proc);
+            try { errTask.GetAwaiter().GetResult(); } catch { }
             throw new TimeoutException($"ffmpeg timed out while decoding '{Path.GetFileName(inputPath)}' after {timeout.TotalSeconds:F0}s.");
         }
         catch
         {
-            KillProcessTreeSafe(proc);
+            CdBurner.Core.Utilities.ProcessAndFileCleanup.KillTreeAndWait(proc);
             timeoutCts.Cancel();
             try { errTask.GetAwaiter().GetResult(); } catch { }
             throw;
-        }
-    }
-
-    private static void KillProcessTreeSafe(Process proc)
-    {
-        try
-        {
-            if (!proc.HasExited)
-            {
-                proc.Kill(entireProcessTree: true);
-                proc.WaitForExit(5000);
-            }
-        }
-        catch (InvalidOperationException)
-        {
-        }
-        catch (System.ComponentModel.Win32Exception)
-        {
         }
     }
 }

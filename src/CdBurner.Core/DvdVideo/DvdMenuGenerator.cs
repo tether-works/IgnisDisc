@@ -323,7 +323,7 @@ public static class DvdMenuGenerator
                     }
                     catch
                     {
-                        try { if (!proc.HasExited) proc.Kill(entireProcessTree: true); } catch { }
+                        CdBurner.Core.Utilities.ProcessAndFileCleanup.KillTreeAndWait(proc);
                         throw;
                     }
 
@@ -347,8 +347,8 @@ public static class DvdMenuGenerator
             }
             finally
             {
-                try { if (File.Exists(tempBmp)) File.Delete(tempBmp); } catch { }
-                try { if (File.Exists(tempVob)) File.Delete(tempVob); } catch { }
+                CdBurner.Core.Utilities.ProcessAndFileCleanup.TryDeleteFileWithRetry(tempBmp);
+                CdBurner.Core.Utilities.ProcessAndFileCleanup.TryDeleteFileWithRetry(tempVob);
             }
         }
 

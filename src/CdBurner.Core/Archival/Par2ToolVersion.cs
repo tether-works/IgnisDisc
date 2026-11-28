@@ -116,15 +116,7 @@ public sealed partial record Par2ToolVersion(string Product, Version Version)
             Task<string> stderr = proc.StandardError.ReadToEndAsync();
             if (!proc.WaitForExit(timeout ?? TimeSpan.FromSeconds(5)))
             {
-                try
-                {
-                    proc.Kill(entireProcessTree: true);
-                }
-                catch (InvalidOperationException)
-                {
-                    // Exited between the wait and the kill.
-                }
-
+                CdBurner.Core.Utilities.ProcessAndFileCleanup.KillTreeAndWait(proc);
                 return null;
             }
 

@@ -106,14 +106,14 @@ public static class CalibrationStore
 
     private static CalibrationStoreDocument LoadFromSingleFile(string filePath)
     {
-        string json;
-        using (var stream = new FileStream(filePath, FileMode.Open, FileAccess.Read, FileShare.ReadWrite | FileShare.Delete, 4096, FileOptions.SequentialScan))
+        string json = CdBurner.Core.Utilities.ProcessAndFileCleanup.RetryOnTransientIo(() =>
         {
+            using var stream = new FileStream(filePath, FileMode.Open, FileAccess.Read, FileShare.ReadWrite | FileShare.Delete, 4096, FileOptions.SequentialScan);
             if (stream.Length > MaxFileBytes)
                 throw new InvalidDataException($"The calibration store is too large: {filePath}");
             using var reader = new StreamReader(stream, Encoding.UTF8, detectEncodingFromByteOrderMarks: true);
-            json = reader.ReadToEnd();
-        }
+            return reader.ReadToEnd();
+        });
 
         using JsonDocument doc = ParseJsonDocument(json, filePath);
         JsonElement root = doc.RootElement;
@@ -218,7 +218,7 @@ public static class CalibrationStore
             try
             {
                 WriteAtomicText(temporary, json);
-                File.Move(temporary, fullPath, overwrite: true);
+                CdBurner.Core.Utilities.ProcessAndFileCleanup.MoveFileWithRetry(temporary, fullPath, overwrite: true);
                 TryWriteBackup(fullPath, bakTemp, json);
             }
             finally
@@ -248,7 +248,7 @@ public static class CalibrationStore
         try
         {
             WriteAtomicText(bakTemp, json);
-            File.Move(bakTemp, fullPath + ".bak", overwrite: true);
+            CdBurner.Core.Utilities.ProcessAndFileCleanup.MoveFileWithRetry(bakTemp, fullPath + ".bak", overwrite: true);
         }
         catch (Exception ex) when (ex is IOException or UnauthorizedAccessException)
         {
@@ -256,15 +256,8 @@ public static class CalibrationStore
         }
     }
 
-    private static void TryDeleteFile(string path)
-    {
-        try
-        {
-            if (File.Exists(path)) File.Delete(path);
-        }
-        catch (IOException) { }
-        catch (UnauthorizedAccessException) { }
-    }
+    private static void TryDeleteFile(string path) =>
+        CdBurner.Core.Utilities.ProcessAndFileCleanup.TryDeleteFileWithRetry(path);
 
     private static bool SameKey(CalibrationStoreEntry entry, string driveModel, string mediaId)
         => string.Equals(entry.DriveModel?.Trim(), driveModel, StringComparison.OrdinalIgnoreCase)

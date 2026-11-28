@@ -817,6 +817,10 @@ public class AudioCdRipperService
         string? hiddenTrackOneAudioPath = null;
         int hiddenTrackOneAudioFrames = 0;
         int track1SilentPreGapFrames = 0;
+        string? cueSheetPath = null;
+        string? ripLogPath = null;
+        try
+        {
         if (audioOrder[0].TrackNumber == 1 &&
             audioOrder[0].StartLba > 0 &&
             tracksToRip.Any(t => t.TrackNumber == 1))
@@ -1082,7 +1086,6 @@ public class AudioCdRipperService
             : null;
 
         // Generate companion CUE sheet
-        string? cueSheetPath = null;
         if (options.GenerateCueSheet && wavNameByTrackNumber.Count > 0)
         {
             string cueBaseName = SanitizeFileName(Path.GetFileNameWithoutExtension(options.CueSheetFileName ?? "album"));
@@ -1184,7 +1187,7 @@ public class AudioCdRipperService
         if (options.WriteRipLog)
         {
             string logFileName = ResolveLogFileName(options.RipLogFileName, cdText?.AlbumTitle);
-            string ripLogPath = Path.Combine(outputDirectory, logFileName);
+            ripLogPath = Path.Combine(outputDirectory, logFileName);
             await RipLogFormatter.WriteToFileAsync(
                 ripLogPath,
                 new RipLogContext(ripResult, OutputFormatLabel: "WAV"),
@@ -1193,6 +1196,23 @@ public class AudioCdRipperService
         }
 
         return ripResult;
+        }
+        catch (OperationCanceledException)
+        {
+            foreach (string path in rippedFilePaths)
+            {
+                TryDeleteFile(path);
+            }
+            if (cueSheetPath != null)
+            {
+                TryDeleteFile(cueSheetPath);
+            }
+            if (ripLogPath != null)
+            {
+                TryDeleteFile(ripLogPath);
+            }
+            throw;
+        }
     }
 
     private async Task<AudioCdRipResult> RipImageCueAsync(
@@ -2037,18 +2057,6 @@ public class AudioCdRipperService
         }
     }
 
-    private static void TryDeleteFile(string path)
-    {
-        try
-        {
-            if (File.Exists(path))
-            {
-                File.Delete(path);
-            }
-        }
-        catch
-        {
-            // Best-effort cleanup of incomplete or silent temporary WAV file
-        }
-    }
+    private static void TryDeleteFile(string path) =>
+        CdBurner.Core.Utilities.ProcessAndFileCleanup.TryDeleteFileWithRetry(path);
 }
